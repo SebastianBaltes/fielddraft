@@ -145,6 +145,7 @@ fn onshape_419_revolve_remove_stays_bounded() {
     //     octree fallback   54 vertices, 110 edges, 37 faces
     //     strict analytic   52 vertices,  74 edges, 37 faces
     //     …plus #436        51 vertices,  80 edges, 37 faces
+    //     …plus #437        51 vertices,  86 edges, 37 faces
     //
     // Same 37 faces on every route: the contact never bounded a face, it only
     // polluted two of them. The 36 extra edges of the octree were its attempt
@@ -159,27 +160,41 @@ fn onshape_419_revolve_remove_stays_bounded() {
     // not a gain: two of the newly traced seams end on corners the old,
     // edge-less topology had left as separate cluster termini, and the corner
     // clustering now merges that pair into one vertex.
+    //
+    // The next +6 are #437, the same family: the interval seeding used to draw
+    // its trim boundaries from the GLOBALLY position-deduped witness list, so a
+    // seam whose second boundary happened to sit within `witness_merge`
+    // (3,09 mm here) of another triple's witness lost it and stayed unseeded.
+    // Drawing them from the per-pair concurrence list instead recovers, among
+    // others, the 19 mm flanks at y = −62,53 on both plates (z = −24,8 and
+    // z = 0) and the 11,3 mm flanks at y = −60,93. Every one is a straight
+    // segment between two exact triple points; none is a duplicate (the count
+    // is net of the coincidence canonicalisation, which merges twins).
     assert_eq!(
         brep_counts(&mut kernel, 4),
-        (51, 80, 37),
+        (51, 86, 37),
         "body 4 must weave on the STRICT analytic route (octree gave 54/110/37)",
     );
 
     // #436 instrument — faces whose boundary is not a traversable ring, per
-    // body. Before the interval seeding: `[0, 0, 0, 0, 28]`. The three faces
-    // that closed are the ones whose ONLY missing edge was such an unseeded
-    // interval; the other 25 are still short at least one edge for a reason
-    // this ticket did not settle (a seam whose interval boundaries are not both
-    // known corners, and a second family where a face carries an INTERIOR seam
-    // that belongs to no ring at all — see the follow-up).
+    // body. 28 before the interval seeding, 25 after it (#436), 24 once the
+    // seeding stopped losing its trim boundaries to the witness dedup (#437).
+    //
+    // The 24 that remain are NOT the same defect. #436 counted 17 of its 64
+    // ordering failures as „merged twins" — a face on a coincidence-class
+    // carrier whose edge list contains the carrier's own INTERIOR seams, so no
+    // walk can close it however many edges the tracer finds. That family is
+    // reproduced minimally and pinned in
+    // `brep::weaving::tests::partial_membrane_on_coincident_carrier_leaves_face_boundary_open`;
+    // it needs per-region membership attribution, not more seeds.
     //
     // Both directions are meaningful: a rise means seams stopped being traced,
     // a fall means the remaining families are being solved. Neither may pass
     // silently.
     assert_eq!(
         open_faces(&mut kernel),
-        vec![0, 0, 0, 0, 25],
-        "faces without a traversable boundary (#436); was [0, 0, 0, 0, 28]",
+        vec![0, 0, 0, 0, 24],
+        "faces without a traversable boundary (#436/#437); was [0, 0, 0, 0, 28]",
     );
 }
 
@@ -233,14 +248,28 @@ fn onshape_419_full_import_stays_bounded() {
     assert_eq!(bodies, 12, "the #419 import partitions into 12 bodies");
 
     // #436 instrument on the WHOLE document — faces without a traversable
-    // boundary, per body. Nine of them, on three bodies, and the interval
-    // seeding that repaired three faces of the revolve prefix moves NONE of
-    // these: whatever is missing here is a different family. Nailing the number
-    // down is the point — it is the only place the document's open faces are
-    // counted, and it was drifting unwatched.
+    // boundary, per body. Nailing the number down is the point: it is the only
+    // place the document's open faces are counted, and it was drifting
+    // unwatched.
+    //
+    // Body 10 went from 6 to 8 under #437 and that rise is a GAIN, not a
+    // regression — measured, not argued. Its counts go (22, 28, 15) to
+    // (23, 30, 17): the two new edges are the cap-rim segments of two wall
+    // facets (branches 131094 and 131098, 0,43 mm each) that the model-scaled
+    // SSI grid had never sampled. Those two branches previously had NO edge at
+    // all and therefore NO FACE — the shell simply lacked them, which this
+    // instrument does not count. Now they exist with one edge each and are
+    // counted as open. Face-by-face diff: the six faces that were open before
+    // (110605, 112638, 131093, 133118, 131097, 131099) are the same six after,
+    // NOT ONE previously-closed face broke, and 133118 even gained two edges
+    // (3 → 5). The rest of those facets' boundaries — the vertical seams
+    // against their neighbours — are a THIRD family: measured on pair
+    // (131111, 131112), the seam line has no active interval anywhere
+    // (`both_branches_active` is false along its whole length), so no amount
+    // of seeding reaches it.
     assert_eq!(
         open_faces(&mut kernel),
-        vec![0, 0, 0, 0, 0, 0, 2, 0, 0, 1, 6, 0],
-        "faces without a traversable boundary (#436)",
+        vec![0, 0, 0, 0, 0, 0, 2, 0, 0, 1, 8, 0],
+        "faces without a traversable boundary (#436/#437); was [.., 6, ..] on body 10",
     );
 }

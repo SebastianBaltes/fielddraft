@@ -753,6 +753,10 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
     //    trim clustering) keeps working as the backstop.
     let witness_merge = (1e-3 * diag).max(64.0 * eps as f64);
     let mut witnesses: Vec<([f64; 3], [BranchId; 3])> = Vec::new();
+    // #437: every concurrence that passed the rank AND activity gates, filed
+    // under each of its three branch PAIRS — before the global positional
+    // dedup below throws the losers away. See the pass-1 comment in stage 3.
+    let mut pair_conc: HashMap<(u32, u32), Vec<[f64; 3]>> = HashMap::new();
     {
         use std::collections::{BTreeSet, HashSet};
         let ckey = |x: BranchId, y: BranchId| {
@@ -934,6 +938,16 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                     }
                     continue;
                 }
+                // File the concurrence under all three of its pairs FIRST: it is
+                // a trim boundary of each of those three seams no matter which
+                // of them the positional dedup below happens to keep (#437).
+                for (i, j) in [(0usize, 1usize), (0, 2), (1, 2)] {
+                    let (x, y) = (branches[i].as_u32(), branches[j].as_u32());
+                    let e = pair_conc.entry((x.min(y), x.max(y))).or_default();
+                    if !e.iter().any(|q| dist3(*q, p) < SOLUTION_MERGE) {
+                        e.push(p);
+                    }
+                }
                 if witnesses.iter().any(|(w, _)| dist3(*w, p) < witness_merge) {
                     continue;
                 }
@@ -1012,209 +1026,242 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
         // enumerated once), so the orientation of the first member is the
         // orientation of all of them.
         let (a, b) = (seeds[members[0]].a, seeds[members[0]].b);
-        // This pair's seeds, in two passes (#436).
+        // This pair's seeds come from TWO sources in ONE list (#436, #437).
         //
-        // Pass 0 is the SSI sample set — spread UNIFORMLY over the pair's
-        // overlap box, so its spacing scales with the MODEL and never with the
-        // feature. On the #419 assembly rail (3 087 mm long, and a plane's
-        // overlap box is the whole body) a plane∩plane line carries its 64
-        // samples 48,998 mm apart, while the active intervals that line is
-        // trimmed into are 10–39 mm long: measured on pair (41063, 43006), all
-        // 128 samples land outside the one 10,435 mm interval, the seam is
-        // never traced at all, and the two faces that share it end up with an
-        // open boundary (the „could not order face loops" fallback).
+        // The SSI sample set is spread UNIFORMLY over the pair's overlap box,
+        // so its spacing scales with the MODEL and never with the feature. On
+        // the #419 assembly rail (3 087 mm long, and a plane's overlap box is
+        // the whole body) a plane∩plane line carries its 64 samples 48,998 mm
+        // apart, while the active intervals that line is trimmed into are
+        // 10–39 mm long: measured on pair (41063, 43006), all 128 samples land
+        // outside the one 10,435 mm interval, the seam is never traced at all,
+        // and the two faces that share it end up with an open boundary (the
+        // „could not order face loops" fallback).
         //
-        // Pass 1 runs ONLY when pass 0 emitted no record at all for a pair that
-        // carries at least two of its own trim boundaries. That combination is
-        // a contradiction the geometry itself reports: a witness is a triple
-        // point that passed the activity test, so the pair PROVABLY has seam on
-        // the body — the uniform grid simply stepped over it. The retry seeds
-        // the midpoints between those witnesses, which lie inside an interval
-        // by construction (`trace_edge` projects each seed onto the curve
-        // first, so a chord midpoint off a curved seam is fine).
+        // The second source closes exactly that gap, and it needs no sampling
+        // at all: the boundaries of a seam's active intervals ARE triple
+        // points, and stage 2b has already solved every one of them. Seeding
+        // the midpoints BETWEEN them puts a seed inside an interval by
+        // construction, at the feature's own scale, whatever the model
+        // measures.
         //
-        // Restricting the retry to the empty case is deliberate, not timid.
-        // Seeding the midpoints unconditionally also finds the missing seams,
-        // but it re-fragments seams that were already complete: measured, that
-        // took six adversarial mesher tests (`lichen_adv_*`,
-        // `gyroid_cutout_acceptance_four_metrics`) from green to red on
-        // U(p)-coverage gaps along edges this ticket never touched. A pair that
-        // already produced an edge is therefore left exactly as it was.
-        let ssi_pts: Vec<[f64; 3]> = members
+        // The boundaries come from `pair_conc`, NOT from the `witnesses` list
+        // (#437). Both are built by the same stage-2b Newton and pass the same
+        // rank and activity gates; they differ only in the dedup afterwards.
+        // `witnesses` is deduped GLOBALLY by position within `witness_merge`
+        // (= max(1e-3·diag, 64·eps), 3,09 mm on this 3 088 mm body), so a
+        // concurrence of one triple is discarded whenever ANY other triple
+        // already put a witness within that radius — and with it goes the pair
+        // membership this retry needs. Measured on the #419 rail: triple
+        // (41096, 41099, 43006) has all NINE of its Newton starts converge,
+        // pass the rank gate (|n̂₁·(n̂₂×n̂₃)| = 1,0) and pass the activity gate,
+        // and all nine are then dropped by that radius against the witness of
+        // (41081, 41096, 43006) 1,63 mm away — which is the OTHER END of the
+        // very interval this pair needs seeded. `pair_conc` keeps every gated
+        // concurrence under each of its three pairs and dedups only against
+        // the same pair's own entries at Newton precision, so both ends
+        // survive. Shrinking `witness_merge` itself was measured in #436 and
+        // is WORSE (it splits the marches at corners that must stay fused);
+        // the seed list and the vertex list simply want different tolerances.
+        //
+        // The midpoints are NOT a second pass. #436 ran them only for a pair
+        // that pass 0 had left completely empty, because seeding them
+        // unconditionally re-fragmented seams that were already whole (six
+        // adversarial mesher tests went red). The reason was mechanical, not
+        // geometric: a separate pass restarts `covered`, so a midpoint on an
+        // arc pass 0 had already traced was re-traced into a SECOND record of
+        // the same arc. Feeding both sources into ONE list lets the existing
+        // co-component dedup do its job — a midpoint that lands on an
+        // already-emitted polyline is simply marked covered — so the retry no
+        // longer needs the „only if empty" guard, and a seam that carries both
+        // a resolved and an unresolved interval (the grid hits one, misses the
+        // next) now gets both. The SSI samples stay FIRST so every trace that
+        // used to happen still happens, from the same seed, in the same order.
+        //
+        // Each midpoint is pulled onto the seam curve before it joins the list:
+        // the chord midpoint of a CURVED seam sits off the curve by the
+        // sagitta, which is exactly what would escape `near_traced` and mint
+        // the duplicate. `trace_edge` would project it anyway; doing it here is
+        // what makes the dedup see it.
+        //
+        // Build the two fields ONCE for the group. In `Strict` mode
+        // `unresolved` is empty so both lookups must succeed; a `None` here
+        // would be an internal inconsistency, so we bail to octree defensively
+        // rather than panic. In `Partial` mode an unliftable branch is expected
+        // (it is exactly a transition seam we mean to skip), so we drop the
+        // whole group.
+        let (Some(fa), Some(fb)) = (field_for(a), field_for(b)) else {
+            if mode == SeedMode::Partial {
+                skipped.insert(pair_key(a, b));
+                continue;
+            }
+            return None;
+        };
+        let mut seed_pts: Vec<[f64; 3]> = members
             .iter()
             .map(|&i| {
                 let p = seeds[i].point;
                 [p[0] as f64, p[1] as f64, p[2] as f64]
             })
             .collect();
-        let mut witness_pts: Vec<[f64; 3]> = Vec::new();
-        for i in 0..wit_pos.len() {
-            for j in i + 1..wit_pos.len() {
-                witness_pts.push([
-                    0.5 * (wit_pos[i][0] + wit_pos[j][0]),
-                    0.5 * (wit_pos[i][1] + wit_pos[j][1]),
-                    0.5 * (wit_pos[i][2] + wit_pos[j][2]),
-                ]);
+        // Midpoints of every PAIR of this seam's trim boundaries, not just of
+        // consecutive ones: on a curved or closed seam there is no global
+        // parameter to sort them by, and a midpoint that lands in a
+        // trimmed-away stretch costs nothing — `trace_edge` refuses an inactive
+        // seed (`trace_edge_rejects_inactive_seed`). The boundaries number a
+        // handful per seam, so the quadratic is a handful of seeds.
+        let empty_conc: Vec<[f64; 3]> = Vec::new();
+        let conc = pair_conc.get(&_key).unwrap_or(&empty_conc);
+        for i in 0..conc.len() {
+            for j in i + 1..conc.len() {
+                let mid = [
+                    0.5 * (conc[i][0] + conc[j][0]),
+                    0.5 * (conc[i][1] + conc[j][1]),
+                    0.5 * (conc[i][2] + conc[j][2]),
+                ];
+                if let Some(q) = project_to_edge(&fa, &fb, mid) {
+                    seed_pts.push(q);
+                }
             }
         }
-        let records_before = records.len();
-        for pass in 0..2 {
-            let seed_pts: &[[f64; 3]] = if pass == 0 { &ssi_pts } else { &witness_pts };
-            if pass == 1 && (records.len() > records_before || seed_pts.is_empty()) {
-                break;
+        // `covered` marks group seeds already absorbed by an emitted polyline.
+        let mut covered = vec![false; seed_pts.len()];
+        for idx in 0..seed_pts.len() {
+            if covered[idx] {
+                continue;
             }
-            // `covered` marks group seeds already absorbed by an emitted polyline.
-            let mut covered = vec![false; seed_pts.len()];
-            for idx in 0..seed_pts.len() {
-                if covered[idx] {
-                    continue;
+
+            let active = |p: [f64; 3]| {
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                if disp.is_empty() {
+                    both_branches_active(body, pf, a, b, eps)
+                } else {
+                    // Displace-Route: der Tracer reicht nur Punkte auf beiden
+                    // displacten Feldern herein — On-Boundary genügt (s.o.).
+                    displaced_on_boundary(pf)
                 }
+            };
+            let seed_pt = seed_pts[idx];
 
-                // Build the two fields. In `Strict` mode `unresolved` is empty so
-                // both lookups must succeed; a `None` here would be an internal
-                // inconsistency, so we bail to octree defensively rather than panic.
-                // In `Partial` mode an unliftable branch is expected (it is exactly
-                // a transition seam we mean to skip), so we drop just this seed.
-                let (Some(fa), Some(fb)) = (field_for(a), field_for(b)) else {
-                    if mode == SeedMode::Partial {
-                        skipped.insert(pair_key(a, b));
-                        continue;
-                    }
-                    return None;
-                };
-
-                let active = |p: [f64; 3]| {
-                    let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
-                    if disp.is_empty() {
-                        both_branches_active(body, pf, a, b, eps)
-                    } else {
-                        // Displace-Route: der Tracer reicht nur Punkte auf beiden
-                        // displacten Feldern herein — On-Boundary genügt (s.o.).
-                        displaced_on_boundary(pf)
-                    }
-                };
-                let seed_pt = seed_pts[idx];
-
-                let Some(mut traced) = trace_edge(
-                    &fa,
-                    &fb,
-                    seed_pt,
-                    &wit_pos,
-                    &params,
-                    Some(&active as &dyn Fn([f64; 3]) -> bool),
-                ) else {
-                    if std::env::var("SEED_WEAVER_TRACE_DEBUG").is_ok() {
-                        eprintln!("TRACE none: pair=({a:?},{b:?}) seed={seed_pt:?}");
-                    }
-                    // The seed sat in a trimmed-away (inactive) region — this branch
-                    // pair does meet, but not on the real model boundary here. Not a
-                    // failure: skip the seed (proven safe by
-                    // `trace_edge_rejects_inactive_seed`).
-                    continue;
-                };
-
+            let Some(mut traced) = trace_edge(
+                &fa,
+                &fb,
+                seed_pt,
+                &wit_pos,
+                &params,
+                Some(&active as &dyn Fn([f64; 3]) -> bool),
+            ) else {
                 if std::env::var("SEED_WEAVER_TRACE_DEBUG").is_ok() {
-                    eprintln!(
-                        "TRACE pair=({a:?},{b:?}) pts={} closed={} ends={:?} seed={seed_pt:?}",
-                        traced.points.len(),
-                        traced.closed,
-                        traced.ends
-                    );
+                    eprintln!("TRACE none: pair=({a:?},{b:?}) seed={seed_pt:?}");
                 }
-                // A closed ring carries `(Open, Open)` ends by construction (it has no
-                // termini) — only an OPEN arc's `Open` end signals a stalled march. On
-                // the seed path there is no sample-fit backstop for a stall, so an open
-                // arc that failed to reach a clean end is an unbounded/unresolved seam.
-                // In `Strict` mode this aborts to the whole-body octree; in `Partial`
-                // mode it is precisely a transition seam, so we drop just this record.
-                if !traced.closed
-                    && (matches!(traced.ends.0, EdgeEnd::Open) || matches!(traced.ends.1, EdgeEnd::Open))
-                {
-                    if std::env::var("SEED_WEAVER_TRACE_DEBUG").is_ok() {
-                        let len: f64 = traced.points.windows(2).map(|w| dist3(w[0], w[1])).sum();
-                        eprintln!("OPENEND pair=({a:?},{b:?}) 0x{:x} 0x{:x} pts={} len={len:.6} ends={:?} seed={seed_pt:?}",
-                            a.as_u32(), b.as_u32(), traced.points.len(), traced.ends);
-                    }
-                    if mode == SeedMode::Partial {
-                        skipped.insert(pair_key(a, b));
-                        continue;
-                    }
-                    return None;
-                }
+                // The seed sat in a trimmed-away (inactive) region — this branch
+                // pair does meet, but not on the real model boundary here. Not a
+                // failure: skip the seed (proven safe by
+                // `trace_edge_rejects_inactive_seed`).
+                continue;
+            };
 
-                // Remap witness-vertex ends from the group-local list the march
-                // saw to GLOBAL witness ids (materialised as B-Rep vertices below).
-                for end in [&mut traced.ends.0, &mut traced.ends.1] {
-                    if let EdgeEnd::Vertex(li) = end {
-                        *end = EdgeEnd::Vertex(wit_global[*li]);
-                    }
-                }
-
-                // A seed sitting (numerically) ON a witness corner ends BOTH
-                // march directions right at that corner — one side snapped to the
-                // vertex, the other trim-bisected onto the same spot — a µm-scale
-                // self-loop stub, not an edge. Positions decide (the end KINDS
-                // vary): an open arc whose termini coincide within the corner
-                // merge radius and whose whole arc is a few march floors long is
-                // degenerate. A genuine same-vertex teardrop seam is orders of
-                // magnitude longer.
-                if !traced.closed && traced.points.len() >= 2 {
-                    let first = traced.points[0];
-                    let last = *traced.points.last().expect("nonempty");
-                    if dist3(first, last) < witness_merge {
-                        let len: f64 = traced
-                            .points
-                            .windows(2)
-                            .map(|w| dist3(w[0], w[1]))
-                            .sum();
-                        if len < 8.0 * min_step {
-                            continue;
-                        }
-                    }
-                }
-
-                // Convert to Hermite NOW, while the borrowing fields are alive, so
-                // the stored record is self-contained.
-                let samples = traced_to_hermite(&fa, &fb, &traced);
-                if samples.len() < 2 {
-                    continue; // degenerate — too short to be a real edge.
-                }
-
-                // Co-component dedup: every other not-yet-traced seed in this group
-                // that lands on this polyline is the SAME component (SSI can emit
-                // multiple seeds per curve) — mark it covered so it is not re-traced.
-                // A seed on a genuinely disjoint component lies off the polyline and
-                // survives to trace its own edge.
-                covered[idx] = true;
-                // The dedup polyline includes the TRIM TERMINI: the march's last
-                // emitted point undershoots the true end by up to one adaptive
-                // stride, and a same-arc seed inside that gap would otherwise
-                // escape the (deliberately tight) radius and re-trace the arc —
-                // the historical reason `near_tol` had to be a whole `max_step`.
-                let mut dedup_poly = traced.points.clone();
-                if let EdgeEnd::Trim(p) = traced.ends.0 {
-                    dedup_poly.insert(0, p);
-                }
-                if let EdgeEnd::Trim(p) = traced.ends.1 {
-                    dedup_poly.push(p);
-                }
-                for other in 0..seed_pts.len() {
-                    if covered[other] {
-                        continue;
-                    }
-                    if near_traced(seed_pts[other], &dedup_poly, traced.closed, near_tol) {
-                        covered[other] = true;
-                    }
-                }
-
-                records.push(EdgeRecord {
-                    a,
-                    b,
-                    samples,
-                    closed: traced.closed,
-                    ends: traced.ends,
-                });
+            if std::env::var("SEED_WEAVER_TRACE_DEBUG").is_ok() {
+                eprintln!(
+                    "TRACE pair=({a:?},{b:?}) pts={} closed={} ends={:?} seed={seed_pt:?}",
+                    traced.points.len(),
+                    traced.closed,
+                    traced.ends
+                );
             }
+            // A closed ring carries `(Open, Open)` ends by construction (it has no
+            // termini) — only an OPEN arc's `Open` end signals a stalled march. On
+            // the seed path there is no sample-fit backstop for a stall, so an open
+            // arc that failed to reach a clean end is an unbounded/unresolved seam.
+            // In `Strict` mode this aborts to the whole-body octree; in `Partial`
+            // mode it is precisely a transition seam, so we drop just this record.
+            if !traced.closed
+                && (matches!(traced.ends.0, EdgeEnd::Open) || matches!(traced.ends.1, EdgeEnd::Open))
+            {
+                if std::env::var("SEED_WEAVER_TRACE_DEBUG").is_ok() {
+                    let len: f64 = traced.points.windows(2).map(|w| dist3(w[0], w[1])).sum();
+                    eprintln!("OPENEND pair=({a:?},{b:?}) 0x{:x} 0x{:x} pts={} len={len:.6} ends={:?} seed={seed_pt:?}",
+                        a.as_u32(), b.as_u32(), traced.points.len(), traced.ends);
+                }
+                if mode == SeedMode::Partial {
+                    skipped.insert(pair_key(a, b));
+                    continue;
+                }
+                return None;
+            }
+
+            // Remap witness-vertex ends from the group-local list the march
+            // saw to GLOBAL witness ids (materialised as B-Rep vertices below).
+            for end in [&mut traced.ends.0, &mut traced.ends.1] {
+                if let EdgeEnd::Vertex(li) = end {
+                    *end = EdgeEnd::Vertex(wit_global[*li]);
+                }
+            }
+
+            // A seed sitting (numerically) ON a witness corner ends BOTH
+            // march directions right at that corner — one side snapped to the
+            // vertex, the other trim-bisected onto the same spot — a µm-scale
+            // self-loop stub, not an edge. Positions decide (the end KINDS
+            // vary): an open arc whose termini coincide within the corner
+            // merge radius and whose whole arc is a few march floors long is
+            // degenerate. A genuine same-vertex teardrop seam is orders of
+            // magnitude longer.
+            if !traced.closed && traced.points.len() >= 2 {
+                let first = traced.points[0];
+                let last = *traced.points.last().expect("nonempty");
+                if dist3(first, last) < witness_merge {
+                    let len: f64 = traced
+                        .points
+                        .windows(2)
+                        .map(|w| dist3(w[0], w[1]))
+                        .sum();
+                    if len < 8.0 * min_step {
+                        continue;
+                    }
+                }
+            }
+
+            // Convert to Hermite NOW, while the borrowing fields are alive, so
+            // the stored record is self-contained.
+            let samples = traced_to_hermite(&fa, &fb, &traced);
+            if samples.len() < 2 {
+                continue; // degenerate — too short to be a real edge.
+            }
+
+            // Co-component dedup: every other not-yet-traced seed in this group
+            // that lands on this polyline is the SAME component (SSI can emit
+            // multiple seeds per curve) — mark it covered so it is not re-traced.
+            // A seed on a genuinely disjoint component lies off the polyline and
+            // survives to trace its own edge.
+            covered[idx] = true;
+            // The dedup polyline includes the TRIM TERMINI: the march's last
+            // emitted point undershoots the true end by up to one adaptive
+            // stride, and a same-arc seed inside that gap would otherwise
+            // escape the (deliberately tight) radius and re-trace the arc —
+            // the historical reason `near_tol` had to be a whole `max_step`.
+            let mut dedup_poly = traced.points.clone();
+            if let EdgeEnd::Trim(p) = traced.ends.0 {
+                dedup_poly.insert(0, p);
+            }
+            if let EdgeEnd::Trim(p) = traced.ends.1 {
+                dedup_poly.push(p);
+            }
+            for other in 0..seed_pts.len() {
+                if covered[other] {
+                    continue;
+                }
+                if near_traced(seed_pts[other], &dedup_poly, traced.closed, near_tol) {
+                    covered[other] = true;
+                }
+            }
+
+            records.push(EdgeRecord {
+                a,
+                b,
+                samples,
+                closed: traced.closed,
+                ends: traced.ends,
+            });
         }
     }
 
