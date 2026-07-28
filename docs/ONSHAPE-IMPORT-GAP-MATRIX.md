@@ -1459,3 +1459,76 @@ und nicht den Baum — eine Heuristik aus der Zeit, als `parseBton` noch Lücken
 hatte. Sie funktioniert (alle Ebenen-Tests grün), steht aber jetzt ohne Grund
 neben einem vollständigen Parser. Umstellung wäre eigene Arbeit mit eigenen
 E2E-Pins.
+
+## Update 2026-07-28 (2) — Klasse „abgeleitete Geometrie": `MERGE`, `SPLIT` und `BLEND_EDGE` sind übersetzt (#429, v0.43.0)
+
+Update (6) zählte die Kanten-Formen und ließ **60 der 206** als topologische
+Historie stehen (`MERGE`, `SPLIT`, `COPY`, `BLEND_EDGE`), plus 61
+`INTERSECT`-Kanten mit einer solchen Fläche. Drei der vier sind jetzt
+übersetzt. Der Plan dahinter ist `docs/DERIVED-NAMING-PLAN.md` (Schritte 3–5).
+
+### Eine Erkenntnis, drei Formen
+
+Es waren nie drei Aufgaben. `MERGE` und `SPLIT` sind Flächen, die aus **anderen
+Flächen** bestehen; sobald der Flächenbegriff des Dekoders ein Baum statt einer
+flachen Aufzählung ist, fällt `BLEND_EDGE` als Nebenprodukt an (seine
+Nachbarfläche ist in einem Drittel der Fälle selbst ein `MERGE`).
+
+| Onshape | FieldDraft |
+|---|---|
+| `BLEND_FACE` | `qCreatedBy(f, BLEND)` — Rolle seit v0.41.0 |
+| `BLEND_EDGE` | `qCommonEdge(qCreatedBy(f, BLEND), <blendedInto>)` |
+| `MERGE` (Fläche) | `qUnion(a, b)`, links gefaltet für n > 2 — **neues Query-Vokabular** |
+| `SPLIT` (Fläche) | `qAdjacentTo(basis, n₁) … nₖ`, gekettet |
+
+Dazu ein Zweig, den der Plan nicht vorgesehen hatte: ein `SWEPT_FACE` mit
+**mehreren** Ursprüngen ist derselbe Fall wie `MERGE`. In #414 ist
+`v7UgcE38VD0I.bottom` der einzige Ursprung der einen Wand und einer von dreien
+der anderen — drei kollineare Profilkurven, eine Onshape-Fläche. Bisher als
+„genau eines erwartet" abgelehnt, jetzt `qUnion` der drei Wände.
+
+Alle Kombinatoren sind **alles-oder-nichts**: fehlt einem Partner der Name,
+wird die ganze Fläche abgelehnt statt aus dem Rest übersetzt (§ „Warum nicht
+raten" des Plans).
+
+### Zahlen — Dekoder, alle acht Fixtures
+
+| | vorher | nachher |
+|---|---:|---:|
+| Kanten-Queries mit Flächenpaar | 101 | **124** |
+| `BLEND_EDGE` | 0 / 13 | **13 / 13** |
+| `INTERSECT` | 38 / 79 | **48 / 79** |
+| `MERGE`-Flächen mit Namen | 0 / 27 | **22 / 27** |
+| `SPLIT`-Flächen mit Namen | 0 / 8 | **6 / 8** |
+
+Keine vorher übersetzte Query wurde schlechter.
+
+### Zahlen — Ende zu Ende (#419): unverändert, und das ist der Befund
+
+190 Meldungen auf 107 Features, 12 Körper, 49 Feature-Calls — vorher wie
+nachher. Was sich verschiebt, ist die **Klasse** der Meldungen:
+
+| Meldungsklasse | vorher | nachher |
+|---|---:|---:|
+| „FieldDraft hat für diese Form keinen Namen" | 26 | **14** |
+| „Query nennt ein Feature, das nie importiert" (Folgefehler) | 35 | **47** |
+
+`Fillet 9/12/16` und `Chamfer 4/10` scheitern jetzt an ihren Extrudes statt am
+Dekoder — dieselbe Bewegung wie in #425, aus demselben Grund: der Engpass liegt
+seit #424 flussaufwärts.
+
+### Offen
+
+`COPY` ist die letzte Onshape-Form ohne FieldDraft-Namen (52 Wurzel-Queries,
+plus 7 `MERGE`/`SPLIT`-Flächen und 24 `INTERSECT`-Kanten mit `COPY`-Partner).
+Sie zerfällt in die **Muster**-Kopie (`qInstance(i, …)` steht seit v0.40.0
+bereit, der Übersetzer-Zweig fehlt) und die **Boolean**-Kopie — dieselbe Fläche
+auf dem Ergebniskörper, mit gedrehter Normalen, wie sie `Thicken 6` in #419
+referenziert (`docs/research/440-thicken6-face-provenance.md`). Die zweite
+braucht einen Körper-Selektor im Query-Vokabular; `qUnion`/`qAdjacentTo`
+kombinieren Namen innerhalb eines Körpers und decken sie nicht ab.
+
+Der EBENEN-Pfad (`extractPlaneRef`) liest weiterhin den flachen Token-Strom —
+absichtlich: eine Ebene braucht nur EINE Fläche eines verschmolzenen Paares,
+und `thicken` verlangt sogar genau eine. Die neue Flächen-Übersetzung ist über
+`decodeFaceRef` separat messbar, statt den Ebenen-Pfad umzustellen.

@@ -527,6 +527,40 @@ describe("chamfer import (#414)", () => {
   });
 });
 
+/**
+ * #429/E3 — the derived-shape lowering, in the query text a feature actually
+ * stores. {@link decodeFaceRef}'s tests establish WHAT an Onshape query means;
+ * these establish that the meaning reaches the kernel intact.
+ */
+describe("derived-shape edge queries (#429)", () => {
+  it("a BLEND_EDGE lowers to the blend face against its neighbour", async () => {
+    // #414 rounds an already-rounded edge four times (`Fillet 13/16/17`).
+    // Before v0.43.0 all four were refused as „Kante einer bereits verrundeten
+    // Fläche"; the blend face has carried a role since v0.41.0.
+    const { kernel, result } = await translate(
+      (ticket414().features as any[]).map((f) => structuredClone(f.message ?? f)),
+    );
+    const blendEdges = kernel.calls
+      .filter((c) => c.type === "fillet_edge" || c.type === "chamfer_edge")
+      .map((c) => String(c.params.edge))
+      .filter((q) => q.includes("BLEND"));
+    expect(blendEdges.length, result.errors.join(" | ")).toBeGreaterThan(0);
+    for (const q of blendEdges) {
+      expect(q).toMatch(/^qCommonEdge\(qCreatedBy\(\d+, BLEND\), /);
+    }
+    // And one of them names a neighbour Onshape merged out of several of our
+    // walls — the whole point of `qUnion` (§4/E3).
+    expect(blendEdges.some((q) => q.includes("qUnion("))).toBe(true);
+    // Nesting is left-folded and paren-balanced; the kernel's top-level split
+    // is paren-aware, so the inner commas must stay inside.
+    for (const q of blendEdges) {
+      expect([...q].filter((c) => c === "(").length).toBe(
+        [...q].filter((c) => c === ")").length,
+      );
+    }
+  });
+});
+
 describe("hole import (#414)", () => {
   const doc = ticket414();
   /** Everything the hole depends on: the base sketch/extrudes plus Sketch 2,

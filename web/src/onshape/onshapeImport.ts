@@ -2880,6 +2880,11 @@ async function decodeAnyOpRef(qs: string): Promise<string | null> {
  * depends on the extrude's DIRECTION, because a FieldDraft slab is centred on
  * `depth/2` — a negative depth puts CAP_TOP, not CAP_BOTTOM, flush with the
  * sketch plane (the same bookkeeping `buildPlaneQuery` does for cap planes).
+ *
+ * Recursive, because {@link OnshapeFaceRef} is: Onshape's boolean shapes are
+ * combinations of named faces, and each combinator has one FieldDraft form —
+ * `MERGE` → `qUnion`, `SPLIT` → `qAdjacentTo` (#429/E3). Nothing here invents a
+ * name; a sub-face that has none propagates its error out.
  */
 function faceQueryOf(
   face: OnshapeFaceRef,
@@ -2888,15 +2893,42 @@ function faceQueryOf(
   sketches: Map<string, SketchRecord>,
   sweeps: Map<string, SweepRecord>,
 ): { query?: string; error?: string } {
-  const fd = idMap[face.opFeatureId];
-  if (fd === undefined) {
-    return { error: `${name}: Kanten-Query nennt das nicht importierte Feature ${face.opFeatureId}` };
-  }
   const capRole = (opFeatureId: string, isStart: boolean, inner: boolean): string => {
     const positive = sweeps.get(opFeatureId)?.depthPositive ?? true;
     const top = isStart ? !positive : positive;
     return `${inner ? "INNER_" : ""}CAP_${top ? "TOP" : "BOTTOM"}`;
   };
+  const recurse = (f: OnshapeFaceRef) => faceQueryOf(f, name, idMap, sketches, sweeps);
+
+  // The combinators carry no operation of their own — resolve the parts first.
+  if (face.kind === "union") {
+    const parts: string[] = [];
+    for (const p of face.parts) {
+      const q = recurse(p);
+      if (!q.query) return q;
+      if (!parts.includes(q.query)) parts.push(q.query);
+    }
+    // Left fold: `qUnion` is binary, an n-way merge nests. Two partners that
+    // translate to the SAME FieldDraft face collapse to one — FieldDraft may
+    // already keep as one face what Onshape merged.
+    return { query: parts.reduce((acc, q) => `qUnion(${acc}, ${q})`) };
+  }
+  if (face.kind === "adjacent") {
+    const base = recurse(face.base);
+    if (!base.query) return base;
+    let query = base.query;
+    for (const n of face.neighbours) {
+      const q = recurse(n);
+      if (!q.query) return q;
+      query = `qAdjacentTo(${query}, ${q.query})`;
+    }
+    return { query };
+  }
+
+  const fd = idMap[face.opFeatureId];
+  if (fd === undefined) {
+    return { error: `${name}: Kanten-Query nennt das nicht importierte Feature ${face.opFeatureId}` };
+  }
   switch (face.kind) {
     case "cap":
       return { query: `qCreatedBy(${fd}, ${capRole(face.opFeatureId, face.isStart, false)})` };
@@ -2904,6 +2936,8 @@ function faceQueryOf(
       return { query: `qCreatedBy(${fd}, ${capRole(face.opFeatureId, face.isStart, true)})` };
     case "innerWall":
       return { query: `qCreatedBy(${fd}, INNER_WALL)` };
+    case "blend":
+      return { query: `qCreatedBy(${fd}, BLEND)` };
     case "wall": {
       const wall = wallQuery(face.origin, fd, name, sketches);
       return wall.query ? { query: wall.query } : { error: wall.error };

@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import {
   decodeEdgeQuery,
+  decodeFaceRef,
   decodePlaneQuery,
   decodeOnshapeQueryString,
   parseBton,
@@ -589,8 +590,6 @@ describe("decodeEdgeQuery — Ticket #425", () => {
       ["COPY", "Fillet 6", 0, /COPY/],
       // A fragment of an edge a boolean cut in two.
       ["SPLIT", "Fillet 14", 0, /SPLIT/],
-      // An edge of an EARLIER chamfer's blend face.
-      ["BLEND_EDGE", "Fillet 12", 0, /BLEND_EDGE/],
       // Three profile curves meet there — an edge is the seam of exactly two
       // faces, so which two is not determined.
       ["SWEPT_EDGE ×3", "Fillet 7", 4, /SWEPT_EDGE aus 3/],
@@ -622,6 +621,143 @@ describe("decodeEdgeQuery — Ticket #425", () => {
       const shape = /Flächenform (\S+)/.exec(r)?.[1] ?? /Onshape-Kantenform (\S+)/.exec(r)?.[1];
       if (shape) expect(shape, r).toMatch(/^[A-Z][A-Z_0-9]*$/);
     }
+  });
+});
+
+/**
+ * Ticket #429, Schritte 3–5 — the DERIVED shapes: an edge of an earlier blend,
+ * a face a boolean merged, a face a boolean split.
+ *
+ * All three follow one rule (`docs/DERIVED-NAMING-PLAN.md` §3): a boolean
+ * neither creates nor destroys a name, it re-arranges which pieces count as one
+ * face. So none of them needs a new BASE name — `MERGE` is a union of names we
+ * have, `SPLIT` is one of them narrowed by its neighbours, and a `BLEND_EDGE`
+ * is the blend face (named by role since v0.41.0) against that neighbour.
+ */
+describe("derived shapes — Ticket #429", () => {
+  it("#419 Fillet 12: BLEND_EDGE = the chamfer's own face against its neighbour", async () => {
+    // Was refused as „Kante einer bereits verrundeten Fläche" until v0.43.0.
+    const ref = await decodeEdgeQuery(
+      edgeQueriesOf(fixtureFeatures("onshape-419-features.json"), "Fillet 12")[0],
+    );
+    expect(ref).toEqual({
+      kind: "faces",
+      a: { kind: "blend", opFeatureId: "FrNJDasD6Bcgjmg_16" },
+      // And the neighbour is not ONE of our walls: Onshape's single swept face
+      // descends from three collinear profile curves, which FieldDraft sweeps
+      // into three walls. Naming the first would name a third of the face.
+      b: {
+        kind: "union",
+        parts: [
+          { kind: "wall", opFeatureId: "FXM7cgv7SSV4fNz_16", origin: { sketchFeatureId: "F4WO948JctI84oR_16", entityId: "ZJ6DQQEtuGlb.bottom" } },
+          { kind: "wall", opFeatureId: "FXM7cgv7SSV4fNz_16", origin: { sketchFeatureId: "F4WO948JctI84oR_16", entityId: "YNKhgeVUBOAG" } },
+          { kind: "wall", opFeatureId: "FXM7cgv7SSV4fNz_16", origin: { sketchFeatureId: "F4WO948JctI84oR_16", entityId: "ul2O6GIbEgTr" } },
+        ],
+      },
+    });
+  });
+
+  it("#414: the very same sketch entity is one face's whole origin and another's third", async () => {
+    // The measurement the union rule rests on. `v7UgcE38VD0I.bottom` is the
+    // SINGLE origin of `F0wnh1pM7vyYeuQ_0`'s wall and one of THREE of
+    // `FfvtqKy49obEe5L_1`'s — so „several originals" is not a decode gap, it is
+    // Onshape merging what we keep apart.
+    const ref = await decodeEdgeQuery(
+      edgeQueriesOf(fixtureFeatures("onshape-414-features.json"), "Fillet 16")[0],
+    );
+    expect(ref.kind).toBe("faces");
+    if (ref.kind !== "faces") return;
+    expect(ref.a).toEqual({ kind: "blend", opFeatureId: "FWR7LxruMqOn7Zi_1" });
+    expect(ref.b).toEqual({
+      kind: "union",
+      parts: [
+        { kind: "wall", opFeatureId: "F0wnh1pM7vyYeuQ_0", origin: { sketchFeatureId: "FGnfhqBaFuIRIZp_0", entityId: "v7UgcE38VD0I.bottom" } },
+        {
+          kind: "union",
+          parts: [
+            { kind: "wall", opFeatureId: "FfvtqKy49obEe5L_1", origin: { sketchFeatureId: "FGnfhqBaFuIRIZp_0", entityId: "v7UgcE38VD0I.bottom" } },
+            { kind: "wall", opFeatureId: "FfvtqKy49obEe5L_1", origin: { sketchFeatureId: "FGnfhqBaFuIRIZp_0", entityId: "mF5xAV4vzG8n" } },
+            { kind: "wall", opFeatureId: "FfvtqKy49obEe5L_1", origin: { sketchFeatureId: "FGnfhqBaFuIRIZp_0", entityId: "SpqLYdHMgGj5" } },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("Kabelbox Sketch 4: SPLIT names the cut face plus the neighbours that pick the fragment", async () => {
+    const doc = await parseQueryDocument(planeQueryOf(kabelbox(), "Sketch 4"));
+    expect(decodeFaceRef(doc!)).toEqual({
+      kind: "adjacent",
+      base: {
+        kind: "wall",
+        opFeatureId: "Fz9Ll1Nhy8Iyyah_0",
+        origin: { sketchFeatureId: "F6VjtplfD7vN1DM_0", entityId: "zTyZhgNVqaMx.bottom" },
+      },
+      // The blend face is one of the two, and it only became nameable in
+      // v0.41.0 — before that this SPLIT had no complete reading at all.
+      neighbours: [
+        { kind: "blend", opFeatureId: "FH63Kd1qUroHFAm_1" },
+        {
+          kind: "wall",
+          opFeatureId: "FFvPoOzuN3l2ZlB_1",
+          origin: { sketchFeatureId: "F4NsMPM3ginTKFA_1", entityId: "CuIfANXbpd5x.left" },
+        },
+      ],
+    });
+  });
+
+  it("refuses a combinator whose PARTS have no name — all or nothing", async () => {
+    // `Sketch 30`'s split is narrowed by pattern COPIES. Translating it from
+    // the neighbours we DO have would bind a fragment we never established is
+    // the right one — the #414 failure mode. It is refused, and by name.
+    const doc = await parseQueryDocument(planeQueryOf(fixtureFeatures("onshape-419-features.json"), "Sketch 30"));
+    const ref = decodeFaceRef(doc!);
+    expect(ref).toEqual({ reason: "SPLIT-Nachbarfläche: Flächenform COPY" });
+  });
+
+  /**
+   * The corpus census, pinned in BOTH directions: a number rising means a gap
+   * closed and the line belongs updated, a number falling is a regression.
+   * Measured 2026-07-28 (v0.43.0), was 0 / 0 / 0 before.
+   */
+  it("counts what the derived shapes now resolve to, across every fixture", async () => {
+    const stats: Record<string, { ok: number; total: number }> = {};
+    const tally = (key: string, ok: boolean) => {
+      const s = (stats[key] ??= { ok: 0, total: 0 });
+      s.total += 1;
+      if (ok) s.ok += 1;
+    };
+    for (const file of [
+      "kabelbox-features.json", "onshape-409-features.json", "onshape-412-features.json",
+      "onshape-414-features.json", "onshape-415-features.json", "onshape-416-features.json",
+      "onshape-419-features.json", "ticket339-features.json",
+    ]) {
+      for (const feat of fixtureFeatures(file)) {
+        for (const p of feat.parameters ?? []) {
+          for (const q of (p.message ?? p).queries ?? []) {
+            const qs = (q.message ?? q).queryString;
+            if (!qs) continue;
+            const doc = (await parseQueryDocument(qs)) as any;
+            if (!doc || typeof doc !== "object" || Array.isArray(doc)) continue;
+            if (doc.queryType === "BLEND_EDGE") {
+              tally("BLEND_EDGE", (await decodeEdgeQuery(qs)).kind === "faces");
+            }
+            if (doc.entityType === "FACE" && (doc.queryType === "MERGE" || doc.queryType === "SPLIT")) {
+              tally(doc.queryType, !("reason" in decodeFaceRef(doc)));
+            }
+          }
+        }
+      }
+    }
+    expect(stats).toEqual({
+      // Every one of them — a blend face has had a role since v0.41.0.
+      BLEND_EDGE: { ok: 13, total: 13 },
+      // The five that stay out have a pattern COPY as a merge partner (E1's
+      // `qInstance` is built but the Onshape `COPY` branch is not translated).
+      MERGE: { ok: 22, total: 27 },
+      // Two of the eight are narrowed by pattern copies — same gap.
+      SPLIT: { ok: 6, total: 8 },
+    });
   });
 });
 

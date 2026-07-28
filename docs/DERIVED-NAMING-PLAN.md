@@ -212,6 +212,12 @@ Pfaden unter einer Rolle, folgt der Rest ohne neues Vokabular:
 
 ### E3 — Kombinatoren statt neuer Basisnamen
 
+> **Nachtrag nach den Schritten 3-Rest/4/5 (v0.43.0):** die Richtung stimmt,
+> der Umfang war zu eng gefasst. Die Kombinatoren sind nicht zwei Sonderfälle
+> neben den Basisformen, sondern machen die Flächen-Übersetzung insgesamt
+> **rekursiv** — und der erste Kunde ist nicht `MERGE`, sondern ein gewöhnlicher
+> `SWEPT_FACE` mit mehreren Ursprüngen. Details im Abschluss-Abschnitt unten.
+
 Für `MERGE` und `SPLIT` braucht es **keinen** neuen Grundnamen, sondern die
 Fähigkeit, mehrere vorhandene zu kombinieren:
 
@@ -248,14 +254,16 @@ Fähigkeit, mehrere vorhandene zu kombinieren:
 | 0 | **Erledigt (v0.39.1):** Mehrfach-Region-Profile bekommen die Kontur ihrer Vereinigung; geschlossene Konturen starten am G1-Knick | — |
 | 1 | **Erledigt (v0.39.2, #431):** `spatial_index` körperübergreifend — `qFace(hash)` wieder eindeutig | — |
 | 2 | **Erledigt (2026-07-28):** Messen, warum der Blend-Träger keine Fläche wird — Antwort: er wird gar nicht gebaut, und die Fläche fehlt nicht (§ „Schritt 2" unten) | — |
-| 3 | **Kernel-Teil erledigt (v0.41.0):** E2 — Rolle für die Cutter-Verrundungs-/Fasenfläche (§ „Schritt 3" unten); offen bleibt der Übersetzer-Zweig `BLEND_EDGE` | 2 |
-| 4 | `qUnion(a, b)` + Übersetzer-Zweig `MERGE` (Fläche) | — |
-| 5 | Übersetzer-Zweig `SPLIT` auf `qAdjacentTo` | — |
+| 3 | **Erledigt:** E2 — Rolle für die Cutter-Verrundungs-/Fasenfläche (v0.41.0, § „Schritt 3" unten) + Übersetzer-Zweig `BLEND_EDGE` (v0.43.0, § „Schritte 3-Rest/4/5" unten) | 2 |
+| 4 | **Erledigt (v0.43.0):** `qUnion(a, b)` + Übersetzer-Zweig `MERGE` (Fläche) | — |
+| 5 | **Erledigt (v0.43.0):** Übersetzer-Zweig `SPLIT` auf `qAdjacentTo` | — |
 | 6 | **Erledigt (v0.40.0, #429):** E1: `BranchId` auf u64, Instanz-Ordinal, `qInstance(...)` | 1 |
 
 Schritte 1–5 sind je für sich abgeschlossen und messbar. Schritt 6 war der
 Breaking Change; er ist vorgezogen worden und in v0.40.0 ausgeliefert (§ „Schritt 6"
-unten). Offen bleiben damit Schritt 3 (E2) und E3 (Schritte 4–5).
+unten). **Alle sechs Schritte sind ausgeliefert.** Was offen bleibt, ist keine
+Stufe dieses Plans mehr, sondern die eine Onshape-Form, die er von Anfang an
+ausgeklammert hat: `COPY` — siehe „Was offen bleibt" am Ende.
 
 ### Schritt 2 — wie er ausgeführt wurde (2026-07-28)
 
@@ -352,7 +360,105 @@ nieder.
 **Offen aus Schritt 3:** der Übersetzer-Zweig für `BLEND_EDGE` — Onshapes Rand
 einer Verrundungsfläche, in FieldDraft
 `qCommonEdge(qCreatedBy(f, BLEND), <nachbar>)`. Die Kernel-Seite steht damit
-bereit.
+bereit. *(Erledigt in v0.43.0, § unten.)*
+
+---
+
+### Schritte 3-Rest / 4 / 5 — E3, wie sie ausgeführt wurden (v0.43.0)
+
+Die drei Reste hängen an **einer** Erkenntnis, und die kam wieder aus der
+Messung, nicht aus dem Entwurfstext: `BLEND_EDGE`, `MERGE` und `SPLIT` sind
+keine drei Aufgaben, sondern **eine rekursive Flächen-Übersetzung**. Der
+Dekoder hatte bis dahin einen *flachen* Flächenbegriff (`faceRefOf` gab eine
+von vier Basisformen zurück oder eine Ablehnung); `MERGE` und `SPLIT` sind aber
+Flächen, die aus **anderen Flächen** bestehen. Sobald `OnshapeFaceRef` ein Baum
+ist, fällt `BLEND_EDGE` als Nebenprodukt an: seine Nachbarfläche ist in einem
+Drittel der Fälle selbst ein `MERGE`.
+
+| Onshape | FieldDraft | wo |
+| --- | --- | --- |
+| `BLEND_FACE` | `qCreatedBy(f, BLEND)` | seit v0.41.0 benennbar, jetzt auch als *Flächen*-Argument |
+| `BLEND_EDGE` | `qCommonEdge(qCreatedBy(f, BLEND), <blendedInto>)` | `extractEdgeRef` |
+| `MERGE` (Fläche) | `qUnion(a, b)` (links gefaltet für n>2) | `faceRefOf` |
+| `SPLIT` (Fläche) | `qAdjacentTo(basis, n₁) … nₖ` gekettet | `faceRefOf` |
+
+**Der einzige neue Kernel-Baustein ist `qUnion`.** `QueryExpr::Union`,
+Mengenvereinigung nach Identität mit Dedup — `qUnion(x, x)` ist `x`, sonst
+zählte ein Aufrufer, der Treffer zählt, dieselbe Fläche doppelt. Er ist
+absichtlich **kind-polymorph** (Kanten wie Flächen) und binär statt variadisch;
+n-fach heißt schachteln, und der klammer-bewusste Top-Level-Split trägt das
+schon. `NAMING_SCHEMA_VERSION` bleibt bei **4**: rein additives Vokabular,
+kein `id_hash` bewegt sich.
+
+**Alles-oder-nichts, und das ist §1.** Fehlt einem Verschmelzungspartner oder
+einer Split-Nachbarschaft der Name, wird die **ganze** Fläche abgelehnt, nicht
+aus dem Rest übersetzt. Eine Vereinigung minus einem Glied ist eine andere
+Fläche; ein Split, der von drei statt fünf Nachbarn eingeengt wird, kann das
+falsche Bruchstück binden — genau die erfundene Verrundung aus #414.
+
+**Was der Entwurfstext nicht wusste: ein `SWEPT_FACE` mit MEHREREN Ursprüngen
+ist derselbe Fall wie `MERGE`.** Bis v0.42.2 lehnte der Dekoder das als
+„`SWEPT_FACE` mit n Herkunfts-Skizzenelementen (genau eines erwartet)" ab. Die
+Messung, die das umdreht, steht in #414: die Skizzen-Entity
+`v7UgcE38VD0I.bottom` ist der **einzige** Ursprung der Wand von
+`F0wnh1pM7vyYeuQ_0` und **einer von dreien** der Wand von `FfvtqKy49obEe5L_1`.
+Drei kollineare Profilkurven, eine Onshape-Fläche — weil Onshape verschmilzt,
+was in einer Ebene liegt, und FieldDraft nicht (kein impliziter Merge). Die
+erste zu nehmen (was der Ebenen-Scan tut) benennt ein Drittel der Fläche. Also
+auch hier `qUnion`. Ohne diesen Zweig blieben 3 der 13 `BLEND_EDGE` liegen,
+darunter #419 `Fillet 12`.
+
+**Gemessen — Dekoder (alle acht Fixtures, 697 BTON-Queries):**
+
+| | vorher | nachher |
+| --- | ---: | ---: |
+| Kanten-Queries mit Flächenpaar | **101** | **124** |
+| `BLEND_EDGE` | 0 / 13 | **13 / 13** |
+| `INTERSECT` | 38 / 79 | **48 / 79** |
+| `MERGE`-Flächen mit Namen | 0 / 27 | **22 / 27** |
+| `SPLIT`-Flächen mit Namen | 0 / 8 | **6 / 8** |
+
+Die 5 + 2 Reste hängen ausnahmslos an einer `COPY` (Muster-Kopie) als
+Partner bzw. Nachbar. Keine einzige vorher übersetzte Query wurde schlechter.
+
+**Gemessen — Ende zu Ende (#419): NICHTS bewegt sich, und das ist der Befund.**
+190 Meldungen auf 107 Features, 12 Körper, 49 Feature-Calls — vorher wie
+nachher identisch. Was sich bewegt, ist **wovon** die Meldungen handeln: die
+Klasse „FieldDraft hat für diese Form keinen Namen" fällt von **26 auf 14**,
+die Klasse „die Query nennt ein Feature, das dieses Dokument nie importiert"
+steigt von **35 auf 47**. `Fillet 12`, `Fillet 16`, `Fillet 9`, `Chamfer 4` und
+`Chamfer 10` scheitern jetzt an ihren Extrudes, nicht mehr am Dekoder. Das ist
+dieselbe Bewegung, die #425 erzeugt hat, und aus demselben Grund: der Engpass
+liegt seit #424 flussaufwärts. Alle sechs Onshape-E2E-Suiten blieben ohne eine
+einzige Pin-Änderung grün, Kernel 1366/1366, Web 2040/2040.
+
+**Was ausdrücklich NICHT angefasst wurde.** Der EBENEN-Pfad
+(`extractPlaneRef`) liest weiter den flachen Token-Strom. Er beantwortet eine
+andere Frage: eine *Ebene* braucht nur **eine** Fläche eines verschmolzenen
+Paares, weil beide in ihr liegen — und `thicken` braucht sogar genau eine, weil
+der Kernel dort `qFace(hash)` verlangt. Ein `qUnion` an dieser Stelle wäre eine
+Verschlechterung. Die neue Flächen-Übersetzung ist deshalb über
+`decodeFaceRef` separat messbar gemacht, statt den Ebenen-Pfad umzustellen.
+
+### Was offen bleibt: `COPY`
+
+Die einzige Onshape-Form ohne FieldDraft-Namen ist jetzt `COPY` — 52 Queries im
+Korpus, plus die 7 `MERGE`/`SPLIT`-Flächen und 24 `INTERSECT`-Kanten, die einen
+`COPY`-Partner haben. Sie zerfällt in **zwei** Fälle, und nur einer davon ist
+das, was E1 gebaut hat:
+
+1. **Muster-Kopie.** `qInstance(i, …)` steht seit v0.40.0 bereit; was fehlt, ist
+   der Übersetzer-Zweig, der Onshapes `COPY` auf das Ordinal abbildet.
+2. **Boolean-Kopie** — dieselbe Fläche auf dem ERGEBNISKÖRPER einer Boolean,
+   mit gedrehter Normalen. Das ist **kein** Muster und **kein** `qInstance`:
+   das Ordinal unterscheidet Kopien eines Musters, nicht Körper. Der Live-Fall
+   ist `Thicken 6` in #419 (`docs/research/440-thicken6-face-provenance.md`):
+   Onshape referenziert die Wand über `… → COPY aus Boolean 1 (keepTools=True)`,
+   wir lassen das Glied fallen und schichten deshalb nach innen statt außen.
+   **E3 macht diese Kette nicht ausdrückbar** — `qUnion`/`qAdjacentTo`
+   kombinieren Namen innerhalb eines Körpers, hier fehlt die Angabe *welcher
+   Körper*. Das braucht einen Körper-Selektor im Query-Vokabular und ist damit
+   eine eigene Stufe, nicht ein Zweig dieser.
 
 ### Schritt 1 — wie er ausgeführt wurde (v0.39.2, #431)
 

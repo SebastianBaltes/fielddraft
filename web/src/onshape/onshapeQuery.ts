@@ -580,7 +580,17 @@ export function extractPlaneRef(tokens: BtonToken[]): OnshapePlaneRef {
   return { kind: "unsupported", reason: "no known plane query shape" };
 }
 
-/** A B-Rep FACE an Onshape query names, in the terms FieldDraft can express. */
+/**
+ * A B-Rep FACE an Onshape query names, in the terms FieldDraft can express.
+ *
+ * The first four are BASE names — geometry with an owning feature. The last
+ * three are COMBINATORS (`docs/DERIVED-NAMING-PLAN.md` §4/E3): a boolean
+ * neither creates nor destroys a name, it re-arranges which pieces are one
+ * face, so what Onshape calls a merged or split face is a SET operation over
+ * names FieldDraft already has. That is why none of them introduces a new base
+ * name — and why the tree nests: a `SPLIT` fragment of a `MERGE` is exactly
+ * `adjacent(union(…), …)`.
+ */
 export type OnshapeFaceRef =
   /** A sweep's cap. `isStart` is Onshape's sketch-plane side. */
   | { kind: "cap"; opFeatureId: string; isStart: boolean }
@@ -589,7 +599,19 @@ export type OnshapeFaceRef =
   /** A shelled body's inner skin (Onshape `OFFSET_FACE`), wall side. */
   | { kind: "innerWall"; opFeatureId: string }
   /** A shelled body's inner skin, cap side. */
-  | { kind: "innerCap"; opFeatureId: string; isStart: boolean };
+  | { kind: "innerCap"; opFeatureId: string; isStart: boolean }
+  /** The rounding/bevel face a fillet or chamfer produced (Onshape
+   *  `BLEND_FACE`). FieldDraft names it by ROLE since v0.41.0 — both the smin
+   *  carrier and the hard cutter's cylinder/plane read as `BLEND`. */
+  | { kind: "blend"; opFeatureId: string }
+  /** Onshape `MERGE`: one face of theirs = SEVERAL of ours. FieldDraft never
+   *  merges coplanar walls implicitly, so the pieces keep their own names and
+   *  the merged face is their union. */
+  | { kind: "union"; parts: OnshapeFaceRef[] }
+  /** Onshape `SPLIT`: a boolean cut one face into fragments that all share a
+   *  branch. Which fragment is meant follows from the NEIGHBOURS Onshape's
+   *  `TOPOLOGY` disambiguation lists — `qAdjacentTo`, never a position. */
+  | { kind: "adjacent"; base: OnshapeFaceRef; neighbours: OnshapeFaceRef[] };
 
 /**
  * What a decoded fillet/chamfer EDGE query names. FieldDraft addresses a B-Rep
@@ -667,13 +689,63 @@ function sketchOriginals(root: { [k: string]: BtonValue }): OnshapeEntityOrigin[
   return out;
 }
 
-/** One face of an edge's `derivedFrom` pair. */
+/**
+ * One face an Onshape query names — the recursive heart of the face
+ * translation. Base shapes (`CAP_FACE`, `SWEPT_FACE`, `OFFSET_FACE`,
+ * `BLEND_FACE`) resolve to a named face of one feature; the boolean shapes
+ * (`MERGE`, `SPLIT`) resolve to a COMBINATION of faces and recurse.
+ *
+ * A combinator is ALL-OR-NOTHING. If one merge partner or one split neighbour
+ * has no FieldDraft name, the whole face is refused instead of translated from
+ * the remainder: a union of two faces minus one is a different face, and a
+ * split narrowed by three of five neighbours may bind the wrong fragment. That
+ * is §1 of the plan — an unnameable entity is refused by name, never rounded to
+ * the nearest plausible one.
+ */
 function faceRefOf(v: BtonValue): OnshapeFaceRef | { reason: string } {
   const m = asMap(v);
   if (!m) return { reason: "Fläche als geteilte Rück-Referenz (nicht auflösbar)" };
   const qt = queryTypeOf(m.queryType);
-  const op = opRefOfValue(m.operationId);
   if (!qt) return { reason: "Flächen-Query, deren queryType nicht dekodierbar ist" };
+
+  // Onshape `MERGE`: the boolean made several faces flush and calls the result
+  // one face. FieldDraft keeps the pieces — the name is their union.
+  if (qt === "MERGE") {
+    const df = Array.isArray(m.derivedFrom) ? m.derivedFrom : [];
+    if (df.length === 0) return { reason: "MERGE ohne die verschmolzenen Flächen" };
+    const parts: OnshapeFaceRef[] = [];
+    for (const d of df) {
+      const part = faceRefOf(d);
+      if ("reason" in part) return { reason: `MERGE-Teilfläche: ${part.reason}` };
+      parts.push(part);
+    }
+    return parts.length === 1 ? parts[0] : { kind: "union", parts };
+  }
+
+  // Onshape `SPLIT`: one face of the original, narrowed to the fragment that
+  // touches the listed neighbours. `derivedFrom` is a single value here, not
+  // an array — the face that was cut.
+  if (qt === "SPLIT") {
+    const base = faceRefOf(m.derivedFrom as BtonValue);
+    if ("reason" in base) return { reason: `SPLIT-Ausgangsfläche: ${base.reason}` };
+    const dd = Array.isArray(m.disambiguationData) ? m.disambiguationData : [];
+    const neighbours: OnshapeFaceRef[] = [];
+    for (const entry of dd) {
+      const em = asMap(entry);
+      if (!em || asText(em.disambiguationType) !== "TOPOLOGY") continue;
+      for (const e of Array.isArray(em.entities) ? em.entities : []) {
+        const n = faceRefOf(e);
+        if ("reason" in n) return { reason: `SPLIT-Nachbarfläche: ${n.reason}` };
+        neighbours.push(n);
+      }
+    }
+    if (neighbours.length === 0) {
+      return { reason: "SPLIT ohne TOPOLOGY-Nachbarschaft — welches Bruchstück gemeint ist, sagt die Query nicht" };
+    }
+    return { kind: "adjacent", base, neighbours };
+  }
+
+  const op = opRefOfValue(m.operationId);
   if (!op) return { reason: `Flächen-Query ${qt} ohne lesbare Operations-Id` };
   if (qt === "CAP_FACE") {
     if (typeof m.isStart !== "boolean") return { reason: "CAP_FACE ohne isStart-Flag" };
@@ -681,14 +753,23 @@ function faceRefOf(v: BtonValue): OnshapeFaceRef | { reason: string } {
   }
   if (qt === "SWEPT_FACE") {
     const origins = sketchOriginals(m);
-    if (origins.length !== 1) {
-      return {
-        reason: `SWEPT_FACE mit ${origins.length} Herkunfts-Skizzenelementen (genau eines erwartet)`,
-      };
+    if (origins.length === 0) {
+      return { reason: "SWEPT_FACE ohne Herkunfts-Skizzenelement" };
     }
-    return { kind: "wall", opFeatureId: op.featureId, origin: origins[0] };
+    // SEVERAL originals is the MERGE shape one level down, and it is measured,
+    // not assumed: in #414 the very entity `v7UgcE38VD0I.bottom` is the SINGLE
+    // origin of one extrude's wall and one of THREE origins of another's. Three
+    // collinear profile curves, one Onshape face — because Onshape merges what
+    // lies on one plane and FieldDraft does not (no implicit merge). So the
+    // wall is the union of the walls those curves swept; picking the first, as
+    // the plane scan does, would name a THIRD of the face.
+    const walls = origins.map(
+      (origin): OnshapeFaceRef => ({ kind: "wall", opFeatureId: op.featureId, origin }),
+    );
+    return walls.length === 1 ? walls[0] : { kind: "union", parts: walls };
   }
   if (qt === "OFFSET_FACE") return { kind: "innerWall", opFeatureId: op.featureId };
+  if (qt === "BLEND_FACE") return { kind: "blend", opFeatureId: op.featureId };
   return { reason: `Flächenform ${qt}` };
 }
 
@@ -762,6 +843,34 @@ export function extractEdgeRef(doc: BtonValue): OnshapeEdgeRef {
     return { kind: "faces", a, b };
   }
 
+  // The rim of an EARLIER blend: where a fillet's/chamfer's own face meets a
+  // neighbour. Onshape says it as `blendedFrom` (the edge that was rounded away)
+  // + `blendedInto` (the face on the other side of this rim); FieldDraft says
+  // the same thing as the two faces that meet — the blend face, which carries
+  // its role since v0.41.0, and that neighbour.
+  //
+  // `blendedFrom` is deliberately NOT translated. It names an edge that no
+  // longer exists (the fillet consumed it), so it can only ever be a
+  // disambiguator — and in the whole corpus every BLEND_EDGE has exactly ONE
+  // `blendedInto`, so there is nothing left to disambiguate. Lowering it anyway
+  // would mean naming a face by an edge that is gone.
+  if (qt === "BLEND_EDGE") {
+    if (!op) return unsupported("BLEND_EDGE ohne lesbare Operations-Id");
+    const into = Array.isArray(root.blendedInto) ? root.blendedInto : [];
+    if (into.length !== 1) {
+      return unsupported(
+        `BLEND_EDGE mit ${into.length} Nachbarflächen — eine Kante ist der Schnitt der Verrundungsfläche mit GENAU einer`,
+      );
+    }
+    const neighbour = faceRefOf(into[0]);
+    if ("reason" in neighbour) return unsupported(`BLEND_EDGE-Nachbarfläche: ${neighbour.reason}`);
+    return {
+      kind: "faces",
+      a: { kind: "blend", opFeatureId: op.featureId },
+      b: neighbour,
+    };
+  }
+
   // A SHELLED body's inner rim: the hollow's floor meets its side. Both faces
   // belong to the SWEEP — an inner face keeps the outer one's provenance; the
   // shell only hollowed it — so the sweep comes out of the TRUE_DEPENDENCY the
@@ -793,13 +902,30 @@ export function extractEdgeRef(doc: BtonValue): OnshapeEdgeRef {
     MERGE: "aus einer Boolean-Vereinigung hervorgegangene Kante (MERGE)",
     COPY: "Kante einer Muster-Kopie (COPY)",
     SPLIT: "Bruchstück einer von einer Boolean geteilten Kante (SPLIT)",
-    BLEND_EDGE: "Kante einer bereits verrundeten/gefasten Fläche (BLEND_EDGE)",
-    BLEND_FACE: "Kante an einer Verrundungsfläche (BLEND_FACE)",
+    BLEND_FACE: "ganze Verrundungsfläche statt einer Kante (BLEND_FACE)",
     CAP_FACE: "ganze Deckelfläche statt einer Kante (CAP_FACE)",
   };
   return unsupported(
     `${named[qt] ?? `Onshape-Kantenform ${qt}`} — FieldDraft benennt Kanten über zwei Flächen und hat dafür kein Gegenstück`,
   );
+}
+
+/**
+ * The FACE translation as a first-class entry point: a parsed BTON document →
+ * the face FieldDraft names, or the reason it has none.
+ *
+ * A thin wrapper over the recursion {@link extractEdgeRef} already uses for the
+ * two faces of an edge. It exists so the face rules can be measured on their
+ * own — a `MERGE` or `SPLIT` face reaches the edge decoder only when some edge
+ * happens to be bounded by one, which in the corpus hides several shapes behind
+ * an unrelated neighbour's gap.
+ *
+ * NOT (yet) the decoder behind sketch planes: those still run the flat token
+ * scan {@link extractPlaneRef}, which answers a different question — a PLANE
+ * needs only one face of a merged pair, because both lie in it.
+ */
+export function decodeFaceRef(doc: BtonValue): OnshapeFaceRef | { reason: string } {
+  return faceRefOf(doc);
 }
 
 /** Decode + tokenize + parse + extract an EDGE query in one step. */
