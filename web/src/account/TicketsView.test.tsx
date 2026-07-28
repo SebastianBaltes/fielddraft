@@ -104,12 +104,23 @@ async function flush() {
   });
 }
 
-// FileReader (jsdom) delivers results on the macrotask queue — flush it so
-// the async addFiles pipeline (fileToAttachment) lands before asserting.
-async function flushTasks() {
-  await act(async () => {
-    await new Promise((r) => setTimeout(r, 0));
-  });
+// jsdom's FileReader delivers its result via TWO nested setImmediate calls
+// (loadstart+progress, then load+loadend — see FileReader-impl.js), so the
+// async addFiles pipeline (fileToAttachment) can take more than one
+// macrotask tick to land. A single fixed `setTimeout(0)` flush raced that
+// under CPU load: the timer sometimes fired before the second setImmediate,
+// so the assertion below ran before pendingFiles was ever set (#432).
+// Poll the real condition instead of guessing a tick count.
+async function waitFor(condition: () => boolean, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) {
+      throw new Error("waitFor: condition not met within timeout");
+    }
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  }
 }
 
 function byTestId<T extends HTMLElement = HTMLElement>(id: string): T | null {
@@ -389,7 +400,7 @@ describe("TicketsView — detail", () => {
     act(() => {
       fileInput.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    await flushTasks();
+    await waitFor(() => byTestId("comment-attachments") !== null);
 
     const thumbs = byTestId("comment-attachments")!;
     expect(thumbs.textContent).toContain("notes.txt");
@@ -434,7 +445,7 @@ describe("TicketsView — detail", () => {
     act(() => {
       input.dispatchEvent(pasteEvent);
     });
-    await flushTasks();
+    await waitFor(() => byTestId("comment-attachments") !== null);
 
     const thumbs = byTestId("comment-attachments");
     expect(thumbs).toBeTruthy();
@@ -459,7 +470,8 @@ describe("TicketsView — detail", () => {
     act(() => {
       input.dispatchEvent(pasteEvent);
     });
-    await flushTasks();
+    // No image in the payload — onCommentPaste's early return is synchronous
+    // (no addFiles/FileReader kicked off), so there's nothing to wait for.
 
     expect(byTestId("comment-attachments")).toBeNull();
     // Text pastes must keep the browser's default behaviour.
