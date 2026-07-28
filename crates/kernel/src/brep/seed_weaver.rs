@@ -1605,10 +1605,25 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
             // position break the ring connectivity. Merge this cluster's
             // termini into the witness; its branch union picks them up when
             // the witness vertices are materialised below.
+            // NEAREST witness within the merge radius, ties by lowest index.
+            // `.find()` over the keys would take whichever candidate `HashMap`
+            // iteration happened to yield first — and with several witnesses
+            // inside `witness_merge` (3,09 mm on the #419 rail) that made the
+            // whole weave differ from run to run: different vertex merges →
+            // different edge endpoints → a different survivor in the
+            // coincidence edge merge. Measured on #419 body 4 before this:
+            // 102 or 101 edges after the merge, ~50/50 across processes.
             let coincident = witness_refs
                 .keys()
-                .find(|wi| dist3(witnesses[**wi].0, pos) <= witness_merge)
-                .copied();
+                .copied()
+                .map(|wi| (wi, dist3(witnesses[wi].0, pos)))
+                .filter(|&(_, d)| d <= witness_merge)
+                .min_by(|a, b| {
+                    a.1.partial_cmp(&b.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then(a.0.cmp(&b.0))
+                })
+                .map(|(wi, _)| wi);
             if let Some(wi) = coincident {
                 let refs = witness_refs.get_mut(&wi).expect("key just found");
                 for &m in &group {
