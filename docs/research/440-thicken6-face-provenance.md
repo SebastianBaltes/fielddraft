@@ -182,3 +182,143 @@ tut nichts.
   Produktentscheidung und steht in ihren eigenen Tickets.
 - `carrier_coverage` darf nie wieder auf einen gekrümmten Träger angewendet werden.
   `carrier_coverage_curved` steht daneben und sagt im Kopfkommentar, warum.
+
+---
+
+## Reparatur (Option A) — der Region-Übersetzer, 2026-07-28, v0.42.1
+
+Der User hat Option A gewählt: eine Onshape-Region bildet ab jetzt auf **alle**
+atomaren Imprint-Flächen ab, die sie überdeckt.
+
+### Was sich geändert hat
+
+Der Umbau hängt an einer Beobachtung, die (f) noch nicht hatte: die Region-Query
+trägt ihre **vollständige Rand-Topologie**, und `parseBton` liest sie seit #430
+fehlerfrei. Eine `FACE`/`IMPRINT`-Query disambiguiert über TOPOLOGY zu einer
+Liste von Imprint-KANTEN; jede Kante nennt ihre Basis-Sketchkurve und — wieder
+über TOPOLOGY — die zwei Imprint-VERTICES, an denen sie beschnitten ist, jeder
+als Schnitt benannter Kurven. Über alle sieben Fixture-Dokumente hat **jede**
+Profil-Query der Form `FACE/IMPRINT` diese Disambiguierung; es gibt keinen Fall
+ohne sie.
+
+#412 las statt dessen einen **flachen Token-Scan** über alle Strings der Query.
+Der kostete drei Dinge:
+
+1. **Den Beschnitt.** Ohne ihn geht eine 920 mm lange Linie in voller Länge in
+   die Bewertung, obwohl die Region nur 20 mm davon berandet.
+2. **Die Unterscheidbarkeit.** `Extrude 4` (#419) wählt drei Streifen EINES
+   Rechtecks; zwei davon nennen buchstäblich dieselben Kurven-Ids und
+   unterscheiden sich nur im Beschnitt. Der flache Scan lieferte für beide
+   dieselbe Liste — die Regionen fielen zusammen.
+3. **Die Genauigkeit.** Der Scan sammelte auch Strukturwerte (`CAP_EDGE`) und
+   Ids aus verschachtelten Vertex-Disambiguierungen als wären es Randkurven.
+   Jeder unbekannte Name machte die ganze Query unauflösbar.
+
+Neu, in zwei Dateien:
+
+- `web/src/onshape/onshapeRegion.ts` liefert statt `entityIds: string[]` jetzt
+  `edges: RegionBoundaryEdge[]` — Basis-Kurve plus die Kurvenmengen der beiden
+  Trim-Vertices. Kanten, die nicht aus einer Sketchkurve stammen, fallen weg
+  statt die Query zu vergiften.
+- `web/src/onshape/onshapeRegionFaces.ts` (neu) bildet eine Region auf eine
+  MENGE von Flächen ab. Zwei unabhängige Lesarten derselben Sondierung:
+  - **Rangfolge** wählt den Anker (wie bisher: Deckungsanteil am eigenen Umfang
+    × Anteil der Randkanten, die die Fläche berühren) — nur jetzt auf den
+    beschnittenen Kanten, was die Bewertung erheblich schärft.
+  - **Verschmelzung** wächst vom Anker: eine Onshape-Imprint-Kante hat auf jeder
+    Seite **genau eine** Fläche. Wechselt die Fläche auf einer Seite, während man
+    die Kante entlangläuft, liegen beide in derselben Onshape-Region — unsere
+    Anordnung hat dort geschnitten, Onshapes nicht. Das ist positive Evidenz,
+    kein Fehlen eines Trenners: es kann nicht in den ganzen Sketch auslaufen.
+  Eine benannte Kante ZWISCHEN zwei Flächen ist Beweis, dass sie nicht dieselbe
+  Region sind. Widerspricht sie der Verschmelzung, bleibt der Anker allein
+  stehen und die Auflösung meldet `conflict`.
+
+Zwei Fälle konnten vorher stumm falsch werden und sind es nicht mehr: der Anker
+einer Region gehört ihr — keine andere Region darf ihn per Verschmelzung
+abziehen —, und die Fehlmengen-Warnung zählt nicht mehr Flächen gegen Queries
+(das schwieg genau beim #440-Fall), sondern benennt, was passiert ist:
+unauflösbare Regionen, Anker-Kollisionen, Widersprüche, umstrittene Flächen.
+
+### Nachher-Zahlen
+
+**`Revolve 1`** (#419): `qRegions(6, [4, 7])` → **`qRegions(6, [4, 6, 7])`**.
+Face 6 ist genau das Band x ∈ [9,25; 16,99] × y ∈ [−52,83; −46,68], also die
+6,15-mm-Lücke aus (c). Das Radialprofil hat sie nicht mehr.
+
+**`Extrude 4`** (#419): `qRegions(6, [4, 5])` → **`qRegions(6, [3, 4, 5])`** —
+die drei Streifen, die Onshape wählt, statt zwei. Die Warnung ist ersatzlos weg.
+
+**`Thicken 6`**: seine Fläche existiert jetzt. Die Query löst auf **genau eine**
+Fläche auf, und die ist der Zylinder aus (a):
+
+    Body 9, featureId 23 (Revolve 1), kind cylinder, radius 7,735 mm
+
+Vorher war derselbe Träger nach (c) auf 486 von 64 800 Proben Rand — eine
+Tangentenlinie, kein Flächenstück.
+
+**`Thicken 6` schneidet trotzdem nichts** — und der Grund ist ein anderer als
+#440s. Sein `booleanScope` ist `qCreatedBy(27)` = `Extrude 16`, und dessen Körper
+trifft den Revolve in unserem Import überhaupt nicht: Body 10 (Features 27, 35)
+liegt bei x ∈ [−78,4; −62,5], Body 9 (der Revolve) bei x ∈ [−72,5; −19,5], und
+der Zylinder sitzt lokal bei y 46,68 … 60,93 ⇒ Welt-x −46,7 … −60,9. Der Beweis,
+dass das nicht an Thicken liegt: **`Boolean 1` (Call 28) subtrahiert dieselben
+zwei Körper und bewegt ebenfalls keine einzige Zahl.** Beide hängen an
+`Extrude 16`s End-Condition `UP_TO_SURFACE` mit `oppositeDirection: true`, die
+wir als gemessene Tiefe +15,85 mm übernehmen — eigener Prüfpunkt, eigene
+Baustelle, nicht die Regionen-Auflösung.
+
+Kontrolle, damit das kein blindes Instrument ist: `setFeatureSuppressed(25)`
+(= `Extrude 4`) bewegt Body 9 von (26, 47, 24) auf (18, 35, 18).
+
+### Pin-Bewegungen in den sechs Suiten
+
+Körperzahlen und Fehlerzahlen: #419 12 Körper / 192 Meldungen unverändert,
+#412 / #414 / #415 / #416 vollständig unverändert. Bewegt haben sich:
+
+| Dokument | Feature | vorher | nachher | Warum besser |
+|---|---|---|---|---|
+| #419 | `Revolve 1` | `[4, 7]` | `[4, 6, 7]` | die 6,15-mm-Lücke, s. o. |
+| #419 | `Extrude 4` | `[4, 5]` | `[3, 4, 5]` | Onshape wählt drei Streifen |
+| #419 | `Extrude 20` | 9 Faces | 11 Faces | 5 Kollisionen → 3 |
+| #419 | `Extrude 23` | 7 Faces | 8 Faces | 2 unauflösbare → 1 |
+| #419 | `Extrude 49` | `[4, 8, 9, 10]` | `[2, 4, 8, 9]` | Beschnitt trennt die Streifen |
+| #419 | `Revolve 7` | ganzer Sketch | `qRegion(6, 13)` | löst jetzt auf |
+| #419 | `Extrude 44` | ganzer Sketch | Region | löst jetzt auf |
+| #409 | `Extrude 4` | `[2, 3]` | `[1, 3]` | s. u. — die einzige harte |
+
+Die #409-Bewegung ist die einzige, die etwas kostet, und sie ist die deutlichste
+Korrektur. Sketch 3 ist ein 920×500-Rahmen: vier Leisten (Faces 0, 1, 3, 4) um
+eine große Mittelplatte (Face 2). `Extrude 3` extrudiert die obere und untere
+Leiste, `Extrude 4` die linke und rechte. Die erste Region-Query von `Extrude 4`
+ist — mit Beschnitt gelesen — exakt das Rechteck x ∈ [0; 20] × y ∈ [20; 480], die
+linke Leiste. Ohne Beschnitt gingen die beiden 920 mm langen Querlinien in voller
+Länge ein, und die bestbewertete Fläche war die **880×460-Mittelplatte**, die
+Onshape nie extrudiert. Der Import baute dort einen Körper, den es im Original
+nicht gibt.
+
+Der Preis: die beiden Leisten sind **disjunkt** und werden von denselben zwei
+Querlinien berandet. `wall_sub_table` lehnt eine Tabelle mit wiederholten Ids ab
+(zwei Wände mit einer Sub kollabierten zu einer Fläche), also fallen die Wände
+auf positionale Subs zurück — `qWall(8, 45)` bindet nicht mehr, und `Mirror 2`
+samt Mate-Connector stehen wieder in `KNOWN_GAPS` der #409-Suite. Gemessen:
+vorher band `qWall(8, n)` für n = 6, 15, 36, 45; nachher für n = 0 … 7.
+
+Das ist eine **Kernel-Lücke, keine Übersetzer-Lücke**: die richtige Reparatur ist
+Wand-Benennung pro Rand-Schleife (#429s Gebiet). Die Alternative — das Profil
+wieder aufzublasen — hieße, einen Mate-Connector funktionieren zu lassen, weil
+der Körper unter ihm 44× zu groß ist.
+
+### Was offen bleibt
+
+- `Extrude 16`s `UP_TO_SURFACE` + `oppositeDirection` (s. o.) — blockiert
+  `Boolean 1` UND `Thicken 6` im #419-Dokument.
+- Wand-Benennung für disjunkte Mehrfach-Regionen (#409 `Mirror 2`).
+- Der `thickness1`-vs-`thickness`-Punkt aus (a) ist weiterhin ungeprüft.
+- Die zwei `#[ignore]`-Sonden in `crates/kernel/src/onshape_regression_tests.rs`
+  laufen auf der eingefrorenen Aufzeichnung `testdata/onshape419_full_import.json`,
+  die noch die ALTEN Profile trägt (`qRegions(6, [4, 7])`). Sie messen damit den
+  Zustand vor dieser Reparatur. Wer sie wieder als Instrument braucht, muss die
+  Aufzeichnung neu ziehen — dabei bewegen sich die dort gepinnten
+  `open_faces`-Vektoren. Die Nachher-Messung oben steht statt dessen als
+  dauerhafter Pin in `onshapeImport419E2E.slow.test.ts`.
