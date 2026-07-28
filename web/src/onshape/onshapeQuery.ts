@@ -10,10 +10,11 @@
  * (`%B5$Query…`) or zlib/base64 (`&<hexlen>$eJ…`). Two readings sit on the same
  * tokenizer:
  *
- *  - {@link parseBton} rebuilds the actual document tree, resolving the string
+ *  - {@link parseBton} rebuilds the actual document tree, resolving the
  *    back-references, so a value can be read AT ITS KEY. The EDGE translation
  *    (#425) uses it; it is the only reading that can tell a query's own fields
- *    from those of the ancestors its disambiguation nests.
+ *    from those of the ancestors its disambiguation nests. Since #430 it
+ *    decodes every BTON query of every fixture (697/697) without a gap.
  *  - {@link extractPlaneRef} scans the flat token stream for literals. Every
  *    DISCRIMINATING field of a PLANE query appears as a literal on first use, so
  *    the scan suffices there — validated against the Kabelbox corpus.
@@ -25,35 +26,34 @@
  * Token vocabulary (empirical):
  *   `M<hex>` map · `A<hex>` array · `C<hex>` class back-ref (0-based)
  *   `S<hex>$s` string · `S<h1>.<h2>$s1s2` two-part string
- *   `S-<ref>.<h>$suffix` table reference + literal suffix
- *   `B<hex>$Name` class/enum introduction · `R<hex>` string back-ref
- *   `E<hex>` shared SUB-STRUCTURE (a table we do not reconstruct)
+ *   `S-<ref>.<h>$suffix` string-pool reference + literal suffix
+ *   `B<hex>$Name` class/enum introduction · `E<hex>` string-pool back-ref
+ *   `R<hex>` VALUE back-ref (see {@link BtonTables})
  *   `D-?<hex>` number · `T`/`F` booleans · `%` root marker
  */
 
 /** One component of a BTON string: either spelled out or a back-reference
- *  into the string table. `S12.6$F…wireOp` is two literal parts,
- *  `S-13.5$right` a table reference followed by a literal one. */
+ *  into the string pool. `S12.6$F…wireOp` is two literal parts,
+ *  `S-13.5$right` a pool reference followed by a literal one. */
 export type BtonPart = { lit: string } | { ref: number };
 
-/** One BTON token. Literal strings carry their parts; back-references
- *  stay opaque (`ref`). */
+/** One BTON token. Literal strings carry their parts; back-references carry
+ *  the index and the table they index (`ref` → values, `poolref`/`cls` →
+ *  string pool). */
 export interface BtonToken {
-  t: "str" | "enum" | "ref" | "map" | "arr" | "cls" | "num" | "bool" | "refstr";
+  t: "str" | "enum" | "ref" | "poolref" | "map" | "arr" | "cls" | "num" | "bool" | "refstr";
   /** str/enum: first part; refstr: the suffix. */
   p1?: string;
   /** str: second part of a two-part string ("" for plain). */
   p2?: string;
-  /** ref/cls/map/arr/num: the numeric payload; refstr: the base ref. */
+  /** ref/poolref/cls/map/arr/num: the numeric payload; refstr: the base ref. */
   n?: number;
   /** bool value. */
   v?: boolean;
   /** str/enum/refstr: the parts as written, literal or referenced. The
    *  structured parser needs the distinction (only LITERAL parts enter the
-   *  string table); the flat scans read `p1`/`p2` instead. */
+   *  string pool); the flat scans read `p1`/`p2` instead. */
   parts?: BtonPart[];
-  /** ref: written as `E<hex>` — a shared SUB-STRUCTURE, not a string. */
-  structural?: boolean;
 }
 
 /** Strip the `qCompressed` wrapper and inflate the payload when it is
@@ -156,17 +156,12 @@ export function tokenizeBton(payload: string): BtonToken[] {
       continue;
     }
     if (c === "R" || c === "E") {
-      // `R<hex>` is a STRING back-reference (into the table of parts every
-      // literal string introduces). `E<hex>` appears where a VALUE is
-      // expected and shares a whole previously-emitted SUB-STRUCTURE — a
-      // different table, which we do not reconstruct. Keeping the two apart
-      // matters: resolving an `E` against the string table yields a
-      // plausible-looking but WRONG string, and that string then lands in a
-      // map-key slot. A well-formed token we happen not to interpret must
-      // never abort the decode either — throwing here killed every edge
-      // query of a document that used it.
+      // Two DIFFERENT tables (#430): `R<hex>` repeats a previously emitted
+      // VALUE, `E<hex>` a string out of the pool `C<hex>` and the negative
+      // part-lengths index. Confusing them yields a plausible-looking but
+      // wrong string, and that string then lands in a map-key slot.
       i += 1;
-      out.push({ t: "ref", n: hex(), structural: c === "E" });
+      out.push({ t: c === "R" ? "ref" : "poolref", n: hex() });
       continue;
     }
     if (c === "M" || c === "A" || c === "C") {
@@ -199,58 +194,67 @@ export type BtonValue =
   | BtonValue[]
   | { [k: string]: BtonValue };
 
-/** A back-reference the string tables could not resolve. It is a VALUE, not a
- *  string, so every consumer that expects text rejects it instead of guessing.
- *  (Onshape shares whole sub-structures too; those refs live in a table we do
- *  not reconstruct, and the fields they carry are disambiguation metadata we
- *  do not read.) */
+/** A back-reference neither table could resolve. It is a VALUE, not a string,
+ *  so every consumer that expects text rejects it instead of guessing. */
 export interface BtonUnresolved {
   unresolvedRef: number;
 }
 
-export function isUnresolved(v: BtonValue | undefined): v is BtonValue & BtonUnresolved {
-  return typeof v === "object" && v !== null && !Array.isArray(v) && "unresolvedRef" in v;
-}
-
 /**
- * The two string tables a BTON payload builds up as it is read. Empirically
- * calibrated against the #419 fillet/chamfer corpus (103 payloads), where every
- * reading is cross-checked by a hard constraint: a map KEY must come out as one
- * of Onshape's field names, and a class ref (`C<n>`) as a class name.
+ * The two tables a BTON payload builds up as it is read. They index DIFFERENT
+ * things, and that is the whole difficulty of the format: one holds strings,
+ * the other holds values.
  *
- *  - `all` — every string INTRODUCED, in order: class names (`B…`), each
- *    literal part of a multi-part string, and then the joined string itself.
- *    `C<n>` and the negative part-lengths inside a string index this table.
- *  - `parts` — the same list WITHOUT class names and WITHOUT the joined
- *    composites. `R<n>` indexes this one.
+ *  - `pool` — the string constant pool. Every string the payload SPELLS OUT
+ *    enters it in order: class names (`B<len>$Name`), each literal part of a
+ *    multi-part string, and then the joined composite. Indexed by `C<n>`
+ *    (class), by `E<n>` (a string value), and by the negative part-lengths
+ *    inside a string (`S-13.5$right` = pool entry 0x13 plus the literal
+ *    `right`).
+ *  - `values` — every VALUE the document produces, appended when it is
+ *    COMPLETE: a string when it is read, a map or array after its last
+ *    element. Indexed by `R<n>`. A class intro/ref is transparent and adds
+ *    nothing; a back-reference repeats an existing value and adds nothing
+ *    either. BOOLEANS take no slot — `T`/`F` is one character and a
+ *    back-reference is never shorter, so the encoder does not intern them.
+ *    Numbers (`D<hex>`) it does.
  *
- * That the two tables differ is not a guess: `C12` resolves to `Id` only with
- * the class names counted, and a replayed map key `R13` resolves to
- * `sketchEntityId` only with them left out. Both hold across the corpus.
+ * `R<n>` therefore does NOT name a string (#430). It reads that way in short
+ * payloads — early on the two tables run in lockstep, because nothing but
+ * strings has completed yet — and the earlier decoder took it for a string
+ * table, which held for 656 of the corpus's 697 payloads and drifted in the
+ * rest. The drift is not random: it starts at the first COMPOSITE string
+ * (`S12.6$F…wireOp` is two pool entries but one value) and grows by one at
+ * every completed container. Read as values, all 697 decode, and a repeated
+ * `operationId` comes back as the whole `Id[["F…_18.wireOp"]]` it shares
+ * instead of the bare suffix `wireOp` a string table yields.
+ *
+ * The calibration is a hard constraint, not a plausibility judgement: a map
+ * KEY must come out as one of Onshape's field names and a class ref as a class
+ * name, checked over every BTON query of every fixture.
  */
-interface BtonStrings {
-  all: string[];
-  parts: string[];
+interface BtonTables {
+  pool: string[];
+  values: BtonValue[];
 }
 
-/** Read one string token, registering the parts it introduces. */
-function readBtonString(tok: BtonToken, st: BtonStrings, isClass: boolean): string {
+/** Read one string token, registering the parts it introduces in the pool. */
+function readBtonString(tok: BtonToken, st: BtonTables): string {
   const resolved: string[] = [];
   for (const part of tok.parts ?? []) {
     if ("lit" in part) {
       resolved.push(part.lit);
-      st.all.push(part.lit);
-      if (!isClass) st.parts.push(part.lit);
+      st.pool.push(part.lit);
     } else {
-      const s = st.all[part.ref];
-      if (s === undefined) throw new Error(`BTON: string ref ${part.ref} out of range`);
+      const s = st.pool[part.ref];
+      if (s === undefined) throw new Error(`BTON: pool ref ${part.ref} out of range`);
       resolved.push(s);
     }
   }
   const joined = resolved.join(".");
   // A multi-part string also registers the joined form — that is the entry a
   // later `<featureId>.<op>` reference points at.
-  if ((tok.parts?.length ?? 0) > 1) st.all.push(joined);
+  if ((tok.parts?.length ?? 0) > 1) st.pool.push(joined);
   return joined;
 }
 
@@ -268,7 +272,7 @@ function readBtonString(tok: BtonToken, st: BtonStrings, isClass: boolean): stri
  * past the table); the callers turn that into a visible "unsupported" result.
  */
 export function parseBton(tokens: BtonToken[]): BtonValue {
-  const st: BtonStrings = { all: [], parts: [] };
+  const st: BtonTables = { pool: [], values: [] };
   const cur = { i: 0 };
   const value = parseBtonValue(tokens, cur, st);
   if (cur.i !== tokens.length) {
@@ -277,17 +281,18 @@ export function parseBton(tokens: BtonToken[]): BtonValue {
   return value;
 }
 
-function parseBtonValue(tokens: BtonToken[], cur: { i: number }, st: BtonStrings): BtonValue {
+function parseBtonValue(tokens: BtonToken[], cur: { i: number }, st: BtonTables): BtonValue {
   const tok = tokens[cur.i];
   if (!tok) throw new Error("BTON: unexpected end of stream");
   cur.i += 1;
   switch (tok.t) {
     case "enum":
-      // Class introduction: name it, then read the value it wraps.
-      readBtonString(tok, st, true);
+      // Class introduction: the name enters the POOL, then read the value it
+      // wraps. A class is not a value — it adds nothing to the value table.
+      readBtonString(tok, st);
       return parseBtonValue(tokens, cur, st);
     case "cls":
-      // Class back-reference — same, but the name is already known.
+      // Class back-reference — same, but the name is already in the pool.
       return parseBtonValue(tokens, cur, st);
     case "map": {
       const out: { [k: string]: BtonValue } = {};
@@ -295,30 +300,45 @@ function parseBtonValue(tokens: BtonToken[], cur: { i: number }, st: BtonStrings
         const key = parseBtonValue(tokens, cur, st);
         const val = parseBtonValue(tokens, cur, st);
         // A key we cannot name gets a synthetic one rather than aborting the
-        // parse. Onshape shares whole sub-structures through a second table we
-        // do not reconstruct, and those shared branches are TOPOLOGY
-        // disambiguation metadata — nothing the translation reads. Throwing
-        // here threw the well-formed ROOT away with them (9 of #416's 22 edge
-        // queries). The `?` prefix cannot collide with an Onshape field name,
-        // so a lost key can never masquerade as one.
+        // parse — throwing here threw the well-formed ROOT away with it. The
+        // `?` prefix cannot collide with an Onshape field name, so a lost key
+        // can never masquerade as one.
         out[typeof key === "string" ? key : `?${k}`] = val;
       }
+      st.values.push(out);
       return out;
     }
     case "arr": {
       const out: BtonValue[] = [];
       for (let k = 0; k < (tok.n ?? 0); k += 1) out.push(parseBtonValue(tokens, cur, st));
+      st.values.push(out);
       return out;
     }
     case "str":
-    case "refstr":
-      return readBtonString(tok, st, false);
+    case "refstr": {
+      const s = readBtonString(tok, st);
+      st.values.push(s);
+      return s;
+    }
     case "ref": {
-      const s = tok.structural ? undefined : st.parts[tok.n ?? -1];
-      return s === undefined ? { unresolvedRef: tok.n ?? -1 } : s;
+      // `R<n>`: repeat value n. Not appended again — it is the SAME value.
+      const v = st.values[tok.n ?? -1];
+      return v === undefined ? { unresolvedRef: tok.n ?? -1 } : v;
+    }
+    case "poolref": {
+      // `E<n>`: a string value taken straight out of the pool. Unlike `R<n>`
+      // this IS a fresh value occurrence, so it takes a value slot.
+      const s = st.pool[tok.n ?? -1];
+      if (s === undefined) return { unresolvedRef: tok.n ?? -1 };
+      st.values.push(s);
+      return s;
     }
     case "num":
+      st.values.push(tok.n ?? 0);
       return tok.n ?? 0;
+    // A boolean takes NO value slot — see {@link BtonTables}. Interning one
+    // shifts every later index by one, which is how #414's `startBoundEntity`
+    // query read an array where its `entityType` belongs.
     case "bool":
       return tok.v === true;
   }
@@ -620,14 +640,13 @@ function opRefOfValue(v: BtonValue | undefined): OnshapeOpRef | null {
  * `ORIGINAL_DEPENDENCY` disambiguation — at the KEYS `operationId` and
  * `sketchEntityId`, never by the shape of a string.
  *
- * Onshape replays a repeated `operationId` as a back-reference to a string PART
- * (`"wireOp"`), which on its own no longer names a sketch. Such an entry
- * inherits the sketch of the entry BEFORE it — that is what a back-reference to
- * the preceding value means, and it is not left as an assumption: the caller
- * looks the entity id up in exactly that sketch's entity table, and a 12-random-
- * character id that is not in it fails the translation visibly. In the one
- * corpus query where two sketches meet (#419 `Fillet 7`), the inherited sketch
- * is the one whose entity ids the following originals actually carry.
+ * A repeated `operationId` travels as a back-reference to the whole
+ * `Id[["F…_18.wireOp"]]` value, so every original names its own sketch outright
+ * (7210 of the corpus's 7223 operation ids; the rest are datum planes and a
+ * mate connector, which have no feature id by nature). Reading `R<n>` as a
+ * string used to leave the bare suffix `wireOp` here, and the sketch had to be
+ * INHERITED from the preceding entry — a guess that happened to hold. #430
+ * removed the need for it.
  */
 function sketchOriginals(root: { [k: string]: BtonValue }): OnshapeEntityOrigin[] {
   const out: OnshapeEntityOrigin[] = [];
@@ -636,16 +655,13 @@ function sketchOriginals(root: { [k: string]: BtonValue }): OnshapeEntityOrigin[
   for (const entry of dd) {
     const em = asMap(entry);
     if (!em || asText(em.disambiguationType) !== "ORIGINAL_DEPENDENCY") continue;
-    const originals = Array.isArray(em.originals) ? em.originals : [];
-    let sketchFeatureId: string | null = null;
-    for (const o of originals) {
+    for (const o of Array.isArray(em.originals) ? em.originals : []) {
       const om = asMap(o);
       if (!om || queryTypeOf(om.queryType) !== "SKETCH_ENTITY") continue;
       const op = opRefOfValue(om.operationId);
-      if (op) sketchFeatureId = op.op === "wireOp" ? op.featureId : null;
       const entityId = asText(om.sketchEntityId);
-      if (!entityId || !sketchFeatureId) continue;
-      out.push({ sketchFeatureId, entityId });
+      if (!op || op.op !== "wireOp" || !entityId) continue;
+      out.push({ sketchFeatureId: op.featureId, entityId });
     }
   }
   return out;

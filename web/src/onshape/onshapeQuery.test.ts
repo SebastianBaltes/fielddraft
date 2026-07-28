@@ -262,18 +262,20 @@ function edgeQueriesOf(features: any[], name: string): string[] {
 }
 
 /**
- * The BTON string tables — the piece of the format that had to be reverse-
- * engineered for #425, and the piece that decides whether a value is read at
- * its KEY or at a position.
+ * The BTON back-reference tables — the piece of the format that had to be
+ * reverse-engineered, and the piece that decides whether a value is read at its
+ * KEY or at a position.
  *
- * A payload builds up two tables as it is read, and they are NOT the same one:
- * `C<n>` (class) and the negative part-lengths inside a string index the table
- * WITH the class names and the joined composites in it; `R<n>` indexes the one
- * with only the literal parts. Get either wrong by one and the decode still
- * "works" — it just returns a neighbouring string, which is how a map key comes
- * out as `bottom` and a query type as `opRevolve`.
+ * A payload builds up TWO tables as it is read, and they hold different things:
+ * the string POOL (every string spelled out, class names and joined composites
+ * included), indexed by `C<n>`, `E<n>` and the negative part-lengths inside a
+ * string — and the VALUE table (every string, number, map and array the
+ * document produces, appended when COMPLETE), indexed by `R<n>`. Get either
+ * wrong by one and the decode still "works": it just returns a neighbouring
+ * entry, which is how a map key comes out as `bottom` and a query type as
+ * `opRevolve`.
  */
-describe("parseBton — the two string tables", () => {
+describe("parseBton — the two back-reference tables", () => {
   // #409 „Chamfer 1", verbatim: the smallest real SWEPT_EDGE in the corpus.
   const CHAMFER_1_409 =
     "%B5$QueryM5S12$disambiguationDataA1M2S12$disambiguationTypeS13$ORIGINAL_DEPENDENCY" +
@@ -286,6 +288,13 @@ describe("parseBton — the two string tables", () => {
     // The second `originals` entry is written as nine back-references plus one
     // literal. Only the literal (`exVl27xLp2IA`) is spelled out — everything
     // else, INCLUDING the key `sketchEntityId`, comes out of the table.
+    //
+    // `Ra` in that entry is the value slot of `operationId`, and it is the
+    // sharpest test the corpus offers of what `R<n>` names: read as a string
+    // table it lands on the PART `wireOp` (index 10 of the literal parts), read
+    // as the value table on the whole `Id[["Fu6o1ZFH8h4gKml_18.wireOp"]]`
+    // (value 10 — the composite counts once, the array closes right after it).
+    // Both are well-formed; only the second says which sketch the entry means.
     expect(parseBton(tokenizeBton(CHAMFER_1_409))).toEqual({
       disambiguationData: [
         {
@@ -301,10 +310,11 @@ describe("parseBton — the two string tables", () => {
             {
               entityType: "EDGE",
               historyType: "CREATION",
-              // The replayed operation id resolves to the SUFFIX part alone —
-              // the sketch is the preceding entry's, and the entity id below is
-              // what proves it (it is looked up in that sketch's table).
-              operationId: "wireOp",
+              // The replayed operation id is the SAME `Id` value as above, so
+              // this entry names its sketch outright. It used to come out as
+              // the bare suffix `wireOp`, and the sketch had to be inherited
+              // from the entry before it.
+              operationId: ["Fu6o1ZFH8h4gKml_18.wireOp"],
               queryType: "SKETCH_ENTITY",
               sketchEntityId: "exVl27xLp2IA",
             },
@@ -316,6 +326,73 @@ describe("parseBton — the two string tables", () => {
       operationId: ["FJaU8k5c579SOul_18.opExtrude"],
       queryType: "SWEPT_EDGE",
     });
+  });
+
+  /**
+   * #409 „Extrude 5", `booleanScope`, verbatim: a pattern COPY of a pattern
+   * COPY. It is the payload that settled #430 — the shortest one whose
+   * back-references simply do not exist in any string table.
+   *
+   * `R1a` (26) stands in TWO `entityType` value slots. The literal parts of
+   * this payload run out at 30 entries and put `BODY` at 20, so as a string
+   * table the reference is either out of range or points at the feature id
+   * `FzRCW3jQWfL6H0k_9`. As the VALUE table it is exactly `BODY`: the four
+   * `originals` maps, the two arrays and the two enclosing maps that closed in
+   * between each took a slot. Same for `R1f`/`R20` (`instanceName` and its
+   * value) and `R23` (`COPY`).
+   */
+  const EXTRUDE_5_409 =
+    "%B5$QueryM6Sb$derivedFromC0M6R0C0M5S12$disambiguationDataA1M2S12$disambiguationTypeS13$O" +
+    "RIGINAL_DEPENDENCYS9$originalsA4C0M5Sa$entityTypeBa$EntityTypeS4$EDGESb$historyTypeS8$CR" +
+    "EATIONSb$operationIdB2$IdA1S11.6$FhBUvJiYcqBpE1M_0wireOpS9$queryTypeSd$SKETCH_ENTITYSe$s" +
+    "ketchEntityIdSc.6$ytjnFzrj1CKNbottomC0M5R5R6R7R8R9RbRcRdReS-13.3$topC0M5R5R6R7R8R9RbRcRd" +
+    "ReS-13.4$leftC0M5R5R6R7R8R9RbRcRdReS-13.5$rightR5C7S4$BODYR7R8R9CcA1S11.9$Fiz0Mmct8ouL6F" +
+    "G_0opExtrudeRcSa$SWEPT_BODYR5R1aR7R8Sc$instanceNameS1$1R9CcA1S11.9$FzRCW3jQWfL6H0k_9opPa" +
+    "tternRcS4$COPYR5R1aR7R8R1fR20R9CcA1S11.-24$F3PepExHlLDpHaC_9RcR23";
+
+  it("shares a value the string tables never held (#430)", () => {
+    const doc: any = parseBton(tokenizeBton(EXTRUDE_5_409));
+    // Both COPY levels and the swept body they descend from say `BODY` — the
+    // reference the old string-table reading could not resolve at all.
+    expect(doc.entityType).toBe("BODY");
+    expect(doc.derivedFrom.entityType).toBe("BODY");
+    expect(doc.derivedFrom.derivedFrom.entityType).toBe("BODY");
+    // The outer instance repeats the inner one's `instanceName` key AND value.
+    expect(doc.instanceName).toBe("1");
+    expect(doc.derivedFrom.instanceName).toBe("1");
+    // The pool reference `S11.-24$…` splices the earlier `opPattern` onto a new
+    // feature id — the pool and the value table indexing the same payload with
+    // different numbers is the whole point.
+    expect(doc.operationId).toEqual(["F3PepExHlLDpHaC_9.opPattern"]);
+    expect(doc.derivedFrom.operationId).toEqual(["FzRCW3jQWfL6H0k_9.opPattern"]);
+    expect(doc.queryType).toBe("COPY");
+    expect(doc.derivedFrom.queryType).toBe("COPY");
+    expect(doc.derivedFrom.derivedFrom.queryType).toBe("SWEPT_BODY");
+    // Four sketch edges, each named in full — the last three are nine
+    // back-references and a suffix apiece.
+    expect(
+      doc.derivedFrom.derivedFrom.disambiguationData[0].originals.map(
+        (o: any) => o.sketchEntityId,
+      ),
+    ).toEqual([
+      "ytjnFzrj1CKN.bottom",
+      "ytjnFzrj1CKN.top",
+      "ytjnFzrj1CKN.left",
+      "ytjnFzrj1CKN.right",
+    ]);
+  });
+
+  it("reads `E<n>` out of the string POOL, not the value table (#430)", async () => {
+    // Eight payloads in the corpus write the `instanceName` value as `E<hex>`.
+    // It is the only token that indexes the pool from a VALUE position: here
+    // `E22` is pool entry 0x22, the `1` of the pattern instance. Against the
+    // value table the same index is an array, and an array in a string slot is
+    // how a decode starts inventing shapes.
+    const doc: any = await parseQueryDocument(
+      edgeQueriesOf(fixtureFeatures("ticket339-features.json"), "Fillet 1")[1],
+    );
+    expect(doc.derivedFrom[0].derivedFrom.instanceName).toBe("1");
+    expect(doc.derivedFrom[0].derivedFrom.queryType).toBe("COPY");
   });
 
   it("resolves a string that is written as `<table entry> + suffix`", async () => {
@@ -352,6 +429,61 @@ describe("parseBton — the two string tables", () => {
       }
     }
     expect(n).toBe(206);
+  });
+
+  /**
+   * The whole-corpus gate (#430). Every BTON query of every fixture — sketch
+   * planes, boolean scopes, fillet edges, extrude boundaries, the lot — is
+   * decoded and held against the hard constraint the tables were calibrated on:
+   *
+   *  - no map key may be synthetic. The parser gives a key it cannot name a
+   *    `?<n>` (which no Onshape field can collide with), so a single drifted
+   *    index shows up here as a failure instead of as a plausible wrong shape.
+   *  - no value may be an unresolved back-reference.
+   *  - every key must be a field name Onshape actually uses.
+   *
+   * Before #430 this was 656 of 697 payloads. A regression drops the number,
+   * and this test says by how much and where.
+   */
+  it("decodes every BTON query of every fixture — all 697", async () => {
+    const FIELDS = new Set([
+      "blendedFrom", "blendedInto", "derivedFrom", "disambiguationData",
+      "disambiguationType", "entities", "entityType", "faceName", "fromTools",
+      "historyType", "instanceName", "isStart", "operationId", "order",
+      "originals", "owners", "queryType", "side", "sketchEntityId",
+    ]);
+    const bad: string[] = [];
+    const check = (v: any, where: string) => {
+      if (Array.isArray(v)) return v.forEach((x, i) => check(x, `${where}[${i}]`));
+      if (typeof v !== "object" || v === null) return;
+      if ("unresolvedRef" in v) return void bad.push(`${where}: unresolved ${v.unresolvedRef}`);
+      for (const [k, val] of Object.entries(v)) {
+        if (!FIELDS.has(k)) bad.push(`${where}.${k}: not an Onshape field name`);
+        check(val, `${where}.${k}`);
+      }
+    };
+    let n = 0;
+    for (const file of [
+      "onshape-409-features.json", "onshape-412-features.json",
+      "onshape-414-features.json", "onshape-415-features.json",
+      "onshape-416-features.json", "onshape-419-features.json",
+      "kabelbox-features.json", "ticket339-features.json",
+    ]) {
+      for (const feat of fixtureFeatures(file)) {
+        for (const p of feat.parameters ?? []) {
+          for (const q of (p.message ?? p).queries ?? []) {
+            const qs = (q.message ?? q).queryString;
+            if (!qs) continue;
+            const doc = await parseQueryDocument(qs);
+            if (doc === null) continue; // qSketchRegion & co. — not BTON
+            n += 1;
+            check(doc, `${file} ${feat.name} ${(p.message ?? p).parameterId}`);
+          }
+        }
+      }
+    }
+    expect(n).toBe(697);
+    expect(bad.slice(0, 12)).toEqual([]);
   });
 });
 
@@ -493,17 +625,15 @@ describe("decodeEdgeQuery — Ticket #425", () => {
   });
 });
 
-describe("tokenizeBton — unknown-but-well-formed tokens (Ticket #339)", () => {
-  it("consumes the E<hex> back-reference instead of aborting the decode", () => {
+describe("tokenizeBton — the E<hex> token (Tickets #339, #430)", () => {
+  it("keeps E apart from R — they index DIFFERENT tables", () => {
     // A real document used `E<hex>` where a VALUE was expected. The tokenizer
-    // threw on it, which killed the WHOLE query — every fillet edge of that
-    // document failed to decode. A token we merely do not interpret must not
-    // be a hard stop.
+    // threw on it, which killed the WHOLE query (#339); then it read it as a
+    // string back-reference, which silently produced the wrong string (#430).
+    // It is a STRING-POOL reference, and only its own token type says so.
     const toks = tokenizeBton("%Sc$instanceNameE22R9S9$queryTypeS4$FACE");
-    expect(() => toks).not.toThrow();
-    const literals = toks.filter((t) => t.t === "str").map((t) => t.p1);
-    expect(literals).toContain("instanceName");
-    expect(literals).toContain("FACE"); // the scan survived past the E token
+    expect(toks.filter((t) => t.t === "poolref").map((t) => t.n)).toEqual([0x22]);
+    expect(toks.filter((t) => t.t === "ref").map((t) => t.n)).toEqual([9]);
   });
 
   it("still rejects genuinely unknown syntax — visibly", () => {

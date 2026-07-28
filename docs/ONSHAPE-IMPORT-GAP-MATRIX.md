@@ -1368,3 +1368,94 @@ was auf eine Ursache **vor** der Benennung deutet.
 | `INTERSECT` mit solcher Fläche | 61 | Folgefehler der drei Zeilen darüber. |
 
 Entwurf, wie diese Namen entstehen sollen: **`docs/DERIVED-NAMING-PLAN.md`**.
+
+## Update 2026-07-28 — `R<n>` war nie eine String-Referenz: der BTON-Dekoder ist vollständig (#430)
+
+### Was gemessen wurde
+
+Update (6) hielt fest, dass **41 der 699 BTON-Payloads** der Fixtures nicht
+sauber dekodieren: dort landete etwas in einem Map-Schlüssel-Slot, das kein
+Onshape-Feldname ist, und der Parser vergab einen synthetischen `?n`-Schlüssel.
+Vermutet wurde ein „dritter Verweis-Raum" für geteilte Unterstrukturen. Die
+Vermutung war halb richtig und in der entscheidenden Hälfte falsch: es gibt
+keinen dritten Raum, es gab von Anfang an **den falschen zweiten**.
+
+`R<n>` referenziert **keinen String, sondern einen Wert** — den n-ten Wert, den
+das Dokument fertiggestellt hat. Beide Lesarten laufen anfangs im Gleichschritt
+(solange nur Strings fertig werden), und genau deshalb hielt die
+String-Tabellen-Lesart 656 der 697 Payloads. Sie bricht auseinander:
+
+- am ersten **zusammengesetzten String** — `S12.6$F…_18wireOp` sind zwei
+  Pool-Einträge, aber **ein** Wert;
+- an jedem **fertiggestellten Container** — jede Map und jedes Array bekommt
+  eine Wert-Nummer, ein String-Pool sieht davon nichts.
+
+Die vollständigen Regeln, empirisch an allen 697 Payloads gegen die harte
+Bedingung „ein Map-Schlüssel ist ein Onshape-Feldname" kalibriert:
+
+| Raum | Was hineinkommt | Wer indiziert |
+|---|---|---|
+| **String-Pool** | jeder ausgeschriebene String: Klassennamen (`B<len>$Name`), jeder literale Teil eines mehrteiligen Strings, danach der zusammengesetzte | `C<n>` (Klasse), `E<n>` (String-Wert), negative Teil-Längen (`S-13.5$right`) |
+| **Wert-Tabelle** | jeder fertige Wert: String, Zahl, Map, Array — Container erst nach ihrem letzten Element | `R<n>` |
+
+Was **keine** Wert-Nummer bekommt: Klassen-Intros/-Referenzen (`B`/`C` sind
+transparent), Rück-Referenzen selbst (`R<n>` wiederholt einen Wert, es entsteht
+kein neuer) und **Booleans**. Letzteres ist kein Sonderfall, sondern
+Ökonomie: `T`/`F` ist ein Zeichen, ein Rückverweis nie kürzer — der Encoder
+interniert sie gar nicht erst. Zahlen (`D<hex>`) dagegen schon. Das ist nicht
+geraten: die #414-`startBoundEntity`-Query hängt genau an dem einen `isStart:
+false` dazwischen, und mit interniertem Boolean rutscht ihr `entityType`-Slot
+auf ein Array.
+
+`E<hex>` war bis hierher als „geteilte Unterstruktur, nicht rekonstruierbar"
+geführt. Es ist schlicht eine **Pool-Referenz aus einer Wert-Position**. Alle
+acht Vorkommen im Korpus stehen im Wert-Slot von `instanceName` und lesen sich
+als `1` — dieselbe Zeichenkette, die die übrigen 67 `instanceName`-Werte
+ausschreiben.
+
+### Ergebnis
+
+| | vorher | nachher |
+|---|---:|---:|
+| BTON-Payloads ohne synthetischen Schlüssel | 656 / 697 | **697 / 697** |
+| Payloads ohne unauflösbare Rück-Referenz | 372 / 697 | **697 / 697** |
+| saubere `queryType`-Schlüssel im Korpus | 4431 | **7223** |
+| `operationId` mit vollem `F…_n.op` | — | **7210 / 7223** (Rest: Datum-Ebenen `Top.planeOp`, ein Mate-Connector) |
+| Kanten-Queries auf ein Flächenpaar abgebildet | 78 / 206 | **99 / 206** |
+
+Jeder Map-Schlüssel des Korpus ist jetzt ein echter Onshape-Feldname (19
+verschiedene), jeder `queryType` SCREAMING_CASE, jeder `entityType` eines von
+`EDGE`/`FACE`/`VERTEX`/`BODY`, jeder `historyType` `CREATION`.
+
+Die 21 zusätzlichen Kanten sind **alle** `INTERSECT`: deren Flächen-Slots lasen
+vorher zu 37 von 162 Müll — `bottom`, `left`, `3`, `opBoolean`, `opRevolve`,
+eine Feature-Id — oder gar nichts. Sie lesen jetzt `CAP_FACE` (50 → 72) und
+`SWEPT_FACE` (36 → 53). Die Zahlen für `COPY` (19), `MERGE` (12) und `SPLIT` (6)
+in Flächen-Position sind **unverändert**: der Dekoder-Fix bringt **keine** neue
+abgeleitete Geometrie ans Licht, die #429 nicht ohnehin schon zählt.
+
+Ein Nebeneffekt räumt eine Annahme weg, die #425 noch stehenlassen musste: eine
+wiederholte `operationId` ist der geteilte `Id[["F…_18.wireOp"]]`-Wert selbst,
+nicht das nackte Suffix `wireOp`. Der Ursprungs-Sketch musste bisher vom
+Eintrag DAVOR geerbt werden — die Vererbung ist ersatzlos entfallen.
+
+### Was das am Import ändert — wenig, und das ist der Befund
+
+Ende-zu-Ende über alle sechs Fixture-Dokumente: **+1 importierte Verrundung**
+(#339 `Fillet 1`) und **3 Meldungen weniger** (#339 8 → 6, #415 39 → 38). Die
+übrigen 20 neu übersetzten Kanten scheitern eine Stufe später, an derselben
+Kernel-Lücke, die die #416-Suite als `it.fails` festhält: `qWall` bindet auf
+verschmolzenen Mänteln keine Fläche, und `qCommonEdge` braucht zwei gebundene
+Flächen auf **einem** Körper.
+
+Damit ist die Reihenfolge belegt statt behauptet: der Dekoder ist nicht mehr
+der Engpass. Die nächste Stufe ist die Flächen-Bindung im Kernel, nicht das
+Lesen der Query.
+
+### Offen
+
+Der EBENEN-Pfad (`extractPlaneRef`) liest weiterhin den **flachen** Token-Strom
+und nicht den Baum — eine Heuristik aus der Zeit, als `parseBton` noch Lücken
+hatte. Sie funktioniert (alle Ebenen-Tests grün), steht aber jetzt ohne Grund
+neben einem vollständigen Parser. Umstellung wäre eigene Arbeit mit eigenen
+E2E-Pins.
