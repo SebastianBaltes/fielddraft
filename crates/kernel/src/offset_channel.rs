@@ -130,7 +130,7 @@ pub struct OffsetChannel {
     pub bound_c: [f32; 3],
     pub bound_r: f32,
     /// Provenance-BranchId des Kanal-Terms (0x700+-Band, Plan §9).
-    pub branch: u32,
+    pub branch: u64,
 }
 
 /// offset_tree Phase C4 (#384): Rossignac–Requicha-**Vertex-Kugel** an
@@ -167,7 +167,7 @@ pub struct VertexSphere {
     /// Gate-Weite G = c_v·δ + Marge.
     pub gate: f32,
     /// Provenance-BranchId (0x700+-Band, Plan §9).
-    pub branch: u32,
+    pub branch: u64,
 }
 
 // ─── f32-Vektor-Helfer (lokal, um keine Modul-Abhängigkeit zu ziehen) ────────
@@ -1238,7 +1238,9 @@ fn synthesize_vertices(
             concave: ctx.concave,
             trust,
             gate,
-            branch: (owner << 12) | sub,
+            // Explizit über den Konstruktor, nicht handgepackt: das
+            // Instanz-Feld (#429/E1) sitzt zwischen Feature und Sub.
+            branch: crate::csg::BranchId::from_parts(owner, 0, sub).as_u64(),
         });
         if verts.len() >= 64 {
             break;
@@ -1253,7 +1255,7 @@ fn build_channel(
     pts: &[SeamPoint],
     closed: bool,
     ctx: &StopCtx,
-    branch: u32,
+    branch: u64,
     report: &mut crate::offset_capability::CapabilityReport,
 ) -> Option<OffsetChannel> {
     // Winkel-Statistik: γ = Winkel zwischen den Normalen.
@@ -1408,7 +1410,7 @@ fn coplanar_interface_present(
             let mut out = Vec::new();
             for b in bl {
                 let Some((fielddraft_protocol::HalfSpace::Plane { normal, offset }, xf)) =
-                    map.get(&b.id.as_u32())
+                    map.get(&b.id.as_u64())
                 else {
                     continue;
                 };
@@ -3403,7 +3405,7 @@ fn synthesize_stop(
             let step = (oscale * 0.02).clamp(ctx.tol.max(1e-4) * 4.0, oscale * 0.05);
 
             for ba in &branch_lists[i] {
-                let Some((hs_a, xf_a)) = branch_maps[i].get(&ba.id.as_u32()) else {
+                let Some((hs_a, xf_a)) = branch_maps[i].get(&ba.id.as_u64()) else {
                     // Member ohne analytische Halfspace-Karte (Sweep, Gyroid,
                     // Mesh) — seine Nähte lassen sich nicht per Kanal
                     // korrigieren; f−δ bleibt dort unbeschränkt.
@@ -3413,7 +3415,7 @@ fn synthesize_stop(
                     continue;
                 };
                 for bb in &branch_lists[j] {
-                    let Some((hs_b, xf_b)) = branch_maps[j].get(&bb.id.as_u32()) else {
+                    let Some((hs_b, xf_b)) = branch_maps[j].get(&bb.id.as_u64()) else {
                         report.note_conservative(
                             "Boolean-Naht an einer nicht abbildbaren Fläche (Sweep/Gyroid/Mesh ohne Halfspace-Karte) — keine Kanal-Korrektur, Näherung f−δ.",
                         );
@@ -3616,7 +3618,7 @@ fn synthesize_stop(
                             // (deterministisch in Synthese-Reihenfolge;
                             // Kollisionswächter wie offset_fold: reale Subs
                             // liegen strikt unter 0x700).
-                            let (pa, pb) = if ba.id.as_u32() <= bb.id.as_u32() {
+                            let (pa, pb) = if ba.id.as_u64() <= bb.id.as_u64() {
                                 (ba.id, bb.id)
                             } else {
                                 (bb.id, ba.id)
@@ -3625,7 +3627,10 @@ fn synthesize_stop(
                                 continue; // Kollision mit dem Band — verweigern
                             }
                             let sub = 0x700 + (channel_idx % 0xFD);
-                            let branch = (pa.feature_id() << 12) | sub;
+                            // Erbt die Muster-Instanz des Trägers (#429/E1).
+                            let branch =
+                                crate::csg::BranchId::from_parts(pa.feature_id(), pa.instance(), sub)
+                                    .as_u64();
                             if let Some(ch) = build_channel(&pts, closed, &ctx, branch, report) {
                                 total_arcs += ch.arcs.len();
                                 if total_arcs > MAX_ARCS_PER_STOP {

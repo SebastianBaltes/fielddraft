@@ -301,11 +301,11 @@ pub(super) fn collect_extrude_halfspaces(
     let top = BranchId::from_feature_sub(id, BranchId::EXTRUDE_CAP_TOP_SUB);
     let bottom = BranchId::from_feature_sub(id, BranchId::EXTRUDE_CAP_BOTTOM_SUB);
     out.insert(
-        top.as_u32(),
+        top.as_u64(),
         (HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: half_height }, xf),
     );
     out.insert(
-        bottom.as_u32(),
+        bottom.as_u64(),
         (HalfSpace::Plane { normal: [0.0, 0.0, -1.0], offset: half_height }, xf),
     );
 
@@ -319,7 +319,7 @@ pub(super) fn collect_extrude_halfspaces(
             SketchWall::Line { normal, offset } => {
                 // 2D outward normal lifted to [nx, ny, 0]; offset unchanged.
                 out.insert(
-                    branch.as_u32(),
+                    branch.as_u64(),
                     (HalfSpace::Plane { normal: [normal[0], normal[1], 0.0], offset }, xf),
                 );
             }
@@ -344,7 +344,7 @@ pub(super) fn collect_extrude_halfspaces(
                     },
                 );
                 out.insert(
-                    branch.as_u32(),
+                    branch.as_u64(),
                     (HalfSpace::InfiniteCylinder { radius }, center_xf),
                 );
             }
@@ -386,7 +386,7 @@ pub(super) fn collect_revolve_halfspaces(
         if ny.abs() < 1e-6 {
             // Constant r = offset / nr (nr = ±1). Radius is |r|.
             let radius = (offset / nr).abs();
-            out.insert(branch.as_u32(), (HalfSpace::InfiniteCylinder { radius }, xf));
+            out.insert(branch.as_u64(), (HalfSpace::InfiniteCylinder { radius }, xf));
         } else if nr.abs() < 1e-6 {
             // Constant y = offset / ny. Revolving a horizontal line gives
             // a flat disc/annulus in the plane y = const. Outward normal
@@ -401,7 +401,7 @@ pub(super) fn collect_revolve_halfspaces(
                 },
             );
             out.insert(
-                branch.as_u32(),
+                branch.as_u64(),
                 (HalfSpace::Plane { normal: [0.0, sign, 0.0], offset: 0.0 }, center_xf),
             );
         } else {
@@ -422,7 +422,7 @@ pub(super) fn collect_revolve_halfspaces(
                 },
             );
             out.insert(
-                branch.as_u32(),
+                branch.as_u64(),
                 (HalfSpace::Cone { half_angle }, center_xf),
             );
         }
@@ -438,7 +438,7 @@ pub(super) fn collect_revolve_halfspaces(
     for (group, segments, ccw) in groups {
         let branch =
             BranchId::from_feature_sub(id, crate::csg::map_wall_sub(wall_subs, group));
-        out.entry(branch.as_u32()).or_insert((
+        out.entry(branch.as_u64()).or_insert((
             HalfSpace::RevolvedProfile {
                 segments,
                 ccw,

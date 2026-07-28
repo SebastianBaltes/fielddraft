@@ -409,6 +409,9 @@ fn query_input_ids(expr: &crate::queries::QueryExpr) -> Vec<String> {
             }
             ids
         }
+        // An instance wrapper adds no input of its own — it re-points the
+        // ones its sub-query already names at another pattern copy.
+        Q::Instance(_, q) => query_input_ids(q),
         Q::Face(_) | Q::Edge(_) | Q::Vertex(_) => Vec::new(),
     }
 }

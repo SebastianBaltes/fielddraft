@@ -157,7 +157,7 @@ fn open_shell_breaks_through_the_open_face_only() {
             vec![OpenSurface {
                 // The box's +Z face is sub 5−1… see `primitive_halfspaces`:
                 // sub 4 = plane [0,0,1].
-                branch: BranchId::from_feature_sub(&FeatureId::from_u32(1), 4).as_u32(),
+                branch: BranchId::from_feature_sub(&FeatureId::from_u32(1), 4).as_u64(),
                 surface: HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: 10.0 },
                 placement: Transform::IDENTITY,
             }],
@@ -214,7 +214,7 @@ fn open_shell_curved_face_leaves_the_retained_plates() {
             1,
             2.0,
             vec![OpenSurface {
-                branch: BranchId::from_feature_sub(&FeatureId::from_u32(1), 0).as_u32(),
+                branch: BranchId::from_feature_sub(&FeatureId::from_u32(1), 0).as_u64(),
                 surface: HalfSpace::InfiniteCylinder { radius: 10.0 },
                 placement: Transform::IDENTITY,
             }],
@@ -321,10 +321,10 @@ fn inner_wall_branch_id_scheme() {
     let inner = outer.inner_wall();
     assert!(!outer.is_inner_wall());
     assert!(inner.is_inner_wall());
-    assert_ne!(outer.as_u32(), inner.as_u32(), "inner wall is a distinct id");
+    assert_ne!(outer.as_u64(), inner.as_u64(), "inner wall is a distinct id");
     assert_eq!(inner.feature_id(), outer.feature_id(), "feature_id preserved");
     assert_eq!(inner.feature_id(), 7);
-    assert_eq!(inner.inner_wall().as_u32(), inner.as_u32(), "idempotent");
+    assert_eq!(inner.inner_wall().as_u64(), inner.as_u64(), "idempotent");
 
     // The two extrude caps live below the inner-wall flag, so a cap and its
     // inner wall are distinct and the flag never collides with a cap.
@@ -332,7 +332,7 @@ fn inner_wall_branch_id_scheme() {
     const { assert!(BranchId::EXTRUDE_CAP_BOTTOM_SUB < BranchId::INNER_WALL_FLAG) };
     let cap = BranchId::from_feature_sub(&FeatureId::from_u32(7), BranchId::EXTRUDE_CAP_TOP_SUB);
     assert!(!cap.is_inner_wall());
-    assert_ne!(cap.as_u32(), cap.inner_wall().as_u32());
+    assert_ne!(cap.as_u64(), cap.inner_wall().as_u64());
 }
 
 // ─── #384 Phase D2: closed-shell → complement-duality expansion ──────────────
@@ -433,7 +433,7 @@ fn expand_shells_leaves_open_shells_on_the_field_path() {
     // (the retained-face masking is a per-sub-face field mask) — it must stay a
     // `CsgNode::Shell` so it keeps the existing open-face field path.
     let open = vec![OpenSurface {
-        branch: BranchId::from_feature_sub(&FeatureId::from_u32(1), 4).as_u32(),
+        branch: BranchId::from_feature_sub(&FeatureId::from_u32(1), 4).as_u64(),
         surface: HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: 10.0 },
         placement: Transform::IDENTITY,
     }];
@@ -601,7 +601,7 @@ fn branches(raw: &[(u32, u32)]) -> Vec<BranchId> {
         .iter()
         .map(|&(f, sub)| BranchId::from_feature_sub(&FeatureId::from_u32(f), sub))
         .collect();
-    v.sort_by_key(|b| b.as_u32());
+    v.sort_by_key(|b| b.as_u64());
     v
 }
 
@@ -637,7 +637,7 @@ fn evaluate_on_emergent_edge_returns_two_contributors() {
     assert!(d.abs() < 1e-4, "should lie on both surfaces, got d={d}");
     assert_eq!(c.element(), ProxyElement::Edge);
     let mut got: Vec<BranchId> = c.as_slice().to_vec();
-    got.sort_by_key(|b| b.as_u32());
+    got.sort_by_key(|b| b.as_u64());
     // box +Y face (sub 2) meets cylinder lateral wall (sub 0).
     assert_eq!(got, branches(&[(1, 2), (2, 0)]));
 }
@@ -690,7 +690,7 @@ fn difference_preserves_both_contributors_on_hole_rim() {
     assert!(d.abs() < 1e-4, "should lie on both boundaries, got d={d}");
     assert_eq!(c.element(), ProxyElement::Edge);
     let mut got: Vec<BranchId> = c.as_slice().to_vec();
-    got.sort_by_key(|b| b.as_u32());
+    got.sort_by_key(|b| b.as_u64());
     // box +X face (sub 0) meets the sphere (un-split, sub 0).
     assert_eq!(got, branches(&[(1, 0), (2, 0)]));
 }
@@ -719,7 +719,7 @@ fn expand_evaluate_leaf_box_face_and_edge_subfaces() {
     assert!(d.abs() < 1e-4, "on +X/+Y edge, got d={d}");
     assert_eq!(c.element(), ProxyElement::Edge);
     let mut got: Vec<BranchId> = c.as_slice().to_vec();
-    got.sort_by_key(|b| b.as_u32());
+    got.sort_by_key(|b| b.as_u64());
     assert_eq!(got, branches(&[(1, 0), (1, 2)]));
 }
 
@@ -753,7 +753,7 @@ fn contributors_push_dedupes_and_caps() {
     }
     assert_eq!(c.len(), MAX_CONTRIBUTORS);
     let mut got: Vec<BranchId> = c.as_slice().to_vec();
-    got.sort_by_key(|x| x.as_u32());
+    got.sort_by_key(|x| x.as_u64());
     assert_eq!(
         got,
         branches(&[(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0), (7, 0), (8, 0)])
@@ -1102,12 +1102,12 @@ fn extrude_corner_reports_both_walls_and_rim_reports_wall_and_cap() {
     // top (2) walls → a vertical wall∩wall edge reports BOTH branches, so
     // the both-branches gate sees a real edge instead of a singleton.
     let (_, c) = extrude.evaluate([1.0, 1.0, 0.0], 0.25, EvalMode::Visual);
-    let s: std::collections::HashSet<u32> =
-        c.as_slice().iter().map(|b| b.as_u32()).collect();
+    let s: std::collections::HashSet<u64> =
+        c.as_slice().iter().map(|b| b.as_u64()).collect();
     assert!(
-        s.contains(&BranchId::from_feature_sub(&FeatureId::from_u32(fid), 1).as_u32())
+        s.contains(&BranchId::from_feature_sub(&FeatureId::from_u32(fid), 1).as_u64())
             && s.contains(
-                &BranchId::from_feature_sub(&FeatureId::from_u32(fid), 2).as_u32()
+                &BranchId::from_feature_sub(&FeatureId::from_u32(fid), 2).as_u64()
             ),
         "corner must report both adjoining walls, got {s:?}"
     );
@@ -1116,16 +1116,16 @@ fn extrude_corner_reports_both_walls_and_rim_reports_wall_and_cap() {
     // At the top rim (mid-wall, z = +half_height) the wall group and the
     // top cap tie → a wall∩cap edge reports both branches.
     let (_, c) = extrude.evaluate([1.0, 0.0, 3.0], 0.25, EvalMode::Visual);
-    let s: std::collections::HashSet<u32> =
-        c.as_slice().iter().map(|b| b.as_u32()).collect();
+    let s: std::collections::HashSet<u64> =
+        c.as_slice().iter().map(|b| b.as_u64()).collect();
     assert!(
-        s.contains(&BranchId::from_feature_sub(&FeatureId::from_u32(fid), 1).as_u32())
+        s.contains(&BranchId::from_feature_sub(&FeatureId::from_u32(fid), 1).as_u64())
             && s.contains(
                 &BranchId::from_feature_sub(
                     &FeatureId::from_u32(fid),
                     BranchId::EXTRUDE_CAP_TOP_SUB
                 )
-                .as_u32()
+                .as_u64()
             ),
         "rim must report the wall group and the top cap, got {s:?}"
     );
@@ -2490,8 +2490,8 @@ fn fold_preserves_leaf_keys_and_branch_map_keys() {
     let map_pre = crate::brep::weaving::branch_halfspace_map(&crate::bvh::BoundedCsg::from_csg(&tree));
     let map_post =
         crate::brep::weaving::branch_halfspace_map(&crate::bvh::BoundedCsg::from_csg(&folded));
-    let mut k_pre: Vec<u32> = map_pre.keys().copied().collect();
-    let mut k_post: Vec<u32> = map_post.keys().copied().collect();
+    let mut k_pre: Vec<u64> = map_pre.keys().copied().collect();
+    let mut k_post: Vec<u64> = map_post.keys().copied().collect();
     k_pre.sort_unstable();
     k_post.sort_unstable();
     assert_eq!(k_pre, k_post, "BranchId space must survive the fold");

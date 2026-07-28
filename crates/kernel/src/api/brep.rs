@@ -158,14 +158,14 @@ impl Kernel {
 
     /// Per-body analytic B-Rep edges, sampled to **world-space** polylines for
     /// viewport rendering and hover. Returns a JSON array; each edge is
-    /// `{"a":<branch u32>,"b":<branch u32>,"idHash":<decimal string>,
+    /// `{"a":<branch u64>,"b":<branch u64>,"idHash":<decimal string>,
     /// "points":[x,y,z, …],"controlPoints":[x,y,z, …],"degree":<usize>}`,
     /// where `points` is the dense tessellation (for the wireframe) and
     /// `controlPoints`/`degree` are the sparse structural points for the debug
     /// points overlay (on-curve nodes sit at every `degree`-th control point).
     /// `a`/`b` are the canonical
     /// colliding-branch signature. Those two ids are
-    /// the same `as_u32()` branch values that [`Kernel::pick`] reports in its
+    /// the same `as_u64()` branch values that [`Kernel::pick`] reports in its
     /// `contributors` array, so the frontend can match a hovered edge to its
     /// polyline. `idHash` is the regeneration-stable
     /// [`crate::brep::naming::TopoRef`] edge id (decimal string, like the
@@ -228,8 +228,8 @@ impl Kernel {
                 crate::brep::edge_sampling::edge_control_structure(&edge.geometry);
             let control_points = to_world(&cps_local);
             edges.push(serde_json::json!({
-                "a": edge.signature.0.as_u32(),
-                "b": edge.signature.1.as_u32(),
+                "a": edge.signature.0.as_u64(),
+                "b": edge.signature.1.as_u64(),
                 "idHash": id_hash.to_string(),
                 "query": crate::queries::element_query(&topo).to_string(),
                 "points": points,
@@ -319,7 +319,7 @@ impl Kernel {
                 "idHash": id_hash.to_string(),
                 "query": crate::queries::element_query(&topo).to_string(),
                 "kind": "face",
-                "branchId": face.branch_id.as_u32(),
+                "branchId": face.branch_id.as_u64(),
                 "featureId": face.branch_id.feature_id(),
                 "surfaceKind": surface_kind(&face.surface),
                 "surfaceParams": surface_params(&face.surface),
@@ -333,7 +333,7 @@ impl Kernel {
     /// Per-body feature-based B-Rep **vertices**, in the body-LOCAL frame, as a
     /// JSON array — one entry per `brep.vertices[k]` (Brocken A1). Each entry:
     /// `{"vertexIndex","idHash","kind":"vertex","positionLocal":[x,y,z],
-    /// "branches":[<u32 packed>, …]}`. `idHash` is the stable
+    /// "branches":[<u64 packed>, …]}`. `idHash` is the stable
     /// [`crate::brep::naming::TopoRef`] vertex id as a decimal string.
     #[wasm_bindgen(js_name = bodyBrepVertices)]
     pub fn body_brep_vertices(&mut self, i: usize) -> String {
@@ -349,7 +349,7 @@ impl Kernel {
         for (k, vertex) in brep.vertices.iter().enumerate() {
             let topo = TopoRef::from_vertex(brep, VertexId(k as u32));
             let id_hash = topo.id_hash;
-            let branches: Vec<u32> = vertex.branches.iter().map(|b| b.as_u32()).collect();
+            let branches: Vec<u64> = vertex.branches.iter().map(|b| b.as_u64()).collect();
             verts.push(serde_json::json!({
                 "vertexIndex": k,
                 "idHash": id_hash.to_string(),

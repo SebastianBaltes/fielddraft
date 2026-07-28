@@ -576,7 +576,7 @@ fn open_shell_on_exact_leaf_is_exact() {
     // Open shell wall = zero set of `d + t`; on an exact leaf SDF that IS the
     // true erosion surface.
     let node = CsgNode::Shell(Box::new(leaf_box(1, [20.0, 20.0, 20.0])), 2.0, vec![crate::csg::OpenSurface {
-        branch: crate::csg::BranchId::from_feature_sub(&id(1), 4).as_u32(),
+        branch: crate::csg::BranchId::from_feature_sub(&id(1), 4).as_u64(),
         surface: fielddraft_protocol::HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: 20.0 },
         placement: Transform::IDENTITY,
     }]);
@@ -602,7 +602,7 @@ fn open_shell_on_composite_body_is_conservative() {
         Box::new(CsgNode::Union(Box::new(b1), Box::new(b2))),
         2.0,
         vec![crate::csg::OpenSurface {
-        branch: crate::csg::BranchId::from_feature_sub(&id(1), 4).as_u32(),
+        branch: crate::csg::BranchId::from_feature_sub(&id(1), 4).as_u64(),
         surface: fielddraft_protocol::HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: 20.0 },
         placement: Transform::IDENTITY,
     }],

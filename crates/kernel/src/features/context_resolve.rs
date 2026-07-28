@@ -16,8 +16,8 @@ use fielddraft_protocol::{FeatureId, Transform};
 pub struct FilletEdgeHit {
     pub feature_a: FeatureId,
     pub feature_b: FeatureId,
-    pub branch_a: u32,
-    pub branch_b: u32,
+    pub branch_a: u64,
+    pub branch_b: u64,
     pub polyline: Vec<[f32; 3]>,
     /// World-space normal of the planar face on `branch_a`, if that face is a
     /// plane. `None` for a curved/tessellated face.
@@ -146,7 +146,7 @@ impl<'a> Context<'a> {
                 let owner = FeatureId::from_u32(brep.faces[i].branch_id.feature_id());
                 return Some((
                     crate::csg::OpenSurface {
-                        branch: brep.faces[i].branch_id.as_u32(),
+                        branch: brep.faces[i].branch_id.as_u64(),
                         surface: surface.clone(),
                         placement: world,
                     },
@@ -866,8 +866,8 @@ impl<'a> Context<'a> {
                 out.push(FilletEdgeHit {
                     feature_a,
                     feature_b,
-                    branch_a: edge.signature.0.as_u32(),
-                    branch_b: edge.signature.1.as_u32(),
+                    branch_a: edge.signature.0.as_u64(),
+                    branch_b: edge.signature.1.as_u64(),
                     polyline: world,
                     plane_normal_a,
                     plane_normal_b,

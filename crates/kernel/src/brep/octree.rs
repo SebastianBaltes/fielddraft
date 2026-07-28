@@ -328,25 +328,25 @@ impl Octree {
         self.leaves.iter().filter(|c| c.class == CellClass::Face)
     }
 
-    /// The set of distinct canonical edge signatures `(a, b)` (raw `u32`
+    /// The set of distinct canonical edge signatures `(a, b)` (raw `u64`
     /// branch payloads, smaller first) over all `Edge` cells. The
     /// resolution-robust topological summary of the edges: a clean cube
     /// yields exactly 12 entries regardless of how finely it was
     /// refined.
-    pub fn distinct_edge_signatures(&self) -> HashSet<(u32, u32)> {
+    pub fn distinct_edge_signatures(&self) -> HashSet<(u64, u64)> {
         self.edge_cells()
             .filter_map(|c| c.edge_signature())
-            .map(|(a, b)| (a.as_u32(), b.as_u32()))
+            .map(|(a, b)| (a.as_u64(), b.as_u64()))
             .collect()
     }
 
     /// The set of distinct sorted branch sets over all `Vertex` cells
-    /// (raw `u32` payloads). The resolution-robust topological summary of
+    /// (raw `u64` payloads). The resolution-robust topological summary of
     /// the vertices: a clean cube yields exactly 8 entries, one per
     /// corner, each its unique triple of face branches.
-    pub fn distinct_vertex_branch_sets(&self) -> HashSet<Vec<u32>> {
+    pub fn distinct_vertex_branch_sets(&self) -> HashSet<Vec<u64>> {
         self.vertex_cells()
-            .map(|c| c.branches.iter().map(|b| b.as_u32()).collect::<Vec<_>>())
+            .map(|c| c.branches.iter().map(|b| b.as_u64()).collect::<Vec<_>>())
             .collect()
     }
 }
@@ -587,7 +587,7 @@ fn classify(
             }
         }
     }
-    branches.sort_unstable_by_key(|b| b.as_u32());
+    branches.sort_unstable_by_key(|b| b.as_u64());
 
     // Phase 4: members of one coincidence class share a single carrier
     // surface — for cell classification they are ONE effective surface,

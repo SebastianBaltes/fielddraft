@@ -15,12 +15,33 @@
 import type { BRepEdge, BRepFace, BRepVertex } from "./kernel";
 import type { PickedElement } from "./elementQuery";
 
-/** Mirrors `BranchId::SUB_BITS` in crates/kernel/src/csg.rs. */
+/**
+ * Mirrors the `BranchId` field layout in crates/kernel/src/csg.rs:
+ * `feature (20) | instance (12) | sub (12)`, 44 significant bits. The kernel
+ * caps the layout at 44 bits precisely so a packed branch stays an EXACT
+ * JavaScript integer (2^44 ≪ 2^53) and can cross the wasm boundary as a plain
+ * JSON number.
+ *
+ * Never decode a branch with `>>` / `&`: JavaScript bit operators truncate to
+ * 32 bits and would silently return garbage for any feature id ≥ 256.
+ */
 export const SUB_BITS = 12;
+export const INSTANCE_BITS = 12;
+export const FEATURE_SHIFT = SUB_BITS + INSTANCE_BITS;
 
 /** Flat feature id of a packed branch id. */
 export function branchFeatureId(branchId: number): number {
-  return Math.floor(branchId / 2 ** SUB_BITS);
+  return Math.floor(branchId / 2 ** FEATURE_SHIFT);
+}
+
+/** Pattern instance ordinal of a packed branch id; 0 is the original (#429/E1). */
+export function branchInstance(branchId: number): number {
+  return Math.floor(branchId / 2 ** SUB_BITS) % 2 ** INSTANCE_BITS;
+}
+
+/** Per-feature sub-face index of a packed branch id. */
+export function branchSub(branchId: number): number {
+  return branchId % 2 ** SUB_BITS;
 }
 
 /** The slice of the kernel API this module reads. */

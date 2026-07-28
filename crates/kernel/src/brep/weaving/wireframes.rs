@@ -370,7 +370,7 @@ pub(super) fn build_box_wireframe(body: &BoundedCsg) -> Option<BRep> {
 
     // Reuse the analytic face transform (sub 0; all six box faces share it).
     let halfspaces = branch_halfspace_map(body);
-    let face_xf = halfspaces.get(&BranchId::from_feature_sub(id, 0).as_u32())?.1;
+    let face_xf = halfspaces.get(&BranchId::from_feature_sub(id, 0).as_u64())?.1;
 
     let [hx, hy, hz] = half_extents;
     let mut brep = BRep::new();
@@ -461,7 +461,7 @@ pub(super) fn build_cylinder_wireframe(body: &BoundedCsg) -> Option<BRep> {
     let wall = BranchId::from_feature_sub(id, 0);
     let top = BranchId::from_feature_sub(id, 1);
     let bottom = BranchId::from_feature_sub(id, 2);
-    let wall_xf = halfspaces.get(&wall.as_u32())?.1;
+    let wall_xf = halfspaces.get(&wall.as_u64())?.1;
 
     let mut brep = BRep::new();
     // Rims are the closed-loop edges wall∩cap: top at local y = +half_height,

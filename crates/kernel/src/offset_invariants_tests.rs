@@ -78,7 +78,7 @@ fn pos_open_shell_is_not_flagged_closed() {
         Box::new(box_leaf(1, [10.0, 10.0, 10.0])),
         1.0,
         vec![OpenSurface {
-            branch: BranchId::from_feature_sub(&id(1), 4).as_u32(),
+            branch: BranchId::from_feature_sub(&id(1), 4).as_u64(),
             surface: HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: 10.0 },
             placement: Transform::IDENTITY,
         }],

@@ -1567,7 +1567,7 @@ fn linear_pattern_emits_count_minus_one_offset_clones() {
     // Clones live at pattern_id/1_1, /1_2, /1_3 (namespaced by
     // the source feature id) with 20 mm increments along +X.
     for i in 1..4_u32 {
-        let clone_id = pattern_id.child(format!("1_{i}"));
+        let clone_id = pattern_id.pattern_instance(&id(1), i);
         let clone = ctx
             .features
             .iter()
@@ -1741,7 +1741,7 @@ fn circular_pattern_places_clones_around_y_axis_at_even_angles() {
         (3_u32, [0.0, 0.0, 10.0]),
     ];
     for (i, expected) in expectations {
-        let clone_id = id(2).child(format!("1_{i}"));
+        let clone_id = id(2).pattern_instance(&id(1), i);
         let clone = ctx
             .features
             .iter()
@@ -2178,7 +2178,7 @@ fn mirror_through_a_real_face_uses_its_offset_plane() {
     let clone = ctx2
         .features
         .iter()
-        .find(|f| f.id == id(3).child("2_1"))
+        .find(|f| f.id == id(3).pattern_instance(&id(2), 1))
         .expect("mirror clone");
     assert!((clone.transform.translate[0] - (-10.0)).abs() < 1e-4);
     assert!(clone.transform.translate[1].abs() < 1e-4);
@@ -2247,7 +2247,7 @@ fn mirror_moves_the_geometry_not_just_the_feature_origin() {
     let clone = ctx
         .features
         .iter()
-        .find(|f| f.id == id(3).child("2_1"))
+        .find(|f| f.id == id(3).pattern_instance(&id(2), 1))
         .expect("mirror clone");
     let (src, mir) = (feature_field(source), feature_field(clone));
 
@@ -2311,7 +2311,7 @@ fn mirror_flips_handedness_rather_than_turning_the_body() {
     let clone = ctx
         .features
         .iter()
-        .find(|f| f.id == id(3).child("2_1"))
+        .find(|f| f.id == id(3).pattern_instance(&id(2), 1))
         .expect("mirror clone");
     assert!(
         clone.transform.is_mirrored(),
@@ -5309,7 +5309,7 @@ fn fillet_blend_weaves_as_its_own_analytic_face() {
 
     // The surface registry detects the blend carrier, keyed on the fillet
     // feature's own branch (sub 0). `cylinder_on_box_filleted` uses id(3).
-    let fillet_branch = BranchId::from_feature(&id(3)).as_u32();
+    let fillet_branch = BranchId::from_feature(&id(3)).as_u64();
     let map = crate::brep::weaving::branch_halfspace_map(&body);
     let entry = map.get(&fillet_branch).unwrap_or_else(|| {
         panic!("no blend carrier registered for the fillet branch (keys: {:?})", map.keys())
@@ -5360,7 +5360,7 @@ fn fillet_blend_weaves_as_its_own_analytic_face() {
 /// cylinder and a plane); its two seams are CLOSED circles (blend↔cylinder
 /// at height r, blend↔box-top at radius R+r) — no runout, the cleanest
 /// manifold fillet.
-fn cylinder_on_box_filleted(radius: f32) -> (crate::bvh::BoundedCsg, u32) {
+fn cylinder_on_box_filleted(radius: f32) -> (crate::bvh::BoundedCsg, u64) {
     let registry = FeatureRegistry::with_builtins();
     let mut doc = empty_ctx();
     let mut ctx = Context::new(&mut doc);
@@ -5420,7 +5420,7 @@ fn cylinder_on_box_filleted(radius: f32) -> (crate::bvh::BoundedCsg, u32) {
         .unwrap();
     let hard = crate::csg::CsgNode::from_decoded(&ctx.features);
     let filleted = hard.apply_edge_fillets(&ctx.edge_fillets);
-    let fillet_branch = crate::csg::BranchId::from_feature(&id(3)).as_u32();
+    let fillet_branch = crate::csg::BranchId::from_feature(&id(3)).as_u64();
     (crate::bvh::BoundedCsg::from_csg(&filleted), fillet_branch)
 }
 
@@ -5933,9 +5933,9 @@ fn vase_revolve_branch_map_covers_every_wall_group() {
     assert!(!branches.is_empty(), "vase enumerates revolve wall branches");
     for b in &branches {
         assert!(
-            map.contains_key(&b.id.as_u32()),
+            map.contains_key(&b.id.as_u64()),
             "branch {} ({:?}) missing from the half-space map",
-            b.id.as_u32(),
+            b.id.as_u64(),
             b.kind
         );
     }
@@ -6560,7 +6560,7 @@ fn extrude_side_face_resolves_clean_profile_at_user_scale() {
             "extrude",
             id(5),
             json!({
-                "profiles": "qFace(4315924989883055031)",
+                "profiles": "qFace(12359111842341183460)",
                 "depth": { "value": 52.91257140451136, "unit": "mm" },
                 "depth_back": { "value": 0.0, "unit": "mm" },
                 "symmetric": false,
@@ -6577,7 +6577,7 @@ fn extrude_side_face_resolves_clean_profile_at_user_scale() {
         for i in 0..brep.face_count() {
             let fid = crate::brep::FaceId(i as u32);
             if crate::brep::naming::TopoRef::from_face(&brep, fid).id_hash
-                != 6025886176426920981
+                != 13906371814813429378
             {
                 continue;
             }
@@ -6597,7 +6597,7 @@ fn extrude_side_face_resolves_clean_profile_at_user_scale() {
         }
     }
     let (region, frame) = ctx
-        .resolve_extrude_faces(&["qFace(6025886176426920981)".to_string()])
+        .resolve_extrude_faces(&["qFace(13906371814813429378)".to_string()])
         .expect("ticket face must resolve");
     assert!(
         frame.normal[0] > 0.99,
@@ -6617,7 +6617,7 @@ fn extrude_side_face_resolves_clean_profile_at_user_scale() {
         "extrude",
         id(8),
         json!({
-            "profiles": "qFace(6025886176426920981)",
+            "profiles": "qFace(13906371814813429378)",
             "depth": { "value": 25.0, "unit": "mm" },
             "depth_back": { "value": 0.0, "unit": "mm" },
             "symmetric": false,
@@ -8071,10 +8071,10 @@ fn loft_p3_caps_registered_and_wall_split() {
     let map = crate::brep::weaving::branch_halfspace_map(&body);
     let top = BranchId::from_feature_sub(&id(1), BranchId::EXTRUDE_CAP_TOP_SUB);
     let bot = BranchId::from_feature_sub(&id(1), BranchId::EXTRUDE_CAP_BOTTOM_SUB);
-    assert!(map.contains_key(&top.as_u32()), "top cap must be an analytic carrier");
-    assert!(map.contains_key(&bot.as_u32()), "bottom cap must be an analytic carrier");
+    assert!(map.contains_key(&top.as_u64()), "top cap must be an analytic carrier");
+    assert!(map.contains_key(&bot.as_u64()), "bottom cap must be an analytic carrier");
     assert!(
-        matches!(map[&top.as_u32()].0, fielddraft_protocol::HalfSpace::Plane { .. }),
+        matches!(map[&top.as_u64()].0, fielddraft_protocol::HalfSpace::Plane { .. }),
         "top cap carrier must be a Plane"
     );
 

@@ -345,11 +345,11 @@ impl Kernel {
             // Branch attribution of the free particles (shown only): the
             // winning body's contributor set at the point names its face.
             let eps_attr = (min_size_est * 0.1).max(1e-3);
-            let mut by_branch: std::collections::HashMap<(usize, u32), Vec<u32>> =
+            let mut by_branch: std::collections::HashMap<(usize, u64), Vec<u32>> =
                 std::collections::HashMap::new();
             // Same attribution in LEAF index space — the fallback patches
             // need the octree cells behind the particles (connectivity).
-            let mut by_branch_leaf: std::collections::HashMap<(usize, u32), Vec<usize>> =
+            let mut by_branch_leaf: std::collections::HashMap<(usize, u64), Vec<usize>> =
                 std::collections::HashMap::new();
             for (i, _) in leaves.iter().enumerate() {
                 if !(alive[i] && processed[i]) {
@@ -370,10 +370,10 @@ impl Kernel {
                     bodies[best.1].evaluate(p, eps_attr, crate::csg::EvalMode::Logical);
                 for br in contributors.as_slice() {
                     by_branch
-                        .entry((best.1, br.as_u32()))
+                        .entry((best.1, br.as_u64()))
                         .or_default()
                         .push(remap[i]);
-                    by_branch_leaf.entry((best.1, br.as_u32())).or_default().push(i);
+                    by_branch_leaf.entry((best.1, br.as_u64())).or_default().push(i);
                 }
             }
 
@@ -386,7 +386,7 @@ impl Kernel {
             };
             // Faces WITHOUT a usable chart, deferred to the §6-F3 fallback
             // pass below: (body, branch, rim loops as output-index rings).
-            let mut fallback_faces: Vec<(usize, u32, Vec<Vec<u32>>)> = Vec::new();
+            let mut fallback_faces: Vec<(usize, u64, Vec<Vec<u32>>)> = Vec::new();
             for &bi in &active {
                 let placement = self.bodies[bi].placement;
                 let Some(brep) = self.bodies[bi].brep_cached() else { continue };
@@ -450,12 +450,12 @@ impl Kernel {
                     };
                     let Some((surface, transform)) = chartable else {
                         if opts.fallback_patches {
-                            fallback_faces.push((bi, face.branch_id.as_u32(), face_loops));
+                            fallback_faces.push((bi, face.branch_id.as_u64(), face_loops));
                         }
                         continue;
                     };
                     let interior = by_branch
-                        .get(&(bi, face.branch_id.as_u32()))
+                        .get(&(bi, face.branch_id.as_u64()))
                         .map(Vec::as_slice)
                         .unwrap_or(&[]);
                     if matches!(surface, HalfSpace::Plane { .. }) {
@@ -754,7 +754,7 @@ impl Kernel {
                     false
                     };
                     if !meshed && opts.fallback_patches {
-                        fallback_faces.push((bi, face.branch_id.as_u32(), face_loops));
+                        fallback_faces.push((bi, face.branch_id.as_u64(), face_loops));
                     }
                 }
             }

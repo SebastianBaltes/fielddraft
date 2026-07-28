@@ -96,6 +96,103 @@ impl FeatureId {
             .or_else(|| self.root_ancestor().as_u32_if_flat())
     }
 
+    /// Local-segment marker that separates a pattern's source-feature
+    /// namespace from the **instance ordinal** of a copy: a clone minted by
+    /// [`Self::pattern_instance`] reads `«pattern».«source»~«i»`.
+    ///
+    /// `~` is deliberately outside [`FromStr`]'s alphabet of meaning — only
+    /// `.` separates segments — so a marked local part round-trips through
+    /// `Display`/`FromStr` unchanged.
+    pub const INSTANCE_MARK: char = '~';
+
+    /// Id for the `ordinal`-th copy that pattern `self` makes of `source`.
+    ///
+    /// The ordinal is part of the *identity*, not a side table: it is what
+    /// [`Self::instance_ordinal`] reads back and what the kernel packs into
+    /// the branch id, so a copy keeps its name when the pattern is
+    /// rearranged in space (#429/E1). `ordinal` counts from 1 — 0 is the
+    /// source body itself, which stays on the spine under its own id.
+    pub fn pattern_instance(&self, source: &FeatureId, ordinal: u32) -> Self {
+        self.child(format!("{source}{}{ordinal}", Self::INSTANCE_MARK))
+    }
+
+    /// The `(feature, instance)` pair a branch id is packed from.
+    ///
+    /// For an ordinary id this is `(as_u32_or_root(), 0)`. For a pattern
+    /// copy the feature is the **source** feature, not the pattern — a copy
+    /// is *the same sub-structure at another point of the hierarchy*, so it
+    /// differs from the original in exactly one field.
+    ///
+    /// Taking the pattern id instead would collide: a pattern may copy
+    /// SEVERAL source features at once (`patterns.rs` resolves a `MultiQuery`
+    /// source), and their clones all sit under the same pattern with the same
+    /// ordinal — `(pattern, i, sub)` would name box 1's `+x` face and box 2's
+    /// `+x` face identically.
+    ///
+    /// Descendants inherit the ordinal: a hole drilled into a copy has the id
+    /// `«pattern».«source»~2.0` and still reads `(source, 2)`. **Nested**
+    /// patterns put more than one marker on the chain; the deepest one wins
+    /// for both fields, because the branch id has one 12-bit instance field,
+    /// not a list.
+    ///
+    /// **Known limitation:** two *different* patterns over the *same* source
+    /// feature both mint `(source, i, sub)` and collide. 12 bits have no room
+    /// for the pattern's own id; lifting that needs a wider wire than a JS
+    /// number, so it is stated rather than silently mis-answered (#429/E1).
+    pub fn branch_identity(&self) -> (u32, u32) {
+        let mut found: Option<(u32, u32)> = None;
+        for seg in self.segments_root_first() {
+            let Some((head, tail)) = seg.rsplit_once(Self::INSTANCE_MARK) else {
+                continue;
+            };
+            let (Ok(src), Ok(ord)) = (head.parse::<u32>(), tail.parse::<u32>()) else {
+                continue;
+            };
+            found = Some((src, ord));
+        }
+        found.unwrap_or_else(|| (self.as_u32_or_root().unwrap_or(0), 0))
+    }
+
+    /// The pattern instance ordinal carried by this id, or `0` for anything
+    /// a pattern did not copy. See [`Self::branch_identity`].
+    pub fn instance_ordinal(&self) -> u32 {
+        self.branch_identity().1
+    }
+
+    /// Re-root this id: if `prefix` **is** `self` or an ancestor of it, return
+    /// `self` with that prefix swapped for `replacement`. `None` when `prefix`
+    /// is not an ancestor.
+    ///
+    /// This is how a pattern copy takes ownership of the geometry it copied:
+    /// the source's node tree names ids under `«source»`, and the copy needs
+    /// the same shapes named under `«pattern».«source»~«i»` — otherwise every
+    /// copy mints the source's branch ids and they all share one name
+    /// (#429/E1).
+    pub fn rebase(&self, prefix: &FeatureId, replacement: &FeatureId) -> Option<FeatureId> {
+        let mine = self.segments_root_first();
+        let theirs = prefix.segments_root_first();
+        if mine.len() < theirs.len() || mine[..theirs.len()] != theirs[..] {
+            return None;
+        }
+        let mut out = replacement.clone();
+        for seg in &mine[theirs.len()..] {
+            out = out.child(*seg);
+        }
+        Some(out)
+    }
+
+    /// The local segments from the root-most ancestor down to `self`.
+    fn segments_root_first(&self) -> Vec<&str> {
+        let mut chain: Vec<&str> = Vec::new();
+        let mut cur = Some(self);
+        while let Some(id) = cur {
+            chain.push(id.local.as_str());
+            cur = id.parent.as_deref();
+        }
+        chain.reverse();
+        chain
+    }
+
     /// Walk up the parent chain and return the root-most ancestor.
     pub fn root_ancestor(&self) -> &FeatureId {
         let mut cur = self;

@@ -1391,7 +1391,7 @@ fn pick_returns_face_with_single_contributor_for_box_top() {
         json.contains(&format!("\"contributors\":[{id}]")),
         "{json}"
     );
-    let branch = csg::BranchId::from_feature_sub(&FeatureId::from_u32(id), 2).as_u32();
+    let branch = csg::BranchId::from_feature_sub(&FeatureId::from_u32(id), 2).as_u64();
     assert!(
         json.contains(&format!("\"branches\":[{branch}]")),
         "{json}"
@@ -1417,7 +1417,7 @@ fn pick_selects_sphere_by_flat_feature_id() {
         json.contains(&format!("\"contributors\":[{sphere_id}]")),
         "{json}"
     );
-    let branch = csg::BranchId::from_feature_sub(&FeatureId::from_u32(sphere_id), 0).as_u32();
+    let branch = csg::BranchId::from_feature_sub(&FeatureId::from_u32(sphere_id), 0).as_u64();
     assert!(json.contains(&format!("\"branches\":[{branch}]")), "{json}");
 }
 
@@ -1824,7 +1824,7 @@ fn sync_meshing_off_keeps_bodies_partitioned_but_meshes_empty() {
         json.contains(&format!("\"contributors\":[{id_a}]")),
         "{json}"
     );
-    let branch_a = csg::BranchId::from_feature_sub(&FeatureId::from_u32(id_a), 2).as_u32();
+    let branch_a = csg::BranchId::from_feature_sub(&FeatureId::from_u32(id_a), 2).as_u64();
     assert!(
         json.contains(&format!("\"branches\":[{branch_a}]")),
         "{json}"
@@ -3797,7 +3797,8 @@ fn ticket_g4rr_sliver_union_weaves_watertight_end_to_end() {
     let edges: serde_json::Value = serde_json::from_str(&k.body_brep_edges(0)).unwrap();
     for e in edges.as_array().unwrap() {
         let (a, b) = (e["a"].as_u64().unwrap(), e["b"].as_u64().unwrap());
-        if a != 8192 && b != 8192 {
+        let sphere = crate::csg::BranchId::from_parts(2, 0, 0).as_u64();
+        if a != sphere && b != sphere {
             continue;
         }
         let pts: Vec<f64> = e["points"]
@@ -3830,7 +3831,7 @@ fn ticket_9zlq_face_extrude_prism_weaves_straight_edges() {
             {"type":"box","id":1,"params":{"half_extents":[50,50,50],"op":"new","translate":[0,0,0]}},
             {"type":"boolean","id":10,"params":{"keep_tools":false,"operation":"Union","targets":"","tools":"qCreatedBy(2),qCreatedBy(1)"}},
             {"type":"translate","id":11,"params":{"target_id":1,"translate":[-23.49043846130371,1.4090451002120972,5.554038047790527]}},
-            {"type":"extrude","id":15,"params":{"depth":{"unit":"mm","value":20},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(4315924989883055031)","symmetric":false,"operation":"add"}}
+            {"type":"extrude","id":15,"params":{"depth":{"unit":"mm","value":20},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(12359111842341183460)","symmetric":false,"operation":"add"}}
         ],
         "next_feature_id": 17
     }"#;
@@ -3909,8 +3910,8 @@ fn ticket_px2o_extrude_of_face_extrude_docks_into_parent_with_straight_edges() {
     let mut k = Kernel::new();
     let json = r#"{"schema_version":1,"name":"Part","feature_calls":[
         {"type":"box","id":1,"params":{"half_extents":[50,50,50],"op":"new","translate":[0,0,0]}},
-        {"type":"extrude","id":5,"params":{"depth":{"unit":"mm","value":52.91257140451136},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(4315924989883055031)","symmetric":false,"operation":"add"}},
-        {"type":"extrude","id":17,"params":{"depth":{"unit":"mm","value":98.74537260854363},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(16665108990841144567)","symmetric":false,"operation":"add"}}
+        {"type":"extrude","id":5,"params":{"depth":{"unit":"mm","value":52.91257140451136},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(12359111842341183460)","symmetric":false,"operation":"add"}},
+        {"type":"extrude","id":17,"params":{"depth":{"unit":"mm","value":98.74537260854363},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(6763013863679330200)","symmetric":false,"operation":"add"}}
     ],"next_feature_id":18}"#;
     k.load_json(json).unwrap();
     // Both face-extrudes are explicit Add and grow the box: ONE body
@@ -3986,8 +3987,8 @@ fn ticket_o2j9_two_face_extrude_weaves_manifold() {
     let mut k = Kernel::new();
     let json = r#"{"schema_version":1,"name":"Part","feature_calls":[
         {"type":"box","id":1,"params":{"half_extents":[50,50,50],"op":"new","translate":[0,0,0]}},
-        {"type":"extrude","id":5,"params":{"depth":{"unit":"mm","value":52.91257140451136},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(4315924989883055031)","symmetric":false,"operation":"add"}},
-        {"type":"extrude","id":17,"params":{"depth":{"unit":"mm","value":98.74537260854363},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(16665108990841144567)","symmetric":false,"operation":"add"}}
+        {"type":"extrude","id":5,"params":{"depth":{"unit":"mm","value":52.91257140451136},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(12359111842341183460)","symmetric":false,"operation":"add"}},
+        {"type":"extrude","id":17,"params":{"depth":{"unit":"mm","value":98.74537260854363},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(6763013863679330200)","symmetric":false,"operation":"add"}}
     ],"next_feature_id":18}"#;
     k.load_json(json).unwrap();
     assert_eq!(k.body_count(), 1);
@@ -4641,6 +4642,189 @@ fn circular_pattern_copies_get_distinct_face_hashes() {
     assert_eq!(uniq.len(), 24, "every face of every circular copy needs its own id_hash");
 }
 
+// ─── #429/E1: der Name einer Muster-Kopie ist NICHT positionell ───
+//
+// #431 machte die Namen der Kopien *eindeutig*, aber der Unterscheider ist
+// der `spatial_index` — eine Rangnummer nach Weltschwerpunkt. Sobald sich die
+// räumliche Anordnung der Kopien ändert (Richtung umdrehen, Abstand negieren,
+// eine Kopie einschieben), wandert dieser Rang und damit der Name. E1 ersetzt
+// ihn durch ein Instanz-Ordinal aus dem Modell (der Klon-Id), das die
+// Umordnung übersteht.
+
+/// `count` copies of the same 10 mm box along ±X. A NEGATIVE `spacing_mm` is
+/// not a way to flip the pattern — `LinearPatternFeature::execute` rejects it
+/// outright (`must be > 0 mm`) and the regen loop swallows the error, leaving
+/// a single body. Measured 2026-07-28: `dir=+1, spacing=-40` yields
+/// `bodies=1 faces=6`, not 3 bodies. Flip the DIRECTION instead.
+fn boxed_linear_pattern_dir(count: u32, dir_x: f32) -> Kernel {
+    let mut k = Kernel::new();
+    let box_id = k
+        .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+        .unwrap();
+    k.add_linear_pattern(box_id, dir_x, 0.0, 0.0, count, 40.0).unwrap();
+    k
+}
+
+#[test]
+fn pattern_copy_names_survive_a_direction_flip() {
+    // Same model, same copies, mirrored placement: copy 1 is still copy 1.
+    // With the positional (#431) stamp the copies are ranked by world
+    // centroid, so flipping the direction reverses the ranking and every
+    // copy inherits another copy's name.
+    let forward = all_face_hashes(&mut boxed_linear_pattern_dir(3, 1.0));
+    let backward = all_face_hashes(&mut boxed_linear_pattern_dir(3, -1.0));
+    assert_eq!(forward.len(), 18, "3 copies × 6 box faces");
+    assert_eq!(backward.len(), 18, "3 copies × 6 box faces");
+    assert_eq!(
+        forward, backward,
+        "reversing the pattern direction only moves the copies in space — \
+         their names must not move with them"
+    );
+}
+
+#[test]
+fn pattern_copy_names_survive_an_inserted_copy() {
+    // Raising the count appends a copy; the ones that were already there
+    // keep their names (their instance ordinals are unchanged).
+    let three = all_face_hashes(&mut boxed_linear_pattern_dir(3, 1.0));
+    let four = all_face_hashes(&mut boxed_linear_pattern_dir(4, 1.0));
+    assert_eq!(three.len(), 18);
+    assert_eq!(four.len(), 24);
+    assert_eq!(four[..18], three[..], "adding a fourth copy must not rename the first three");
+}
+
+/// Face hashes of exactly one query, sorted — the shape of a name set.
+fn query_hashes(k: &mut Kernel, q: &str) -> Vec<String> {
+    let json = k.resolve_query(q);
+    let refs: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let mut out: Vec<String> = refs
+        .as_array()
+        .map(|a| a.iter().map(|r| r["idHash"].as_str().unwrap().to_string()).collect())
+        .unwrap_or_default();
+    out.sort();
+    out
+}
+
+#[test]
+fn q_instance_names_the_face_of_a_chosen_copy() {
+    // `qInstance(i, <q>)` = "the same thing as <q>, but on copy i".
+    let mut k = boxed_linear_pattern_dir(3, 1.0);
+    k.ensure_named_breps();
+
+    // `qCreatedBy(1)` names the source feature's geometry EVERYWHERE it was
+    // replicated — 3 bodies × 6 faces. That was already true before E1 (the
+    // copies always carried feature 1); what E1 adds is the ability to say
+    // WHICH of them you mean.
+    let everywhere = query_hashes(&mut k, "qCreatedBy(1)");
+    assert_eq!(everywhere.len(), 18, "the source feature's faces on all three bodies");
+
+    let original = query_hashes(&mut k, "qInstance(0, qCreatedBy(1))");
+    assert_eq!(original.len(), 6, "instance 0 is the source box alone");
+
+    let copy1 = query_hashes(&mut k, "qInstance(1, qCreatedBy(1))");
+    let copy2 = query_hashes(&mut k, "qInstance(2, qCreatedBy(1))");
+    assert_eq!(copy1.len(), 6, "copy 1 has six faces");
+    assert_eq!(copy2.len(), 6, "copy 2 has six faces");
+    assert_ne!(copy1, original, "a copy is not the original");
+    assert_ne!(copy1, copy2, "and the copies are not each other");
+
+    // Together the three instances partition what `qCreatedBy` returns.
+    let mut union: Vec<String> =
+        original.iter().chain(&copy1).chain(&copy2).cloned().collect();
+    union.sort();
+    assert_eq!(union, everywhere, "the instances partition the feature's geometry");
+
+    // A copy that does not exist matches nothing. It is NOT rounded to the
+    // nearest one — that is the failure mode #414 was made of.
+    assert!(query_hashes(&mut k, "qInstance(7, qCreatedBy(1))").is_empty());
+}
+
+#[test]
+fn q_instance_survives_a_direction_flip() {
+    // The whole point of E1: the answer to "copy 1's faces" must not change
+    // when the copies swap places in the world.
+    let mut fwd = boxed_linear_pattern_dir(3, 1.0);
+    let mut back = boxed_linear_pattern_dir(3, -1.0);
+    fwd.ensure_named_breps();
+    back.ensure_named_breps();
+    for q in ["qInstance(1, qCreatedBy(1))", "qInstance(2, qCreatedBy(1))"] {
+        let a = query_hashes(&mut fwd, q);
+        assert_eq!(a.len(), 6, "{q} must resolve");
+        assert_eq!(a, query_hashes(&mut back, q), "{q} moved with the geometry");
+    }
+}
+
+#[test]
+fn q_instance_reaches_an_edge_of_a_copy() {
+    // Edges are named by a branch PAIR, so the ordinal has to be swapped on
+    // both halves of the signature — the arm that would silently return
+    // nothing if only one were shifted.
+    let mut k = boxed_linear_pattern_dir(3, 1.0);
+    k.ensure_named_breps();
+    let brep_edges = {
+        let brep = k.bodies[0].brep_cached().expect("source body woven");
+        (0..brep.edges.len())
+            .map(|i| {
+                crate::brep::naming::TopoRef::from_edge(brep, crate::brep::EdgeId(i as u32))
+                    .id_hash
+            })
+            .collect::<Vec<u64>>()
+    };
+    assert_eq!(brep_edges.len(), 12, "a box has twelve edges");
+    let one = brep_edges[0];
+    let on_copy = query_hashes(&mut k, &format!("qInstance(2, qEdge({one}))"));
+    assert_eq!(on_copy.len(), 1, "the same edge exists exactly once on copy 2");
+    assert_ne!(on_copy[0], one.to_string(), "and it is a different edge than the original's");
+}
+
+#[test]
+fn a_two_source_pattern_keeps_its_sources_apart() {
+    // A pattern may copy SEVERAL source features at once. Their clones all
+    // sit under the same pattern with the same ordinal, so a branch id that
+    // took the PATTERN's feature id would name box 1's +x face and box 2's
+    // +x face identically — every copy would lose half its names. Taking the
+    // SOURCE's feature id is what keeps them apart (#429/E1).
+    let mut k = Kernel::new();
+    let a = k
+        .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 5.0, 5.0, 5.0)
+        .unwrap();
+    let b = k
+        .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 40.0, 0.0, 5.0, 5.0, 5.0)
+        .unwrap();
+    k.add_feature_call(
+        "linear_pattern",
+        &format!(
+            r#"{{"source":"qCreatedBy({a}),qCreatedBy({b})","direction":[1,0,0],"count":3,"spacing":{{"value":40,"unit":"mm"}}}}"#
+        ),
+    )
+    .unwrap();
+
+    k.ensure_named_breps();
+    // The sharp assertion is on the BRANCH WORDS, not the hashes: a branch
+    // collision would still be papered over by the positional `spatial_index`
+    // (#431) and the hashes would come out distinct anyway.
+    let mut branches: Vec<u64> = Vec::new();
+    for body in &k.bodies {
+        let Some(brep) = body.brep_cached() else { continue };
+        branches.extend(brep.faces.iter().map(|f| f.branch_id.as_u64()));
+    }
+    assert_eq!(branches.len(), 36, "2 sources × 3 instances × 6 box faces");
+    let mut uniq = branches.clone();
+    uniq.sort_unstable();
+    uniq.dedup();
+    assert_eq!(
+        uniq.len(),
+        36,
+        "every face of every copy of every source needs its own BRANCH, not just its own hash"
+    );
+
+    let hashes = all_face_hashes(&mut k);
+    let mut uh = hashes.clone();
+    uh.sort_unstable();
+    uh.dedup();
+    assert_eq!(uh.len(), 36, "…and therefore its own name");
+}
+
 #[test]
 fn pattern_face_hashes_are_reproducible() {
     // A unique name is worthless if it is not also stable: the same document
@@ -4690,3 +4874,5 @@ fn an_unrelated_body_does_not_shift_pattern_hashes() {
         "an unrelated body must not renumber the pattern's faces"
     );
 }
+
+

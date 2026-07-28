@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SUB_BITS,
+  FEATURE_SHIFT,
   bodyFeatureIds,
   branchFeatureId,
   resolveSelectionLinks,
@@ -8,7 +9,8 @@ import {
 } from "./selectionLinks";
 import type { BRepEdge, BRepFace, BRepVertex } from "./kernel";
 
-const pack = (feature: number, sub = 0) => feature * 2 ** SUB_BITS + sub;
+const pack = (feature: number, sub = 0, instance = 0) =>
+  feature * 2 ** FEATURE_SHIFT + instance * 2 ** SUB_BITS + sub;
 
 function face(idHash: string, featureId: number): BRepFace {
   return {

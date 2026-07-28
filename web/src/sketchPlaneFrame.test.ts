@@ -7,6 +7,7 @@ import {
   type PlaneFrameKernel,
 } from "./sketchPlaneFrame";
 import type { BRepFace, Placement } from "./kernel";
+import { FEATURE_SHIFT } from "./selectionLinks";
 
 const IDENTITY: Placement = {
   translate: [0, 0, 0],
@@ -24,7 +25,7 @@ function face(
     faceIndex: 0,
     idHash,
     kind: "face",
-    branchId: featureId << 8,
+    branchId: featureId * 2 ** FEATURE_SHIFT,
     featureId,
     surfaceKind: "plane",
     centroidLocal: centroid,

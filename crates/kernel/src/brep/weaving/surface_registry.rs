@@ -52,7 +52,7 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
                         &Transform { translate, ..Transform::IDENTITY },
                     );
                     let branch = BranchId::from_feature_sub(id, f.sub);
-                    out.insert(branch.as_u32(), (f.half_space.clone(), face_xf));
+                    out.insert(branch.as_u64(), (f.half_space.clone(), face_xf));
                 }
             } else if let fielddraft_protocol::Primitive::Gyroid { cell_size, thickness } =
                 primitive
@@ -64,7 +64,7 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
                 // untouched. No centre fold: the primitive has no `center`
                 // param, the world transform places the lattice.
                 out.insert(
-                    BranchId::from_feature_sub(id, 0).as_u32(),
+                    BranchId::from_feature_sub(id, 0).as_u64(),
                     (
                         fielddraft_protocol::HalfSpace::Gyroid {
                             cell_size: *cell_size,
@@ -139,7 +139,7 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
             let mut sub = HashMap::new();
             collect_halfspaces(inner, &mut sub);
             for (key, entry) in sub {
-                out.entry(BranchId(key).inner_wall().as_u32()).or_insert(entry);
+                out.entry(BranchId(key).inner_wall().as_u64()).or_insert(entry);
             }
         }
         BoundedCsg::Shell { inner, thickness, open_faces, .. } => {
@@ -162,7 +162,7 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
             let mut profiles = HashMap::new();
             collect_revolve_profile_carriers(inner, &mut profiles);
             let opened =
-                |branch: u32| open_faces.iter().any(|f| f.branch == branch);
+                |branch: u64| open_faces.iter().any(|f| f.branch == branch);
             let tables = wall_sub_tables(inner);
             for (key, (hs, xf)) in &sub {
                 // An OPENED face has no inner wall — the cavity passes
@@ -238,7 +238,7 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
                         *extend_start = prev.is_none_or(|n| !neighbour_open(n));
                         *extend_end = next.is_none_or(|n| !neighbour_open(n));
                     }
-                    out.entry(BranchId(*key).inner_wall().as_u32())
+                    out.entry(BranchId(*key).inner_wall().as_u64())
                         .or_insert((inner_hs, inner_xf));
                 }
             }
@@ -296,7 +296,7 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
                     (BranchId::EXTRUDE_CAP_TOP_SUB, n_end),
                 ] {
                     out.insert(
-                        BranchId::from_feature_sub(id, sub).as_u32(),
+                        BranchId::from_feature_sub(id, sub).as_u64(),
                         (HalfSpace::Plane { normal, offset: 0.0 }, *world_transform),
                     );
                 }
@@ -316,11 +316,11 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
             use fielddraft_protocol::HalfSpace;
             let xf = *world_transform;
             out.insert(
-                BranchId::from_feature_sub(id, BranchId::EXTRUDE_CAP_TOP_SUB).as_u32(),
+                BranchId::from_feature_sub(id, BranchId::EXTRUDE_CAP_TOP_SUB).as_u64(),
                 (HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: *half_span }, xf),
             );
             out.insert(
-                BranchId::from_feature_sub(id, BranchId::EXTRUDE_CAP_BOTTOM_SUB).as_u32(),
+                BranchId::from_feature_sub(id, BranchId::EXTRUDE_CAP_BOTTOM_SUB).as_u64(),
                 (HalfSpace::Plane { normal: [0.0, 0.0, -1.0], offset: *half_span }, xf),
             );
         }
@@ -334,7 +334,7 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
 /// Shell arm as the inner-wall offset fallback (see above).
 fn collect_revolve_profile_carriers(
     node: &BoundedCsg,
-    out: &mut HashMap<u32, (fielddraft_protocol::HalfSpace, Transform)>,
+    out: &mut HashMap<u64, (fielddraft_protocol::HalfSpace, Transform)>,
 ) {
     match node {
         BoundedCsg::Revolve { id, sketch, world_transform, wall_subs, .. } => {
@@ -343,7 +343,7 @@ fn collect_revolve_profile_carriers(
             collect_path_group_segments(sketch, 0, &mut groups);
             for (g, segments, ccw) in groups {
                 let g = crate::csg::map_wall_sub(ws, g);
-                out.entry(BranchId::from_feature_sub(id, g).as_u32()).or_insert((
+                out.entry(BranchId::from_feature_sub(id, g).as_u64()).or_insert((
                     fielddraft_protocol::HalfSpace::RevolvedProfile {
                         segments,
                         ccw,

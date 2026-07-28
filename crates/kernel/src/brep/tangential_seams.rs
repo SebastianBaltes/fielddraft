@@ -390,7 +390,7 @@ fn offset_point(br: &Break, shell: Option<f32>) -> [f32; 2] {
 pub(crate) fn sweep_contact_pairs(
     body: &BoundedCsg,
     map: &BranchSurfaceMap,
-) -> std::collections::HashSet<(u32, u32)> {
+) -> std::collections::HashSet<(u64, u64)> {
     let mut out = std::collections::HashSet::new();
     let mut frames: Vec<SweepFrame> = Vec::new();
     collect_sweep_frames(body, &mut frames);
@@ -400,7 +400,7 @@ pub(crate) fn sweep_contact_pairs(
     }
 
     // Branches by owning feature, so the pair loop below never rescans the map.
-    let mut by_feature: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut by_feature: HashMap<u32, Vec<u64>> = HashMap::new();
     for &b in map.keys() {
         by_feature.entry(BranchId(b).feature_id()).or_default().push(b);
     }
@@ -467,7 +467,7 @@ const AXIS_TOL: f64 = 1e-5;
 /// angular identity by 0.06 — four orders of magnitude.
 const TANGENCY_REL_TOL: f64 = 1e-5;
 
-fn is_cap(branch: u32) -> bool {
+fn is_cap(branch: u64) -> bool {
     let sub = BranchId(branch).sub() & !BranchId::INNER_WALL_FLAG;
     sub == BranchId::EXTRUDE_CAP_TOP_SUB || sub == BranchId::EXTRUDE_CAP_BOTTOM_SUB
 }

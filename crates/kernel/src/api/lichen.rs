@@ -844,10 +844,10 @@ impl Kernel {
             // entstehen durch Verkettung der angrenzenden Kanten-Ketten
             // (Kanten, deren Punkte alle auf der Surface liegen). Damit
             // wächst und trianguliert die Fläche wie jede gewebte. ──
-            let woven: HashSet<u32> =
-                brep.faces.iter().map(|f| f.branch_id.as_u32()).collect();
+            let woven: HashSet<u64> =
+                brep.faces.iter().map(|f| f.branch_id.as_u64()).collect();
             let hs_map = crate::brep::weaving::branch_halfspace_map(&bodies[bi]);
-            let mut orphan_ids: Vec<u32> =
+            let mut orphan_ids: Vec<u64> =
                 hs_map.keys().copied().filter(|b| !woven.contains(b)).collect();
             orphan_ids.sort_unstable();
             if std::env::var("LICHEN_DEBUG_FACES").is_ok() {

@@ -1132,7 +1132,7 @@ fn vertex_sphere_tape_and_dual_parity() {
 fn channel_provenance_uses_reserved_band() {
     let node = steinmetz_node(2.0);
     let bounded = synth(&node, 0.01);
-    fn collect(n: &BoundedCsg, out: &mut Vec<u32>) {
+    fn collect(n: &BoundedCsg, out: &mut Vec<u64>) {
         if let BoundedCsg::ArcChannel { inner, channels, .. } = n {
             for ch in channels {
                 out.push(ch.branch);

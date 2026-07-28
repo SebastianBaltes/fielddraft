@@ -463,7 +463,7 @@ use super::tol::{ADAPT_MAX_FRACTION, ADAPT_MIN_FRACTION, ADAPT_TOL_FRACTION};
 pub(crate) fn branch_field<'a>(
     halfspaces: &crate::brep::BranchSurfaceMap,
     leaf_map: &HashMap<u32, &'a BoundedCsg>,
-    branch: u32,
+    branch: u64,
 ) -> Option<Field<'a>> {
     if let Some((hs, xf)) = halfspaces.get(&branch) {
         return Some(Field::Analytic {
@@ -795,7 +795,7 @@ fn vertex_bounds_seam(
 ) -> bool {
     let tol = (0.5 * spacing).max(2.0 * VERTEX_REFINE_TOL as f64);
     let p = [pos[0] as f32, pos[1] as f32, pos[2] as f32];
-    branches.iter().all(|b| match halfspaces.get(&b.as_u32()) {
+    branches.iter().all(|b| match halfspaces.get(&b.as_u64()) {
         None => true, // non-analytic branch: cannot judge → keep
         Some((hs, xf)) => {
             (crate::csg::sdf_halfspace(hs, crate::world_to_local(xf, p)).abs() as f64) <= tol
@@ -977,14 +977,14 @@ pub(crate) const VERTEX_CLUSTER_GAP_FACTOR: f64 = 4.0;
 /// cluster by `cluster_gap` and emit one vertex per cluster. `cluster_gap <= 0`
 /// (no vertex cells to size from) keeps the legacy single-cluster behaviour.
 fn dedup_vertices(raw: &[Vertex], cluster_gap: f64) -> Vec<DedupVertex> {
-    // Group by branch-set (raw u32 payloads, already sorted by `Vertex::new`),
+    // Group by branch-set (raw u64 payloads, already sorted by `Vertex::new`),
     // preserving insertion order for determinism. Each group accumulates its raw
     // positions plus the canonical `BranchId`s for emission.
     type BranchGroup = (Vec<[f64; 3]>, Vec<BranchId>);
-    let mut order: Vec<Vec<u32>> = Vec::new();
-    let mut groups: HashMap<Vec<u32>, BranchGroup> = HashMap::new();
+    let mut order: Vec<Vec<u64>> = Vec::new();
+    let mut groups: HashMap<Vec<u64>, BranchGroup> = HashMap::new();
     for v in raw {
-        let key: Vec<u32> = v.branches.iter().map(|b| b.as_u32()).collect();
+        let key: Vec<u64> = v.branches.iter().map(|b| b.as_u64()).collect();
         let entry = groups.entry(key.clone()).or_insert_with(|| {
             order.push(key.clone());
             (Vec::new(), v.branches.clone())
@@ -1067,10 +1067,10 @@ fn dist_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// coincide and fuse, while two truly distinct corners stay apart. Preserves
 /// first-seen branch-set order for deterministic vertex ids.
 fn merge_refined_by_branch_set(dedup: Vec<DedupVertex>, gap: f64) -> Vec<DedupVertex> {
-    let mut order: Vec<Vec<u32>> = Vec::new();
-    let mut groups: HashMap<Vec<u32>, Vec<usize>> = HashMap::new();
+    let mut order: Vec<Vec<u64>> = Vec::new();
+    let mut groups: HashMap<Vec<u64>, Vec<usize>> = HashMap::new();
     for (i, dv) in dedup.iter().enumerate() {
-        let key: Vec<u32> = dv.branches.iter().map(|b| b.as_u32()).collect();
+        let key: Vec<u64> = dv.branches.iter().map(|b| b.as_u64()).collect();
         groups
             .entry(key.clone())
             .or_insert_with(|| {
@@ -1170,7 +1170,7 @@ pub(crate) fn refine_triple_vertex(
     // Every branch must carry an analytic surface, else we cannot solve.
     let Some(surfs) = branches
         .iter()
-        .map(|b| halfspaces.get(&b.as_u32()))
+        .map(|b| halfspaces.get(&b.as_u64()))
         .collect::<Option<Vec<_>>>()
     else {
         return TripleRefine::Indeterminate;
@@ -1596,15 +1596,15 @@ pub(crate) fn root_displace(body: &BoundedCsg) -> Option<Vec<(f64, f64)>> {
 /// DL-52.
 fn chain_on_both_surfaces(
     halfspaces: &crate::brep::BranchSurfaceMap,
-    sa: u32,
-    sb: u32,
+    sa: u64,
+    sb: u64,
     samples: &[HermiteSample],
     tol: f64,
 ) -> bool {
     if samples.is_empty() {
         return true;
     }
-    let check_branch = |branch: u32| -> bool {
+    let check_branch = |branch: u64| -> bool {
         let Some((hs, xf)) = halfspaces.get(&branch) else {
             // No analytic surface to validate against → cannot judge, keep.
             return true;
@@ -1803,12 +1803,12 @@ pub fn build_wireframe_with(body: &BoundedCsg, octree: &Octree, pure_octree: boo
     // order-dependent — and therefore erratic across regenerations. The emitted
     // `EdgeId` order (feeds idHash) and the `dangling` list (feeds reflex-vertex
     // reconstruction) would both drift run to run. Sorting pins them.
-    let mut groups: HashMap<(u32, u32), Vec<EdgePoint>> = HashMap::new();
+    let mut groups: HashMap<(u64, u64), Vec<EdgePoint>> = HashMap::new();
     for ep in &edge_points {
-        let key = (ep.signature.0.as_u32(), ep.signature.1.as_u32());
+        let key = (ep.signature.0.as_u64(), ep.signature.1.as_u64());
         groups.entry(key).or_default().push(*ep);
     }
-    let mut group_keys: Vec<(u32, u32)> = groups.keys().copied().collect();
+    let mut group_keys: Vec<(u64, u64)> = groups.keys().copied().collect();
     group_keys.sort_unstable();
 
     // Analytic branch→surface table, used to reject phantom signature groups
@@ -2162,7 +2162,7 @@ fn reconcile_dangling_endpoints(body: &BoundedCsg, brep: &mut BRep, dangling: &[
         if branches.len() < 3 {
             continue;
         }
-        branches.sort_unstable_by_key(|b| b.as_u32());
+        branches.sort_unstable_by_key(|b| b.as_u64());
 
         // Centroid seed + local scale for the synthetic cell.
         let mut sum = [0.0f64; 3];
@@ -2395,12 +2395,12 @@ mod tests {
         let thread_fid = BranchId::from_feature(&FeatureId::from_u32(2)).feature_id();
         for e in &brep.edges {
             assert_ne!(
-                BranchId(e.signature.0.as_u32()).feature_id(),
+                BranchId(e.signature.0.as_u64()).feature_id(),
                 thread_fid,
                 "no edge may touch the non-Lipschitz thread face"
             );
             assert_ne!(
-                BranchId(e.signature.1.as_u32()).feature_id(),
+                BranchId(e.signature.1.as_u64()).feature_id(),
                 thread_fid,
                 "no edge may touch the non-Lipschitz thread face"
             );
@@ -2435,7 +2435,7 @@ mod tests {
 
             // Distinct signatures.
             assert!(
-                signatures.insert((e.signature.0.as_u32(), e.signature.1.as_u32())),
+                signatures.insert((e.signature.0.as_u64(), e.signature.1.as_u64())),
                 "duplicate edge signature {:?}",
                 e.signature
             );
@@ -2566,8 +2566,8 @@ mod tests {
 
         let gyroid_fid = BranchId::from_feature(&FeatureId::from_u32(2)).feature_id();
         for e in &brep.edges {
-            assert_ne!(BranchId(e.signature.0.as_u32()).feature_id(), gyroid_fid);
-            assert_ne!(BranchId(e.signature.1.as_u32()).feature_id(), gyroid_fid);
+            assert_ne!(BranchId(e.signature.0.as_u64()).feature_id(), gyroid_fid);
+            assert_ne!(BranchId(e.signature.1.as_u64()).feature_id(), gyroid_fid);
         }
         assert_eq!(brep.validate(), Ok(()));
     }

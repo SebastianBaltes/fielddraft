@@ -243,11 +243,11 @@ Fähigkeit, mehrere vorhandene zu kombinieren:
 | 3 | E2: Blend-Fläche + Übersetzer-Zweig `BLEND_FACE` / `BLEND_EDGE` | 2 |
 | 4 | `qUnion(a, b)` + Übersetzer-Zweig `MERGE` (Fläche) | — |
 | 5 | Übersetzer-Zweig `SPLIT` auf `qAdjacentTo` | — |
-| 6 | E1: `BranchId` auf u64, Instanz-Ordinal, `qInstance(...)` | 1 |
+| 6 | **Erledigt (v0.40.0, #429):** E1: `BranchId` auf u64, Instanz-Ordinal, `qInstance(...)` | 1 |
 
-Schritte 1–5 sind je für sich abgeschlossen und messbar. Schritt 6 ist der
-Breaking Change und sollte erst laufen, wenn 1–5 gezeigt haben, wie viel ohne
-ihn schon zusammenkommt.
+Schritte 1–5 sind je für sich abgeschlossen und messbar. Schritt 6 war der
+Breaking Change; er ist vorgezogen worden und in v0.40.0 ausgeliefert (§ „Schritt 6"
+unten). Offen bleiben damit E2 (Schritte 2–3) und E3 (Schritte 4–5).
 
 ### Schritt 1 — wie er ausgeführt wurde (v0.39.2, #431)
 
@@ -292,6 +292,68 @@ ist reproduzierbar (gleicher Aufbau → gleiche Hashes) und unempfindlich gegen
 unbeteiligte Körper (beides als Test gepinnt), aber er wandert, sobald die
 Kopien ihre Reihenfolge tauschen — Musterrichtung umdrehen, Abstand negieren,
 Kopie in der Mitte einfügen. Dafür ist E1 da.
+
+---
+
+### Schritt 6 / E1 — wie er ausgeführt wurde (v0.40.0, #429)
+
+**Was zuerst gemessen wurde.** Eine Sonde auf einem 3er-Linearmuster eines
+Quaders vergleicht die 18 Flächen-`id_hash`es bei Richtung `+x` gegen `−x`.
+Vor E1 ergab das eine exakte Block-Umkehr `[A|B|C] → [C|B|A]`: nicht nur die
+Kopien tauschten die Namen, auch das **Original** übernahm die Namen von
+Kopie 2. Ein Folge-Feature auf einer Fläche des Originals hätte nach einem
+Richtungswechsel still auf einer Kopie gesessen. Der Test dazu ist
+`pattern_copy_names_survive_a_direction_flip`.
+
+Nebenbefund, der den Testaufbau korrigierte: `spacing < 0` ist **keine**
+Umkehrung — `LinearPatternFeature::execute` lehnt es ab (`must be > 0 mm`),
+der Regen-Loop schluckt den Fehler und es bleibt **ein** Körper (gemessen:
+`bodies=1 faces=6`). Die Umkehrung läuft über die Richtung.
+
+**Die eigentliche Ursache war eine andere als im Entwurf oben.** §4/E1
+vermutete, `BranchId::from_feature` falte die hierarchische Klon-Id über
+`as_u32_or_root()` auf den Wurzel-Vorfahren zurück. Das stimmt als
+Mechanismus, ist hier aber gar nicht wirksam geworden: die Klon-Id **erreicht
+den Branch überhaupt nicht**. Ein Muster baut seine Kopie als
+`source_feature.clone()` und setzt nur `DecodedFeature::id` um — die Geometrie
+liegt aber in `DecodedFeature::node`, und jede id-tragende `CsgNode`-Variante
+hält ihre **eigene** `FeatureId`, die des Originals. Gemessen 2026-07-28:
+Klon-Ids `2.1~1` / `2.1~2`, gewobene Branch-Wörter aber dreimal
+`1/0/0 … 1/0/5`. Der Fix ist `CsgNode::rebrand`, das den Klon-Teilbaum auf die
+Klon-Identität umschreibt (inkl. der Branch-Wörter in `Shell`-Öffnungen und
+`MaskedBlend`-Provenienz); der Match ist absichtlich erschöpfend.
+
+**Layout.** `BranchId` ist jetzt `u64` mit
+`feature (20) | instance (12) | sub (12)` — 44 signifikante Bits. Bewusst
+nicht mehr: das gepackte Wort quert die wasm-Grenze als **JSON-Zahl**
+(`branchId`, `a`/`b` in `bodyBrepEdges`), und JavaScript-Ganzzahlen sind nur
+unter 2^53 exakt. Wer ein Feld weiter aufbohren will, muss zuerst den Draht
+auf Strings umstellen. `NAMING_SCHEMA_VERSION` ging 2 → **3**: das Branch-Wort
+im Hash wuchs von 4 auf 8 Byte, also hat sich **jeder** `id_hash` geändert.
+
+**Der Feature-Teil trägt die QUELL-Id, nicht die Muster-Id** — eine Abweichung
+vom Entwurf oben, und zwar gemessen. Ein Muster darf mehrere Quell-Features
+auf einmal kopieren (`resolve_source_feature_ids` liest eine `MultiQuery`).
+Trüge der Feature-Teil die Muster-Id, bekämen der Klon von Feature 1 und der
+von Feature 2 beide `(P, i, sub)`. Gegenprobe mit zwei Quell-Quadern: unter
+dem Muster-Id-Schema fallen 36 Branch-Wörter auf **24** zusammen, unter dem
+Quell-Id-Schema bleiben es 36 (`a_two_source_pattern_keeps_its_sources_apart`).
+Eine Kopie unterscheidet sich vom Original damit in **genau einem** Feld.
+
+**Query-Form: `qInstance(i, <sub-query>)` — zwei Argumente, nicht drei.** Der
+Entwurf skizzierte `qInstance(pattern_id, i, …)`. Die Muster-Id ist nach der
+Messung oben aber gar nicht Teil des Namens; ein Argument mitzuführen, das
+kein Branch kodiert, wäre ein Argument, das nichts tut. Die Auflösung ist rein
+mechanisch: das Ergebnis der Unterabfrage hernehmen, auf jedem Branch seiner
+Signatur das Ordinal tauschen, nachschlagen. Keine Geometrie, keine Nähe,
+kein Raten — `qInstance(7, …)` auf ein 3er-Muster liefert **nichts** statt der
+nächstbesten Kopie (§1).
+
+**Was E1 NICHT leistet.** Zwei *verschiedene* Muster über *dieselbe* Quelle
+prägen beide `(Quelle, i, sub)` und kollidieren. 12 Bit haben keinen Platz für
+die Muster-Id; das aufzulösen braucht einen breiteren Draht als eine
+JS-Zahl. Das steht so in `FeatureId::branch_identity` und ist ausgesprochen,
+statt still falsch beantwortet zu werden.
 
 ---
 

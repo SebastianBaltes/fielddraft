@@ -54,7 +54,12 @@ use crate::brep::{BRep, EdgeGeometry, EdgeId, FaceId, SurfaceGeometry, VertexId}
 ///   `wall_subs` table (min solver curve-entity id of the G1 group);
 ///   positional numbering remains the fallback for unattributable
 ///   profiles (SVG `sketch_path`, mirror copies, replay failure).
-pub const NAMING_SCHEMA_VERSION: u32 = 2;
+/// - **3** — pattern instance ordinal (#429/E1): the branch word grew from
+///   32 to 64 bits so a pattern copy carries its ordinal *in the name*
+///   instead of being told apart by a positional `spatial_index`. Every
+///   `id_hash` in every document changed with this bump — that is the point
+///   of the marker.
+pub const NAMING_SCHEMA_VERSION: u32 = 3;
 use crate::csg::BranchId;
 
 // ─── deterministic hash ───────────────────────────────────────────────────
@@ -76,11 +81,15 @@ pub fn fnv1a_64(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// Fold a list of `u32` words plus a trailing `spatial_index` into a stable
+/// Fold a list of branch words plus a trailing `spatial_index` into a stable
 /// hash. The words must already be in canonical (sorted) order. Each word is
 /// hashed in fixed little-endian byte order so the result is platform stable.
-fn hash_signature(words: &[u32], spatial_index: u32) -> u64 {
-    let mut buf = Vec::with_capacity((words.len() + 1) * 4);
+///
+/// Schema v3 (#429/E1) widened the branch word from 4 to 8 bytes to make room
+/// for the pattern instance ordinal. Every `id_hash` in the document therefore
+/// changed — see [`NAMING_SCHEMA_VERSION`].
+fn hash_signature(words: &[u64], spatial_index: u32) -> u64 {
+    let mut buf = Vec::with_capacity(words.len() * 8 + 4);
     for &w in words {
         buf.extend_from_slice(&w.to_le_bytes());
     }
@@ -95,17 +104,17 @@ fn hash_signature(words: &[u32], spatial_index: u32) -> u64 {
 /// branch uniquely uses `spatial_index = 0`, which by construction hashes the
 /// branch word alone with a 0 tail.
 pub fn face_id(branch: BranchId, spatial_index: u32) -> u64 {
-    hash_signature(&[branch.as_u32()], spatial_index)
+    hash_signature(&[branch.as_u64()], spatial_index)
 }
 
 /// `Edge_ID = hash(sort(branch_a, branch_b) [, spatial_index])`. The signature
 /// pair is canonicalised (smaller first) so the ID is independent of which
 /// half-space the edge walk met first.
 pub fn edge_id(a: BranchId, b: BranchId, spatial_index: u32) -> u64 {
-    let (lo, hi) = if a.as_u32() <= b.as_u32() {
-        (a.as_u32(), b.as_u32())
+    let (lo, hi) = if a.as_u64() <= b.as_u64() {
+        (a.as_u64(), b.as_u64())
     } else {
-        (b.as_u32(), a.as_u32())
+        (b.as_u64(), a.as_u64())
     };
     hash_signature(&[lo, hi], spatial_index)
 }
@@ -113,7 +122,7 @@ pub fn edge_id(a: BranchId, b: BranchId, spatial_index: u32) -> u64 {
 /// `Vertex_ID = hash(sort(branch u32s) [, spatial_index])`. `branches` is
 /// sorted here defensively; the B-Rep already stores them canonically.
 pub fn vertex_id(branches: &[BranchId], spatial_index: u32) -> u64 {
-    let mut words: Vec<u32> = branches.iter().map(|b| b.as_u32()).collect();
+    let mut words: Vec<u64> = branches.iter().map(|b| b.as_u64()).collect();
     words.sort_unstable();
     hash_signature(&words, spatial_index)
 }
@@ -1058,14 +1067,14 @@ mod tests {
             &FeatureId::from_u32(1),
             crate::csg::BranchId::EXTRUDE_CAP_TOP_SUB,
         )
-        .as_u32();
+        .as_u64();
         let cap_bottom = crate::csg::BranchId::from_feature_sub(
             &FeatureId::from_u32(1),
             crate::csg::BranchId::EXTRUDE_CAP_BOTTOM_SUB,
         )
-        .as_u32();
+        .as_u64();
         let is_wall_wall = |e: &crate::brep::Edge| {
-            let (a, b) = (e.signature.0.as_u32(), e.signature.1.as_u32());
+            let (a, b) = (e.signature.0.as_u64(), e.signature.1.as_u64());
             a != cap_top && a != cap_bottom && b != cap_top && b != cap_bottom
         };
         // Require the picked wall–wall edge to also persist (same branch pair)

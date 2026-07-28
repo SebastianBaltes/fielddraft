@@ -170,17 +170,17 @@ fn compare_edges(
     tol: f64,
 ) -> (Vec<(usize, usize, f64)>, Vec<usize>, Vec<usize>) {
     // signature → arena indices, per side.
-    let mut a_buckets: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    let mut a_buckets: HashMap<(u64, u64), Vec<usize>> = HashMap::new();
     for (i, e) in a.edges.iter().enumerate() {
         a_buckets
-            .entry((e.signature.0.as_u32(), e.signature.1.as_u32()))
+            .entry((e.signature.0.as_u64(), e.signature.1.as_u64()))
             .or_default()
             .push(i);
     }
-    let mut b_buckets: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    let mut b_buckets: HashMap<(u64, u64), Vec<usize>> = HashMap::new();
     for (i, e) in b.edges.iter().enumerate() {
         b_buckets
-            .entry((e.signature.0.as_u32(), e.signature.1.as_u32()))
+            .entry((e.signature.0.as_u64(), e.signature.1.as_u64()))
             .or_default()
             .push(i);
     }
@@ -273,8 +273,8 @@ fn compare_vertices(
 
 /// Iterate a signature → indices map in deterministic (sorted-key) order.
 fn iter_sorted(
-    buckets: &HashMap<(u32, u32), Vec<usize>>,
-) -> Vec<(&(u32, u32), &Vec<usize>)> {
+    buckets: &HashMap<(u64, u64), Vec<usize>>,
+) -> Vec<(&(u64, u64), &Vec<usize>)> {
     let mut entries: Vec<_> = buckets.iter().collect();
     entries.sort_unstable_by_key(|(k, _)| **k);
     entries

@@ -3305,7 +3305,7 @@ mod tests {
                     &FeatureId::from_u32(1),
                     0,
                 )
-                .as_u32(),
+                .as_u64(),
                 surface: HalfSpace::Sphere { radius: 10.0 },
                 placement: Transform::IDENTITY,
             }],

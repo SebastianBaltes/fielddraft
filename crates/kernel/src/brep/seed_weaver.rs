@@ -52,8 +52,8 @@ use crate::bvh::BoundedCsg;
 
 /// Canonical `(lo, hi)` signature key of a branch pair — the identity the
 /// Stufe-C octree fill matches edges on.
-fn pair_key(a: BranchId, b: BranchId) -> (u32, u32) {
-    let (x, y) = (a.as_u32(), b.as_u32());
+fn pair_key(a: BranchId, b: BranchId) -> (u64, u64) {
+    let (x, y) = (a.as_u64(), b.as_u64());
     if x <= y { (x, y) } else { (y, x) }
 }
 
@@ -62,7 +62,7 @@ fn pair_key(a: BranchId, b: BranchId) -> (u32, u32) {
 /// fill ([`weave_branch_seeds_hybrid`]).
 struct SeedWireframe {
     brep: BRep,
-    skipped: std::collections::HashSet<(u32, u32)>,
+    skipped: std::collections::HashSet<(u64, u64)>,
     /// Where each skipped seam LIVES (#426): the world AABB the octree fill
     /// has to cover for that pair. `None` for a pair whose locality is not
     /// known (it never seeded and carries no candidate box) — one such entry
@@ -218,7 +218,7 @@ const SEAM_REGION_CELL_DIVISOR: f32 = 32.0;
 /// rather than guessing a locality we do not have.
 fn skipped_seam_regions(
     body: &BoundedCsg,
-    skipped: &std::collections::HashSet<(u32, u32)>,
+    skipped: &std::collections::HashSet<(u64, u64)>,
     seeds: &[EdgeSeed],
     unresolved: &[crate::brep::branch_pairs::BranchPair],
 ) -> Vec<Option<Aabb>> {
@@ -229,7 +229,7 @@ fn skipped_seam_regions(
         let s = body.aabb().size();
         (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt()
     };
-    let mut seeded: HashMap<(u32, u32), Aabb> = HashMap::new();
+    let mut seeded: HashMap<(u64, u64), Aabb> = HashMap::new();
     for s in seeds {
         let key = pair_key(s.a, s.b);
         if !skipped.contains(&key) {
@@ -239,7 +239,7 @@ fn skipped_seam_regions(
         let entry = seeded.entry(key).or_insert(Aabb::EMPTY);
         *entry = Aabb::union(*entry, point);
     }
-    let mut candidates: HashMap<(u32, u32), Aabb> = HashMap::new();
+    let mut candidates: HashMap<(u64, u64), Aabb> = HashMap::new();
     for pair in unresolved {
         let key = pair_key(pair.a, pair.b);
         let entry = candidates.entry(key).or_insert(Aabb::EMPTY);
@@ -247,7 +247,7 @@ fn skipped_seam_regions(
     }
     // Deterministic order: `skipped` is a HashSet, and the union below is
     // order-independent, but a stable order keeps debug output reproducible.
-    let mut keys: Vec<(u32, u32)> = skipped.iter().copied().collect();
+    let mut keys: Vec<(u64, u64)> = skipped.iter().copied().collect();
     keys.sort_unstable();
     keys.into_iter()
         .map(|key| {
@@ -266,7 +266,7 @@ fn skipped_seam_regions(
 /// Remove every edge whose canonical signature is in `skipped`, compacting
 /// away vertices that lose all references (the arena remap keeps the kept
 /// edges' endpoint ids valid).
-fn drop_pair_edges(brep: &mut BRep, skipped: &std::collections::HashSet<(u32, u32)>) {
+fn drop_pair_edges(brep: &mut BRep, skipped: &std::collections::HashSet<(u64, u64)>) {
     let kept: Vec<Edge> = brep
         .edges
         .drain(..)
@@ -302,7 +302,7 @@ fn drop_pair_edges(brep: &mut BRep, skipped: &std::collections::HashSet<(u32, u3
 fn merge_octree_fill(
     brep: &mut BRep,
     oct: &BRep,
-    skipped: &std::collections::HashSet<(u32, u32)>,
+    skipped: &std::collections::HashSet<(u64, u64)>,
     weld: f64,
 ) {
     let mut vmap: HashMap<u32, VertexId> = HashMap::new();
@@ -501,7 +501,7 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
 }
 
 fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<SeedWireframe> {
-    let mut skipped: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+    let mut skipped: std::collections::HashSet<(u64, u64)> = std::collections::HashSet::new();
     // 1. Seed every candidate branch pair. An unresolved pair is one whose field
     //    we cannot lift analytically (missing half-space / SSI `Unsupported`) —
     //    the analytic route cannot trace it. In `Strict` mode the WHOLE body goes
@@ -551,7 +551,7 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
     // is byte-identical to [`branch_field`].
     let field_for = |branch: BranchId| -> Option<Field<'_>> {
         if !disp.is_empty() {
-            let (hs, xf) = halfspaces.get(&branch.as_u32())?;
+            let (hs, xf) = halfspaces.get(&branch.as_u64())?;
             return Some(Field::DisplacedAnalytic {
                 hs: hs.clone(),
                 xf: *xf,
@@ -559,9 +559,9 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
             });
         }
         if warp.is_empty() {
-            return branch_field(&halfspaces, &leaf_map, branch.as_u32());
+            return branch_field(&halfspaces, &leaf_map, branch.as_u64());
         }
-        let (hs, xf) = halfspaces.get(&branch.as_u32())?;
+        let (hs, xf) = halfspaces.get(&branch.as_u64())?;
         Some(Field::WarpedAnalytic {
             hs: hs.clone(),
             xf: *xf,
@@ -614,7 +614,7 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
             let mut jtf = Vector3::<f64>::zeros();
             let mut worst = 0.0f64;
             for b in branches {
-                let Some((hs, xf)) = halfspaces.get(&b.as_u32()) else {
+                let Some((hs, xf)) = halfspaces.get(&b.as_u64()) else {
                     return p0;
                 };
                 let (f, g) = if disp.is_empty() {
@@ -756,11 +756,11 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
     // #437: every concurrence that passed the rank AND activity gates, filed
     // under each of its three branch PAIRS — before the global positional
     // dedup below throws the losers away. See the pass-1 comment in stage 3.
-    let mut pair_conc: HashMap<(u32, u32), Vec<[f64; 3]>> = HashMap::new();
+    let mut pair_conc: HashMap<(u64, u64), Vec<[f64; 3]>> = HashMap::new();
     {
         use std::collections::{BTreeSet, HashSet};
         let ckey = |x: BranchId, y: BranchId| {
-            let (a32, b32) = (x.as_u32(), y.as_u32());
+            let (a32, b32) = (x.as_u64(), y.as_u64());
             (a32.min(b32), a32.max(b32))
         };
         // Seeds bucketed by canonical pair, ONCE. The triple loop below needs
@@ -771,17 +771,17 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
         // geometry (#423). Bucketing preserves each pair's seed ORDER, so the
         // "fewest seeds" pick and the `step_by` stride below choose exactly the
         // same guesses as the scan did.
-        let mut by_pair: HashMap<(u32, u32), Vec<[f32; 3]>> = HashMap::new();
+        let mut by_pair: HashMap<(u64, u64), Vec<[f32; 3]>> = HashMap::new();
         for s in &seeds {
             by_pair.entry(ckey(s.a, s.b)).or_default().push(s.point);
         }
-        let seeded: HashSet<(u32, u32)> = by_pair.keys().copied().collect();
-        let mut partner: HashMap<u32, HashSet<u32>> = HashMap::new();
+        let seeded: HashSet<(u64, u64)> = by_pair.keys().copied().collect();
+        let mut partner: HashMap<u64, HashSet<u64>> = HashMap::new();
         for &(x, y) in &seeded {
             partner.entry(x).or_default().insert(y);
             partner.entry(y).or_default().insert(x);
         }
-        let mut triples: BTreeSet<[u32; 3]> = BTreeSet::new();
+        let mut triples: BTreeSet<[u64; 3]> = BTreeSet::new();
         for &(x, y) in &seeded {
             if let (Some(px), Some(py)) = (partner.get(&x), partner.get(&y)) {
                 for &z in px.intersection(py) {
@@ -896,7 +896,7 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                     let mut n = [[0.0f64; 3]; 3];
                     let mut ok = true;
                     for (k, br) in branches.iter().enumerate() {
-                        let Some((hs, xf)) = halfspaces.get(&br.as_u32()) else {
+                        let Some((hs, xf)) = halfspaces.get(&br.as_u64()) else {
                             ok = false;
                             break;
                         };
@@ -942,7 +942,7 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                 // a trim boundary of each of those three seams no matter which
                 // of them the positional dedup below happens to keep (#437).
                 for (i, j) in [(0usize, 1usize), (0, 2), (1, 2)] {
-                    let (x, y) = (branches[i].as_u32(), branches[j].as_u32());
+                    let (x, y) = (branches[i].as_u64(), branches[j].as_u64());
                     let e = pair_conc.entry((x.min(y), x.max(y))).or_default();
                     if !e.iter().any(|q| dist3(*q, p) < SOLUTION_MERGE) {
                         e.push(p);
@@ -994,9 +994,9 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
 
     // 3. Group seeds by canonical (min, max) branch signature, then process each
     //    group, collapsing co-component seeds into a single traced edge.
-    let mut groups: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    let mut groups: HashMap<(u64, u64), Vec<usize>> = HashMap::new();
     for (i, seed) in seeds.iter().enumerate() {
-        let (a32, b32) = (seed.a.as_u32(), seed.b.as_u32());
+        let (a32, b32) = (seed.a.as_u64(), seed.b.as_u64());
         let key = (a32.min(b32), a32.max(b32));
         groups.entry(key).or_default().push(i);
     }
@@ -1005,7 +1005,7 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
     // which would shuffle the edge arena (and with it the face order every
     // consumer sees) from run to run. Handles are arena-order-independent,
     // but UI face lists and test pick order are not.
-    let mut group_list: Vec<((u32, u32), Vec<usize>)> = groups.into_iter().collect();
+    let mut group_list: Vec<((u64, u64), Vec<usize>)> = groups.into_iter().collect();
     group_list.sort_unstable_by_key(|(key, _)| *key);
 
     let mut records: Vec<EdgeRecord> = Vec::new();
@@ -1018,7 +1018,7 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
             .iter()
             .enumerate()
             .filter(|(_, (_, br))| {
-                br.iter().any(|x| x.as_u32() == _key.0) && br.iter().any(|x| x.as_u32() == _key.1)
+                br.iter().any(|x| x.as_u64() == _key.0) && br.iter().any(|x| x.as_u64() == _key.1)
             })
             .map(|(i, (p, _))| (i, *p))
             .unzip();
@@ -1181,7 +1181,7 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                 if std::env::var("SEED_WEAVER_TRACE_DEBUG").is_ok() {
                     let len: f64 = traced.points.windows(2).map(|w| dist3(w[0], w[1])).sum();
                     eprintln!("OPENEND pair=({a:?},{b:?}) 0x{:x} 0x{:x} pts={} len={len:.6} ends={:?} seed={seed_pt:?}",
-                        a.as_u32(), b.as_u32(), traced.points.len(), traced.ends);
+                        a.as_u64(), b.as_u64(), traced.points.len(), traced.ends);
                 }
                 if mode == SeedMode::Partial {
                     skipped.insert(pair_key(a, b));
@@ -2065,7 +2065,7 @@ mod tests {
         ));
         let brep = weave_branch_seeds_hybrid(&body, 0.5).expect("Displace-Body im Partial-Scope");
         if std::env::var("SEED_WEAVER_DEBUG").is_ok() {
-            let mut hist: std::collections::BTreeMap<(u32, u32), (usize, f64)> = Default::default();
+            let mut hist: std::collections::BTreeMap<(u64, u64), (usize, f64)> = Default::default();
             for e in &brep.edges {
                 let k = pair_key(e.signature.0, e.signature.1);
                 let len = match &e.geometry {
@@ -2128,7 +2128,7 @@ mod tests {
             };
             for p in pts.iter().step_by(4) {
                 for br in [e.signature.0, e.signature.1] {
-                    let (hs, xf) = &halfspaces[&br.as_u32()];
+                    let (hs, xf) = &halfspaces[&br.as_u64()];
                     let (f, _) =
                         crate::sdf_dual::displaced_halfspace_value_grad(hs, xf, &disp, *p);
                     assert!(
@@ -2721,8 +2721,9 @@ mod tests {
         // self-crossing scribble): the -x face plane is x = -73.4904, the
         // top face plane z = 55.554; allow a few microns of trim slack.
         for e in &seed.edges {
-            let (a, b) = (e.signature.0.as_u32(), e.signature.1.as_u32());
-            if a != 8192 && b != 8192 {
+            let (a, b) = (e.signature.0.as_u64(), e.signature.1.as_u64());
+            let sphere = BranchId::from_parts(2, 0, 0).as_u64();
+            if a != sphere && b != sphere {
                 continue;
             }
             if let EdgeGeometry::Hermite(samples) = &e.geometry {
@@ -2791,7 +2792,7 @@ mod tests {
             unresolved.len(),
             unresolved
                 .iter()
-                .map(|p| (p.a.as_u32(), p.b.as_u32()))
+                .map(|p| (p.a.as_u64(), p.b.as_u64()))
                 .collect::<Vec<_>>()
         );
         assert!(!seeds.is_empty(), "the analytic route must produce seeds");
@@ -2974,11 +2975,11 @@ mod tests {
         // the constant-r segment (extrude plane × revolve CYLINDER). Groups 0
         // and 2 are constant-y: the revolve lifts them to PLANES, and two
         // planes are never tangent — they cross or coincide.
-        let expect: std::collections::HashSet<(u32, u32)> = [1u32, 3]
+        let expect: std::collections::HashSet<(u64, u64)> = [1u32, 3]
             .iter()
             .map(|g| {
-                let a = BranchId::from_feature_sub(&FeatureId::from_u32(10), *g).as_u32();
-                let b = BranchId::from_feature_sub(&FeatureId::from_u32(11), *g).as_u32();
+                let a = BranchId::from_feature_sub(&FeatureId::from_u32(10), *g).as_u64();
+                let b = BranchId::from_feature_sub(&FeatureId::from_u32(11), *g).as_u64();
                 (a.min(b), a.max(b))
             })
             .collect();

@@ -2331,7 +2331,7 @@ mod tests {
         assert!(baseline.is_finite() && baseline > 0.0, "probe starts outside the skin");
 
         let open_surface = |feature: &FeatureId, sub: u32| OpenSurface {
-            branch: crate::csg::BranchId::from_feature_sub(feature, sub).as_u32(),
+            branch: crate::csg::BranchId::from_feature_sub(feature, sub).as_u64(),
             surface: HalfSpace::Plane { normal: [0.0, 1.0, 0.0], offset: 0.0 },
             placement: Transform::IDENTITY,
         };

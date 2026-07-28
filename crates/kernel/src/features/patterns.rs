@@ -182,7 +182,11 @@ impl FeatureKind for LinearPatternFeature {
                     unit[2] * spacing_mm * i_f,
                 ];
                 let mut clone = source_feature.clone();
-                clone.id = id.child(format!("{source_fid}_{i}"));
+                clone.id = id.pattern_instance(source_fid, i);
+                // The geometry carries its OWN feature ids; renaming the
+                // DecodedFeature alone leaves every copy minting the source's
+                // branch words (#429/E1).
+                clone.node.rebrand(source_fid, &clone.id);
                 clone.name = format!("{} {}", source_feature.name, i);
                 clone.transform.translate = [
                     source_feature.transform.translate[0] + offset[0],
@@ -325,7 +329,11 @@ impl FeatureKind for CircularPatternFeature {
                 ];
 
                 let mut clone = source_feature.clone();
-                clone.id = id.child(format!("{source_fid}_{i}"));
+                clone.id = id.pattern_instance(source_fid, i);
+                // The geometry carries its OWN feature ids; renaming the
+                // DecodedFeature alone leaves every copy minting the source's
+                // branch words (#429/E1).
+                clone.node.rebrand(source_fid, &clone.id);
                 clone.name = format!("{} {}", source_feature.name, i);
                 clone.transform.translate = new_translate;
                 clone.transform.rotation =
@@ -479,7 +487,8 @@ impl FeatureKind for MirrorFeature {
                 .clone();
 
             let mut clone = source_feature.clone();
-            clone.id = id.child(format!("{source_fid}_1"));
+            clone.id = id.pattern_instance(source_fid, 1);
+            clone.node.rebrand(source_fid, &clone.id);
             clone.name = format!("{} mirror", source_feature.name);
             // `reflection ∘ source`: the source is placed first, then the
             // whole thing is reflected — the source's own rotation and

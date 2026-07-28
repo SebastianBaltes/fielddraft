@@ -490,7 +490,7 @@ fn main() {
     // cylinder with the top cap opened → cylinder-kind + plane records; a
     // cone with a cap opened → cone-kind record.
     let open = |fid: u32, sub: u32, surface: fielddraft_protocol::HalfSpace| OpenSurface {
-        branch: BranchId::from_feature_sub(&FeatureId::from_u32(fid), sub).as_u32(),
+        branch: BranchId::from_feature_sub(&FeatureId::from_u32(fid), sub).as_u64(),
         surface,
         placement: Transform::IDENTITY,
     };

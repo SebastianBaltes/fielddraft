@@ -320,13 +320,13 @@ fn canonicalize_coincident(
     brep: &mut BRep,
     body: &BoundedCsg,
     halfspaces: &BranchSurfaceMap,
-) -> (Vec<Vec<u32>>, std::collections::HashSet<u32>) {
+) -> (Vec<Vec<u64>>, std::collections::HashSet<u64>) {
     let registry = crate::brep::coincidence::CoincidenceRegistry::build(body);
-    let mut memberships: Vec<Vec<u32>> = brep
+    let mut memberships: Vec<Vec<u64>> = brep
         .edges
         .iter()
         .map(|e| {
-            let (a, b) = (e.signature.0.as_u32(), e.signature.1.as_u32());
+            let (a, b) = (e.signature.0.as_u64(), e.signature.1.as_u64());
             if a == b {
                 vec![a]
             } else {
@@ -334,7 +334,7 @@ fn canonicalize_coincident(
             }
         })
         .collect();
-    let mut culled: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut culled: std::collections::HashSet<u64> = std::collections::HashSet::new();
     let has_tangency = !registry.tangent_seams().is_empty();
     // c-M2: filleted junctions carry a procedural blend carrier whose two
     // seams are G1-tangent (untraceable by the octree). Materialise their
@@ -392,11 +392,11 @@ fn materialize_faces(
     brep: &mut BRep,
     halfspaces: &BranchSurfaceMap,
     complemented: &std::collections::HashSet<u32>,
-    memberships: &[Vec<u32>],
-    culled: &std::collections::HashSet<u32>,
+    memberships: &[Vec<u64>],
+    culled: &std::collections::HashSet<u64>,
 ) -> Vec<crate::brep::FaceId> {
-    let mut branch_order: Vec<u32> = Vec::new();
-    let mut edges_by_branch: HashMap<u32, Vec<EdgeId>> = HashMap::new();
+    let mut branch_order: Vec<u64> = Vec::new();
+    let mut edges_by_branch: HashMap<u64, Vec<EdgeId>> = HashMap::new();
     for (i, members) in memberships.iter().enumerate() {
         let eid = EdgeId(i as u32);
         for &key in members {
@@ -413,15 +413,15 @@ fn materialize_faces(
     // Build one face per CONNECTED REGION of each branch (F0-1) — skipping
     // membrane branches culled in (1b).
     let mut face_ids = Vec::with_capacity(branch_order.len());
-    for &branch_u32 in &branch_order {
-        if culled.contains(&branch_u32) {
+    for &branch_word in &branch_order {
+        if culled.contains(&branch_word) {
             continue;
         }
-        let edge_ids = &edges_by_branch[&branch_u32];
-        let branch_id = BranchId(branch_u32);
+        let edge_ids = &edges_by_branch[&branch_word];
+        let branch_id = BranchId(branch_word);
 
         // Analytic surface from the lookup, else a tessellated fallback (DL-25).
-        let surface = match halfspaces.get(&branch_u32) {
+        let surface = match halfspaces.get(&branch_word) {
             Some((hs, xf)) => SurfaceGeometry::Analytic {
                 surface: hs.clone(),
                 transform: *xf,
@@ -459,7 +459,7 @@ fn materialize_faces(
                     debug_assert!(
                         outer.is_connected_ring(&brep.edges)
                             && inner.iter().all(|lp| lp.is_connected_ring(&brep.edges)),
-                        "ordered face loops for branch {branch_u32} must be connected rings"
+                        "ordered face loops for branch {branch_word} must be connected rings"
                     );
                     (outer, inner)
                 })
@@ -472,7 +472,7 @@ fn materialize_faces(
                 // built from complete topology never reach here.
                 eprintln!(
                     "weave: WARNING could not order face loops for branch \
-                     {branch_u32}; emitting unordered fallback loop (degenerate \
+                     {branch_word}; emitting unordered fallback loop (degenerate \
                      topology)"
                 );
                 vec![(
@@ -502,12 +502,12 @@ fn materialize_faces(
     // from `edges_by_branch` would be a *degenerate* (unbounded / clipped-away)
     // face, not a genuinely closed one — those stay out (DL-54).
     if brep.edges.is_empty() {
-        for (&branch_u32, (hs, xf)) in halfspaces {
-            if edges_by_branch.contains_key(&branch_u32) {
+        for (&branch_word, (hs, xf)) in halfspaces {
+            if edges_by_branch.contains_key(&branch_word) {
                 continue;
             }
             let fid = brep.add_face(Face {
-                branch_id: BranchId(branch_u32),
+                branch_id: BranchId(branch_word),
                 surface: SurfaceGeometry::Analytic {
                     surface: hs.clone(),
                     transform: *xf,

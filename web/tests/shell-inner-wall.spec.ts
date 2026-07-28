@@ -91,8 +91,11 @@ test("DL-75: open-shell inner wall is a selectable B-Rep face", async ({ page })
     return k ? k.bodyBrepFaces(0) : [];
   })) as FaceLite[];
 
-  const inner = faces.filter((f) => (f.branchId & 0x800) !== 0);
-  const outer = faces.filter((f) => (f.branchId & 0x800) === 0);
+  // The inner-wall flag lives in the SUB field. `&` would truncate the
+  // 44-bit branch word to 32 bits, so mask arithmetically (#429/E1).
+  const innerFlag = (b: number) => Math.floor((b % 4096) / 0x800) === 1;
+  const inner = faces.filter((f) => innerFlag(f.branchId));
+  const outer = faces.filter((f) => !innerFlag(f.branchId));
   logs.push(
     `faces total=${faces.length} inner=${inner.length} outer=${outer.length}`,
   );

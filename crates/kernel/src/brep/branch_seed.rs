@@ -95,7 +95,7 @@ pub fn seed_branch_pairs(body: &BoundedCsg) -> SeedResult {
         // and the coincidence registry cannot gate them for carrier kinds it
         // does not model (RevolvedProfile): without this skip such a pair
         // floods SSI with `implicit ≡ 0` pseudo-roots (a circle per sample).
-        if pair.a.as_u32() == pair.b.as_u32() {
+        if pair.a.as_u64() == pair.b.as_u64() {
             continue;
         }
 
@@ -104,14 +104,14 @@ pub fn seed_branch_pairs(body: &BoundedCsg) -> SeedResult {
         // splits into two mirror arcs, the tracer stalls on them, and the
         // whole body falls to the octree (#435).
         {
-            let (a, b) = (pair.a.as_u32(), pair.b.as_u32());
+            let (a, b) = (pair.a.as_u64(), pair.b.as_u64());
             if tangential.contains(&(a.min(b), a.max(b))) {
                 continue;
             }
         }
 
         let (Some((ha, ta)), Some((hb, tb))) =
-            (map.get(&pair.a.as_u32()), map.get(&pair.b.as_u32()))
+            (map.get(&pair.a.as_u64()), map.get(&pair.b.as_u64()))
         else {
             // One (or both) branches are non-analytic → octree fallback.
             result.unresolved.push(pair);
@@ -174,11 +174,11 @@ mod tests {
 
     /// Canonical branch-pair signatures present in a seed set (each pair is one
     /// candidate edge; a pair now carries several seeds spread along the edge).
-    fn pair_set(seeds: &[EdgeSeed]) -> std::collections::HashSet<(u32, u32)> {
+    fn pair_set(seeds: &[EdgeSeed]) -> std::collections::HashSet<(u64, u64)> {
         seeds
             .iter()
             .map(|s| {
-                let (a, b) = (s.a.as_u32(), s.b.as_u32());
+                let (a, b) = (s.a.as_u64(), s.b.as_u64());
                 (a.min(b), a.max(b))
             })
             .collect()
@@ -213,8 +213,8 @@ mod tests {
         let res = seed_branch_pairs(&body);
 
         for seed in &res.seeds {
-            let (ha, ta) = map.get(&seed.a.as_u32()).expect("branch a in map");
-            let (hb, tb) = map.get(&seed.b.as_u32()).expect("branch b in map");
+            let (ha, ta) = map.get(&seed.a.as_u64()).expect("branch a in map");
+            let (hb, tb) = map.get(&seed.b.as_u64()).expect("branch b in map");
             let da = sdf_halfspace(ha, world_to_local(ta, seed.point)).abs();
             let db = sdf_halfspace(hb, world_to_local(tb, seed.point)).abs();
             assert!(da < ON_SURF, "seed {:?} not on branch a: |sdf|={da}", seed.point);
@@ -296,8 +296,8 @@ mod tests {
         // plane∩plane line is properly box-clipped, there are no off-surface
         // seeds at all.
         for s in &res.seeds {
-            let (ha, ta) = map.get(&s.a.as_u32()).expect("branch a in map");
-            let (hb, tb) = map.get(&s.b.as_u32()).expect("branch b in map");
+            let (ha, ta) = map.get(&s.a.as_u64()).expect("branch a in map");
+            let (hb, tb) = map.get(&s.b.as_u64()).expect("branch b in map");
             let da = sdf_halfspace(ha, world_to_local(ta, s.point)).abs();
             let db = sdf_halfspace(hb, world_to_local(tb, s.point)).abs();
             assert!(
@@ -308,12 +308,12 @@ mod tests {
         }
 
         // The 12 intrinsic box edges are all present (distinct intra-box pairs).
-        let box_edges: std::collections::HashSet<(u32, u32)> = res
+        let box_edges: std::collections::HashSet<(u64, u64)> = res
             .seeds
             .iter()
             .filter(|s| s.a.feature_id() == 1 && s.b.feature_id() == 1)
             .map(|s| {
-                let (a, b) = (s.a.as_u32(), s.b.as_u32());
+                let (a, b) = (s.a.as_u64(), s.b.as_u64());
                 (a.min(b), a.max(b))
             })
             .collect();

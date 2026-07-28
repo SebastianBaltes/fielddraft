@@ -13,7 +13,16 @@
 //!     just test-full
 //!     cargo nextest run --profile full -E 'test(/^onshape_regression_tests::/)'
 
+use crate::csg::BranchId;
 use crate::Kernel;
+
+/// Packed branch word of sub-face `sub` on feature `feature`, instance 0.
+/// The diagnostic probes below used to spell these out as decimal literals
+/// (`94338` = `qWall(23, 130)`); since #429/E1 the packing is BranchId's
+/// business and a literal would silently name something else.
+fn br(feature: u32, sub: u32) -> u64 {
+    BranchId::from_parts(feature, 0, sub).as_u64()
+}
 use std::time::Instant;
 
 #[derive(serde::Deserialize)]
@@ -334,7 +343,7 @@ fn onshape_419_full_import_stays_bounded() {
 
 /// World implicit of a branch carrier — 0 exactly on the carrier surface
 /// (mirror of the private `brep::ssi::implicit_world`).
-fn carrier_implicit(map: &crate::brep::BranchSurfaceMap, id: u32, p: [f32; 3]) -> f32 {
+fn carrier_implicit(map: &crate::brep::BranchSurfaceMap, id: u64, p: [f32; 3]) -> f32 {
     let (hs, t) = map.get(&id).expect("branch carrier in map");
     crate::csg::sdf_halfspace(hs, crate::world_to_local(t, p))
 }
@@ -344,7 +353,7 @@ fn carrier_implicit(map: &crate::brep::BranchSurfaceMap, id: u32, p: [f32; 3]) -
 /// regardless of the placement scale.
 fn carrier_plane(
     map: &crate::brep::BranchSurfaceMap,
-    id: u32,
+    id: u64,
     anchor: [f32; 3],
     h: f32,
 ) -> ([f32; 3], f32) {
@@ -392,7 +401,7 @@ fn onshape_419_body10_seam_activity_probe() {
 
     // Which faces are open, and on which branch do they sit?
     if let Some(brep) = kernel.bodies[10].brep_cached() {
-        let open: Vec<(usize, u32, usize)> = brep
+        let open: Vec<(usize, u64, usize)> = brep
             .faces
             .iter()
             .enumerate()
@@ -400,7 +409,7 @@ fn onshape_419_body10_seam_activity_probe() {
                 !f.outer.is_connected_ring(&brep.edges)
                     || !f.inner.iter().all(|lp| lp.is_connected_ring(&brep.edges))
             })
-            .map(|(i, f)| (i, f.branch_id.as_u32(), f.outer.edges.len()))
+            .map(|(i, f)| (i, f.branch_id.as_u64(), f.outer.edges.len()))
             .collect();
         println!("open faces (face, branch, outer edges): {open:?}");
         println!(
@@ -416,47 +425,50 @@ fn onshape_419_body10_seam_activity_probe() {
             .enumerate()
             .map(|(i, f)| {
                 let closed = f.outer.is_connected_ring(&brep.edges);
-                format!("{i}:b{} e{}{}", f.branch_id.as_u32(), f.outer.edges.len(), if closed { "" } else { "!" })
+                format!("{i}:b{} e{}{}", f.branch_id.as_u64(), f.outer.edges.len(), if closed { "" } else { "!" })
             })
             .collect();
         println!("all faces (idx:branch edges, ! = open): {all:?}");
         // The cap face 112638 — which edges does its loop carry?
         for (i, f) in brep.faces.iter().enumerate() {
-            if f.branch_id.as_u32() == 112638 {
-                let sigs: Vec<(u32, u32)> = f
+            // Feature 27, cap-bottom sub (was the packed literal 112638).
+            if f.branch_id == BranchId::from_parts(27, 0, BranchId::EXTRUDE_CAP_BOTTOM_SUB) {
+                let sigs: Vec<(u64, u64)> = f
                     .outer
                     .edges
                     .iter()
                     .map(|(e, _)| {
                         let ed = &brep.edges[e.0 as usize];
-                        (ed.signature.0.as_u32(), ed.signature.1.as_u32())
+                        (ed.signature.0.as_u64(), ed.signature.1.as_u64())
                     })
                     .collect();
-                println!("  cap face {i} (112638) loop signatures: {sigs:?}");
+                println!("  cap face {i} (27/CAP_BOTTOM) loop signatures: {sigs:?}");
             }
         }
 
         // Where are the wall facets actually boundary? Every face on a facet
         // branch plus every edge whose signature names one.
-        for want in [131093u32, 131094, 131097, 131098, 131099, 131111, 131112] {
+        for want in [21u32, 22, 25, 26, 27, 39, 40]
+            .map(|sub| BranchId::from_parts(32, 0, sub).as_u64())
+        {
             let faces: Vec<usize> = brep
                 .faces
                 .iter()
                 .enumerate()
-                .filter(|(_, f)| f.branch_id.as_u32() == want)
+                .filter(|(_, f)| f.branch_id.as_u64() == want)
                 .map(|(i, _)| i)
                 .collect();
             let edges: Vec<String> = brep
                 .edges
                 .iter()
-                .filter(|e| e.signature.0.as_u32() == want || e.signature.1.as_u32() == want)
+                .filter(|e| e.signature.0.as_u64() == want || e.signature.1.as_u64() == want)
                 .map(|e| {
                     let sv = e.start.map(|v| brep.vertices[v.0 as usize].position);
                     let ev = e.end.map(|v| brep.vertices[v.0 as usize].position);
                     format!(
                         "({},{}) {:?}→{:?}",
-                        e.signature.0.as_u32(),
-                        e.signature.1.as_u32(),
+                        e.signature.0.as_u64(),
+                        e.signature.1.as_u64(),
                         sv.map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]),
                         ev.map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]),
                     )
@@ -467,7 +479,7 @@ fn onshape_419_body10_seam_activity_probe() {
     }
 
     let map = crate::brep::weaving::branch_halfspace_map(&bounded);
-    let mut ids: Vec<u32> = map.keys().copied().collect();
+    let mut ids: Vec<u64> = map.keys().copied().collect();
     ids.sort_unstable();
     println!("branches on body 10: {} → {ids:?}", ids.len());
 
@@ -514,17 +526,17 @@ fn onshape_419_body10_seam_activity_probe() {
     // Is the facet wall boundary ANYWHERE above the cap plane? Walk up from
     // the midpoint of each open facet's single edge.
     for (label, mid) in [
-        ("131093", [-2.0410f32, 18.6999, 0.0]),
-        ("131094", [-2.4727f32, 18.6600, 0.0]),
-        ("131097", [-26.5892f32, -7.6000, 0.0]),
-        ("131099", [-26.6393f32, -5.8993, 0.0]),
+        ("32/21", [-2.0410f32, 18.6999, 0.0]),
+        ("32/22", [-2.4727f32, 18.6600, 0.0]),
+        ("32/25", [-26.5892f32, -7.6000, 0.0]),
+        ("32/27", [-26.6393f32, -5.8993, 0.0]),
     ] {
         let mut out = String::new();
         for k in 0..12 {
             let z = 0.05 * (2.0f32).powi(k as i32);
             let p = [mid[0], mid[1], z];
             let (f, c) = bounded.evaluate(p, eps, crate::csg::EvalMode::Logical);
-            let set: Vec<u32> = c.as_slice().iter().map(|b| b.as_u32()).collect();
+            let set: Vec<u64> = c.as_slice().iter().map(|b| b.as_u64()).collect();
             out.push_str(&format!(" z={z:.2}:f={f:.4}{set:?}"));
             if z > 20.0 {
                 break;
@@ -533,7 +545,7 @@ fn onshape_419_body10_seam_activity_probe() {
         println!("  facet {label} midpoint climb:{out}");
     }
 
-    for &(a, b) in &[(131111u32, 131112u32), (131093u32, 131094u32)] {
+    for &(a, b) in &[(br(32, 39), br(32, 40)), (br(32, 21), br(32, 22))] {
         probe_pair(&bounded, &map, a, b, bb, diag, eps);
     }
 }
@@ -541,8 +553,8 @@ fn onshape_419_body10_seam_activity_probe() {
 fn probe_pair(
     bounded: &crate::bvh::BoundedCsg,
     map: &crate::brep::BranchSurfaceMap,
-    ida: u32,
-    idb: u32,
+    ida: u64,
+    idb: u64,
     bb: crate::csg::Aabb,
     diag: f32,
     eps: f32,
@@ -610,13 +622,13 @@ fn probe_pair(
         let (mut on_b, mut both_c, mut active) = (0usize, 0usize, 0usize);
         let mut min_abs_f = f32::INFINITY;
         let mut min_at = 0.0f32;
-        let mut min_contrib: Vec<u32> = Vec::new();
-        let mut sets: std::collections::BTreeMap<Vec<u32>, usize> = Default::default();
+        let mut min_contrib: Vec<u64> = Vec::new();
+        let mut sets: std::collections::BTreeMap<Vec<u64>, usize> = Default::default();
         for i in 0..=n {
             let s = -span + step * i as f32;
             let p = [p0[0] + t[0] * s, p0[1] + t[1] * s, p0[2] + t[2] * s];
             let (f, c) = bounded.evaluate(p, e, crate::csg::EvalMode::Logical);
-            let mut set: Vec<u32> = c.as_slice().iter().map(|b| b.as_u32()).collect();
+            let mut set: Vec<u64> = c.as_slice().iter().map(|b| b.as_u64()).collect();
             set.sort_unstable();
             let has_both = c.as_slice().contains(&ba) && c.as_slice().contains(&bbr);
             let onb = f.abs() <= e;
@@ -657,7 +669,7 @@ fn probe_pair(
     while s <= 12.0 {
         let p = [p0[0] + t[0] * s, p0[1] + t[1] * s, p0[2] + t[2] * s];
         let (f, c) = bounded.evaluate(p, eps * 10.0, crate::csg::EvalMode::Logical);
-        let set: Vec<u32> = c.as_slice().iter().map(|b| b.as_u32()).collect();
+        let set: Vec<u64> = c.as_slice().iter().map(|b| b.as_u64()).collect();
         println!("    {s:>7.2} | {:>7.3} | {f:>10.5} | {set:?}", p[2]);
         s += 1.0;
     }
@@ -678,13 +690,13 @@ fn onshape_419_qwall_23_130_face_probe() {
             .faces
             .iter()
             .enumerate()
-            .filter(|(_, f)| f.branch_id.as_u32() == 94338)
+            .filter(|(_, f)| f.branch_id.as_u64() == br(23, 130))
             .map(|(k, f)| (k, f.outer.edges.len(), f.outer.is_connected_ring(&brep.edges)))
             .collect();
         let edges = brep
             .edges
             .iter()
-            .filter(|e| e.signature.0.as_u32() == 94338 || e.signature.1.as_u32() == 94338)
+            .filter(|e| e.signature.0.as_u64() == 94338 || e.signature.1.as_u64() == 94338)
             .count();
         println!("QWALL body {i}: faces {hits:?}, edges naming 94338: {edges}");
         let b = &kernel.bodies[i];
@@ -710,7 +722,7 @@ fn onshape_419_qwall_23_130_face_probe() {
 /// much of it is boundary. This variant never assumes a shape — it Newton-
 /// projects a dense volume grid onto the carrier's own zero set along
 /// `∇(carrier implicit)` and evaluates the body field there.
-fn carrier_coverage_curved(bounded: &crate::bvh::BoundedCsg, id: u32, res: usize) {
+fn carrier_coverage_curved(bounded: &crate::bvh::BoundedCsg, id: u64, res: usize) {
     let map = crate::brep::weaving::branch_halfspace_map(bounded);
     let bb = bounded.aabb();
     let s = bb.size();
@@ -819,7 +831,7 @@ fn onshape_440_thicken6_carrier_probe() {
     }
     let bounded = crate::body::build_bounded_for_body_local(&kernel.decoded, &idxs, &place);
     let map = crate::brep::weaving::branch_halfspace_map(&bounded);
-    for want in [94338u32, 94347] {
+    for want in [br(23, 130), br(23, 139)] {
         match map.get(&want) {
             Some((hs, t)) => {
                 let d = format!("{hs:?}");
@@ -840,9 +852,9 @@ fn onshape_440_thicken6_carrier_probe() {
         .map(|(i, f)| {
             format!(
                 "{i}:b{}({}/{}) e{}{}",
-                f.branch_id.as_u32(),
-                f.branch_id.as_u32() >> 12,
-                f.branch_id.as_u32() & 4095,
+                f.branch_id.as_u64(),
+                f.branch_id.as_u64() >> 12,
+                f.branch_id.as_u64() & 4095,
                 f.outer.edges.len(),
                 if f.outer.is_connected_ring(&brep.edges) { "" } else { "!" }
             )
@@ -851,7 +863,7 @@ fn onshape_440_thicken6_carrier_probe() {
     println!("BODY {bi} faces (idx:branch(op/entity) edges, ! = open): {inv:?}");
 
     for (ei, e) in brep.edges.iter().enumerate() {
-        let (a, c) = (e.signature.0.as_u32(), e.signature.1.as_u32());
+        let (a, c) = (e.signature.0.as_u64(), e.signature.1.as_u64());
         if a != 94338 && c != 94338 {
             continue;
         }
@@ -1125,7 +1137,7 @@ fn onshape_419_body4_face_inventory_probe() {
         .map(|f| {
             format!(
                 "b{}:{}{}",
-                f.branch_id.as_u32(),
+                f.branch_id.as_u64(),
                 f.outer.edges.len(),
                 if f.outer.is_connected_ring(&brep.edges) { "" } else { "!" }
             )
@@ -1139,10 +1151,10 @@ fn onshape_419_body4_face_inventory_probe() {
         brep.manifold_violations().len(),
         brep.shells.iter().all(|s| s.is_closed),
     );
-    let sigs: Vec<(u32, u32)> = brep
+    let sigs: Vec<(u64, u64)> = brep
         .edges
         .iter()
-        .map(|e| (e.signature.0.as_u32(), e.signature.1.as_u32()))
+        .map(|e| (e.signature.0.as_u64(), e.signature.1.as_u64()))
         .collect();
     println!("BODY4 edge signatures: {sigs:?}");
 
@@ -1153,7 +1165,7 @@ fn onshape_419_body4_face_inventory_probe() {
         &b.feature_indices,
         &b.placement,
     );
-    for want in [41108u32, 45195, 45204, 40973, 41111, 43006] {
+    for want in [br(10, 148), br(11, 139), br(11, 148), br(10, 13), br(10, 151), br(10, 0x7FE)] {
         carrier_coverage(&bounded, want);
     }
 }
@@ -1169,7 +1181,7 @@ fn onshape_419_body4_face_inventory_probe() {
 /// that branch 94338 (an `InfiniteCylinder`) was nowhere boundary. For anything
 /// that is not a [`fielddraft_protocol::HalfSpace::Plane`], use
 /// [`carrier_coverage_curved`].
-fn carrier_coverage(bounded: &crate::bvh::BoundedCsg, id: u32) {
+fn carrier_coverage(bounded: &crate::bvh::BoundedCsg, id: u64) {
     let map = crate::brep::weaving::branch_halfspace_map(bounded);
     let bb = bounded.aabb();
     let s = bb.size();

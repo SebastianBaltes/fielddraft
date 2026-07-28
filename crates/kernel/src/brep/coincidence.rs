@@ -111,7 +111,7 @@ pub struct TangentSeam {
 #[derive(Debug, Default)]
 pub struct CoincidenceRegistry {
     classes: Vec<CoincidenceClass>,
-    by_branch: HashMap<u32, (usize, RelOrientation)>,
+    by_branch: HashMap<u64, (usize, RelOrientation)>,
     /// Order-1 contacts (tangent circles between coaxial revolution
     /// carriers) — the Phase-1 docking point for tangential contact, now
     /// populated for the analytic pair zoo (sphere↔cylinder, sphere↔cone,
@@ -137,10 +137,10 @@ impl CoincidenceRegistry {
         let halfspaces = branch_halfspace_map(body);
 
         // Deterministic iteration order: sort by branch id.
-        let mut branches: Vec<u32> = halfspaces.keys().copied().collect();
+        let mut branches: Vec<u64> = halfspaces.keys().copied().collect();
         branches.sort_unstable();
 
-        let carriers: Vec<(u32, Carrier)> = branches
+        let carriers: Vec<(u64, Carrier)> = branches
             .iter()
             .filter_map(|&b| {
                 let (hs, xf) = &halfspaces[&b];
@@ -169,7 +169,7 @@ impl CoincidenceRegistry {
         for (_, members) in classes.into_iter().filter(|(_, m)| m.len() >= 2) {
             let idx = out.classes.len();
             for &(branch, rel) in &members {
-                out.by_branch.insert(branch.as_u32(), (idx, rel));
+                out.by_branch.insert(branch.as_u64(), (idx, rel));
             }
             out.classes.push(CoincidenceClass { members, order: ContactOrder::Coincident });
         }
@@ -220,7 +220,7 @@ impl CoincidenceRegistry {
     /// The class id and representative-relative orientation of a branch, if
     /// it has coincidence partners.
     pub fn class_of(&self, branch: BranchId) -> Option<(usize, RelOrientation)> {
-        self.by_branch.get(&branch.as_u32()).copied()
+        self.by_branch.get(&branch.as_u64()).copied()
     }
 
     /// Relative body-outward orientation of two branches IF they share a

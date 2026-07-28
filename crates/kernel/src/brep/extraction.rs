@@ -255,7 +255,7 @@ fn project_branch(
     // shelled bodies, whose two parallel zero-surfaces defeat the generic body-
     // SDF Newton below (a seed slides between the inner wall and the outer
     // surface). For every other body `halfspaces` is empty → unchanged.
-    if let Some((hs, xf)) = halfspaces.get(&branch.as_u32()) {
+    if let Some((hs, xf)) = halfspaces.get(&branch.as_u64()) {
         if let Some(proj) = project_branch_analytic(hs, xf, cell.center()) {
             return Some(proj);
         }
@@ -517,7 +517,7 @@ fn reproject_branch_near(
 ) -> Option<ProjectedPoint> {
     // Analytic fast path (DL-75): re-anchor straight onto the branch's own
     // surface, never the wrong sheet of a shelled body's twin surfaces.
-    if let Some((hs, xf)) = halfspaces.get(&branch.as_u32()) {
+    if let Some((hs, xf)) = halfspaces.get(&branch.as_u64()) {
         if let Some(proj) = project_branch_analytic(hs, xf, p) {
             return Some(proj);
         }
@@ -827,7 +827,7 @@ pub fn extract_edge_point(
         return None;
     }
 
-    let signature = if ba.as_u32() <= bb.as_u32() {
+    let signature = if ba.as_u64() <= bb.as_u64() {
         (ba, bb)
     } else {
         (bb, ba)
@@ -1098,7 +1098,7 @@ mod tests {
                     "edge tangent not axis-aligned: {:?}",
                     ep.tangent
                 );
-                signatures.insert((ep.signature.0.as_u32(), ep.signature.1.as_u32()));
+                signatures.insert((ep.signature.0.as_u64(), ep.signature.1.as_u64()));
             }
         }
         assert!(count > 0, "no edge points extracted");
@@ -1116,7 +1116,7 @@ mod tests {
         let octree = Octree::build(&body, 0.25);
 
         // Collect one extracted vertex per distinct branch triple.
-        let mut by_branches: std::collections::HashMap<Vec<u32>, [f64; 3]> =
+        let mut by_branches: std::collections::HashMap<Vec<u64>, [f64; 3]> =
             std::collections::HashMap::new();
         for cell in octree.vertex_cells() {
             if let Some(v) = extract_vertex(&body, cell, &BranchSurfaceMap::new()) {
@@ -1125,7 +1125,7 @@ mod tests {
                     "vertex with <3 branches: {:?}",
                     v.branches
                 );
-                let key: Vec<u32> = v.branches.iter().map(|b| b.as_u32()).collect();
+                let key: Vec<u64> = v.branches.iter().map(|b| b.as_u64()).collect();
                 by_branches.insert(key, v.position);
             }
         }
@@ -1160,11 +1160,11 @@ mod tests {
 
         let edge_sigs: HashSet<_> = edges
             .iter()
-            .map(|e| (e.signature.0.as_u32(), e.signature.1.as_u32()))
+            .map(|e| (e.signature.0.as_u64(), e.signature.1.as_u64()))
             .collect();
-        let vert_sets: HashSet<Vec<u32>> = vertices
+        let vert_sets: HashSet<Vec<u64>> = vertices
             .iter()
-            .map(|v| v.branches.iter().map(|b| b.as_u32()).collect())
+            .map(|v| v.branches.iter().map(|b| b.as_u64()).collect())
             .collect();
         assert_eq!(edge_sigs.len(), 12, "12 cube edges");
         assert_eq!(vert_sets.len(), 8, "8 cube corners");
@@ -1297,9 +1297,10 @@ mod tests {
 
         // The sphere branch is the lone Sphere leaf; every edge it participates
         // in is a box-face∩sphere seam. Each such point must sit on z=10.
+        let sphere = crate::csg::BranchId::from_parts(2, 0, 0);
         let sphere_seam: Vec<_> = edges
             .iter()
-            .filter(|e| e.signature.0.as_u32() == 8192 || e.signature.1.as_u32() == 8192)
+            .filter(|e| e.signature.0 == sphere || e.signature.1 == sphere)
             .collect();
         assert!(!sphere_seam.is_empty(), "no sphere seam extracted");
         for e in &sphere_seam {
@@ -1321,10 +1322,11 @@ mod tests {
         let octree = Octree::build(&body, 0.5);
         let brep = weave(&body, &octree);
 
+        let sphere = crate::csg::BranchId::from_parts(2, 0, 0);
         let seam_edges: Vec<_> = brep
             .edges
             .iter()
-            .filter(|e| e.signature.0.as_u32() == 8192 || e.signature.1.as_u32() == 8192)
+            .filter(|e| e.signature.0 == sphere || e.signature.1 == sphere)
             .collect();
         assert_eq!(
             seam_edges.len(),
@@ -1404,7 +1406,7 @@ mod tests {
                 "edge tangent not unit: {:?}",
                 e.tangent
             );
-            edge_sigs.insert((e.signature.0.as_u32(), e.signature.1.as_u32()));
+            edge_sigs.insert((e.signature.0.as_u64(), e.signature.1.as_u64()));
         }
 
         let mut vert_sets = HashSet::new();
@@ -1425,7 +1427,7 @@ mod tests {
                 "vertex with <3 branches: {:?}",
                 v.branches
             );
-            let key: Vec<u32> = v.branches.iter().map(|b| b.as_u32()).collect();
+            let key: Vec<u64> = v.branches.iter().map(|b| b.as_u64()).collect();
             vert_sets.insert(key);
         }
 
@@ -1500,7 +1502,7 @@ mod tests {
             assert!(
                 f.outer.is_connected_ring(&brep.edges),
                 "face {fi} (branch {}) outer loop is not a connected ring",
-                f.branch_id.as_u32()
+                f.branch_id.as_u64()
             );
             for (li, lp) in f.inner.iter().enumerate() {
                 assert!(
@@ -1518,8 +1520,8 @@ mod tests {
             assert!(
                 both || loop_edge,
                 "dangling edge sig=({},{}) start={:?} end={:?}",
-                e.signature.0.as_u32(),
-                e.signature.1.as_u32(),
+                e.signature.0.as_u64(),
+                e.signature.1.as_u64(),
                 e.start,
                 e.end
             );

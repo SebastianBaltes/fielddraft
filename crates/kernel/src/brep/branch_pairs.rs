@@ -77,7 +77,7 @@ pub enum PairOrigin {
 
 /// A candidate pair of branches whose surfaces *might* meet in an edge, with the
 /// per-axis AABB intersection of the two branches as the seed search box for
-/// Phase 1b. The pair is canonicalised so `a.as_u32() <= b.as_u32()`.
+/// Phase 1b. The pair is canonicalised so `a.as_u64() <= b.as_u64()`.
 ///
 /// This is a **candidate**: pair enumeration deliberately over-generates (a box
 /// yields all C(6,2)=15 intrinsic pairs including the 3 parallel-opposite-face
@@ -298,7 +298,7 @@ fn walk(node: &BoundedCsg, out: &mut Vec<Branch>) {
             walk(inner, out);
             let walls: Vec<Branch> = out[before..]
                 .iter()
-                .filter(|b| !open_faces.iter().any(|f| f.branch == b.id.as_u32()))
+                .filter(|b| !open_faces.iter().any(|f| f.branch == b.id.as_u64()))
                 .map(|b| Branch { id: b.id.inner_wall(), ..*b })
                 .collect();
             out.extend(walls);
@@ -361,11 +361,11 @@ fn aabb_overlap(a: &Aabb, b: &Aabb) -> Option<Aabb> {
     Some(Aabb { min, max })
 }
 
-/// Build a canonicalised [`BranchPair`] (`a.as_u32() <= b.as_u32()`) from two
+/// Build a canonicalised [`BranchPair`] (`a.as_u64() <= b.as_u64()`) from two
 /// branches and a pre-computed overlap box, so pairs are deterministic and
 /// `(a,b)` is never emitted alongside `(b,a)`.
 fn make_pair(x: &Branch, y: &Branch, overlap: Aabb, origin: PairOrigin) -> BranchPair {
-    let (a, b) = if x.id.as_u32() <= y.id.as_u32() { (x, y) } else { (y, x) };
+    let (a, b) = if x.id.as_u64() <= y.id.as_u64() { (x, y) } else { (y, x) };
     BranchPair {
         a: a.id,
         b: b.id,
@@ -435,7 +435,7 @@ fn collect_pairs(node: &BoundedCsg, out: &mut Vec<BranchPair>) -> Vec<Branch> {
             let bs = collect_pairs(inner, out);
             let walls: Vec<Branch> = bs
                 .iter()
-                .filter(|b| !open_faces.iter().any(|f| f.branch == b.id.as_u32()))
+                .filter(|b| !open_faces.iter().any(|f| f.branch == b.id.as_u64()))
                 .map(|b| Branch { id: b.id.inner_wall(), ..*b })
                 .collect();
             let origin = |x: &Branch, y: &Branch| {
@@ -509,7 +509,7 @@ mod tests {
             assert!(
                 aabb_non_degenerate(&b.aabb),
                 "branch {:?} has a degenerate AABB {:?}",
-                b.id.as_u32(),
+                b.id.as_u64(),
                 b.aabb
             );
         }
@@ -663,8 +663,8 @@ mod tests {
     // ---- candidate branch-pair enumeration ----------------------------------
 
     fn assert_no_dup_pairs(pairs: &[BranchPair]) {
-        let mut keys: Vec<(u32, u32)> =
-            pairs.iter().map(|p| (p.a.as_u32(), p.b.as_u32())).collect();
+        let mut keys: Vec<(u64, u64)> =
+            pairs.iter().map(|p| (p.a.as_u64(), p.b.as_u64())).collect();
         let n = keys.len();
         keys.sort_unstable();
         keys.dedup();
@@ -674,10 +674,10 @@ mod tests {
     fn assert_canonical(pairs: &[BranchPair]) {
         for p in pairs {
             assert!(
-                p.a.as_u32() <= p.b.as_u32(),
+                p.a.as_u64() <= p.b.as_u64(),
                 "pair not canonicalised: {} > {}",
-                p.a.as_u32(),
-                p.b.as_u32()
+                p.a.as_u64(),
+                p.b.as_u64()
             );
         }
     }
@@ -687,8 +687,8 @@ mod tests {
             assert!(
                 aabb_non_degenerate(&p.overlap),
                 "pair ({},{}) has an inverted overlap box {:?}",
-                p.a.as_u32(),
-                p.b.as_u32(),
+                p.a.as_u64(),
+                p.b.as_u64(),
                 p.overlap
             );
         }

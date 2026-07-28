@@ -88,22 +88,22 @@ use fielddraft_protocol::{HalfSpace, Transform};
 /// half-space in its world transform, walked off the CSG tree by
 /// [`weaving::branch_halfspace_map`]. The shared input of SSI seeding, the
 /// coincidence registry, face materialisation and vertex refinement.
-pub type BranchSurfaceMap = std::collections::HashMap<u32, (HalfSpace, Transform)>;
+pub type BranchSurfaceMap = std::collections::HashMap<u64, (HalfSpace, Transform)>;
 
 /// serde adapter for [`BranchId`], which is a protocol-adjacent newtype that
 /// deliberately does not derive `Serialize`/`Deserialize` itself. We round-trip
-/// it through its public `u32` payload so B-Rep entities stay serialisable
+/// it through its public `u64` payload so B-Rep entities stay serialisable
 /// without reaching outside this module.
 mod branch_id_serde {
     use super::BranchId;
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(id: &BranchId, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_u32(id.as_u32())
+        s.serialize_u64(id.as_u64())
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BranchId, D::Error> {
-        Ok(BranchId(u32::deserialize(d)?))
+        Ok(BranchId(u64::deserialize(d)?))
     }
 }
 
@@ -116,13 +116,13 @@ mod branch_pair_serde {
         pair: &(BranchId, BranchId),
         s: S,
     ) -> Result<S::Ok, S::Error> {
-        [pair.0.as_u32(), pair.1.as_u32()].serialize(s)
+        [pair.0.as_u64(), pair.1.as_u64()].serialize(s)
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(
         d: D,
     ) -> Result<(BranchId, BranchId), D::Error> {
-        let [a, b] = <[u32; 2]>::deserialize(d)?;
+        let [a, b] = <[u64; 2]>::deserialize(d)?;
         Ok((BranchId(a), BranchId(b)))
     }
 }
@@ -133,12 +133,12 @@ mod branch_vec_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<S: Serializer>(ids: &[BranchId], s: S) -> Result<S::Ok, S::Error> {
-        let raw: Vec<u32> = ids.iter().map(|b| b.as_u32()).collect();
+        let raw: Vec<u64> = ids.iter().map(|b| b.as_u64()).collect();
         raw.serialize(s)
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<BranchId>, D::Error> {
-        let raw = Vec::<u32>::deserialize(d)?;
+        let raw = Vec::<u64>::deserialize(d)?;
         Ok(raw.into_iter().map(BranchId).collect())
     }
 }
@@ -183,7 +183,7 @@ impl Vertex {
     /// Build a vertex, canonicalising `branches` (sort + dedup) so equality
     /// is independent of insertion order.
     pub fn new(position: [f64; 3], mut branches: Vec<BranchId>) -> Self {
-        branches.sort_unstable_by_key(|b| b.as_u32());
+        branches.sort_unstable_by_key(|b| b.as_u64());
         branches.dedup();
         Self { position, branches }
     }
@@ -254,7 +254,7 @@ impl Edge {
         start: Option<VertexId>,
         end: Option<VertexId>,
     ) -> Self {
-        let signature = if a.as_u32() <= b.as_u32() {
+        let signature = if a.as_u64() <= b.as_u64() {
             (a, b)
         } else {
             (b, a)
@@ -578,11 +578,11 @@ impl BRep {
         let ns = self.shells.len() as u32;
 
         for (i, edge) in self.edges.iter().enumerate() {
-            if edge.signature.0.as_u32() > edge.signature.1.as_u32() {
+            if edge.signature.0.as_u64() > edge.signature.1.as_u64() {
                 problems.push(format!(
                     "edge {i}: signature not canonically sorted ({} > {})",
-                    edge.signature.0.as_u32(),
-                    edge.signature.1.as_u32()
+                    edge.signature.0.as_u64(),
+                    edge.signature.1.as_u64()
                 ));
             }
             for (label, v) in [("start", edge.start), ("end", edge.end)] {
@@ -1000,7 +1000,7 @@ mod tests {
         let e_ab = Edge::new(EdgeGeometry::Polyline(vec![]), a, b, None, None);
         let e_ba = Edge::new(EdgeGeometry::Polyline(vec![]), b, a, None, None);
         assert_eq!(e_ab.signature, e_ba.signature);
-        assert!(e_ab.signature.0.as_u32() <= e_ab.signature.1.as_u32());
+        assert!(e_ab.signature.0.as_u64() <= e_ab.signature.1.as_u64());
         assert_eq!(e_ab.signature, (a, b));
     }
 }

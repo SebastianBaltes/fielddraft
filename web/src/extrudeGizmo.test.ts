@@ -13,6 +13,7 @@ import {
   type Vec3,
 } from "./extrudeGizmo";
 import type { BRepEdge, BRepFace, Placement } from "./kernel";
+import { FEATURE_SHIFT } from "./selectionLinks";
 
 const IDENTITY: Placement = {
   translate: [0, 0, 0],
@@ -155,18 +156,22 @@ describe("resolveExtrudeAnchor", () => {
 
   it("finds the tip face and its outline for the extrude's branch", () => {
     const EXT = 7;
-    const capBranch = (EXT << 12) | 1;
+    // Pack through the shared layout helper — `<< 12` is the OLD (u32) form
+    // and would name a different face since #429/E1.
+    const pack = (feature: number, sub: number) =>
+      feature * 2 ** FEATURE_SHIFT + sub;
+    const capBranch = pack(EXT, 1);
     const k = kernelWith(
       [
-        face("box", 1, 1 << 12, [0, 0, 0], [0, 0, -1]),
+        face("box", 1, pack(1, 0), [0, 0, 0], [0, 0, -1]),
         face("cap", EXT, capBranch, [55, 0, 0], [1, 0, 0]),
-        face("side1", EXT, (EXT << 12) | 2, [52, 5, 0], [0, 1, 0]),
-        face("side2", EXT, (EXT << 12) | 3, [52, -5, 0], [0, -1, 0]),
+        face("side1", EXT, pack(EXT, 2), [52, 5, 0], [0, 1, 0]),
+        face("side2", EXT, pack(EXT, 3), [52, -5, 0], [0, -1, 0]),
       ],
       [
-        edge(capBranch, (EXT << 12) | 2, [55, 5, -5, 55, 5, 5]),
-        edge((EXT << 12) | 3, capBranch, [55, -5, -5, 55, -5, 5]),
-        edge(1 << 12, 1 << 12, [0, 0, 0, 1, 1, 1]), // unrelated
+        edge(capBranch, pack(EXT, 2), [55, 5, -5, 55, 5, 5]),
+        edge(pack(EXT, 3), capBranch, [55, -5, -5, 55, -5, 5]),
+        edge(pack(1, 0), pack(1, 0), [0, 0, 0, 1, 1, 1]), // unrelated
       ],
     );
     const anchor = resolveExtrudeAnchor(k, EXT);

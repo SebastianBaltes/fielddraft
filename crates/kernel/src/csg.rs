@@ -21,25 +21,46 @@ use crate::{quat_rotate, sdf_primitive, world_to_local};
 /// Stable identifier of a CSG branch — a primitive *sub-face* (a box
 /// face, a cylinder cap, a sketch segment), not just a whole feature.
 ///
-/// Packs a `FeatureId`'s flat numeric id into the high bits and a local
-/// sub-index into the low [`BranchId::SUB_BITS`] bits, so a single `u32`
-/// names "the +X face of feature 7" without a separate side table. The
+/// Packs a `FeatureId`'s flat numeric id, a **pattern instance ordinal**
+/// and a local sub-index into a single `u64`, so one word names "the +X
+/// face of the 2nd copy of feature 7" without a separate side table. The
 /// B-Rep substrate keys faces/edges off these ids; the sub-index lets a
 /// primitive's six faces (or a sketch's many segments) each get a
 /// distinct, Copy, hashable identity.
 ///
+/// Layout (#429/E1) — 44 significant bits, low to high:
+///
+/// | bits | field | meaning |
+/// | --- | --- | --- |
+/// | 0..11 | `sub` | per-feature sub-face (sketch entity ordinal, cap, inner-wall flag) |
+/// | 12..23 | `instance` | pattern instance ordinal; 0 = the original |
+/// | 24..43 | `feature` | flat feature id (root ancestor) |
+/// | 44..63 | — | reserved, always 0 |
+///
+/// **Why 44 bits and not 64:** the packed id crosses the wasm boundary as
+/// a plain JSON number (`branchId` in `bodyBrepFaces`, `a`/`b` in
+/// `bodyBrepEdges`). JavaScript integers are exact only below 2^53, so the
+/// layout deliberately stays inside that range — 2^44−1 ≈ 1.76e13. Anything
+/// that widens a field further has to move the wire to strings first.
+///
 /// Being a plain `u32` newtype makes [`Contributors`] `Copy`, which the
 /// hot evaluate path relies on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct BranchId(pub u32);
+pub struct BranchId(pub u64);
 
 impl BranchId {
-    pub const SENTINEL: u32 = u32::MAX;
+    pub const SENTINEL: u64 = u64::MAX;
     /// Bits reserved for the per-feature sub-index. 12 bits → 4096
-    /// sub-ids per feature (enough for sketch segments), leaving 20
-    /// bits ≈ 1M feature ids.
-    const SUB_BITS: u32 = 12;
-    const SUB_MASK: u32 = 0xFFF;
+    /// sub-ids per feature (enough for sketch segments).
+    pub const SUB_BITS: u32 = 12;
+    const SUB_MASK: u64 = 0xFFF;
+    /// Bits reserved for the pattern instance ordinal (#429/E1). 12 bits →
+    /// 4095 copies plus the original.
+    pub const INSTANCE_BITS: u32 = 12;
+    const INSTANCE_MASK: u64 = 0xFFF;
+    /// Where the flat feature id starts. 20 bits ≈ 1M feature ids.
+    pub const FEATURE_SHIFT: u32 = Self::SUB_BITS + Self::INSTANCE_BITS;
+    const FEATURE_MASK: u64 = 0xF_FFFF;
 
     /// Bit 11 of the 12-bit sub field, reserved as the inner-wall flag (DL-75).
     /// A shelled body's inner wall is the outer face offset inward by the wall
@@ -62,19 +83,50 @@ impl BranchId {
 
     /// Branch id for a whole feature (sub-index 0).
     pub fn from_feature(id: &FeatureId) -> Self {
-        let base = id.as_u32_or_root().unwrap_or(0);
-        Self(base << Self::SUB_BITS)
+        Self::from_feature_sub(id, 0)
     }
 
     /// Branch id for sub-face `sub` of feature `id`.
+    ///
+    /// The instance ordinal comes from the *id*, not from the geometry:
+    /// [`FeatureId::instance_ordinal`] reads it off the hierarchical clone
+    /// id a pattern mints (`«pattern».«source»~«i»`). That is what makes a
+    /// copy's name survive a rearrangement — flipping the pattern direction
+    /// moves the body, not the ordinal (#429/E1).
     pub fn from_feature_sub(id: &FeatureId, sub: u32) -> Self {
-        let base = id.as_u32_or_root().unwrap_or(0);
-        Self((base << Self::SUB_BITS) | (sub & Self::SUB_MASK))
+        let (feature, instance) = id.branch_identity();
+        Self::from_parts(feature, instance, sub)
     }
 
-    /// The flat feature id (sub-index stripped).
+    /// Pack the three fields. Each is masked to its width — a feature id
+    /// ≥ 2^20, an ordinal ≥ 4096 or a sub ≥ 4096 aliases rather than
+    /// corrupting a neighbouring field.
+    pub fn from_parts(feature: u32, instance: u32, sub: u32) -> Self {
+        Self(
+            ((feature as u64 & Self::FEATURE_MASK) << Self::FEATURE_SHIFT)
+                | ((instance as u64 & Self::INSTANCE_MASK) << Self::SUB_BITS)
+                | (sub as u64 & Self::SUB_MASK),
+        )
+    }
+
+    /// The flat feature id (instance and sub-index stripped).
     pub fn feature_id(self) -> u32 {
-        self.0 >> Self::SUB_BITS
+        ((self.0 >> Self::FEATURE_SHIFT) & Self::FEATURE_MASK) as u32
+    }
+
+    /// The pattern instance ordinal (#429/E1). `0` is the original body —
+    /// every branch that a pattern did not copy reads 0, so the field is
+    /// invisible to models without patterns.
+    pub fn instance(self) -> u32 {
+        ((self.0 >> Self::SUB_BITS) & Self::INSTANCE_MASK) as u32
+    }
+
+    /// Same feature and sub-face, but on instance `instance` of a pattern
+    /// whose feature id is `feature`. This is the whole of `qInstance`'s
+    /// resolution rule: a copy's branch differs from the original's only in
+    /// the feature and instance fields.
+    pub fn on_instance(self, feature: u32, instance: u32) -> Self {
+        Self::from_parts(feature, instance, self.sub())
     }
 
     /// The per-feature sub-index (the low [`SUB_BITS`](Self::SUB_BITS) bits,
@@ -84,22 +136,22 @@ impl BranchId {
     /// profile has no table (fallback / legacy). For a cap it is one of the
     /// reserved cap sub-ids.
     pub fn sub(self) -> u32 {
-        self.0 & Self::SUB_MASK
+        (self.0 & Self::SUB_MASK) as u32
     }
 
     /// Map this (outer) branch to its shell inner-wall counterpart (DL-75) by
     /// setting [`INNER_WALL_FLAG`](Self::INNER_WALL_FLAG). Idempotent; leaves
     /// `feature_id()` unchanged.
     pub fn inner_wall(self) -> Self {
-        Self(self.0 | Self::INNER_WALL_FLAG)
+        Self(self.0 | Self::INNER_WALL_FLAG as u64)
     }
 
     /// True if this branch is a shell inner-wall face (DL-75).
     pub fn is_inner_wall(self) -> bool {
-        self.0 & Self::INNER_WALL_FLAG != 0
+        self.0 & Self::INNER_WALL_FLAG as u64 != 0
     }
 
-    pub fn as_u32(self) -> u32 {
+    pub fn as_u64(self) -> u64 {
         self.0
     }
 }
@@ -183,8 +235,9 @@ impl Contributors {
         }
     }
 
-    /// Collapse to per-*feature* granularity: every contained branch is
-    /// reduced to its owning feature (sub-index dropped) and duplicates
+    /// Collapse to per-*feature-instance* granularity: every contained
+    /// branch is reduced to its owning feature and pattern instance
+    /// (sub-index dropped) and duplicates
     /// merged. The analytic per-face decomposition stays in
     /// [`expand_evaluate_leaf`]; the mesh-level proxy (DC/MDC
     /// classification + the flat contributor buffer + the topology
@@ -195,7 +248,7 @@ impl Contributors {
     pub fn feature_collapsed(&self) -> Self {
         let mut out = Self::empty();
         for &b in self.as_slice() {
-            out.push(BranchId(b.feature_id() << BranchId::SUB_BITS));
+            out.push(BranchId::from_parts(b.feature_id(), b.instance(), 0));
         }
         out
     }
@@ -631,7 +684,7 @@ pub enum BlendMode {
 /// — e.g. the weave's open-face annulus classification.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct OpenSurface {
-    pub branch: u32,
+    pub branch: u64,
     pub surface: HalfSpace,
     pub placement: Transform,
 }
@@ -670,13 +723,13 @@ impl<'a> OpenBranchSet<'a> {
     }
 
     /// Whether the exact branch (feature + sub) is opened.
-    pub(crate) fn contains(&self, branch: u32) -> bool {
+    pub(crate) fn contains(&self, branch: u64) -> bool {
         self.faces.iter().any(|f| f.branch == branch)
             || self.parent.is_some_and(|p| p.contains(branch))
     }
 
     pub(crate) fn contains_sub(&self, feature: &FeatureId, sub: u32) -> bool {
-        self.contains(BranchId::from_feature_sub(feature, sub).as_u32())
+        self.contains(BranchId::from_feature_sub(feature, sub).as_u64())
     }
 }
 
@@ -1359,6 +1412,82 @@ impl DecodedFeature {
 }
 
 impl CsgNode {
+    /// Re-brand every embedded identity in this subtree from the `from`
+    /// id-subtree onto `to`.
+    ///
+    /// **Why this exists (#429/E1).** A pattern copy is
+    /// `source_feature.clone()` with a fresh `DecodedFeature::id`. But the
+    /// geometry lives in `DecodedFeature::node`, and every id-carrying node
+    /// variant stores its **own** `FeatureId` — the source's. Measured
+    /// 2026-07-28 on a 3-copy linear pattern of a box: the clones' decoded
+    /// ids were `2.1~1` / `2.1~2`, yet all three bodies wove the branch words
+    /// `1/0/0 … 1/0/5`. The new id never reached the branch, so all three
+    /// copies carried one name and only the positional `spatial_index`
+    /// (#431) told them apart. Renaming the feature without renaming its node
+    /// is the actual root cause — not the `as_u32_or_root()` collapse the
+    /// plan suspected (that one is real but downstream of this).
+    ///
+    /// Branch words embedded in `Shell`'s open faces and `MaskedBlend`'s
+    /// provenance are re-branded too, so an opened or filleted body patterns
+    /// correctly.
+    ///
+    /// The match is exhaustive on purpose: a new id-carrying variant must not
+    /// be able to slip through silently.
+    pub fn rebrand(&mut self, from: &FeatureId, to: &FeatureId) {
+        let rebrand_id = |id: &mut FeatureId| {
+            if let Some(next) = id.rebase(from, to) {
+                *id = next;
+            }
+        };
+        // A branch word carries the *flat* feature id, so re-branding one is
+        // a field swap: keep the sub, take the target's feature + instance.
+        let (from_feat, _) = from.branch_identity();
+        let (to_feat, to_inst) = to.branch_identity();
+        let rebrand_branch = |w: &mut u64| {
+            let b = BranchId(*w);
+            if b.feature_id() == from_feat {
+                *w = BranchId::from_parts(to_feat, to_inst, b.sub()).as_u64();
+            }
+        };
+        match self {
+            Self::Empty => {}
+            Self::Leaf { id, .. }
+            | Self::Extrude { id, .. }
+            | Self::Revolve { id, .. }
+            | Self::Helix { id, .. }
+            | Self::Sweep { id, .. }
+            | Self::Loft { id, .. } => rebrand_id(id),
+            Self::Transform(_, inner)
+            | Self::Twist(inner, _)
+            | Self::Bend(inner, _)
+            | Self::Displace(inner, _, _)
+            | Self::InnerWall(inner)
+            | Self::Offset(inner, _) => inner.rebrand(from, to),
+            Self::Union(a, b)
+            | Self::Difference(a, b)
+            | Self::Intersection(a, b)
+            | Self::SmoothUnion(a, b, _, _)
+            | Self::SmoothDifference(a, b, _, _)
+            | Self::Morph(a, b, _) => {
+                a.rebrand(from, to);
+                b.rebrand(from, to);
+            }
+            Self::Shell(inner, _, open) => {
+                inner.rebrand(from, to);
+                for f in open {
+                    rebrand_branch(&mut f.branch);
+                }
+            }
+            Self::MaskedBlend { a, b, provenance, .. } => {
+                a.rebrand(from, to);
+                b.rebrand(from, to);
+                rebrand_branch(&mut provenance.branch);
+                rebrand_branch(&mut provenance.wall_a);
+                rebrand_branch(&mut provenance.wall_b);
+            }
+        }
+    }
+
     /// `true` genau dann, wenn jeder Float in diesem Teilbaum endlich ist —
     /// Primitiv-Parameter, Sketch-Geometrie, Transforms, Modifier-Skalare.
     /// Ein NaN/∞ (z.B. aus einer degenerierten Web-Sketch-Solver-Lösung)
@@ -4198,7 +4327,7 @@ fn find_matching_fillet<'a>(
         if !a_in_left && !a_in_right {
             return None;
         }
-        let branch = BranchId::from_feature(&f.fillet_id).as_u32();
+        let branch = BranchId::from_feature(&f.fillet_id).as_u64();
         let (wall_a, wall_b) =
             if a_in_left { (f.branch_a, f.branch_b) } else { (f.branch_b, f.branch_a) };
         Some((f, BlendProvenance { branch, wall_a, wall_b }))
@@ -4206,17 +4335,17 @@ fn find_matching_fillet<'a>(
 }
 
 /// Branch identity of a masked blend's fillet surface and its two junction
-/// walls (full [`BranchId`] u32s from the filleted edge's signature).
+/// walls (full [`BranchId`] words from the filleted edge's signature).
 /// `NONE` (all zero) marks a blend with no B-Rep identity — the registry
 /// skips it and its face degrades to Tessellated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlendProvenance {
     /// The blend face's own branch: the fillet feature's id, sub 0.
-    pub branch: u32,
+    pub branch: u64,
     /// The junction wall inside operand `a` (MaskedBlend's left subtree).
-    pub wall_a: u32,
+    pub wall_a: u64,
     /// The junction wall inside operand `b`.
-    pub wall_b: u32,
+    pub wall_b: u64,
 }
 
 impl BlendProvenance {
@@ -4236,9 +4365,9 @@ pub struct EdgeFillet {
     /// Feature id of the "right" operand.
     pub feature_b: FeatureId,
     /// Full branch id (with sub) of the junction wall on `feature_a`'s side.
-    pub branch_a: u32,
+    pub branch_a: u64,
     /// Full branch id (with sub) of the junction wall on `feature_b`'s side.
-    pub branch_b: u32,
+    pub branch_b: u64,
     /// The queried edge's polyline in CSG/world eval space. The mask is
     /// the union of capsules along consecutive segments.
     pub mask_polyline: Vec<[f32; 3]>,

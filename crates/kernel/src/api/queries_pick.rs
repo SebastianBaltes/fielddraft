@@ -234,7 +234,7 @@ impl Kernel {
                         branches.push(',');
                     }
                     contributors.push_str(&id.feature_id().to_string());
-                    branches.push_str(&id.as_u32().to_string());
+                    branches.push_str(&id.as_u64().to_string());
                 }
                 contributors.push(']');
                 branches.push(']');

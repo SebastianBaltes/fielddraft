@@ -50,25 +50,29 @@ fn box_union_interior_sphere_keeps_box_edges_straight() {
         brep.validate()
     );
 
-    // Box feature id 1 expands to half-space branches 4096..=4101
-    // (+x −x +y −y +z −z); the 12 edges are every pair of NON-opposite faces.
-    let opposite = |a: u32, b: u32| (a.min(b), a.max(b)) == (4096, 4097)
-        || (a.min(b), a.max(b)) == (4098, 4099)
-        || (a.min(b), a.max(b)) == (4100, 4101);
-    let is_box = |a: u32, b: u32| (4096..=4101).contains(&a) && (4096..=4101).contains(&b);
+    // Box feature id 1 expands to the six half-space branches with subs
+    // 0..=5 (+x −x +y −y +z −z); the 12 edges are every pair of NON-opposite
+    // faces. Built through the constructor, never from a packed literal —
+    // the field layout is BranchId's business (#429/E1).
+    let bx = |sub: u32| BranchId::from_parts(1, 0, sub).as_u64();
+    let (lo, hi) = (bx(0), bx(5));
+    let opposite = |a: u64, b: u64| (a.min(b), a.max(b)) == (bx(0), bx(1))
+        || (a.min(b), a.max(b)) == (bx(2), bx(3))
+        || (a.min(b), a.max(b)) == (bx(4), bx(5));
+    let is_box = |a: u64, b: u64| (lo..=hi).contains(&a) && (lo..=hi).contains(&b);
 
     // Each of the 12 adjacent box-face pairs must appear EXACTLY ONCE: a
     // duplicate signature means a phantom vertex split a straight edge in two.
-    let box_edge_sigs: Vec<(u32, u32)> = brep
+    let box_edge_sigs: Vec<(u64, u64)> = brep
         .edges
         .iter()
         .filter_map(|e| {
-            let (a, b) = (e.signature.0.as_u32(), e.signature.1.as_u32());
+            let (a, b) = (e.signature.0.as_u64(), e.signature.1.as_u64());
             is_box(a, b).then_some((a, b))
         })
         .collect();
-    for a in 4096..=4101u32 {
-        for b in (a + 1)..=4101u32 {
+    for a in lo..=hi {
+        for b in (a + 1)..=hi {
             if opposite(a, b) {
                 continue;
             }
@@ -84,7 +88,7 @@ fn box_union_interior_sphere_keeps_box_edges_straight() {
     // not bow off the chord between its endpoints (the phantom kink reached
     // ~0.1 mm; a clean plane∩plane edge is exact to float noise).
     for e in &brep.edges {
-        let (a, b) = (e.signature.0.as_u32(), e.signature.1.as_u32());
+        let (a, b) = (e.signature.0.as_u64(), e.signature.1.as_u64());
         if !is_box(a, b) {
             continue;
         }
@@ -529,8 +533,8 @@ fn wireframe_fingerprint(brep: &BRep) -> (Vec<String>, Vec<String>) {
                 .collect();
             format!(
                 "{}-{}|{}|{}|{poly}",
-                e.signature.0.as_u32(),
-                e.signature.1.as_u32(),
+                e.signature.0.as_u64(),
+                e.signature.1.as_u64(),
                 vpos(e.start),
                 vpos(e.end),
             )
@@ -866,11 +870,11 @@ fn coarse_sphere_seam_is_one_analytic_arc_not_fragments() {
     // The three sphere-cap seams (signature carrying the sphere branch) are
     // each exactly ONE edge, bounded by two triple vertices — not a spray of
     // short None-None fragments.
-    let sphere_branch = 8192u32;
+    let sphere_branch = BranchId::from_parts(2, 0, 0).as_u64();
     let seams: Vec<_> = brep
         .edges
         .iter()
-        .filter(|e| e.signature.0.as_u32() == sphere_branch || e.signature.1.as_u32() == sphere_branch)
+        .filter(|e| e.signature.0.as_u64() == sphere_branch || e.signature.1.as_u64() == sphere_branch)
         .collect();
     assert_eq!(seams.len(), 3, "expected 3 single sphere-cap seams, got {}", seams.len());
     for e in &seams {
@@ -887,7 +891,7 @@ fn coarse_sphere_seam_is_one_analytic_arc_not_fragments() {
         assert!(
             f.outer.is_connected_ring(&brep.edges),
             "face {fi} (branch {}) outer loop is not a connected ring",
-            f.branch_id.as_u32()
+            f.branch_id.as_u64()
         );
     }
 }
@@ -1152,7 +1156,7 @@ fn cube_weaves_watertight_brep() {
     }
 
     // Six distinct branch faces.
-    let branches: HashSet<u32> = brep.faces.iter().map(|f| f.branch_id.as_u32()).collect();
+    let branches: HashSet<u64> = brep.faces.iter().map(|f| f.branch_id.as_u64()).collect();
     assert_eq!(branches.len(), 6, "six distinct cube-face branches");
 }
 
@@ -1410,7 +1414,7 @@ fn open_shell_weaves_inner_wall_and_keeps_outer_faces() {
         thickness,
         // Open the +Z face: its outward gate is the plane z = +half.
         vec![crate::csg::OpenSurface {
-            branch: crate::csg::BranchId::from_feature_sub(&FeatureId::from_u32(1), 4).as_u32(),
+            branch: crate::csg::BranchId::from_feature_sub(&FeatureId::from_u32(1), 4).as_u64(),
             surface: HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: half },
             placement: Transform::IDENTITY,
         }],
@@ -1775,8 +1779,8 @@ fn extrude_caps_use_reserved_sub_ids() {
     let top = BranchId::from_feature_sub(&FeatureId::from_u32(1), BranchId::EXTRUDE_CAP_TOP_SUB);
     let bottom =
         BranchId::from_feature_sub(&FeatureId::from_u32(1), BranchId::EXTRUDE_CAP_BOTTOM_SUB);
-    assert!(map.contains_key(&top.as_u32()), "top cap present");
-    assert!(map.contains_key(&bottom.as_u32()), "bottom cap present");
+    assert!(map.contains_key(&top.as_u64()), "top cap present");
+    assert!(map.contains_key(&bottom.as_u64()), "bottom cap present");
     // 4 walls + 2 caps.
     assert_eq!(map.len(), 6);
 }
@@ -1800,9 +1804,9 @@ fn curved_path_extrude_falls_back_to_tessellated() {
     // 2 caps + 3 straight walls; the bézier group (G1 group 1) is absent.
     assert_eq!(map.len(), 5, "caps + straight walls analytic, bézier wall not");
     let top = BranchId::from_feature_sub(&FeatureId::from_u32(1), BranchId::EXTRUDE_CAP_TOP_SUB);
-    assert!(map.contains_key(&top.as_u32()));
+    assert!(map.contains_key(&top.as_u64()));
     let bezier = BranchId::from_feature_sub(&FeatureId::from_u32(1), 1);
-    assert!(!map.contains_key(&bezier.as_u32()), "bézier wall must stay tessellated");
+    assert!(!map.contains_key(&bezier.as_u64()), "bézier wall must stay tessellated");
 }
 
 #[test]
@@ -1828,7 +1832,7 @@ fn straight_path_extrude_lifts_all_walls_as_planes() {
     let expect = [[0.0, -1.0], [1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]];
     for (g, want) in expect.iter().enumerate() {
         let b = BranchId::from_feature_sub(&FeatureId::from_u32(1), g as u32);
-        let (hs, _) = map.get(&b.as_u32()).expect("line wall lifted");
+        let (hs, _) = map.get(&b.as_u64()).expect("line wall lifted");
         let HalfSpace::Plane { normal, offset } = hs else {
             panic!("line wall must lift to a plane, got {hs:?}");
         };
@@ -1866,7 +1870,7 @@ fn bent_g1_line_chain_is_not_lifted() {
     // 3 straight walls + 2 caps lift.
     let bent = BranchId::from_feature_sub(&FeatureId::from_u32(1), 0);
     assert!(
-        !map.contains_key(&bent.as_u32()),
+        !map.contains_key(&bent.as_u64()),
         "a bent G1 chain must not lift to a single plane"
     );
     assert_eq!(map.len(), 5, "3 straight walls + 2 caps");
@@ -1876,11 +1880,11 @@ fn bent_g1_line_chain_is_not_lifted() {
 
 /// Count edges by closed-loop status (start == end == None) and the number
 /// of edges whose signature contains `branch`.
-fn count_loops_for_branch(brep: &BRep, branch: u32) -> (usize, usize) {
+fn count_loops_for_branch(brep: &BRep, branch: u64) -> (usize, usize) {
     let mut loops = 0;
     let mut total = 0;
     for e in &brep.edges {
-        if e.signature.0.as_u32() == branch || e.signature.1.as_u32() == branch {
+        if e.signature.0.as_u64() == branch || e.signature.1.as_u64() == branch {
             total += 1;
             if e.start.is_none() && e.end.is_none() {
                 loops += 1;
@@ -1917,7 +1921,7 @@ fn difference_box_minus_notch_weaves_watertight() {
     // 6 side walls + 2 caps = 8 faces, and 6 vertical + 6 top + 6 bottom =
     // 18 straight edges. All edges consolidate to one per signature (DL-51),
     // no over-segmentation. (DL-79: the two convex corner edges where the cut
-    // walls meet the box's outer +x / +y faces — signatures (4096,8195) and
+    // walls meet the box's outer +x / +y faces — signatures (1/0, 2/3) and
     // (4098,8193) at L-corners (1,0) and (0,1) — used to vanish because every
     // octree cell along them only grazed one of the two faces; the outward-
     // seed edge rescue now recovers them, completing the cross-section.)
@@ -2072,7 +2076,7 @@ fn difference_box_minus_cylindrical_drill_consolidates_trim_circles() {
     );
     // The bore-wall branch is the cylinder sub-0 (InfiniteCylinder). Its
     // boundary is exactly TWO closed-loop trim circles, no fragments.
-    let wall = BranchId::from_feature_sub(&FeatureId::from_u32(2), 0).as_u32();
+    let wall = BranchId::from_feature_sub(&FeatureId::from_u32(2), 0).as_u64();
     let (loops, total) = count_loops_for_branch(&brep, wall);
     assert_eq!(total, 2, "bore wall bounded by exactly 2 edges");
     assert_eq!(loops, 2, "both trim edges are closed circular loops");
@@ -2104,7 +2108,7 @@ fn coarse_cylinder_trim_seam_is_exact_resolution_independent() {
     let octree = Octree::build(&body, 0.4);
     let brep = weave(&body, &octree);
 
-    let wall = BranchId::from_feature_sub(&FeatureId::from_u32(2), 0).as_u32();
+    let wall = BranchId::from_feature_sub(&FeatureId::from_u32(2), 0).as_u64();
     let (loops, total) = count_loops_for_branch(&brep, wall);
     assert_eq!(total, 2, "bore wall bounded by exactly 2 edges at coarse res");
     assert_eq!(loops, 2, "both trim seams are closed loops at coarse res");
@@ -2112,7 +2116,7 @@ fn coarse_cylinder_trim_seam_is_exact_resolution_independent() {
     // Surface-exactness: every trim-seam sample is on the cylinder r=0.5
     // about the Y axis, regardless of the coarse octree spacing.
     for e in &brep.edges {
-        if e.signature.0.as_u32() != wall && e.signature.1.as_u32() != wall {
+        if e.signature.0.as_u64() != wall && e.signature.1.as_u64() != wall {
             continue;
         }
         let EdgeGeometry::Hermite(samples) = &e.geometry else {
@@ -2617,13 +2621,13 @@ fn assert_all_loops_connected(brep: &BRep) {
         assert!(
             f.outer.is_connected_ring(&brep.edges),
             "face {i} (branch {}) outer loop is not a connected ring",
-            f.branch_id.as_u32()
+            f.branch_id.as_u64()
         );
         for (j, lp) in f.inner.iter().enumerate() {
             assert!(
                 lp.is_connected_ring(&brep.edges),
                 "face {i} (branch {}) inner[{j}] is not a connected ring",
-                f.branch_id.as_u32()
+                f.branch_id.as_u64()
             );
         }
     }
@@ -2734,7 +2738,7 @@ fn sector_extrude_registers_arc_cylinder_and_both_flank_planes() {
     assert_eq!(map.len(), 5, "2 caps + 3 walls, got {:?}", map.len());
 
     let sub = |n: u32| {
-        map.get(&crate::csg::BranchId::from_feature_sub(&FeatureId::from_u32(7), n).as_u32())
+        map.get(&crate::csg::BranchId::from_feature_sub(&FeatureId::from_u32(7), n).as_u64())
             .unwrap_or_else(|| panic!("wall sub {n} missing from the half-space map"))
     };
     // Group 0 — the arc → an infinite cylinder of the sector radius.
@@ -2787,7 +2791,7 @@ fn sector_flank_normals_point_out_of_the_wedge() {
         let inside = [1.0 + 3.0 * mid.cos(), 2.0 + 3.0 * mid.sin()];
         for n in [1u32, 2] {
             let (hs, _) = map
-                .get(&crate::csg::BranchId::from_feature_sub(&FeatureId::from_u32(3), n).as_u32())
+                .get(&crate::csg::BranchId::from_feature_sub(&FeatureId::from_u32(3), n).as_u64())
                 .expect("flank present");
             let HalfSpace::Plane { normal, offset } = hs else { panic!("flank is a plane") };
             let d = normal[0] * inside[0] + normal[1] * inside[1] - offset;
@@ -2933,7 +2937,7 @@ fn partial_membrane_with_two_kept_regions_is_one_unclosable_face() {
     let strips: Vec<usize> = brep
         .faces
         .iter()
-        .filter(|f| f.branch_id.0 == 4098)
+        .filter(|f| f.branch_id == BranchId::from_parts(1, 0, 2))
         .map(|f| f.outer.edges.len())
         .collect();
     assert_eq!(strips, vec![10], "A’s +y plane is ONE face of ten edges (owes two of four)");
@@ -2984,7 +2988,7 @@ fn partial_membrane_from_flush_remove_leaves_four_faces_open() {
     let plus_x = brep
         .faces
         .iter()
-        .find(|f| f.branch_id.0 == 4096)
+        .find(|f| f.branch_id == BranchId::from_parts(1, 0, 0))
         .expect("A's +x wall survives the cull (it is only partly a membrane)");
     assert_eq!(
         plus_x.outer.edges.len(),
@@ -3015,7 +3019,7 @@ fn interior_wall_flush_cap_probe() {
         .map(|(i, f)| {
             format!(
                 "{i}:b{} e{}{}",
-                f.branch_id.as_u32(),
+                f.branch_id.as_u64(),
                 f.outer.edges.len(),
                 if f.outer.is_connected_ring(&brep.edges) { "" } else { "!" }
             )
@@ -3029,10 +3033,10 @@ fn interior_wall_flush_cap_probe() {
         brep.shells[0].is_closed
     );
     println!("  viol {}", brep.manifold_violations().len());
-    let sigs: Vec<(u32, u32)> = brep
+    let sigs: Vec<(u64, u64)> = brep
         .edges
         .iter()
-        .map(|e| (e.signature.0.as_u32(), e.signature.1.as_u32()))
+        .map(|e| (e.signature.0.as_u64(), e.signature.1.as_u64()))
         .collect();
     println!("  edge signatures: {sigs:?}");
 }
@@ -3108,7 +3112,7 @@ fn interior_extrude_swallowed_whole_leaves_no_face() {
         branches,
         [1u32].into_iter().collect::<std::collections::BTreeSet<u32>>(),
         "only the swallowing extrude may own faces, got {:?}",
-        brep.faces.iter().map(|f| f.branch_id.as_u32()).collect::<Vec<_>>(),
+        brep.faces.iter().map(|f| f.branch_id.as_u64()).collect::<Vec<_>>(),
     );
     assert_eq!(
         (brep.vertex_count(), brep.edge_count(), brep.face_count()),

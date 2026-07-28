@@ -32,7 +32,7 @@ use super::*;
 pub(super) fn merge_coincident_edges(
     brep: &mut BRep,
     registry: &crate::brep::coincidence::CoincidenceRegistry,
-    memberships: &mut Vec<Vec<u32>>,
+    memberships: &mut Vec<Vec<u64>>,
     diag: f64,
 ) {
     // Identity tolerances: endpoint vertices are Newton-refined (tight);
@@ -41,18 +41,18 @@ pub(super) fn merge_coincident_edges(
     let tol_pt = crate::brep::tol::on_boundary(diag);
     let tol_loop = crate::brep::tol::loop_centroid(diag);
 
-    let canon = |b: BranchId| -> u32 {
+    let canon = |b: BranchId| -> u64 {
         registry
             .class_of(b)
             .map(|(cls, _)| {
                 registry.classes()[cls]
                     .members
                     .iter()
-                    .map(|(m, _)| m.as_u32())
+                    .map(|(m, _)| m.as_u64())
                     .min()
                     .unwrap()
             })
-            .unwrap_or(b.as_u32())
+            .unwrap_or(b.as_u64())
     };
 
     // Group edges by EACH classed branch of their signature (canonical class
@@ -62,7 +62,7 @@ pub(super) fn merge_coincident_edges(
     // sit outside the registry tolerance (face-extrude geometry). The carrier
     // class plus geometric identity of the segment is sufficient: both copies
     // lie on the SAME carrier, so coincident endpoints mean the same edge.
-    let mut groups: HashMap<u32, Vec<usize>> = HashMap::new();
+    let mut groups: HashMap<u64, Vec<usize>> = HashMap::new();
     for (i, e) in brep.edges.iter().enumerate() {
         for b in [e.signature.0, e.signature.1] {
             if registry.class_of(b).is_some() {
@@ -74,7 +74,7 @@ pub(super) fn merge_coincident_edges(
             }
         }
     }
-    let mut keys: Vec<u32> = groups.keys().copied().collect();
+    let mut keys: Vec<u64> = groups.keys().copied().collect();
     keys.sort_unstable();
 
     let mut edge_keep = vec![true; brep.edges.len()];
@@ -93,7 +93,7 @@ pub(super) fn merge_coincident_edges(
             for &r in &reps {
                 if r != i && edges_identical(brep, r, i, tol_pt, tol_loop) {
                     // Union memberships onto the survivor.
-                    let extra: Vec<u32> = memberships[i].clone();
+                    let extra: Vec<u64> = memberships[i].clone();
                     for m in extra {
                         if !memberships[r].contains(&m) {
                             memberships[r].push(m);
@@ -160,7 +160,7 @@ pub(super) fn merge_coincident_edges(
                 target.push(b);
             }
         }
-        target.sort_unstable_by_key(|b| b.as_u32());
+        target.sort_unstable_by_key(|b| b.as_u64());
     }
     for e in &mut brep.edges {
         e.start = e.start.map(|v| VertexId(resolve(v.0, &vertex_alias)));
@@ -230,18 +230,18 @@ pub(super) fn cull_membrane_branches(
     brep: &BRep,
     registry: &crate::brep::coincidence::CoincidenceRegistry,
     halfspaces: &BranchSurfaceMap,
-    memberships: &[Vec<u32>],
+    memberships: &[Vec<u64>],
     diag: f64,
-) -> std::collections::HashSet<u32> {
+) -> std::collections::HashSet<u64> {
     let eps = crate::brep::tol::on_boundary(diag);
-    let mut edges_of: HashMap<u32, Vec<EdgeId>> = HashMap::new();
+    let mut edges_of: HashMap<u64, Vec<EdgeId>> = HashMap::new();
     for (i, members) in memberships.iter().enumerate() {
         for &b in members {
             edges_of.entry(b).or_default().push(EdgeId(i as u32));
         }
     }
     let mut culled = std::collections::HashSet::new();
-    let mut branches: Vec<u32> = edges_of.keys().copied().collect();
+    let mut branches: Vec<u64> = edges_of.keys().copied().collect();
     branches.sort_unstable();
     for b in branches {
         let candidate = registry.class_of(BranchId(b)).is_some_and(|(cls, rel)| {
@@ -375,7 +375,7 @@ pub(super) fn snap_to_carrier(surface: &SurfaceGeometry, p: [f64; 3]) -> Option<
 /// bodies (the caller gates on a non-empty registry).
 pub(super) fn drop_point_contact_edges(
     brep: &mut BRep,
-    memberships: &mut Vec<Vec<u32>>,
+    memberships: &mut Vec<Vec<u64>>,
     diag: f64,
 ) {
     let tol = crate::brep::tol::on_boundary(diag);
@@ -411,7 +411,7 @@ pub(super) fn drop_point_contact_edges(
 /// Vertices closer than the (diagonal-relative) identity tolerance collapse
 /// onto the lowest-index entry, which takes the union of the branch sets.
 /// Only runs on coincident bodies (caller gates on a non-empty registry).
-pub(super) fn weld_seam_vertices(brep: &mut BRep, memberships: &mut Vec<Vec<u32>>, diag: f64) {
+pub(super) fn weld_seam_vertices(brep: &mut BRep, memberships: &mut Vec<Vec<u64>>, diag: f64) {
     let tol = crate::brep::tol::on_boundary(diag);
     let n = brep.vertices.len();
     let mut alias: Vec<u32> = (0..n as u32).collect();
@@ -434,7 +434,7 @@ pub(super) fn weld_seam_vertices(brep: &mut BRep, memberships: &mut Vec<Vec<u32>
                         target.push(b);
                     }
                 }
-                target.sort_unstable_by_key(|b| b.as_u32());
+                target.sort_unstable_by_key(|b| b.as_u64());
             }
         }
     }
@@ -477,8 +477,8 @@ pub(super) fn weld_seam_vertices(brep: &mut BRep, memberships: &mut Vec<Vec<u32>
 pub(super) fn drop_fin_edges(
     body: &BoundedCsg,
     brep: &mut BRep,
-    memberships: &mut Vec<Vec<u32>>,
-    culled: &std::collections::HashSet<u32>,
+    memberships: &mut Vec<Vec<u64>>,
+    culled: &std::collections::HashSet<u64>,
     halfspaces: &BranchSurfaceMap,
     diag: f64,
 ) {
@@ -493,7 +493,7 @@ pub(super) fn drop_fin_edges(
         .zip(memberships.iter())
         .map(|(edge, m)| {
             let lost_to_cull = m.iter().any(|b| culled.contains(b));
-            let survivors: Vec<u32> =
+            let survivors: Vec<u64> =
                 m.iter().copied().filter(|b| !culled.contains(b)).collect();
             if !lost_to_cull || survivors.len() >= 2 {
                 return true;
@@ -561,7 +561,7 @@ pub(super) fn drop_fin_edges(
 pub(super) fn compact_edges_and_vertices(
     brep: &mut BRep,
     keep: &[bool],
-    memberships: &mut Vec<Vec<u32>>,
+    memberships: &mut Vec<Vec<u64>>,
 ) {
     let edges: Vec<Edge> = brep
         .edges
@@ -656,8 +656,8 @@ pub(super) fn reattribute_coincident_memberships(
     brep: &mut BRep,
     registry: &crate::brep::coincidence::CoincidenceRegistry,
     halfspaces: &BranchSurfaceMap,
-    memberships: &mut Vec<Vec<u32>>,
-    culled: &std::collections::HashSet<u32>,
+    memberships: &mut Vec<Vec<u64>>,
+    culled: &std::collections::HashSet<u64>,
     diag: f64,
 ) {
     use crate::csg::EvalMode;
@@ -700,21 +700,21 @@ pub(super) fn reattribute_coincident_memberships(
         };
 
         // Candidate class members share the signature branch's carrier.
-        let group_of = |branch: BranchId| -> Vec<u32> {
+        let group_of = |branch: BranchId| -> Vec<u64> {
             match registry.class_of(branch) {
                 Some((cls, _)) => registry.classes()[cls]
                     .members
                     .iter()
-                    .map(|&(b, _)| b.as_u32())
+                    .map(|&(b, _)| b.as_u64())
                     .collect(),
-                None => vec![branch.as_u32()],
+                None => vec![branch.as_u64()],
             }
         };
         // Carrier-side probe: on `anchor`'s carrier, step probe_eps to both
         // sides of the edge in the tangent plane and report the body field
         // there. `None` when any ingredient is missing (no analytic carrier,
         // degenerate tangent) — the caller then leaves this edge alone.
-        let side_fields = |anchor: u32| -> Option<[(f32, [f32; 3]); 2]> {
+        let side_fields = |anchor: u64| -> Option<[(f32, [f32; 3]); 2]> {
             let (hs, xf) = halfspaces.get(&anchor)?;
             let surface = SurfaceGeometry::Analytic {
                 surface: hs.clone(),
@@ -742,7 +742,7 @@ pub(super) fn reattribute_coincident_memberships(
         // member's footprint and grows past its rim. (Contributor attribution
         // is NOT a containment oracle here — extrude leaves report both wall
         // groups at any axial distance.)
-        let contains = |c: u32, p: [f32; 3]| -> Option<bool> {
+        let contains = |c: u64, p: [f32; 3]| -> Option<bool> {
             let leaf = leaf_map.get(&BranchId(c).feature_id())?;
             // TIGHT containment: the probe sits on the shared carrier, so the
             // true owner's leaf field vanishes there to drift noise, while a
@@ -764,7 +764,7 @@ pub(super) fn reattribute_coincident_memberships(
             if group.len() < 2 {
                 continue;
             }
-            let Some(sides) = side_fields(anchor.as_u32()) else {
+            let Some(sides) = side_fields(anchor.as_u64()) else {
                 continue;
             };
             for &(f, p) in &sides {
@@ -776,7 +776,7 @@ pub(super) fn reattribute_coincident_memberships(
                 // well inside both footprints on the shared carrier), while
                 // near-coincidence drift artefacts read ~bnd. A quarter of
                 // the boundary tolerance separates the regimes with margin.
-                let strictly_contains = |c: u32| -> bool {
+                let strictly_contains = |c: u64| -> bool {
                     leaf_map
                         .get(&BranchId(c).feature_id())
                         .is_some_and(|leaf| {
@@ -827,17 +827,17 @@ pub(super) fn reattribute_coincident_memberships(
             if group.len() < 2 {
                 continue;
             }
-            let Some(sides) = side_fields(anchor.as_u32()) else {
+            let Some(sides) = side_fields(anchor.as_u64()) else {
                 continue;
             };
-            let mut owners: Vec<u32> = Vec::new();
+            let mut owners: Vec<u64> = Vec::new();
             let mut overlap = false;
             let mut oracle_ok = true;
             for &(f, p) in &sides {
                 if (f as f64).abs() > bnd {
                     continue; // off-boundary side owns nothing
                 }
-                let mut containing: Vec<u32> = Vec::new();
+                let mut containing: Vec<u64> = Vec::new();
                 for &c in &group {
                     if culled.contains(&c) {
                         continue;
@@ -867,21 +867,21 @@ pub(super) fn reattribute_coincident_memberships(
         // fewer than two real faces: on each signature carrier, the smallest
         // class member containing an on-boundary side probe owns that side;
         // an owner that is not yet a member joins.
-        let live = |ms: &[u32]| ms.iter().filter(|b| !culled.contains(*b)).count();
+        let live = |ms: &[u64]| ms.iter().filter(|b| !culled.contains(*b)).count();
         if live(&members) < 2 {
             for anchor in [sa, sb] {
                 let group = group_of(anchor);
                 if group.len() < 2 {
                     continue; // no class — nothing to add
                 }
-                let Some(sides) = side_fields(anchor.as_u32()) else {
+                let Some(sides) = side_fields(anchor.as_u64()) else {
                     continue;
                 };
                 for &(f, p) in &sides {
                     if (f as f64).abs() > bnd {
                         continue; // this side is off the boundary
                     }
-                    let mut owner: Option<u32> = None;
+                    let mut owner: Option<u64> = None;
                     let mut oracle_ok = true;
                     for &c in &group {
                         if culled.contains(&c) {
@@ -889,7 +889,7 @@ pub(super) fn reattribute_coincident_memberships(
                         }
                         match contains(c, p) {
                             Some(true) => {
-                                owner = Some(owner.map_or(c, |o: u32| o.min(c)));
+                                owner = Some(owner.map_or(c, |o: u64| o.min(c)));
                             }
                             Some(false) => {}
                             None => oracle_ok = false,
@@ -911,8 +911,8 @@ pub(super) fn reattribute_coincident_memberships(
         if std::env::var("REATTR_DBG").is_ok() && members != before {
             eprintln!(
                 "REATTR edge {i}: sig=({},{}) m={:?} {:?} -> {:?}",
-                sa.as_u32(),
-                sb.as_u32(),
+                sa.as_u64(),
+                sb.as_u64(),
                 m,
                 before,
                 members
@@ -954,7 +954,7 @@ pub(super) fn materialize_tangent_seams(
     body: &BoundedCsg,
     brep: &mut BRep,
     registry: &crate::brep::coincidence::CoincidenceRegistry,
-    memberships: &mut Vec<Vec<u32>>,
+    memberships: &mut Vec<Vec<u64>>,
     diag: f64,
 ) {
     for seam in registry.tangent_seams() {
@@ -970,7 +970,7 @@ pub(super) fn materialize_tangent_seams(
         if !tangent_seam_on_boundary(body, seam, diag) {
             continue;
         }
-        let (ka, kb) = (seam.a.as_u32(), seam.b.as_u32());
+        let (ka, kb) = (seam.a.as_u64(), seam.b.as_u64());
         let inv = crate::inverse(&seam.frame);
         // Local-frame tolerance: the world boundary tolerance divided by the
         // frame scale (rim copies are traced to refinement noise, far below).
@@ -996,7 +996,7 @@ pub(super) fn materialize_tangent_seams(
             .edges
             .iter()
             .map(|e| {
-                let sig = (e.signature.0.as_u32(), e.signature.1.as_u32());
+                let sig = (e.signature.0.as_u64(), e.signature.1.as_u64());
                 let is_pair = (sig.0 == ka && sig.1 == kb) || (sig.0 == kb && sig.1 == ka);
                 !(is_pair || on_circle(e))
             })
@@ -1152,9 +1152,9 @@ fn place_point3(t: &fielddraft_protocol::Transform, p: [f64; 3]) -> [f64; 3] {
 /// One filleted junction to seam: the blend's own branch, its two wall
 /// branches, and the blend radius.
 struct BlendSeamSpec {
-    blend: u32,
-    wall_a: u32,
-    wall_b: u32,
+    blend: u64,
+    wall_a: u64,
+    wall_b: u64,
     radius: f32,
 }
 
@@ -1208,7 +1208,7 @@ pub(super) fn materialize_blend_seams(
     body: &BoundedCsg,
     brep: &mut BRep,
     halfspaces: &BranchSurfaceMap,
-    memberships: &mut Vec<Vec<u32>>,
+    memberships: &mut Vec<Vec<u64>>,
     diag: f64,
 ) {
     let mut specs = Vec::new();
@@ -1227,7 +1227,7 @@ pub(super) fn materialize_blend_seams(
             .edges
             .iter()
             .map(|e| {
-                let (s0, s1) = (e.signature.0.as_u32(), e.signature.1.as_u32());
+                let (s0, s1) = (e.signature.0.as_u64(), e.signature.1.as_u64());
                 let touches_blend = s0 == spec.blend || s1 == spec.blend;
                 let sharp = (s0 == spec.wall_a && s1 == spec.wall_b)
                     || (s0 == spec.wall_b && s1 == spec.wall_a);
@@ -1258,14 +1258,14 @@ pub(super) fn materialize_blend_seams(
 fn blend_seam_circles(
     hs_a: &HalfSpace,
     xf_a: &fielddraft_protocol::Transform,
-    branch_a: u32,
+    branch_a: u64,
     hs_b: &HalfSpace,
     xf_b: &fielddraft_protocol::Transform,
-    branch_b: u32,
+    branch_b: u64,
     radius: f32,
     body: &BoundedCsg,
     diag: f64,
-) -> Option<Vec<(fielddraft_protocol::Transform, f32, f32, u32)>> {
+) -> Option<Vec<(fielddraft_protocol::Transform, f32, f32, u64)>> {
     // Identify which wall is the cylinder and which the plane.
     let (cyl_r, cyl_xf, cyl_branch, pl_normal, pl_offset, pl_xf, pl_branch) = match (hs_a, hs_b) {
         (HalfSpace::InfiniteCylinder { radius: rc }, HalfSpace::Plane { normal, offset }) => {

@@ -7,6 +7,7 @@ import {
   type ProjectFn,
 } from "./boxSelect";
 import type { BRepEdge, BRepVertex, Placement } from "./kernel";
+import { FEATURE_SHIFT } from "./selectionLinks";
 
 const IDENTITY: Placement = {
   translate: [0, 0, 0],
@@ -19,8 +20,8 @@ const projectXY: ProjectFn = (x, y) => ({ x, y });
 
 function edge(idHash: string, pts: number[][]): BRepEdge {
   return {
-    a: 1 << 12,
-    b: 2 << 12,
+    a: 1 * 2 ** FEATURE_SHIFT,
+    b: 2 * 2 ** FEATURE_SHIFT,
     points: pts.flat(),
     controlPoints: [],
     faces: [],

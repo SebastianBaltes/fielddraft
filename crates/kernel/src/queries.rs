@@ -193,6 +193,26 @@ pub enum QueryExpr {
     /// same sweep. Onshape names it `OFFSET_FACE`, and an extrude that runs
     /// "up to the inner wall" needs exactly this.
     Wall(FeatureId, u32, bool),
+    /// `qInstance(i, <sub-query>)` — the same geometry as `<sub-query>`, but
+    /// on the *i*-th copy a pattern made of it. `i = 0` is the original.
+    ///
+    /// A copy's branch differs from the original's in exactly one field: the
+    /// instance ordinal (#429/E1). So resolution is mechanical — take what
+    /// `<sub-query>` matched, swap the ordinal on every branch of its
+    /// signature, and look the result up. No geometry, no proximity, no
+    /// guessing; a copy that does not exist simply matches nothing.
+    ///
+    /// **Deviation from `docs/DERIVED-NAMING-PLAN.md` §E1, on purpose.** The
+    /// plan sketched `qInstance(pattern_id, i, <sub-query>)`. The pattern id
+    /// is NOT part of the name: a copy carries its *source* feature, because
+    /// one pattern may copy several sources at once and `(pattern, i, sub)`
+    /// would name two different sources' faces identically (measured — see
+    /// `a_two_source_pattern_keeps_its_sources_apart`). Carrying an argument
+    /// that no branch encodes would be an argument that does nothing, so the
+    /// form has two arguments. The cost is stated in
+    /// [`FeatureId::branch_identity`]: two different patterns over the same
+    /// source still collide.
+    Instance(u32, Box<QueryExpr>),
     /// `qIntersection(a, b)` — the elements matched by BOTH sub-queries
     /// (set intersection by identity). Onshape disambiguation queries
     /// compose provenance with topology filters; this is the composition
@@ -273,6 +293,7 @@ impl fmt::Display for QueryExpr {
                     write!(f, "qWall({id}, {entity})")
                 }
             }
+            QueryExpr::Instance(i, q) => write!(f, "qInstance({i}, {q})"),
             QueryExpr::Intersection(a, b) => write!(f, "qIntersection({a}, {b})"),
             QueryExpr::AdjacentTo(a, b) => write!(f, "qAdjacentTo({a}, {b})"),
             QueryExpr::CommonEdge(a, b) => write!(f, "qCommonEdge({a}, {b})"),
@@ -480,6 +501,19 @@ pub fn parse_query(input: &str) -> Result<QueryExpr, QueryParseError> {
                 Some(other) => return Err(QueryParseError::InvalidRole((*other).to_string())),
             };
             Ok(QueryExpr::Wall(a, entity, inner))
+        }
+        "qInstance" => {
+            if args.len() != 2 {
+                return Err(QueryParseError::MalformedArguments(
+                    "qInstance expects an ordinal and a query",
+                ));
+            }
+            let ordinal = args[0].trim().parse::<u32>().map_err(|_| {
+                QueryParseError::MalformedArguments(
+                    "qInstance ordinal must be a non-negative integer",
+                )
+            })?;
+            Ok(QueryExpr::Instance(ordinal, Box::new(parse_query(args[1])?)))
         }
         "qIntersection" => {
             let (a, b) = expect_two_subqueries(&args, "qIntersection expects two queries")?;
@@ -689,6 +723,73 @@ pub fn resolve_query_topo(
                     let sub = b.sub() & !crate::csg::BranchId::INNER_WALL_FLAG;
                     if b.feature_id() == target && sub == *entity && face_role(face) == want {
                         out.push(TopoRef::from_face(brep, FaceId(i as u32)));
+                    }
+                }
+            }
+        }
+        QueryExpr::Instance(ordinal, inner) => {
+            use crate::brep::VertexId;
+            // 1. What did the sub-query name? Its own branch signatures are
+            //    the template; only the instance ordinal differs on a copy.
+            let seed: std::collections::HashSet<u64> = resolve_query_topo(breps, inner)
+                .into_iter()
+                .map(|r| r.id_hash)
+                .collect();
+            if seed.is_empty() {
+                return Vec::new();
+            }
+            let shift = |b: crate::csg::BranchId| {
+                crate::csg::BranchId::from_parts(b.feature_id(), *ordinal, b.sub())
+            };
+            let mut want_face: std::collections::HashSet<crate::csg::BranchId> = Default::default();
+            let mut want_edge: std::collections::HashSet<(u64, u64)> = Default::default();
+            let mut want_vertex: std::collections::HashSet<Vec<u64>> = Default::default();
+            let canon_pair = |a: crate::csg::BranchId, b: crate::csg::BranchId| {
+                let (a, b) = (a.as_u64(), b.as_u64());
+                (a.min(b), a.max(b))
+            };
+            let canon_set = |bs: &[crate::csg::BranchId]| {
+                let mut v: Vec<u64> = bs.iter().map(|&b| shift(b).as_u64()).collect();
+                v.sort_unstable();
+                v
+            };
+            for brep in breps {
+                for i in 0..brep.faces.len() {
+                    if seed.contains(&TopoRef::from_face(brep, FaceId(i as u32)).id_hash) {
+                        want_face.insert(shift(brep.faces[i].branch_id));
+                    }
+                }
+                for i in 0..brep.edges.len() {
+                    if seed.contains(&TopoRef::from_edge(brep, EdgeId(i as u32)).id_hash) {
+                        let (a, b) = brep.edges[i].signature;
+                        want_edge.insert(canon_pair(shift(a), shift(b)));
+                    }
+                }
+                for i in 0..brep.vertices.len() {
+                    if seed.contains(&TopoRef::from_vertex(brep, VertexId(i as u32)).id_hash) {
+                        want_vertex.insert(canon_set(&brep.vertices[i].branches));
+                    }
+                }
+            }
+            // 2. Emit every element carrying one of the shifted signatures.
+            for brep in breps {
+                for i in 0..brep.faces.len() {
+                    if want_face.contains(&brep.faces[i].branch_id) {
+                        out.push(TopoRef::from_face(brep, FaceId(i as u32)));
+                    }
+                }
+                for i in 0..brep.edges.len() {
+                    let (a, b) = brep.edges[i].signature;
+                    if want_edge.contains(&canon_pair(a, b)) {
+                        out.push(TopoRef::from_edge(brep, EdgeId(i as u32)));
+                    }
+                }
+                for i in 0..brep.vertices.len() {
+                    let mut v: Vec<u64> =
+                        brep.vertices[i].branches.iter().map(|b| b.as_u64()).collect();
+                    v.sort_unstable();
+                    if want_vertex.contains(&v) {
+                        out.push(TopoRef::from_vertex(brep, VertexId(i as u32)));
                     }
                 }
             }
