@@ -312,9 +312,10 @@ der Körper unter ihm 44× zu groß ist.
 ### Was offen bleibt
 
 - `Extrude 16`s `UP_TO_SURFACE` + `oppositeDirection` (s. o.) — blockiert
-  `Boolean 1` UND `Thicken 6` im #419-Dokument.
+  `Boolean 1` UND `Thicken 6` im #419-Dokument. **Erledigt, s. u.**
 - Wand-Benennung für disjunkte Mehrfach-Regionen (#409 `Mirror 2`).
 - Der `thickness1`-vs-`thickness`-Punkt aus (a) ist weiterhin ungeprüft.
+  **Erledigt, s. u.**
 - Die zwei `#[ignore]`-Sonden in `crates/kernel/src/onshape_regression_tests.rs`
   laufen auf der eingefrorenen Aufzeichnung `testdata/onshape419_full_import.json`,
   die noch die ALTEN Profile trägt (`qRegions(6, [4, 7])`). Sie messen damit den
@@ -322,3 +323,167 @@ der Körper unter ihm 44× zu groß ist.
   Aufzeichnung neu ziehen — dabei bewegen sich die dort gepinnten
   `open_faces`-Vektoren. Die Nachher-Messung oben steht statt dessen als
   dauerhafter Pin in `onshapeImport419E2E.slow.test.ts`.
+
+---
+
+## Abschluss — `UP_TO_SURFACE` + `oppositeDirection`, 2026-07-28, v0.42.2
+
+Diesmal gibt es Onshapes eigene Antwort dazu, nicht nur unsere. Das Dokument ist
+`a40fbe5244d0a1c6abfe8c96 / w f7007df96ecd69d81728cd05 / e 450a3eda61b15636607c33c5`
+(aus dem #419-Ticket); gemessen wurde über den FeatureScript-Eval-Endpunkt
+`POST /api/v6/partstudios/d/…/featurescript` mit HMAC-Signatur wie in
+`web/scripts/onshapeFetch.mjs`. `rollbackBarIndex` wird von diesem Endpunkt
+**nicht** beachtet (an fünf Werten geprüft, alle liefern denselben Zustand) —
+alle Zahlen unten stehen daher am Ende der Historie.
+
+### Der Defekt
+
+`Extrude 16` (`FuEM5hJm4ZF6lHu_11`) hat `endBound: UP_TO_SURFACE`,
+`oppositeDirection: true`, `startOffset: false`, `hasSecondDirection: false`.
+Seine Zielfläche-Query (`endBoundEntityFace`, unkomprimiert lesbar) ist
+
+    SKETCH_ENTITY EDGE  ijNURJMsarZl  aus  FLZMozrL9HQb6CN_2 (= Sketch 3)
+      → SWEPT_FACE  aus  FLX3OZA0PqgN51K_6 (= Revolve 1)
+
+`ijNURJMsarZl` ist die Strecke (7,5142 | −46,6773) → (16,9892 | −46,6773),
+also **senkrecht** zur Revolve-Achse (x = 16,98916). Die gemeinte Fläche ist
+demnach eine ebene Kreisscheibe bei lokal y = −46,6773, Radius 0 … 9,475 — kein
+Zylinder. Der Ebenen-Weg des Übersetzers ist hier also legitim.
+
+Onshapes eigene Zahlen dazu:
+
+| Größe | Onshape |
+|---|---|
+| Sketch-5-Ebene (`evOwnerSketchPlane`) | Ursprung (0 \| 62,52732 \| 0), Normale (0, 1, 0) |
+| Zielscheibe | y = 46,6773 |
+| Abstand | **15,85002 mm**, in **−y** |
+
+Unsere Messung ergab 15,850015 mm — auf 1e−5 identisch. **Der Betrag war nie
+das Problem.** Falsch war das Vorzeichen: `endCondition` setzte
+`depthMm = d` (vorzeichenbehaftet entlang UNSERER Sketch-Normalen) und drehte
+das Ergebnis danach noch einmal um, wenn `oppositeDirection` gesetzt war. Die
+Richtung stand damit **zweimal** in derselben Rechnung. Der Kommentar an der
+Stelle sagte sogar „the caller's oppositeDirection flip must not double it" —
+und zwei Zeilen darunter tat der Code genau das.
+
+Das ist auch nicht bloß eine Vorzeichenkonvention: FieldDraft leitet seine
+Sketch-Normale aus der aufgelösten Fläche ab und kann sie **antiparallel** zu
+Onshapes halten. Dann bezeichnet Onshapes Flag eine Achse, die wir gar nicht
+haben. Die Messung dagegen steht in unserem eigenen Frame und braucht keine
+Entsprechung. `oppositeDirection` gehört bei `UP_TO_*` schlicht ignoriert.
+
+### Nachher-Zahlen
+
+Onshapes Grundwahrheit für den Körper von `Extrude 16` (`evBox3d` auf
+`qCreatedBy(FuEM5hJm4ZF6lHu_11, BODY)`), in mm:
+
+    x [ −5,011 ; 38,989 ]   y [ 46,677 ; 64,527 ]   z [ −12,95 ; 31,05 ]
+
+Das #419-Dokument kommt bei uns um +90° um Z gedreht an (eigener, gepinnter
+Befund in `onshapeImport419E2E.slow.test.ts`): unser x = −Onshapes y. Erwartet
+ist also unser x ∈ [−64,527 ; −46,677].
+
+| | unser x-Bereich von Körper 10 |
+|---|---|
+| vorher | −78,38 … −62,53 |
+| **nachher** | **−64,53 … −46,68** |
+| Onshape (gemappt) | −64,527 … −46,677 |
+
+Beide Grenzen treffen auf 0,01 mm. Vorher lag der Körper genau eine Tiefe
+(15,85 mm) auf der falschen Seite seiner eigenen Skizzenebene.
+
+Und damit wirken beide Folge-Features. `setFeatureSuppressed` auf Körper 10:
+
+| Feature | mit | ohne | |
+|---|---|---|---|
+| `Boolean 1` | (56 e, 21 f, 1 offen, 37 v) | (55, 23, 6, 36) | **wirkt** |
+| `Thicken 6` | (56 e, 21 f, 1 offen, 37 v) | (55, 21, 1, 36) | **wirkt** |
+
+Zum Vergleich: in (e) waren beide auf **jeder** Zahl identisch.
+
+### `thickness1` vs. `thickness` — entschieden
+
+Onshape führt am `Thicken 6` `thickness1 = 0,1 mm`, `thickness = 5 mm`,
+`thickness2 = 0 mm`. Die Frage ist am Ergebnis entscheidbar: die einzige
+groß-radige Zylinderfläche auf Onshapes `Extrude 16`-Körper hat
+**r = 7,835 mm**, und `qCreatedBy(FpBQazFCYSqdMLd_13, FACE)` liefert genau diese
+eine Fläche — sie gehört also `Thicken 6`. 7,835 − 7,735 = **0,1 mm**.
+`thickness = 5 mm` hätte 12,735 ergeben. **`thickness1` ist richtig**, so wie
+der Importer es ohnehin nimmt; `thickness` ist ein mitgeschleppter Parameter
+ohne Wirkung.
+
+### Was `Thicken 6` weiterhin NICHT reproduziert — und warum kein Vorzeichen hilft
+
+Onshape lässt die 0,1-mm-Schale **nach außen** wachsen: die Kaverne in
+`Extrude 16`s Körper wird von r = 7,735 auf r = 7,835 weiter. Wir lassen sie
+nach innen wachsen, also in Material, das `Boolean 1` schon weggenommen hat —
+unser Schnitt streift nur die Naht (1 Kante, 1 Vertex).
+
+Die naheliegende „Reparatur" — `reverse` umdrehen — wäre falsch. Onshapes
+Richtungskonvention ist gemessen, und zwar an Onshapes eigenem `thicken`,
+zweimal auf genau dieser Fläche ausgeführt:
+
+    oppositeDirection = false  →  Schale r ∈ [7,735 ; 7,835]   (nach außen)
+    oppositeDirection = true   →  Schale r ∈ [7,635 ; 7,735]   (nach innen)
+
+`oppositeDirection: true` heißt also „nach innen", und unser
+`oppositeDirection → reverse` bildet das korrekt ab.
+
+Der Unterschied liegt in der **Fläche**, nicht in der Richtung. Onshapes
+Query endet auf einem dritten Glied, das wir fallen lassen:
+
+    … → SWEPT_FACE aus FLX3OZA0PqgN51K_6 (Revolve 1)
+        → COPY aus FJSh1Xj9Ce9qqJO_12 (Boolean 1)
+
+`COPY` durch eine Subtraktion heißt: dieselbe Fläche, aber auf dem
+ERGEBNIS-Körper, wo sie die Kaverne berandet — mit **umgekehrter Normalen**.
+Nachgemessen an der übrig gebliebenen Fläche: die Zylinderwand des Revolve
+(r = 7,735) hat bei (9,2542 | · | 9,05) die Normale (−1, 0, 0), also von der
+Achse weg; `Thicken 6`s Ergebnisfläche (r = 7,835) hat bei (9,1542 | · | 9,05)
+die Normale (+1, 0, 0), also zur Achse hin. Onshape wächst „nach innen"
+bezogen auf die Kavernenwand — was in Weltkoordinaten nach außen ist.
+
+Wir lösen `qWall(23, 130)` auf, die Außenwand des Revolve. Ein Umdrehen von
+`reverse` würde zwei Fehler gegeneinander aufrechnen statt einen zu beheben:
+Gegenprobe gemacht — es liefert zwar den sichtbaren Schnitt (Körper 10:
+55 → 61 Kanten, 21 → 22 Flächen), aber aus dem falschen Grund, und Körper 10
+bekäme 1 → 7 offene Flächen. Die echte Reparatur ist, die **Kavernenwand zu
+benennen** — abgeleitete Geometrie durch einen Boolean hindurch, also #429s
+Gebiet. Heute hat FieldDraft dafür keine Query-Form: die Fläche trägt in
+Körper 10 den Namen von `Boolean 1` (Feature 28), nicht `qWall(23, 130)`.
+
+Von den 26 Thicken-Flächen-Queries des #419-Dokuments enden **9** auf so einem
+Boolean-`COPY`; 8 davon gehören zu Thickens, die ohnehin in `KNOWN_GAPS`
+stehen. In den übrigen sechs Fixtures kommt die Form bei keinem Thicken vor.
+
+### Pin-Bewegungen in den sechs Suiten
+
+`npm run test:slow` vorher und nachher, Datei für Datei verglichen: **genau
+eine** Zusicherung hat sich bewegt — die aus dem Abschnitt oben, die
+`Thicken 6` als wirkungslos festhielt. Sie ist durch ihr Gegenteil ersetzt.
+#409 / #412 / #414 / #415 / #416 sind Zeile für Zeile unverändert, ebenso
+#419s Fehlerliste (192 Meldungen auf denselben 107 Features) und die
+Körperzahl 12.
+
+Zwei Körper haben ihre Geometrie geändert, beide erwartet:
+
+| Körper | Features | vorher | nachher |
+|---|---|---|---|
+| 10 (`Extrude 16`) | 27, 35 → 27, 28, 32, 35 | 25 e, 11 f, 1 offen | 56 e, 21 f, 1 offen |
+| 11 (`Extrude 20`) | 31, 33, 34, 36, 39 → + 37 | 19 e, 12 f, 2 offen | 112 e, 54 f, 30 offen |
+
+Körper 10 nimmt `Boolean 1` (28) und `Extrude 23` (32) auf. `Extrude 23`
+(`FLFFDKi9kSaV1dr_13`) ist der **zweite** Fall derselben Endbedingung —
+`UP_TO_SURFACE` + `oppositeDirection: true` — und dockt jetzt an den Körper an,
+in dessen Scope Onshape ihn baut, statt an Körper 11.
+
+Körper 11 wächst, weil `Thicken 7` (37) dort jetzt schneidet: seine
+Scope-Körper liegen richtig, und seine 0,12-mm-Schalen treffen Material.
+Der Preis sind offene Flächen — 2 → 30, davon 5 direkt auf `Thicken 7`
+(Gegenprobe: mit unterdrücktem `Thicken 7` sind es 25). Das ist keine
+Übersetzer-Regression, sondern der bekannte Weaver-Punkt bei haarfeinen
+Schalen (#438/#439): vorher stapelten sich diese Features an einer Stelle,
+an der sie nichts trafen, und der Körper blieb klein und geschlossen, weil er
+falsch war. Onshapes eigener `Extrude 20`-Körper misst 11,97 × 44 × 44 mm,
+unser Körper 11 in x 12,10 mm — die Größe stimmt; der y/z-Versatz von 16,99 mm
+ist der andernorts gepinnte Frame-Befund dieses Dokuments, nicht dieser Fix.

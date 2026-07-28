@@ -401,7 +401,9 @@ interface EndCondition {
  * - `UP_TO_*` — resolve the target face and measure the sketch plane's
  *   distance to it along the extrude axis. Geometrically exact; the distance
  *   is BAKED, so it does not track a later move of the target face — that is
- *   reported, not hidden.
+ *   reported, not hidden. The measurement is SIGNED along FieldDraft's own
+ *   sketch normal, and that sign is the whole direction answer —
+ *   `oppositeDirection` must NOT be applied on top of it (#440, see below).
  */
 function endCondition(
   params: Map<string, AnyMsg>,
@@ -473,15 +475,27 @@ function endCondition(
       out.error = `${name}: End-Condition ${bound} — Zielfläche liegt in der Sketch-Ebene`;
       return out;
     }
-    out.depthMm = Math.abs(d);
-    // The measured distance already carries the direction; the caller's
-    // oppositeDirection flip must not double it.
+    // `d` is signed along FIELDDRAFT's sketch normal and thereby says, on its
+    // own, on which side of the profile the target lies — which is exactly
+    // what an extrude depth means here. Onshape's `oppositeDirection` states
+    // the SAME fact a second time (it is the flag that sent Onshape looking
+    // for the surface on the far side of the profile), so applying it on top
+    // negates a direction that is already right and puts the body on the empty
+    // side. #440's `Extrude 16` is that case: sketch plane at 62.53 mm, target
+    // disc at 46.68 mm, `oppositeDirection: true` — measured d = +15.85 mm was
+    // flipped to −15.85 and the body landed 15.85 mm PAST the sketch plane,
+    // out of reach of the `Boolean 1` and `Thicken 6` that follow it.
+    //
+    // Ignoring the flag is also the ROBUST reading, not just the convenient
+    // one: FieldDraft derives its sketch normal from the resolved face and may
+    // hold it anti-parallel to Onshape's, in which case Onshape's flag refers
+    // to an axis we do not have. The measurement is in our own frame and needs
+    // no such correspondence.
+    out.depthMm = d;
     out.warnings.push(
-      `${name}: ${bound} als gemessene Tiefe (${out.depthMm.toFixed(2)} mm) übernommen — ` +
+      `${name}: ${bound} als gemessene Tiefe (${d.toFixed(2)} mm) übernommen — ` +
         `geometrisch exakt, folgt der Zielfläche aber nicht mehr, wenn sie sich bewegt`,
     );
-    if (d < 0) out.depthMm = -out.depthMm;
-    if (params.get("oppositeDirection")?.value === true) out.depthMm = -out.depthMm;
     applySecondDirection(params, out, name, env);
     if (params.get("hasDraft")?.value === true) {
       out.warnings.push(`${name}: Draft-Winkel wird nicht unterstützt und ignoriert`);

@@ -343,17 +343,48 @@ describe("#419 multi-part assembly", () => {
     expect(carrier.surfaceParams?.kind).toBe("cylinder");
     expect(carrier.surfaceParams?.radius).toBeCloseTo(7.735, 3);
 
-    // What it still does NOT do is cut, and #440's research doc says why: the
-    // feature's boolean scope is `Extrude 16`'s body, and that body does not
-    // meet the revolve at all in our import. The proof is one line up the tree
-    // — `Boolean 1` subtracts the very same two bodies and is equally inert.
-    // Both are downstream of `Extrude 16`'s UP_TO_SURFACE end condition
-    // (`oppositeDirection: true`), which is its own gap, not a region one.
-    const thicken = named("Thicken 6");
-    const before = kernel.raw.bodyBrepCounts(10);
-    kernel.raw.setFeatureSuppressed(thicken.id, true);
-    expect(kernel.raw.bodyBrepCounts(10)).toBe(before);
-    kernel.raw.setFeatureSuppressed(thicken.id, false);
+    // `Extrude 16` — the body BOTH of them work on — ends UP_TO_SURFACE with
+    // `oppositeDirection: true`, and until v0.42.2 that combination put it on
+    // the wrong side: the measured signed distance was flipped a second time
+    // by the flag, so the body grew 15.85 mm PAST its own sketch plane instead
+    // of up to the target, and neither `Boolean 1` nor `Thicken 6` touched
+    // anything. The depth is the measurement itself now, sign included.
+    expect(named("Extrude 16").params.depth.value).toBeCloseTo(-15.85, 2);
+
+    // Onshape's own answer, via `evBox3d` on `qCreatedBy(FuEM5hJm4ZF6lHu_11,
+    // BODY)` in the source document: x ∈ [−5.011; 38.989], y ∈ [46.677;
+    // 64.527], z ∈ [−12.95; 31.05] mm. Only the extrude's OWN axis is asserted
+    // here — the document's 90° rotation (see the test below) maps Onshape's y
+    // onto our −x, and the other two axes additionally carry the frame offsets
+    // that are still open elsewhere in this file. Our x bounds reproduce
+    // Onshape's y bounds to 0.01 mm; before the fix the body sat at
+    // [−78.38; −62.53], a whole depth away.
+    const box = Array.from(kernel.raw.bodySdfAabb(10));
+    expect(box[0], `Extrude 16 body aabb ${box.join(",")}`).toBeCloseTo(-64.527, 1);
+    expect(box[3]).toBeCloseTo(-46.677, 1);
+
+    // And now both features BITE. Suppressing either one changes the B-Rep of
+    // that body, which is the whole point of #440 — measured, not argued.
+    for (const name of ["Boolean 1", "Thicken 6"]) {
+      const before = kernel.raw.bodyBrepCounts(10);
+      kernel.raw.setFeatureSuppressed(named(name).id, true);
+      expect(kernel.raw.bodyBrepCounts(10), `${name} moves nothing`).not.toBe(before);
+      kernel.raw.setFeatureSuppressed(named(name).id, false);
+    }
+
+    // The one thing `Thicken 6` still does NOT reproduce is WHERE its 0.1 mm
+    // shell goes. Onshape grows it OUTWARD (the cavity in `Extrude 16`'s body
+    // widens from r = 7.735 to r = 7.835 — measured in the source document),
+    // we grow it inward, so our cut lands in material `Boolean 1` already took
+    // away and only grazes the seam. The cause is face PROVENANCE, not
+    // direction: Onshape's `thickness1` is 0.1 mm and its `oppositeDirection`
+    // does mean „inward" (verified by running Onshape's own `thicken` on that
+    // very face both ways), but the face Onshape names is the one `Boolean 1`
+    // COPIED onto the cavity — same surface, opposite normal — while we
+    // resolve the revolve's own outer wall. Flipping `reverse` would cancel two
+    // errors instead of fixing one; the repair is naming the cavity wall
+    // (#429's derived-naming ground). See docs/research/440-…-provenance.md.
+    expect(named("Thicken 6").params.thickness.value).toBeCloseTo(0.1, 6);
   }, 900_000);
 
   it("stands 90° rotated about Z — pinned as the measured defect it is", async () => {
