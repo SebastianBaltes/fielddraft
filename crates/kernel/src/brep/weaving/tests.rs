@@ -2827,6 +2827,14 @@ fn sector_flank_normals_point_out_of_the_wedge() {
 /// belongs to the follow-up (per-region membership attribution, which the
 /// existing `reattribute_coincident_memberships` does not do — measured: it
 /// leaves the count at 1). Both directions matter, so this asserts equality.
+///
+/// #438 measured two more shapes of the same phenomenon, and a repair has to
+/// answer all three at once — see
+/// `partial_membrane_with_two_kept_regions_is_one_unclosable_face` (the kept
+/// region splits in two, so the branch owes TWO faces) and
+/// `partial_membrane_from_flush_remove_leaves_four_faces_open` (on a cut the
+/// surplus edges bound NOTHING and have to be dropped, not moved — and that,
+/// not this one, is the shape the #419 document is made of).
 #[test]
 fn partial_membrane_on_coincident_carrier_leaves_face_boundary_open() {
     let a = CsgNode::Leaf {
@@ -2890,4 +2898,97 @@ fn full_membrane_on_coincident_carrier_still_weaves_closed() {
     let brep = weave_parametric(&body).expect("two flush boxes are parametric-weavable");
     assert_eq!(brep.open_face_count(), 0, "every face closes into a ring");
     assert!(brep.shells[0].is_closed, "the flush stack is watertight");
+}
+
+/// #438 — the partial membrane where the kept region falls into TWO disjoint
+/// strips: B straddles the MIDDLE of A's `+y` plane instead of one of its ends.
+///
+///     A   x ∈ [-1, 1]     y ∈ [-1, 1]   z ∈ [-1, 1]
+///     B   x ∈ [-0.5, 0.5] y ∈ [ 1, 3]   z ∈ [-1, 1]
+///
+/// A's `+y` plane is boundary over x ∈ [-1, -0.5] and over x ∈ [0.5, 1] and
+/// interior between them, so its branch owes TWO faces of four edges each. It
+/// gets ONE face of TEN, because `materialize_faces` hands a branch every
+/// edge whose signature names it and both ±z rims are split into three pieces
+/// here, of which the middle one belongs to neither strip.
+///
+/// INSTRUMENT, not a target: the numbers below are the measured WRONG answers.
+/// A repair turns them into 0 open faces, watertight, and `strips == [4, 4]`.
+/// Recorded because a repair that only handles the one-strip case of
+/// `partial_membrane_on_coincident_carrier_leaves_face_boundary_open` would
+/// pass that test and still be wrong here.
+#[test]
+fn partial_membrane_with_two_kept_regions_is_one_unclosable_face() {
+    let a = CsgNode::Leaf {
+        id: FeatureId::from_u32(1),
+        primitive: Primitive::Box { center: [0.0, 0.0, 0.0], half_extents: [1.0, 1.0, 1.0] },
+    };
+    let b = CsgNode::Leaf {
+        id: FeatureId::from_u32(2),
+        primitive: Primitive::Box { center: [0.0, 2.0, 0.0], half_extents: [0.5, 1.0, 1.0] },
+    };
+    let body = BoundedCsg::from_csg(&CsgNode::Union(Box::new(a), Box::new(b)));
+    let brep = weave_parametric(&body).expect("two flush boxes are parametric-weavable");
+
+    let strips: Vec<usize> = brep
+        .faces
+        .iter()
+        .filter(|f| f.branch_id.0 == 4098)
+        .map(|f| f.outer.edges.len())
+        .collect();
+    assert_eq!(strips, vec![10], "A’s +y plane is ONE face of ten edges (owes two of four)");
+    assert_eq!(brep.open_face_count(), 1, "and that face has no traversable boundary");
+    assert!(!brep.shells[0].is_closed, "so the body is not watertight");
+}
+
+/// #438 — the same partial membrane on a REMOVE instead of an add, and it is
+/// NOT the same defect. A flush cut whose tool wall lands exactly on the
+/// target's `+x` wall over part of its height:
+///
+///     A     x ∈ [-1, 1]  y ∈ [-1, 1]    z ∈ [-1, 1]
+///     tool  x ∈ [ 0, 1]  y ∈ [0.5, 2.5] z ∈ [-2, 2]
+///
+/// This is the shape the #419 document is made of (`Extrude 8 ∖ Revolve 5`).
+/// Measured difference to the union case: there the surplus edges are
+/// MIS-ATTRIBUTED — each still bounds one of the carriers that names it — while
+/// here they bound NOTHING. The cut removed the material they were supposed to
+/// separate, so they are traces on a measure-zero `f = 0` sheet, and a repair
+/// has to DROP them, not move them. `drop_fin_edges` does exactly that job but
+/// never looks at them, because the membrane cull left them two NOMINAL
+/// survivors.
+///
+/// INSTRUMENT: the correct answer is the notched box's exact topology —
+/// 12 vertices, 18 edges, 8 faces (Euler 12 − 18 + 8 = 2), watertight. What the
+/// weaver produces is pinned below: four faces without a traversable boundary,
+/// the `+x` wall alone carrying seven edges where its ring needs four.
+#[test]
+fn partial_membrane_from_flush_remove_leaves_four_faces_open() {
+    let a = CsgNode::Leaf {
+        id: FeatureId::from_u32(1),
+        primitive: Primitive::Box { center: [0.0, 0.0, 0.0], half_extents: [1.0, 1.0, 1.0] },
+    };
+    let tool = CsgNode::Leaf {
+        id: FeatureId::from_u32(2),
+        primitive: Primitive::Box { center: [0.5, 1.5, 0.0], half_extents: [0.5, 1.0, 2.0] },
+    };
+    let body = BoundedCsg::from_csg(&CsgNode::Difference(Box::new(a), Box::new(tool)));
+    let brep = weave_parametric(&body).expect("flush cut is parametric-weavable");
+
+    assert_eq!(
+        (brep.vertex_count(), brep.edge_count(), brep.face_count()),
+        (14, 21, 8),
+        "the notched box weaves 14/21/8 where its true topology is 12/18/8"
+    );
+    assert_eq!(brep.open_face_count(), 4, "four faces have no traversable boundary");
+    assert_eq!(brep.manifold_violations().len(), 18, "and 18 edges are used wrongly");
+    let plus_x = brep
+        .faces
+        .iter()
+        .find(|f| f.branch_id.0 == 4096)
+        .expect("A's +x wall survives the cull (it is only partly a membrane)");
+    assert_eq!(
+        plus_x.outer.edges.len(),
+        7,
+        "the +x wall collects the notch rims too: 7 edges where its ring needs 4"
+    );
 }
