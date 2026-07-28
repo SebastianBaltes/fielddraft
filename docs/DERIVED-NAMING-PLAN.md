@@ -89,9 +89,10 @@ Weltlage gehen; die Geometrie im B-Rep gibt nichts her.
 
 **Verrundungsflächen.** `BlendProvenance.branch` ist als „Fillet-Feature-Id,
 Sub 0" definiert, `FaceRole::Blend` existiert, `qCreatedBy(f, BLEND)` ist
-parsebar. Gemessen an einem Absatz mit Verrundung auf einer Nahtkante entsteht
-im gewobenen B-Rep aber **gar keine Blend-Fläche** — `qCreatedBy(fillet, BLEND)`
-liefert 0. Der Name ist entworfen, die Fläche fehlt.
+parsebar. Gemessen an einem Absatz mit Verrundung auf einer Nahtkante liefert
+`qCreatedBy(fillet, BLEND)` 0. *(Der Schluss daraus — „die Fläche fehlt" —
+war falsch; Schritt 2 unten hat nachgemessen: die Fläche ist da, ihr fehlt die
+Rolle.)*
 
 **Koplanare Verschmelzung.** Zwei bündig aneinanderstoßende Körper behalten in
 FieldDraft **zwei** Flächen (`feat=1 sub=4` und `feat=2 sub=0`); Onshape faltet
@@ -191,11 +192,18 @@ bleibt E1.
 
 ### E2 — Der Blend-Träger wird eine echte B-Rep-Fläche
 
-`BlendProvenance` trägt bereits alles Nötige: `branch` (Fillet-Feature, Sub 0),
-`wall_a`, `wall_b`. Zu klären ist, warum `register_blend_carrier` beim
-gewobenen Absatz keine Fläche liefert (Verdacht: das Nachschlagen von
-`wall_a`/`wall_b` in der `BranchSurfaceMap` scheitert; **nicht gemessen**).
-Ist die Fläche da, folgt der Rest ohne neues Vokabular:
+> **Nachtrag nach Schritt 2 (unten):** Der hier formulierte Verdacht ist
+> widerlegt. Beim geraden Absatz gibt es **keinen** `MaskedBlend`, also auch
+> kein `register_blend_carrier` und kein scheiterndes Lookup — der harte Cutter
+> webt die Verrundungsfläche als gewöhnlichen Zylindermantel unter der
+> Fillet-Feature-Id. E2 heißt damit nicht mehr „Fläche bauen", sondern **„der
+> vorhandenen Fläche ihre Rolle geben"**; die Query-Formen unten bleiben
+> unverändert richtig.
+
+`BlendProvenance` trägt für den smin-Pfad bereits alles Nötige: `branch`
+(Fillet-Feature, Sub 0), `wall_a`, `wall_b` — dort funktioniert der Träger
+(`fillet_blend_weaves_as_its_own_analytic_face`). Steht die Fläche auf beiden
+Pfaden unter einer Rolle, folgt der Rest ohne neues Vokabular:
 
 - `qCreatedBy(fillet, BLEND)` — die Verrundungsfläche selbst (Onshape:
   `BLEND_FACE`).
@@ -239,15 +247,58 @@ Fähigkeit, mehrere vorhandene zu kombinieren:
 | --- | --- | --- |
 | 0 | **Erledigt (v0.39.1):** Mehrfach-Region-Profile bekommen die Kontur ihrer Vereinigung; geschlossene Konturen starten am G1-Knick | — |
 | 1 | **Erledigt (v0.39.2, #431):** `spatial_index` körperübergreifend — `qFace(hash)` wieder eindeutig | — |
-| 2 | Messen, warum der Blend-Träger keine Fläche wird | — |
-| 3 | E2: Blend-Fläche + Übersetzer-Zweig `BLEND_FACE` / `BLEND_EDGE` | 2 |
+| 2 | **Erledigt (2026-07-28):** Messen, warum der Blend-Träger keine Fläche wird — Antwort: er wird gar nicht gebaut, und die Fläche fehlt nicht (§ „Schritt 2" unten) | — |
+| 3 | E2: Rolle für die Cutter-Verrundungsfläche + Übersetzer-Zweig `BLEND_FACE` / `BLEND_EDGE` | 2 |
 | 4 | `qUnion(a, b)` + Übersetzer-Zweig `MERGE` (Fläche) | — |
 | 5 | Übersetzer-Zweig `SPLIT` auf `qAdjacentTo` | — |
 | 6 | **Erledigt (v0.40.0, #429):** E1: `BranchId` auf u64, Instanz-Ordinal, `qInstance(...)` | 1 |
 
 Schritte 1–5 sind je für sich abgeschlossen und messbar. Schritt 6 war der
 Breaking Change; er ist vorgezogen worden und in v0.40.0 ausgeliefert (§ „Schritt 6"
-unten). Offen bleiben damit E2 (Schritte 2–3) und E3 (Schritte 4–5).
+unten). Offen bleiben damit Schritt 3 (E2) und E3 (Schritte 4–5).
+
+### Schritt 2 — wie er ausgeführt wurde (2026-07-28)
+
+Sonde: Würfel `he = 10`, `fillet_edge` mit `r = 3` auf der +X/+Y-Kante, also
+eine **gerade konvexe** Kante. Test:
+`schritt2_hard_cutter_fillet_face_exists_but_has_no_blend_role`.
+
+**Der Verdacht oben war falsch, und zwar strukturell.** Seit v0.26.0
+(#383/#406) läuft genau diese Kantenklasse über den **harten Cutter**
+(`body − (Eck-Box − Tangentialzylinder)`). Gemessen: **0** `MaskedBlend`-Knoten
+im `BoundedCsg`. `register_blend_carrier` wird also nie aufgerufen; sein
+`wall_a`/`wall_b`-Lookup kann gar nicht scheitern. Der smin-Pfad, auf dem der
+Träger tatsächlich lebt, funktioniert und ist seit c-M2 grün
+(`fillet_blend_weaves_as_its_own_analytic_face`, gekrümmter Rand).
+
+**Die Verrundungsfläche fehlt nicht.** Der Weave liefert sie:
+
+    face feat=2 sub=0 kind=cylinder  role=WALL  r=3.0  Achse=[7, 7, 0]
+    face feat=2 sub=4 kind=plane     role=WALL          (Cutter-Box-Stirn)
+    face feat=2 sub=5 kind=plane     role=WALL          (Cutter-Box-Stirn)
+    qCreatedBy(2)        -> 3
+    qCreatedBy(2, BLEND) -> 0
+
+Radius und Achse sind exakt die der Rollkugel (`he − r = 7`). Die Fläche
+gehört dem Fillet-Feature und ist über `qFace(hash)` längst selektierbar —
+**was fehlt, ist die Rolle.** `face_role` erkennt `BLEND` allein an der
+Halbraum-Klasse `HalfSpace::Blend`, und die entsteht nur auf dem smin-Pfad;
+ein Zylindermantel bei Sub 0 liest als `Wall`.
+
+**Latente Namenskollision, mitgemessen.** `2.cut_box` und `2.cut_cyl` sind
+beides `FeatureId::child`-Kinder des Fillets und falten auf dieselbe
+`branch_identity() == (2, 0)`. Beide Teilkörper registrieren ihre Halbräume
+unter `feat=2` ab Sub 0, der Zylindermantel überschreibt darum die +X-Ebene der
+Cutter-Box. Heute **folgenlos** — jene Box-Ebene liegt nie an der Oberfläche —
+aber genau die Klasse Kollision, die Schritt 1 und E1 gerade beseitigt haben.
+Der Test pinnt sie, damit Schritt 3 sie mit auflöst.
+
+**Folge für Schritt 3.** Nicht „Blend-Fläche bauen", sondern: die
+Cutter-Teilkörper bekommen getrennte, reservierte Sub-Bänder (nach dem Vorbild
+von `EXTRUDE_CAP_TOP_SUB`), der Mantel-Sub liest als `FaceRole::Blend`, und der
+Chamfer-Bevel bekommt dieselbe Behandlung — Onshape nennt auch ihn
+`BLEND_FACE`. Erst danach hat der Übersetzer-Zweig etwas, worauf er abbilden
+kann.
 
 ### Schritt 1 — wie er ausgeführt wurde (v0.39.2, #431)
 

@@ -8670,3 +8670,128 @@ fn chamfer_edge_rejects_a_concave_edge_with_a_reason() {
     );
     assert!(k.edge_chamfers.is_empty(), "no chamfer geometry collected");
 }
+
+// ─── DERIVED-NAMING-PLAN Schritt 2: wo die Verrundungsfläche wirklich steht ───
+
+/// Schritt 2 des `docs/DERIVED-NAMING-PLAN.md` — gemessen statt vermutet.
+///
+/// Der Plan verdächtigte das Nachschlagen von `wall_a`/`wall_b` in der
+/// `BranchSurfaceMap`. Die Messung zeigt etwas anderes: eine GERADE konvexe
+/// Kante läuft seit v0.26.0 (#383/#406) über den harten Cutter, also entsteht
+/// **gar kein `MaskedBlend`** — `register_blend_carrier` wird nie aufgerufen,
+/// und sein Lookup kann folglich auch nicht scheitern. Die Verrundungsfläche
+/// FEHLT nicht: sie wird als gewöhnlicher Tangentialzylinder-Mantel unter der
+/// Fillet-Feature-Id gewoben. Was fehlt, ist ihre **Rolle** — `face_role`
+/// erkennt BLEND nur an der Halbraum-Klasse `HalfSpace::Blend`, die allein der
+/// smin-Pfad (gekrümmte Kante, `fillet_blend_weaves_as_its_own_analytic_face`)
+/// erzeugt.
+///
+/// Dieser Test ist in BEIDE Richtungen scharf: er pinnt sowohl die vorhandene
+/// Fläche als auch die fehlende Rolle. Schritt 3 dreht die letzte Zusicherung
+/// von 0 auf 1.
+#[test]
+fn schritt2_hard_cutter_fillet_face_exists_but_has_no_blend_role() {
+    use crate::brep::SurfaceGeometry;
+    use crate::csg::BranchId;
+    use crate::queries::{resolve_query_topo, FaceRole, QueryExpr};
+    use fielddraft_protocol::HalfSpace;
+
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    let he = 10.0f32;
+    let r = 3.0f32;
+    let (edge_hash, _mid) = cube_pxpy_edge(&registry, &mut ctx, he);
+    registry
+        .regenerate(
+            &mut ctx,
+            &[FeatureCall::new(
+                "fillet_edge",
+                id(2),
+                json!({ "edge": format!("qEdge({edge_hash})"), "blend_radius": r }),
+            )],
+            None,
+        )
+        .unwrap();
+    assert!(ctx.edge_fillets[0].cutter.is_some(), "gerade konvexe Kante → harter Cutter");
+
+    let hard = crate::csg::CsgNode::from_decoded(&ctx.features);
+    let filleted = hard.apply_edge_fillets(&ctx.edge_fillets);
+    let body = crate::bvh::BoundedCsg::from_csg(&filleted);
+
+    // (1) Kein MaskedBlend im Baum — der Plan-Verdacht greift ins Leere.
+    fn blends(n: &crate::bvh::BoundedCsg) -> usize {
+        use crate::bvh::BoundedCsg as B;
+        match n {
+            B::MaskedBlend { left, right, .. } => 1 + blends(left) + blends(right),
+            B::Union { left, right, .. }
+            | B::Difference { left, right, .. }
+            | B::Intersection { left, right, .. }
+            | B::SmoothUnion { left, right, .. }
+            | B::SmoothDifference { left, right, .. }
+            | B::Morph { left, right, .. } => blends(left) + blends(right),
+            B::Twist { inner, .. }
+            | B::Bend { inner, .. }
+            | B::Displace { inner, .. }
+            | B::ArcChannel { inner, .. }
+            | B::Offset { inner, .. }
+            | B::InnerWall { inner, .. }
+            | B::Shell { inner, .. } => blends(inner),
+            _ => 0,
+        }
+    }
+    assert_eq!(blends(&body), 0, "harter Cutter baut keinen MaskedBlend");
+
+    // (2) Beide Cutter-Teilkörper falten auf DIESELBE Branch-Identität. Heute
+    // folgenlos (die verdrängte Box-Ebene liegt nie an der Oberfläche), aber
+    // eine latente Kollision im Namensraum — Schritt 3 trennt sie.
+    let (box_id, cyl_id) = (id(2).child("cut_box"), id(2).child("cut_cyl"));
+    assert_eq!(
+        box_id.branch_identity(),
+        cyl_id.branch_identity(),
+        "cut_box und cut_cyl sind im Namensraum heute nicht unterscheidbar"
+    );
+
+    // (3) Die Verrundungsfläche IST gewoben: genau ein Zylindermantel unter der
+    // Fillet-Feature-Id, mit dem Rollkugel-Radius und -Mittelpunkt.
+    let bb = body.aabb();
+    let largest = bb.size().into_iter().fold(0.0_f32, f32::max);
+    let octree = crate::brep::octree::Octree::build(&body, (largest / 48.0).clamp(1e-3, 10.0));
+    let brep = crate::brep::weaving::weave(&body, &octree);
+    let fillet_feat = BranchId::from_feature(&id(2)).feature_id();
+    let cyl_faces: Vec<_> = brep
+        .faces
+        .iter()
+        .filter(|f| f.branch_id.feature_id() == fillet_feat)
+        .filter(|f| {
+            matches!(
+                &f.surface,
+                SurfaceGeometry::Analytic { surface: HalfSpace::InfiniteCylinder { .. }, .. }
+            )
+        })
+        .collect();
+    assert_eq!(cyl_faces.len(), 1, "genau eine Verrundungsfläche");
+    let SurfaceGeometry::Analytic { surface: HalfSpace::InfiniteCylinder { radius }, transform } =
+        &cyl_faces[0].surface
+    else {
+        unreachable!("gefiltert")
+    };
+    assert!((radius - r).abs() < 1e-4, "Rollkugel-Radius, got {radius}");
+    for k in 0..2 {
+        assert!(
+            (transform.translate[k] - (he - r)).abs() < 1e-4,
+            "Achse durch den Rollkugel-Mittelpunkt, got {:?}",
+            transform.translate
+        );
+    }
+
+    // (4) …und ihr fehlt die Rolle: sie liest als WALL, `qCreatedBy(2, BLEND)`
+    // bindet nichts. Genau das ist die Lücke, die Schritt 3 schließt.
+    assert_eq!(crate::queries::face_role(cyl_faces[0]), FaceRole::Wall);
+    let breps = vec![brep];
+    assert_eq!(
+        resolve_query_topo(&breps, &QueryExpr::CreatedByRole(id(2), FaceRole::Blend)).len(),
+        0,
+        "SCHRITT 3 dreht das auf 1"
+    );
+}
