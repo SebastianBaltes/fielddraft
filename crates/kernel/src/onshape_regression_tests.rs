@@ -318,7 +318,19 @@ fn onshape_419_full_import_stays_bounded() {
 // - `onshape_419_body4_face_inventory_probe` lists body 4's faces with their
 //   edge counts and open flag, and measures per-carrier boundary coverage.
 // - `onshape_419_qwall_23_130_face_probe` follows the ONE branch (94338) that
-//   the web import's `Thicken 6` resolves against.
+//   the web import's `Thicken 6` resolves against. Its `carrier_coverage`
+//   numbers for 94338 are PLANE-ONLY and therefore meaningless — see #440.
+//
+// Two more from #440 (`-E 'test(/onshape_440_/)'`), written up in
+// `docs/research/440-thicken6-face-provenance.md`:
+//
+// - `onshape_440_thicken6_carrier_probe` names the carrier's analytic shape,
+//   measures its boundary coverage shape-agnostically, reports which feature
+//   buries it, and scans the revolve's own radial profile.
+// - `onshape_440_thicken6_effect_probe` diffs the whole document with and
+//   without `Thicken 6` — by SUPPRESSION, never deletion, because
+//   `Document::allocate_id` is sequential and a dropped call renumbers every
+//   later feature.
 
 /// World implicit of a branch carrier — 0 exactly on the carrier surface
 /// (mirror of the private `brep::ssi::implicit_world`).
@@ -689,6 +701,416 @@ fn onshape_419_qwall_23_130_face_probe() {
     }
 }
 
+/// #440 — carrier-SHAPE-AGNOSTIC boundary coverage of a branch carrier.
+///
+/// [`carrier_coverage`] linearises the carrier at the body-AABB centre and
+/// rasters that TANGENT PLANE. That is exact for a planar carrier and
+/// meaningless for a curved one: a plane meets a cylinder in at most two
+/// lines, so a cylindrical carrier reads "0 on-boundary samples" no matter how
+/// much of it is boundary. This variant never assumes a shape — it Newton-
+/// projects a dense volume grid onto the carrier's own zero set along
+/// `∇(carrier implicit)` and evaluates the body field there.
+fn carrier_coverage_curved(bounded: &crate::bvh::BoundedCsg, id: u32, res: usize) {
+    let map = crate::brep::weaving::branch_halfspace_map(bounded);
+    let bb = bounded.aabb();
+    let s = bb.size();
+    let diag = ((s[0] as f64).powi(2) + (s[1] as f64).powi(2) + (s[2] as f64).powi(2)).sqrt() as f32;
+    let eps = 1e-4 * diag;
+    if map.get(&id).is_none() {
+        println!("  curved-coverage {id}: NOT IN MAP");
+        return;
+    }
+    let h = 1e-3 * diag;
+    let grad = |p: [f32; 3]| {
+        let mut g = [0.0f32; 3];
+        for k in 0..3 {
+            let (mut pp, mut pm) = (p, p);
+            pp[k] += h;
+            pm[k] -= h;
+            g[k] = (carrier_implicit(&map, id, pp) - carrier_implicit(&map, id, pm)) / (2.0 * h);
+        }
+        g
+    };
+    let (mut projected, mut on, mut owned) = (0usize, 0usize, 0usize);
+    let mut hit_min = [f32::INFINITY; 3];
+    let mut hit_max = [f32::NEG_INFINITY; 3];
+    for i in 0..res {
+        for j in 0..res {
+            for k in 0..res {
+                let mut p = [
+                    bb.min[0] + (bb.max[0] - bb.min[0]) * (i as f32 + 0.5) / res as f32,
+                    bb.min[1] + (bb.max[1] - bb.min[1]) * (j as f32 + 0.5) / res as f32,
+                    bb.min[2] + (bb.max[2] - bb.min[2]) * (k as f32 + 0.5) / res as f32,
+                ];
+                // Newton onto the carrier's zero set.
+                let mut ok = false;
+                for _ in 0..24 {
+                    let f = carrier_implicit(&map, id, p);
+                    if f.abs() <= 0.1 * eps {
+                        ok = true;
+                        break;
+                    }
+                    let g = grad(p);
+                    let gl2 = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+                    if gl2 < 1e-18 {
+                        break;
+                    }
+                    for c in 0..3 {
+                        p[c] -= f * g[c] / gl2;
+                    }
+                }
+                if !ok
+                    || p[0] < bb.min[0]
+                    || p[0] > bb.max[0]
+                    || p[1] < bb.min[1]
+                    || p[1] > bb.max[1]
+                    || p[2] < bb.min[2]
+                    || p[2] > bb.max[2]
+                {
+                    continue;
+                }
+                projected += 1;
+                let (f, cs) = bounded.evaluate(p, eps, crate::csg::EvalMode::Logical);
+                if f.abs() <= eps {
+                    on += 1;
+                    for c in 0..3 {
+                        hit_min[c] = hit_min[c].min(p[c]);
+                        hit_max[c] = hit_max[c].max(p[c]);
+                    }
+                    if cs.as_slice().contains(&crate::csg::BranchId(id)) {
+                        owned += 1;
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "  curved-coverage branch {id}: projected {projected}, on-boundary {on}, contributor {owned} (eps {eps:.5}, res {res}³)"
+    );
+    if on > 0 {
+        println!("    on-boundary hits span {hit_min:?} .. {hit_max:?}");
+    }
+}
+
+/// #440 — what does the web import's `Thicken 6` actually stand on?
+///
+/// `qWall(23, 130)` = branch `23·4096 + 130 = 94338`: op 23 of the replay is
+/// `Revolve 1`, entity 130 is the Onshape sketch line `2L94FTnhDuaQ.right` of
+/// `Sketch 3`. This probe prints (a) the carrier's ANALYTIC shape, (b) a
+/// shape-agnostic boundary coverage for it and its sibling 94347, (c) body 9's
+/// feature list and face inventory, (d) the edges naming 94338 with their
+/// sampled geometry, and (e) for points on the carrier, which single feature
+/// of the body covers them. Instrument only.
+#[test]
+#[ignore = "measurement harness (#440)"]
+fn onshape_440_thicken6_carrier_probe() {
+    let (_t, mut kernel) = replay(include_str!("testdata/onshape419_full_import.json"));
+    for i in 0..kernel.body_count() {
+        let _ = kernel.body_brep_counts(i);
+    }
+    let bi = 9usize;
+    let b = &kernel.bodies[bi];
+    let idxs = b.feature_indices.clone();
+    let place = b.placement;
+    println!("BODY {bi} features (replay call index → feature):");
+    for &i in &idxs {
+        let s = format!("{:?}", kernel.decoded[i]);
+        println!("  idx {i}: {}", &s[..s.len().min(220)]);
+    }
+    let bounded = crate::body::build_bounded_for_body_local(&kernel.decoded, &idxs, &place);
+    let map = crate::brep::weaving::branch_halfspace_map(&bounded);
+    for want in [94338u32, 94347] {
+        match map.get(&want) {
+            Some((hs, t)) => {
+                let d = format!("{hs:?}");
+                println!("carrier {want}: {} ", &d[..d.len().min(400)]);
+                println!("  transform {t:?}");
+            }
+            None => println!("carrier {want}: NOT IN MAP"),
+        }
+    }
+    let bb = bounded.aabb();
+    println!("body aabb {:?} .. {:?}", bb.min, bb.max);
+
+    let brep = kernel.bodies[bi].brep_cached().expect("brep").clone();
+    let inv: Vec<String> = brep
+        .faces
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            format!(
+                "{i}:b{}({}/{}) e{}{}",
+                f.branch_id.as_u32(),
+                f.branch_id.as_u32() >> 12,
+                f.branch_id.as_u32() & 4095,
+                f.outer.edges.len(),
+                if f.outer.is_connected_ring(&brep.edges) { "" } else { "!" }
+            )
+        })
+        .collect();
+    println!("BODY {bi} faces (idx:branch(op/entity) edges, ! = open): {inv:?}");
+
+    for (ei, e) in brep.edges.iter().enumerate() {
+        let (a, c) = (e.signature.0.as_u32(), e.signature.1.as_u32());
+        if a != 94338 && c != 94338 {
+            continue;
+        }
+        let pts = crate::brep::edge_sampling::sample_edge(&e.geometry);
+        let n = pts.len();
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        let mut len = 0.0f64;
+        for (k, p) in pts.iter().enumerate() {
+            for c in 0..3 {
+                lo[c] = lo[c].min(p[c]);
+                hi[c] = hi[c].max(p[c]);
+            }
+            if k > 0 {
+                let q = pts[k - 1];
+                len += ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2))
+                    .sqrt();
+            }
+        }
+        println!(
+            "  edge {ei} sig ({a},{c}) closed={} pts {n} len {len:.4} bbox {lo:?}..{hi:?}",
+            e.start.is_none() && e.end.is_none()
+        );
+        println!("    first {:?} mid {:?} last {:?}", pts[0], pts[n / 2], pts[n - 1]);
+    }
+
+    // (e) Who covers the carrier? Sample the CYLINDER ITSELF on a (θ, y)
+    // grid — the only honest parameterisation for this shape — and classify
+    // the body field plus every single feature of the body at each point.
+    let s = bb.size();
+    let diag = ((s[0] as f64).powi(2) + (s[1] as f64).powi(2) + (s[2] as f64).powi(2)).sqrt() as f32;
+    let eps = 1e-4 * diag;
+    let per_feature: Vec<(usize, String, crate::bvh::BoundedCsg)> = idxs
+        .iter()
+        .map(|&i| {
+            (
+                i,
+                kernel.decoded[i].name.clone(),
+                crate::body::build_bounded_for_body_local(&kernel.decoded, &[i], &place),
+            )
+        })
+        .collect();
+    let r = 7.7349997f32;
+    // The Onshape sketch line `2L94FTnhDuaQ.right` runs y_local 46.677 … 60.927
+    // — the WHOLE swept face, not just the part under `Extrude 4`'s block.
+    let (y0, y1) = (44.0f32, 62.0f32);
+    let (nt, ny) = (360usize, 180usize);
+    let mut on_body = 0usize;
+    let mut buried = 0usize;
+    let mut outside = 0usize;
+    // Per (θ, y) cell, who strictly buries the point (feature sdf < −eps).
+    let mut burier: std::collections::BTreeMap<Vec<usize>, usize> = Default::default();
+    let mut theta_on: Vec<bool> = vec![false; nt];
+    let mut y_on: Vec<bool> = vec![false; ny];
+    for it in 0..nt {
+        let th = std::f32::consts::TAU * (it as f32 + 0.5) / nt as f32;
+        for iy in 0..ny {
+            let y = y0 + (y1 - y0) * (iy as f32 + 0.5) / ny as f32;
+            let p = [r * th.cos(), y, r * th.sin()];
+            let (f, _) = bounded.evaluate(p, eps, crate::csg::EvalMode::Logical);
+            if f.abs() <= eps {
+                on_body += 1;
+                theta_on[it] = true;
+                y_on[iy] = true;
+            } else if f < 0.0 {
+                buried += 1;
+                let set: Vec<usize> = per_feature
+                    .iter()
+                    .filter(|(_, _, bc)| bc.sdf(p, crate::csg::EvalMode::Logical) < -eps)
+                    .map(|(i, _, _)| *i)
+                    .collect();
+                *burier.entry(set).or_default() += 1;
+            } else {
+                outside += 1;
+            }
+        }
+    }
+    println!(
+        "cylinder r={r} y∈[{y0},{y1}] on a {nt}×{ny} (θ,y) grid: on-boundary {on_body}, BURIED {buried}, outside {outside} (eps {eps:.5})"
+    );
+    println!(
+        "  θ-slices with any boundary: {} of {nt}; y-slices with any boundary: {} of {ny}",
+        theta_on.iter().filter(|b| **b).count(),
+        y_on.iter().filter(|b| **b).count()
+    );
+    {
+        let ys: Vec<f32> = (0..ny)
+            .filter(|iy| y_on[*iy])
+            .map(|iy| y0 + (y1 - y0) * (iy as f32 + 0.5) / ny as f32)
+            .collect();
+        if let (Some(a), Some(b)) = (ys.first(), ys.last()) {
+            println!("  boundary y-range {a:.4} … {b:.4} ({} slices)", ys.len());
+        }
+        // Per y-slice: how many of the 360 θ samples are boundary?
+        let mut line = String::new();
+        for iy in 0..ny {
+            let y = y0 + (y1 - y0) * (iy as f32 + 0.5) / ny as f32;
+            let mut c = 0usize;
+            for it in 0..nt {
+                let th = std::f32::consts::TAU * (it as f32 + 0.5) / nt as f32;
+                let p = [r * th.cos(), y, r * th.sin()];
+                let (f, _) = bounded.evaluate(p, eps, crate::csg::EvalMode::Logical);
+                if f.abs() <= eps {
+                    c += 1;
+                }
+            }
+            if iy % 6 == 0 {
+                line.push_str(&format!(" y={y:.2}:{c}"));
+            }
+        }
+        println!("  boundary θ-count per y (every 6th slice):{line}");
+    }
+    println!("  who BURIES the carrier (feature idx with sdf < −eps → count):");
+    let mut v: Vec<_> = burier.into_iter().collect();
+    v.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+    for (set, c) in v.into_iter().take(12) {
+        let names: Vec<&str> = set
+            .iter()
+            .map(|i| {
+                per_feature
+                    .iter()
+                    .find(|(k, _, _)| k == i)
+                    .map(|(_, n, _)| n.as_str())
+                    .unwrap_or("?")
+            })
+            .collect();
+        println!("    {set:?} {names:?} → {c}");
+    }
+    for (i, n, bc) in &per_feature {
+        println!("  feature idx {i} ({n}) aabb {:?} .. {:?}", bc.aabb().min, bc.aabb().max);
+    }
+
+    // (f) The revolve's own (r, y) profile at θ = 90° (a plane that no
+    // extrude's block reaches): where does its material actually end?
+    let rev = &per_feature.iter().find(|(i, _, _)| *i == 11).expect("revolve").2;
+    println!("  Revolve 23 material radius per y (θ=90°, step 0.05 mm):");
+    let mut ycur = 19.0f32;
+    while ycur <= 61.5 {
+        let mut rmax = -1.0f32;
+        let mut rmin = -1.0f32;
+        let mut rr = 0.0f32;
+        while rr <= 12.0 {
+            let p = [0.0, ycur, rr];
+            if rev.sdf(p, crate::csg::EvalMode::Logical) < 0.0 {
+                if rmin < 0.0 {
+                    rmin = rr;
+                }
+                rmax = rr;
+            }
+            rr += 0.05;
+        }
+        println!("    y={ycur:>7.3}  material r ∈ [{rmin:.3}, {rmax:.3}]");
+        ycur += 1.5;
+    }
+
+    carrier_coverage_curved(&bounded, 94338, 90);
+    carrier_coverage_curved(&bounded, 94347, 90);
+}
+
+/// #440 — what does `Thicken 6` actually CHANGE in the replayed document?
+///
+/// The web importer binds it to the one face `qWall(23, 130)` resolves to; the
+/// recording froze that as the `qFace(...)` fingerprint. This probe replays the
+/// document with and without that single call and diffs every body, so the cost
+/// of skipping the feature is a number instead of an opinion. Instrument only.
+#[test]
+#[ignore = "measurement harness (#440)"]
+fn onshape_440_thicken6_effect_probe() {
+    let full = include_str!("testdata/onshape419_full_import.json");
+    let calls: Vec<serde_json::Value> = serde_json::from_str(full).expect("call list");
+    let idx = calls
+        .iter()
+        .position(|c| c["type"] == "thicken" && c["params"].as_str().unwrap().contains("Thicken 6"))
+        .expect("Thicken 6 in the recording");
+    println!("Thicken 6 is recorded call #{idx}: {}", calls[idx]["params"]);
+
+    let (_a, mut ka) = replay(full);
+    // SUPPRESS, never delete: `Document::allocate_id` is sequential, so dropping
+    // a call renumbers every later feature and silently re-points every
+    // `qCreatedBy(n)` after it. Suppression keeps the ids.
+    let (_b, mut kb) = replay(full);
+    kb.set_feature_suppressed(idx as u32 + 1, true)
+        .expect("suppress Thicken 6");
+    println!("bodies: with {} / without {}", ka.body_count(), kb.body_count());
+    let n = ka.body_count().max(kb.body_count());
+    for i in 0..n {
+        let ca = (i < ka.body_count()).then(|| brep_counts(&mut ka, i));
+        let cb = (i < kb.body_count()).then(|| brep_counts(&mut kb, i));
+        let aa = (i < ka.body_count()).then(|| {
+            let b = &ka.bodies[i];
+            crate::body::build_bounded_for_body_local(&ka.decoded, &b.feature_indices, &b.placement)
+                .aabb()
+        });
+        let ab = (i < kb.body_count()).then(|| {
+            let b = &kb.bodies[i];
+            crate::body::build_bounded_for_body_local(&kb.decoded, &b.feature_indices, &b.placement)
+                .aabb()
+        });
+        let same = ca == cb;
+        println!(
+            "  body {i}: counts {ca:?} vs {cb:?} {}",
+            if same { "= equal" } else { "≠ DIFFERENT" }
+        );
+        if let (Some(x), Some(y)) = (aa, ab) {
+            if x.min != y.min || x.max != y.max {
+                println!("    aabb {:?}..{:?}  vs  {:?}..{:?}", x.min, x.max, y.min, y.max);
+            }
+        }
+    }
+    println!("open faces with    {:?}", open_faces(&mut ka));
+    println!("open faces without {:?}", open_faces(&mut kb));
+
+    // CONTROL — the instrument must be able to see a suppression at all.
+    // Recorded call #24 is `Extrude 4` (feature id 25), the block that buries
+    // the carrier; suppressing it has to move body 9.
+    let (_c, mut kc) = replay(full);
+    kc.set_feature_suppressed(25, true).expect("suppress Extrude 4");
+    println!(
+        "CONTROL suppress feature 25 (Extrude 4): body 9 counts {:?} (unsuppressed {:?}), open {:?}",
+        brep_counts(&mut kc, 9),
+        brep_counts(&mut ka, 9),
+        open_faces(&mut kc)
+    );
+
+    // Volume of every body, by Monte-Carlo-free grid count over its own AABB.
+    for (label, k) in [("with", &mut ka), ("without", &mut kb)] {
+        let mut vols = Vec::new();
+        for i in 0..k.body_count() {
+            let b = &k.bodies[i];
+            let bc = crate::body::build_bounded_for_body_local(
+                &k.decoded,
+                &b.feature_indices,
+                &b.placement,
+            );
+            let bb = bc.aabb();
+            let res = 64usize;
+            let mut inside = 0usize;
+            for a in 0..res {
+                for c in 0..res {
+                    for d in 0..res {
+                        let p = [
+                            bb.min[0] + (bb.max[0] - bb.min[0]) * (a as f32 + 0.5) / res as f32,
+                            bb.min[1] + (bb.max[1] - bb.min[1]) * (c as f32 + 0.5) / res as f32,
+                            bb.min[2] + (bb.max[2] - bb.min[2]) * (d as f32 + 0.5) / res as f32,
+                        ];
+                        if bc.sdf(p, crate::csg::EvalMode::Logical) < 0.0 {
+                            inside += 1;
+                        }
+                    }
+                }
+            }
+            let cell = (bb.max[0] - bb.min[0]) * (bb.max[1] - bb.min[1]) * (bb.max[2] - bb.min[2])
+                / (res * res * res) as f32;
+            vols.push((inside as f32 * cell * 1000.0).round() / 1000.0);
+        }
+        println!("volumes {label:>8} (mm³, 64³ grid): {vols:?}");
+    }
+}
+
 /// #439 — face inventory of body 4 of the revolve-remove replay, for the
 /// face-by-face justification of the pinned counts. Instrument only.
 #[test]
@@ -739,6 +1161,14 @@ fn onshape_419_body4_face_inventory_probe() {
 /// Fraction of a PLANAR carrier that lies on ∂body: a dense grid over the
 /// body AABB, projected onto the carrier plane, counting samples with
 /// `|f| ≤ ε` (and, separately, with the branch among the contributors).
+///
+/// **PLANAR ONLY** (#440). [`carrier_plane`] linearises the carrier at the AABB
+/// centre, so this rasters a TANGENT PLANE. A plane meets a cylinder in at most
+/// two lines, so every curved carrier reads "0 on-boundary samples" here no
+/// matter how much of it is boundary — that is precisely how #439 concluded
+/// that branch 94338 (an `InfiniteCylinder`) was nowhere boundary. For anything
+/// that is not a [`fielddraft_protocol::HalfSpace::Plane`], use
+/// [`carrier_coverage_curved`].
 fn carrier_coverage(bounded: &crate::bvh::BoundedCsg, id: u32) {
     let map = crate::brep::weaving::branch_halfspace_map(bounded);
     let bb = bounded.aabb();
