@@ -2992,3 +2992,130 @@ fn partial_membrane_from_flush_remove_leaves_four_faces_open() {
         "the +x wall collects the notch rims too: 7 edges where its ring needs 4"
     );
 }
+
+/// #439 probe — a solid whose walls lie ENTIRELY inside another, with flush
+/// caps. Instrument only; prints the face/branch inventory.
+#[test]
+#[ignore = "measurement harness (#439)"]
+fn interior_wall_flush_cap_probe() {
+    let a = CsgNode::Leaf {
+        id: FeatureId::from_u32(1),
+        primitive: Primitive::Box { center: [0.0, 0.0, 0.0], half_extents: [2.0, 2.0, 1.0] },
+    };
+    let b = CsgNode::Leaf {
+        id: FeatureId::from_u32(2),
+        primitive: Primitive::Box { center: [0.0, 0.0, 0.0], half_extents: [0.5, 0.5, 1.0] },
+    };
+    let body = BoundedCsg::from_csg(&CsgNode::Union(Box::new(a), Box::new(b)));
+    let brep = weave_parametric(&body).expect("weavable");
+    let faces: Vec<String> = brep
+        .faces
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            format!(
+                "{i}:b{} e{}{}",
+                f.branch_id.as_u32(),
+                f.outer.edges.len(),
+                if f.outer.is_connected_ring(&brep.edges) { "" } else { "!" }
+            )
+        })
+        .collect();
+    println!("BOX-IN-BOX faces: {faces:?}");
+    println!(
+        "  open {} counts {:?} closed {}",
+        brep.open_face_count(),
+        (brep.vertex_count(), brep.edge_count(), brep.face_count()),
+        brep.shells[0].is_closed
+    );
+    println!("  viol {}", brep.manifold_violations().len());
+    let sigs: Vec<(u32, u32)> = brep
+        .edges
+        .iter()
+        .map(|e| (e.signature.0.as_u32(), e.signature.1.as_u32()))
+        .collect();
+    println!("  edge signatures: {sigs:?}");
+}
+
+/// #439 — a union operand swallowed WHOLE by its partner must leave no trace
+/// in the B-Rep. A 64-facet extrude sits entirely inside a bigger extrude and
+/// shares its z = 0 cap plane, so every facet wall is interior and meets ∂body
+/// only in the LINE where the cap plane crosses it. Those lines get traced
+/// (both fields are zero there, both branches are contributors).
+///
+/// This is the minimal form of the #419 body-10 defect — and it does NOT
+/// reproduce it: measured, this construction was already correct before #439,
+/// because `finish_weave`'s manifold-driven repair stage re-attributed the
+/// memberships and the extra faces fell out that way. What the real document
+/// adds is a body the repair stage cannot rescue (11 more features, a removing
+/// revolve and four holes), so there the scratches survived into the shell.
+///
+/// The test earns its place as a GUARD: the intermediate #439 state that
+/// culled the interior carriers without dropping their scratches produced
+/// 7 faces / 76 edges here, with the swallowed extrude's cap surviving as a
+/// 64-edge face lying inside the big one. The pin is the correct answer on
+/// every route — the union of the two IS the big prism.
+#[test]
+fn interior_extrude_swallowed_whole_leaves_no_face() {
+    use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+    let n = 64;
+    let ring: Vec<[f32; 2]> = (0..n)
+        .map(|i| {
+            let a = std::f32::consts::TAU * i as f32 / n as f32;
+            [5.0 * a.cos(), 5.0 * a.sin()]
+        })
+        .collect();
+    // Big: z ∈ [0, 15.85].  Small: z ∈ [0, 9.7], entirely inside in xy.
+    let big = CsgNode::Transform(
+        Transform { translate: [0.0, 0.0, 7.925], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+        Box::new(CsgNode::Extrude {
+            wall_subs: None,
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+                center: [0.0, 0.0],
+                half_extents: [20.0, 20.0],
+            })),
+            half_height: 7.925,
+        }),
+    );
+    let small = CsgNode::Transform(
+        Transform { translate: [0.0, 0.0, 4.85], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+        Box::new(CsgNode::Extrude {
+            wall_subs: None,
+            id: FeatureId::from_u32(2),
+            sketch: Box::new(Sketch2d::Prim(Sketch2dPrimitive::Polygon { vertices: ring })),
+            half_height: 4.85,
+        }),
+    );
+    let body = BoundedCsg::from_csg(&CsgNode::Union(Box::new(big), Box::new(small)));
+    let brep = weave_parametric(&body).expect("weavable");
+
+    // The seed wireframe DOES trace the interior facets — 140 edges, among
+    // them the 64 cap-plane scratches. The repair is downstream of tracing.
+    let seed = crate::brep::seed_weaver::seed_wireframe(&body).expect("seed route");
+    assert!(
+        seed.edges.iter().any(|e| {
+            let (a, b) = (e.signature.0.feature_id(), e.signature.1.feature_id());
+            a == 2 || b == 2
+        }),
+        "the tracer must still find the interior facet curves — the cull, not \
+         the tracer, is what removes them",
+    );
+
+    let branches: std::collections::BTreeSet<u32> =
+        brep.faces.iter().map(|f| f.branch_id.feature_id()).collect();
+    assert_eq!(
+        branches,
+        [1u32].into_iter().collect::<std::collections::BTreeSet<u32>>(),
+        "only the swallowing extrude may own faces, got {:?}",
+        brep.faces.iter().map(|f| f.branch_id.as_u32()).collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        (brep.vertex_count(), brep.edge_count(), brep.face_count()),
+        (8, 12, 6),
+        "the union of the two IS the big prism",
+    );
+    assert_eq!(brep.open_face_count(), 0, "every face closes into a ring");
+    assert!(brep.manifold_violations().is_empty(), "and it is manifold");
+    assert!(brep.shells[0].is_closed, "and watertight");
+}
