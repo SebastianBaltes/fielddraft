@@ -230,6 +230,21 @@ pub enum QueryExpr {
     /// compose provenance with topology filters; this is the composition
     /// node. Nests arbitrarily.
     Intersection(Box<QueryExpr>, Box<QueryExpr>),
+    /// `qUnion(a, b)` — the elements matched by EITHER sub-query
+    /// (set union by identity, deduplicated).
+    ///
+    /// The counterpart to [`Intersection`](Self::Intersection), and the whole
+    /// of what `docs/DERIVED-NAMING-PLAN.md` §4/E3 asks for: where a boolean
+    /// makes two coplanar walls flush, Onshape folds them into ONE face and
+    /// calls it `MERGE(a, b)` — FieldDraft keeps both (no implicit merge), so
+    /// one Onshape face is a SET of FieldDraft faces. Naming that set needs a
+    /// union, not a new base name: nothing new is created by the boolean, the
+    /// pieces already have names.
+    ///
+    /// Kind-polymorphic on purpose — a merged EDGE is the same statement about
+    /// edges — and it nests, so `qUnion(qUnion(a, b), c)` expresses a
+    /// three-way merge without a variadic form.
+    Union(Box<QueryExpr>, Box<QueryExpr>),
     /// `qCommonEdge(a, b)` — the B-Rep edges shared by a face matched
     /// by `a` and a face matched by `b`. The import translation for
     /// Onshape's INTERSECT edge queries (a fillet edge named as "the
@@ -307,6 +322,7 @@ impl fmt::Display for QueryExpr {
             }
             QueryExpr::Instance(i, q) => write!(f, "qInstance({i}, {q})"),
             QueryExpr::Intersection(a, b) => write!(f, "qIntersection({a}, {b})"),
+            QueryExpr::Union(a, b) => write!(f, "qUnion({a}, {b})"),
             QueryExpr::AdjacentTo(a, b) => write!(f, "qAdjacentTo({a}, {b})"),
             QueryExpr::CommonEdge(a, b) => write!(f, "qCommonEdge({a}, {b})"),
             QueryExpr::FaceOf(id) => write!(f, "qFaceOf({id})"),
@@ -425,8 +441,9 @@ pub fn parse_query(input: &str) -> Result<QueryExpr, QueryParseError> {
         ))?;
 
     // Paren-aware top-level split: composed queries (`qIntersection`,
-    // `qAdjacentTo`) carry whole sub-queries as arguments, whose own
-    // commas must not split the outer argument list.
+    // `qUnion`, `qAdjacentTo`, `qCommonEdge`, `qInstance`) carry whole
+    // sub-queries as arguments, whose own commas must not split the outer
+    // argument list.
     let args: Vec<&str> = if args_raw.trim().is_empty() {
         Vec::new()
     } else {
@@ -530,6 +547,10 @@ pub fn parse_query(input: &str) -> Result<QueryExpr, QueryParseError> {
         "qIntersection" => {
             let (a, b) = expect_two_subqueries(&args, "qIntersection expects two queries")?;
             Ok(QueryExpr::Intersection(Box::new(a), Box::new(b)))
+        }
+        "qUnion" => {
+            let (a, b) = expect_two_subqueries(&args, "qUnion expects two queries")?;
+            Ok(QueryExpr::Union(Box::new(a), Box::new(b)))
         }
         "qAdjacentTo" => {
             let (a, b) = expect_two_subqueries(&args, "qAdjacentTo expects two queries")?;
@@ -815,6 +836,20 @@ pub fn resolve_query_topo(
                 .into_iter()
                 .filter(|r| b_ids.contains(&r.id_hash))
                 .collect();
+        }
+        QueryExpr::Union(a, b) => {
+            // Set union by identity. An element both sides match appears ONCE —
+            // `qUnion(x, x)` is `x`, and a caller that counts hits (the import's
+            // uniqueness check) must not see a duplicate as a second face.
+            let mut seen: std::collections::HashSet<(u64, u8)> = Default::default();
+            for r in resolve_query_topo(breps, a)
+                .into_iter()
+                .chain(resolve_query_topo(breps, b))
+            {
+                if seen.insert((r.id_hash, r.kind as u8)) {
+                    out.push(r);
+                }
+            }
         }
         QueryExpr::CommonEdge(a, b) => {
             use crate::brep::naming::EntityKind;
@@ -1688,6 +1723,64 @@ mod tests {
             Box::new(QueryExpr::Wall(id(7), 6, false)),
         );
         assert!(resolve_query_topo(std::slice::from_ref(&brep), &disjoint).is_empty());
+    }
+
+    // ─── qUnion (Schritt 4 / E3) ──────────────────────────────
+
+    #[test]
+    fn parses_and_roundtrips_union() {
+        // Onshape's three-way `MERGE` travels as a nested pair — the nested
+        // commas are exactly what the top-level split must not touch.
+        let raw = "qUnion(qUnion(qWall(2, 3), qWall(2, 6)), qCreatedBy(4, CAP_TOP))";
+        let q = parse_query(raw).unwrap();
+        assert_eq!(
+            q,
+            QueryExpr::Union(
+                Box::new(QueryExpr::Union(
+                    Box::new(QueryExpr::Wall(id(2), 3, false)),
+                    Box::new(QueryExpr::Wall(id(2), 6, false)),
+                )),
+                Box::new(QueryExpr::CreatedByRole(id(4), FaceRole::CapTop)),
+            )
+        );
+        assert_eq!(q.to_string(), raw, "Display is the canonical wire form");
+        assert_eq!(parse_query(&q.to_string()).unwrap(), q);
+        assert!(matches!(
+            parse_query("qUnion(qCreatedBy(1))"),
+            Err(QueryParseError::MalformedArguments(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_union_collects_both_sides_without_duplicates() {
+        // The Onshape shape: one merged face = two FieldDraft walls. Both
+        // come back, and a face both sides name comes back ONCE.
+        let brep = adjacency_brep();
+        let both = QueryExpr::Union(
+            Box::new(QueryExpr::Wall(id(7), 3, false)),
+            Box::new(QueryExpr::Wall(id(7), 6, false)),
+        );
+        let refs = resolve_query_topo(std::slice::from_ref(&brep), &both);
+        assert_eq!(refs.len(), 2, "both walls of the merged face");
+        let overlapping = QueryExpr::Union(
+            Box::new(QueryExpr::CreatedByRole(id(7), FaceRole::Wall)),
+            Box::new(QueryExpr::Wall(id(7), 3, false)),
+        );
+        assert_eq!(
+            resolve_query_topo(std::slice::from_ref(&brep), &overlapping).len(),
+            2,
+            "the sub-3 wall is in both sets and appears once"
+        );
+        // Union with an empty set is the identity — a merge partner that no
+        // longer exists must not swallow the partner that does.
+        let with_nothing = QueryExpr::Union(
+            Box::new(QueryExpr::Wall(id(7), 3, false)),
+            Box::new(QueryExpr::Wall(id(7), 99, false)),
+        );
+        assert_eq!(
+            resolve_query_topo(std::slice::from_ref(&brep), &with_nothing).len(),
+            1
+        );
     }
 
     #[test]
