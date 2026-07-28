@@ -33,7 +33,7 @@ import {
 } from "../api/platform";
 import { fileToAttachment, type TicketAttachment } from "../reportTicket";
 import { accountErrorMessage } from "./useAccount";
-import { linkify } from "./linkify";
+import { TicketMarkdown } from "./TicketMarkdown";
 import {
   commentVisible,
   formatDateTime,
@@ -562,9 +562,12 @@ function TicketDetailPanel({
             <span>Opened {formatDateTime(ticket.created_at)}</span>
             <span>Updated {formatDateTime(ticket.updated_at)}</span>
           </div>
-          <p className="detail-body" data-testid="detail-body">
-            {linkify(ticket.body, onOpenTicketByNumber)}
-          </p>
+          <TicketMarkdown
+            className="detail-body"
+            testId="detail-body"
+            text={ticket.body}
+            onOpenTicketByNumber={onOpenTicketByNumber}
+          />
           {(isAuthor || isAdmin) && (
             <div className="detail-author-actions">
               {/* Title/body edit (ticket #378): author or admin, mirroring
@@ -996,9 +999,12 @@ function Thread({
                     {formatDateTime(c.created_at)}
                   </span>
                 </div>
-                <p className="comment-text">
-                  {linkify(c.body, onOpenTicketByNumber)}
-                </p>
+                <TicketMarkdown
+                  className="comment-text"
+                  testId={`comment-text-${c.id}`}
+                  text={c.body}
+                  onOpenTicketByNumber={onOpenTicketByNumber}
+                />
               </div>
             </li>
             );

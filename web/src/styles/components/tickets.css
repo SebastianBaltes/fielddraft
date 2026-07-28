@@ -412,29 +412,11 @@
     color: var(--color-text-subtle);
   }
 
+  /* Markdown-rendered ticket body (ticket #441) — typography is owned by
+   *  `.fd-ticket-markdown` (styles/components/ticketMarkdown.css); this
+   *  class is just the layout hook inside `.detail-head`'s flex column. */
   & .detail-body {
     margin: 0;
-    font-size: var(--fs-base);
-    line-height: var(--lh-normal);
-    white-space: pre-wrap;
-  }
-
-  /* "#N" ticket references inside body/comment text (ticket #364) — a
-   *  <button> (not <a>, there's no href to navigate) styled like the
-   *  autolinked URLs it sits next to. */
-  & .ticket-ref-link {
-    border: none;
-    background: transparent;
-    padding: 0;
-    margin: 0;
-    font: inherit;
-    color: var(--color-accent);
-    cursor: pointer;
-
-    &:hover {
-      color: var(--color-accent-hover);
-      text-decoration: underline;
-    }
   }
 
   & .detail-author-actions {
@@ -837,10 +819,10 @@
     color: var(--color-text-subtle);
   }
 
+  /* Markdown-rendered comment body (ticket #441) — typography is owned by
+   *  `.fd-ticket-markdown`; this class is just the `.comment-body` layout
+   *  hook (flex column, see above). */
   & .comment-text {
     margin: 0;
-    font-size: var(--fs-base);
-    line-height: var(--lh-normal);
-    white-space: pre-wrap;
   }
 }

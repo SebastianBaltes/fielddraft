@@ -14,6 +14,20 @@ import type {
   globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
+// Mermaid is heavy and jsdom cannot lay out real SVG anyway (ticket #441) —
+// mock it once here; each test that cares about the rendered output
+// reconfigures `render`'s resolved/rejected value in the mermaid describe
+// block below.
+vi.mock("mermaid", () => ({
+  default: {
+    initialize: vi.fn(),
+    render: vi.fn(async (_id: string, source: string) => ({
+      svg: `<svg data-testid="mock-mermaid-svg">${source}</svg>`,
+      diagramType: "flowchart",
+    })),
+  },
+}));
+
 const USER: User = {
   id: "u1",
   email: "a@b.c",
@@ -127,9 +141,20 @@ function byTestId<T extends HTMLElement = HTMLElement>(id: string): T | null {
   return container.querySelector<T>(`[data-testid="${id}"]`);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.restoreAllMocks();
   localStorage.clear();
+  // `restoreAllMocks` wipes the `vi.fn()` implementation set in the
+  // `vi.mock("mermaid", …)` factory above (there is no "original" to
+  // restore to) — reinstate the default success path each test; the
+  // mermaid-diagrams tests override it per-case where they need to.
+  const { default: mermaid } = await import("mermaid");
+  vi.mocked(mermaid.render).mockImplementation(
+    async (_id: string, source: string) => ({
+      svg: `<svg data-testid="mock-mermaid-svg">${source}</svg>`,
+      diagramType: "flowchart",
+    }),
+  );
 });
 
 afterEach(() => {
@@ -263,7 +288,7 @@ describe("TicketsView — detail", () => {
     );
     mount({ ticketId: "t1" });
     await flush();
-    expect(byTestId("detail-body")?.textContent).toBe("It explodes");
+    expect(byTestId("detail-body")?.textContent?.trim()).toBe("It explodes");
     expect(byTestId("ticket-thread")?.textContent).toContain("first reply");
   });
 
@@ -560,6 +585,9 @@ describe("TicketsView — detail", () => {
   });
 
   // Ticket #364 (teil A): "#N" refs in the body/comments open that ticket.
+  // Ticket #441 moved this from a React-rendered <button> (the old
+  // `linkify`) to a <span> emitted by the markdown pipeline, clicked via
+  // delegation — see TicketMarkdown.tsx.
   describe("ticket-reference links", () => {
     it("renders a '#N' ref in the body as a link wired to onOpenTicketByNumber", async () => {
       vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
@@ -570,8 +598,8 @@ describe("TicketsView — detail", () => {
       await flush();
 
       const link = container.querySelector(
-        '[data-testid="detail-body"] button.ticket-ref-link',
-      ) as HTMLButtonElement;
+        '[data-testid="detail-body"] .ticket-ref-link',
+      ) as HTMLElement;
       expect(link).toBeTruthy();
       expect(link.textContent).toBe("#12");
       act(() => link.click());
@@ -587,23 +615,155 @@ describe("TicketsView — detail", () => {
       await flush();
 
       const link = container.querySelector(
-        '[data-testid="ticket-thread"] button.ticket-ref-link',
-      ) as HTMLButtonElement;
+        '[data-testid="ticket-thread"] .ticket-ref-link',
+      ) as HTMLElement;
       expect(link.textContent).toBe("#7");
       act(() => link.click());
       expect(onOpenTicketByNumber).toHaveBeenCalledWith("7");
     });
 
-    it("renders '#N' as plain text without an onOpenTicketByNumber handler", async () => {
+    it("does nothing when a '#N' ref is clicked without an onOpenTicketByNumber handler", async () => {
       vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
         detail({ body: "Duplicate of #12." }),
       );
       mount({ ticketId: "t1" }); // no onOpenTicketByNumber passed
       await flush();
-      expect(byTestId("detail-body")!.textContent).toContain("#12");
+      const link = container.querySelector(
+        '[data-testid="detail-body"] .ticket-ref-link',
+      ) as HTMLElement;
+      expect(link.textContent).toBe("#12");
+      expect(() => act(() => link.click())).not.toThrow();
+    });
+
+    it("leaves a '#N' ref inside inline code untouched", async () => {
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+        detail({ body: "Not a ref: `#12`" }),
+      );
+      mount({ ticketId: "t1", onOpenTicketByNumber: vi.fn() });
+      await flush();
+      const body = byTestId("detail-body")!;
+      expect(body.querySelector(".ticket-ref-link")).toBeNull();
+      expect(body.querySelector("code")?.textContent).toBe("#12");
+    });
+  });
+
+  // Ticket #441: ticket bodies/comments render as sanitized Markdown.
+  describe("markdown rendering", () => {
+    it("renders headings, lists and inline code as real markup", async () => {
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+        detail({ body: "# Summary\n\n- one\n- two\n\nSee `npm test`." }),
+      );
+      mount({ ticketId: "t1" });
+      await flush();
+      const body = byTestId("detail-body")!;
+      expect(body.querySelector("h1")?.textContent).toBe("Summary");
       expect(
-        container.querySelector('[data-testid="detail-body"] button'),
-      ).toBeNull();
+        Array.from(body.querySelectorAll("li")).map((li) => li.textContent),
+      ).toEqual(["one", "two"]);
+      expect(body.querySelector("code")?.textContent).toBe("npm test");
+    });
+
+    it("turns a bare URL into a new-tab link, same as the old autolinker", async () => {
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+        detail({ body: "Fix: https://example.com/fix" }),
+      );
+      mount({ ticketId: "t1" });
+      await flush();
+      const a = byTestId("detail-body")!.querySelector("a")!;
+      expect(a.getAttribute("href")).toBe("https://example.com/fix");
+      expect(a.getAttribute("target")).toBe("_blank");
+      expect(a.getAttribute("rel")).toBe("noreferrer");
+    });
+
+    it("keeps single newlines as line breaks in a plain-text comment (breaks: true)", async () => {
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+        detail({ comments: [comment({ body: "line one\nline two" })] }),
+      );
+      mount({ ticketId: "t1" });
+      await flush();
+      const thread = byTestId("ticket-thread")!;
+      expect(thread.querySelector("br")).toBeTruthy();
+      expect(thread.textContent).toContain("line one");
+      expect(thread.textContent).toContain("line two");
+    });
+
+    it("strips a <script> tag and an onerror attribute from the body (XSS)", async () => {
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+        detail({
+          body:
+            'Look: <script>window.__fd_pwned = true;</script> and ' +
+            '<img src="x" onerror="window.__fd_pwned2 = true">',
+        }),
+      );
+      mount({ ticketId: "t1" });
+      await flush();
+      const body = byTestId("detail-body")!;
+      expect(body.querySelector("script")).toBeNull();
+      expect(body.innerHTML).not.toContain("onerror");
+      expect(body.textContent).toContain("Look:");
+      expect(
+        (window as unknown as { __fd_pwned?: boolean }).__fd_pwned,
+      ).toBeUndefined();
+    });
+
+    it("strips a script tag from a comment too (XSS)", async () => {
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+        detail({
+          comments: [
+            comment({ body: '<img src=x onerror="alert(1)">gotcha' }),
+          ],
+        }),
+      );
+      mount({ ticketId: "t1" });
+      await flush();
+      const thread = byTestId("ticket-thread")!;
+      expect(thread.innerHTML).not.toContain("onerror");
+      expect(thread.textContent).toContain("gotcha");
+    });
+  });
+
+  // Ticket #441: ```mermaid fences render as a diagram (or a code-block
+  // fallback on broken syntax). `mermaid` itself is mocked (see the
+  // `vi.mock` above) — jsdom cannot lay out real SVG.
+  describe("mermaid diagrams", () => {
+    it("renders a mermaid fence as a diagram container", async () => {
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+        detail({ body: "Before\n\n```mermaid\ngraph TD; A-->B;\n```\n\nAfter" }),
+      );
+      mount({ ticketId: "t1" });
+      await flush();
+      await waitFor(() => byTestId("mermaid-diagram") !== null);
+      const diagram = byTestId("mermaid-diagram")!;
+      expect(diagram.querySelector('[data-testid="mock-mermaid-svg"]')).toBeTruthy();
+      expect(byTestId("mermaid-fallback")).toBeNull();
+    });
+
+    it("does not touch the main bundle — mermaid loads only via dynamic import", async () => {
+      // Regression guard for the "must not end up in the main bundle"
+      // requirement: a ticket with no mermaid fence never even imports it.
+      const { default: mermaid } = await import("mermaid");
+      vi.mocked(mermaid.render).mockClear();
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+        detail({ body: "Just plain text, no diagrams here." }),
+      );
+      mount({ ticketId: "t1" });
+      await flush();
+      expect(mermaid.render).not.toHaveBeenCalled();
+    });
+
+    it("falls back to a code block when the diagram fails to render", async () => {
+      const { default: mermaid } = await import("mermaid");
+      vi.mocked(mermaid.render).mockRejectedValueOnce(new Error("bad syntax"));
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+        detail({ body: "```mermaid\nnot a real diagram\n```" }),
+      );
+      mount({ ticketId: "t1" });
+      await flush();
+      await waitFor(() => byTestId("mermaid-fallback") !== null);
+      expect(byTestId("mermaid-fallback")!.textContent).toContain(
+        "not a real diagram",
+      );
+      expect(byTestId("mermaid-diagram")).toBeNull();
     });
   });
 });

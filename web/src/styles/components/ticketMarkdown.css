@@ -1,0 +1,161 @@
+/* TicketMarkdown (ticket #441) — sanitized Markdown rendering for ticket
+ * bodies and comments, incl. "#N" ticket-ref links and Mermaid diagrams.
+ * Every size stays >= 1rem (CLAUDE.md hard floor) — nothing here shrinks
+ * text below the surrounding body copy.
+ */
+
+.fd-ticket-markdown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+  color: var(--color-text);
+
+  & .md > :first-child {
+    margin-top: 0;
+  }
+
+  & .md > :last-child {
+    margin-bottom: 0;
+  }
+
+  & p {
+    margin: 0 0 var(--space-3);
+  }
+
+  & h1,
+  & h2,
+  & h3,
+  & h4,
+  & h5,
+  & h6 {
+    margin: var(--space-4) 0 var(--space-2);
+    font-weight: var(--fw-semibold);
+    line-height: var(--lh-tight);
+  }
+
+  & h1 {
+    font-size: var(--fs-2xl);
+  }
+
+  & h2 {
+    font-size: var(--fs-xl);
+  }
+
+  & h3,
+  & h4,
+  & h5,
+  & h6 {
+    font-size: var(--fs-lg);
+  }
+
+  & ul,
+  & ol {
+    margin: 0 0 var(--space-3);
+    padding-left: var(--space-6);
+  }
+
+  & li + li {
+    margin-top: var(--space-1);
+  }
+
+  & blockquote {
+    margin: 0 0 var(--space-3);
+    padding: var(--space-1) var(--space-4);
+    border-left: 3px solid var(--color-border-strong);
+    color: var(--color-text-muted);
+  }
+
+  & hr {
+    margin: var(--space-4) 0;
+    border: none;
+    border-top: 1px solid var(--color-border);
+  }
+
+  & code {
+    padding: 0.1em var(--space-1);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-sunken);
+    font-family: var(--font-family-mono);
+    font-size: var(--fs-base);
+  }
+
+  & pre {
+    margin: 0 0 var(--space-3);
+    padding: var(--space-3);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-sunken);
+    overflow-x: auto;
+
+    & code {
+      padding: 0;
+      background: none;
+    }
+  }
+
+  & table {
+    margin: 0 0 var(--space-3);
+    border-collapse: collapse;
+    font-size: var(--fs-base);
+  }
+
+  & th,
+  & td {
+    padding: var(--space-1) var(--space-3);
+    border: 1px solid var(--color-border);
+    text-align: left;
+  }
+
+  & th {
+    background: var(--color-bg-sunken);
+    font-weight: var(--fw-semibold);
+  }
+
+  & img {
+    max-width: 100%;
+  }
+
+  & a {
+    color: var(--color-accent);
+
+    &:hover {
+      color: var(--color-accent-hover);
+    }
+  }
+
+  /* "#N" ticket references (ticket #364/#441) — a <span>, not an <a>: the
+   *  click is delegated from the container to `onOpenTicketByNumber`, see
+   *  TicketMarkdown.tsx. Styled like the markdown links it sits next to. */
+  & .ticket-ref-link {
+    color: var(--color-accent);
+    cursor: pointer;
+
+    &:hover {
+      color: var(--color-accent-hover);
+      text-decoration: underline;
+    }
+  }
+
+  /* Mermaid diagrams (ticket #441) — lazy-rendered SVG; centered, capped
+   *  to the available width so a wide diagram doesn't blow out the panel. */
+  & .mermaid-diagram {
+    display: flex;
+    justify-content: center;
+    padding: var(--space-3);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
+
+    & svg {
+      max-width: 100%;
+      height: auto;
+    }
+  }
+
+  /* Broken diagram syntax falls back to a plain code block instead of an
+   *  empty gap or a crashed view. */
+  & .mermaid-fallback {
+    margin: 0;
+  }
+}
