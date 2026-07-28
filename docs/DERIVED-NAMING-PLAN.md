@@ -248,7 +248,7 @@ Fähigkeit, mehrere vorhandene zu kombinieren:
 | 0 | **Erledigt (v0.39.1):** Mehrfach-Region-Profile bekommen die Kontur ihrer Vereinigung; geschlossene Konturen starten am G1-Knick | — |
 | 1 | **Erledigt (v0.39.2, #431):** `spatial_index` körperübergreifend — `qFace(hash)` wieder eindeutig | — |
 | 2 | **Erledigt (2026-07-28):** Messen, warum der Blend-Träger keine Fläche wird — Antwort: er wird gar nicht gebaut, und die Fläche fehlt nicht (§ „Schritt 2" unten) | — |
-| 3 | E2: Rolle für die Cutter-Verrundungsfläche + Übersetzer-Zweig `BLEND_FACE` / `BLEND_EDGE` | 2 |
+| 3 | **Kernel-Teil erledigt (v0.41.0):** E2 — Rolle für die Cutter-Verrundungs-/Fasenfläche (§ „Schritt 3" unten); offen bleibt der Übersetzer-Zweig `BLEND_EDGE` | 2 |
 | 4 | `qUnion(a, b)` + Übersetzer-Zweig `MERGE` (Fläche) | — |
 | 5 | Übersetzer-Zweig `SPLIT` auf `qAdjacentTo` | — |
 | 6 | **Erledigt (v0.40.0, #429):** E1: `BranchId` auf u64, Instanz-Ordinal, `qInstance(...)` | 1 |
@@ -299,6 +299,60 @@ von `EXTRUDE_CAP_TOP_SUB`), der Mantel-Sub liest als `FaceRole::Blend`, und der
 Chamfer-Bevel bekommt dieselbe Behandlung — Onshape nennt auch ihn
 `BLEND_FACE`. Erst danach hat der Übersetzer-Zweig etwas, worauf er abbilden
 kann.
+
+---
+
+### Schritt 3 / E2 — wie er ausgeführt wurde (v0.41.0)
+
+**Die Rolle kommt aus dem Namen, nicht aus der Fläche.** Der smin-Pfad
+erkennt sein Blend an der Halbraum-Klasse `HalfSpace::Blend`; der harte Cutter
+hat keine solche Klasse — sein Blend ist ein gewöhnlicher Zylinder bzw. eine
+gewöhnliche Ebene. Ihn an der *Geometrie* zu erkennen (Radius vergleichen,
+Nachbarschaft prüfen) wäre die Ähnlichkeitssuche, die §4 ausschließt. Also
+trägt ihn das Sub-Feld: `BranchId::BLEND_SUB` (`0x7FD`), vergeben von
+`csg::cutter_sub`, gelesen von `queries::face_role`.
+
+Welche Fläche das ist, folgt aus der Konstruktion, nicht aus einer Messung:
+
+| Cutter | Blend-Fläche | warum |
+| --- | --- | --- |
+| Fillet | `cut_cyl` Sub 0 | Sub 0 des Zylinders ist sein Mantel, und der Mantel **ist** die Rollkugel-Fläche |
+| Chamfer | `cut_bevel` Sub 1 | die Box steht im Frame `(m, s, w)` mit `m` = äußere Winkelhalbierende, also ist `−X` die dem Körper zugewandte Ebene |
+
+**Die Kollision aus Schritt 2 ist mitbehoben.** Jeder Teilkörper bekommt sein
+eigenes Band (`CUTTER_AUX_ROUND` / `_BOX` / `_BEVEL`), sodass der
+Zylindermantel keine Box-Ebene mehr verdrängt. Beide Teilkörper behalten
+dieselbe `branch_identity()` — sie gehören ja beide dem Fillet; getrennt werden
+sie eine Ebene tiefer.
+
+**Ein Ort, nicht drei.** Das Re-Keying sitzt in `BranchId::from_feature_sub`.
+Der Sub kommt zwar aus `primitive_halfspaces` (der SSOT der Flächenzerlegung),
+aber jeder Leser eines Branch-Namens — Weave, Seed-Paare, Hot-SDF-Attribution,
+Queries — geht durch diese eine Funktion. Ein Remap in `collect_halfspaces`
+allein hätte drei Lockstep-Stellen erzeugt.
+
+`NAMING_SCHEMA_VERSION` ging 3 → **4**: Cutter-Flächen und die Kanten, die sie
+berühren, bekommen neue `id_hash`es (schmaler als Bump 3, dieselbe
+Heilungs-Zusage).
+
+**Gemessen.** `hard_cutter_fillet_face_is_a_named_blend` und
+`hard_cutter_chamfer_face_is_a_named_blend`: `qCreatedBy(f, BLEND)` bindet
+genau eine Fläche, mit Rollkugel-Radius und -Achse bzw. auf der
+Winkelhalbierenden; die Bänder der Teilkörper überschneiden sich nicht.
+Kernel-Suite 1363/1363, Web 2026/2026, alle sechs Onshape-E2E-Suiten
+unverändert grün.
+
+**Nebenbefund mit Wirkung.** Der Übersetzer emittiert
+`qCreatedBy(<fillet>, BLEND)` **schon heute** — `onshapeImport.ts:675`,
+als `qAdjacentTo`-Term, um zwei sonst gleiche Wände auseinanderzuhalten. Diese
+Query band bisher null Flächen, die Disambiguierung war also wirkungslos. Sie
+wirkt ab jetzt; in den gepinnten Korpus-Zahlen schlägt sich das (noch) nicht
+nieder.
+
+**Offen aus Schritt 3:** der Übersetzer-Zweig für `BLEND_EDGE` — Onshapes Rand
+einer Verrundungsfläche, in FieldDraft
+`qCommonEdge(qCreatedBy(f, BLEND), <nachbar>)`. Die Kernel-Seite steht damit
+bereit.
 
 ### Schritt 1 — wie er ausgeführt wurde (v0.39.2, #431)
 

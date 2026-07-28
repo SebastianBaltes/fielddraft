@@ -81,6 +81,24 @@ impl BranchId {
     pub const EXTRUDE_CAP_TOP_SUB: u32 = 0x7FF;
     pub const EXTRUDE_CAP_BOTTOM_SUB: u32 = 0x7FE;
 
+    /// The rounding/bevel surface of a hard edge cutter — Onshape's
+    /// `BLEND_FACE` (DERIVED-NAMING-PLAN E2). A fillet's tangent cylinder and a
+    /// chamfer's bevel plane are the *one* face the user asked for; everything
+    /// else the cutter carries is scaffolding ([`CUTTER_AUX_ROUND`] …). The
+    /// sub-id is what [`crate::queries::face_role`] reads, so the role comes
+    /// from the provenance, never from the surface class.
+    pub const BLEND_SUB: u32 = 0x7FD;
+
+    /// Scaffolding bands of a hard edge cutter, one per sub-solid. Both
+    /// sub-solids of a fillet cutter are `FeatureId::child`ren of the SAME
+    /// fillet — `branch_identity()` folds them together — so without separate
+    /// bands the tangent cylinder's mantle (sub 0) would overwrite the corner
+    /// box's +X plane (sub 0). Measured 2026-07-28 and pinned in
+    /// `schritt2_hard_cutter_fillet_face_exists_but_has_no_blend_role`.
+    pub const CUTTER_AUX_ROUND: u32 = 0x7E0;
+    pub const CUTTER_AUX_BOX: u32 = 0x7E8;
+    pub const CUTTER_AUX_BEVEL: u32 = 0x7F0;
+
     /// Branch id for a whole feature (sub-index 0).
     pub fn from_feature(id: &FeatureId) -> Self {
         Self::from_feature_sub(id, 0)
@@ -93,9 +111,14 @@ impl BranchId {
     /// id a pattern mints (`«pattern».«source»~«i»`). That is what makes a
     /// copy's name survive a rearrangement — flipping the pattern direction
     /// moves the body, not the ordinal (#429/E1).
+    ///
+    /// The sub-index is re-keyed for the sub-solids of a hard edge cutter
+    /// ([`cutter_sub`]). Doing it *here* is what keeps the mapping single —
+    /// every reader of a branch id (weave, seed pairs, hot-SDF attribution,
+    /// queries) goes through this one function.
     pub fn from_feature_sub(id: &FeatureId, sub: u32) -> Self {
         let (feature, instance) = id.branch_identity();
-        Self::from_parts(feature, instance, sub)
+        Self::from_parts(feature, instance, cutter_sub(id, sub))
     }
 
     /// Pack the three fields. Each is masked to its width — a feature id
@@ -153,6 +176,42 @@ impl BranchId {
 
     pub fn as_u64(self) -> u64 {
         self.0
+    }
+}
+
+/// Local id segment of each sub-solid a hard edge cutter is built from —
+/// minted by [`CsgNode::build_edge_cutter`] / [`CsgNode::build_chamfer_cutter`]
+/// and read back by [`cutter_sub`]. They are constants rather than literals so
+/// the two ends cannot drift apart.
+pub const CUTTER_LOCAL_ROUND: &str = "cut_cyl";
+pub const CUTTER_LOCAL_BOX: &str = "cut_box";
+pub const CUTTER_LOCAL_BEVEL: &str = "cut_bevel";
+
+/// Re-key the sub-index of a hard edge cutter's sub-solid into its reserved
+/// band, and lift the one face the user actually asked for onto
+/// [`BranchId::BLEND_SUB`].
+///
+/// A cutter's sub-solids are `FeatureId::child`ren of the fillet/chamfer, so
+/// they share its `branch_identity()`; the bands are what keeps their faces
+/// apart within that shared identity. Which face is the blend follows from the
+/// construction, not from geometry:
+///
+/// - **Fillet** — `sub 0` of the tangent cylinder is its mantle
+///   ([`primitive_halfspaces`]), and the mantle IS the rolling-ball surface.
+///   Its two caps sit outside the corner box by design and never reach the
+///   surface, but they get band slots anyway rather than an exception.
+/// - **Chamfer** — the bevel box is authored in the frame `(m, s, w)` with `m`
+///   the outward bisector, so the plane facing the body is `−X` = `sub 1`.
+///
+/// Anything that is not a cutter sub-solid passes through untouched.
+pub fn cutter_sub(id: &FeatureId, sub: u32) -> u32 {
+    match id.local.as_str() {
+        CUTTER_LOCAL_ROUND if sub == 0 => BranchId::BLEND_SUB,
+        CUTTER_LOCAL_ROUND => BranchId::CUTTER_AUX_ROUND + sub,
+        CUTTER_LOCAL_BEVEL if sub == 1 => BranchId::BLEND_SUB,
+        CUTTER_LOCAL_BEVEL => BranchId::CUTTER_AUX_BEVEL + sub,
+        CUTTER_LOCAL_BOX => BranchId::CUTTER_AUX_BOX + sub,
+        _ => sub,
     }
 }
 
@@ -1691,8 +1750,8 @@ impl CsgNode {
             edge_cutter_frame(self, c.edge_start, c.edge_end, c.normal_a, c.normal_b, r).ok()?;
         let (mid, u, v, w, len, cen) = (fr.mid, fr.u, fr.v, fr.w, fr.len, fr.inner);
 
-        let box_id = f.fillet_id.child("cut_box");
-        let cyl_id = f.fillet_id.child("cut_cyl");
+        let box_id = f.fillet_id.child(CUTTER_LOCAL_BOX);
+        let cyl_id = f.fillet_id.child(CUTTER_LOCAL_ROUND);
 
         // Corner box: r×r cross-section on the edge, full edge length along w.
         let box_node = CsgNode::Transform(
@@ -1796,7 +1855,7 @@ impl CsgNode {
                 scale: [1.0; 3],
             },
             Box::new(CsgNode::Leaf {
-                id: c.chamfer_id.child("cut_bevel"),
+                id: c.chamfer_id.child(CUTTER_LOCAL_BEVEL),
                 primitive: Primitive::Box {
                     center: [0.0; 3],
                     half_extents: [m_half, d, fr.len * 0.5],

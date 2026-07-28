@@ -8686,11 +8686,11 @@ fn chamfer_edge_rejects_a_concave_edge_with_a_reason() {
 /// smin-Pfad (gekrümmte Kante, `fillet_blend_weaves_as_its_own_analytic_face`)
 /// erzeugt.
 ///
-/// Dieser Test ist in BEIDE Richtungen scharf: er pinnt sowohl die vorhandene
-/// Fläche als auch die fehlende Rolle. Schritt 3 dreht die letzte Zusicherung
-/// von 0 auf 1.
+/// Schritt 3 gibt ihr die Rolle über den Namen: `csg::cutter_sub` hebt den
+/// Mantel auf `BranchId::BLEND_SUB`, und `face_role` liest ihn. Dieser Test
+/// misst beide Schritte zusammen — die Fläche, ihre Lage und ihre Rolle.
 #[test]
-fn schritt2_hard_cutter_fillet_face_exists_but_has_no_blend_role() {
+fn hard_cutter_fillet_face_is_a_named_blend() {
     use crate::brep::SurfaceGeometry;
     use crate::csg::BranchId;
     use crate::queries::{resolve_query_topo, FaceRole, QueryExpr};
@@ -8742,15 +8742,26 @@ fn schritt2_hard_cutter_fillet_face_exists_but_has_no_blend_role() {
     }
     assert_eq!(blends(&body), 0, "harter Cutter baut keinen MaskedBlend");
 
-    // (2) Beide Cutter-Teilkörper falten auf DIESELBE Branch-Identität. Heute
-    // folgenlos (die verdrängte Box-Ebene liegt nie an der Oberfläche), aber
-    // eine latente Kollision im Namensraum — Schritt 3 trennt sie.
-    let (box_id, cyl_id) = (id(2).child("cut_box"), id(2).child("cut_cyl"));
+    // (2) Beide Cutter-Teilkörper falten auf DIESELBE Branch-Identität — daran
+    // ändert Schritt 3 nichts, sie GEHÖREN beide dem Fillet. Getrennt werden
+    // sie im Sub-Feld: eigenes Band je Teilkörper, damit der Zylindermantel
+    // keine Box-Ebene mehr verdrängt.
+    let (box_id, cyl_id) = (
+        id(2).child(crate::csg::CUTTER_LOCAL_BOX),
+        id(2).child(crate::csg::CUTTER_LOCAL_ROUND),
+    );
     assert_eq!(
         box_id.branch_identity(),
         cyl_id.branch_identity(),
-        "cut_box und cut_cyl sind im Namensraum heute nicht unterscheidbar"
+        "beide Teilkörper gehören dem Fillet"
     );
+    let sub_of = |i: &fielddraft_protocol::FeatureId, s: u32| BranchId::from_feature_sub(i, s).sub();
+    assert_eq!(sub_of(&cyl_id, 0), BranchId::BLEND_SUB, "Mantel = Verrundungsfläche");
+    let cyl_subs: Vec<u32> = (0..3).map(|s| sub_of(&cyl_id, s)).collect();
+    let box_subs: Vec<u32> = (0..6).map(|s| sub_of(&box_id, s)).collect();
+    for a in &cyl_subs {
+        assert!(!box_subs.contains(a), "Bänder überschneiden sich nicht: {cyl_subs:?} / {box_subs:?}");
+    }
 
     // (3) Die Verrundungsfläche IST gewoben: genau ein Zylindermantel unter der
     // Fillet-Feature-Id, mit dem Rollkugel-Radius und -Mittelpunkt.
@@ -8785,13 +8796,79 @@ fn schritt2_hard_cutter_fillet_face_exists_but_has_no_blend_role() {
         );
     }
 
-    // (4) …und ihr fehlt die Rolle: sie liest als WALL, `qCreatedBy(2, BLEND)`
-    // bindet nichts. Genau das ist die Lücke, die Schritt 3 schließt.
-    assert_eq!(crate::queries::face_role(cyl_faces[0]), FaceRole::Wall);
+    // (4) …und sie trägt die Rolle: `qCreatedBy(2, BLEND)` bindet genau sie.
+    assert_eq!(crate::queries::face_role(cyl_faces[0]), FaceRole::Blend);
+    assert_eq!(cyl_faces[0].branch_id.sub(), BranchId::BLEND_SUB);
     let breps = vec![brep];
-    assert_eq!(
-        resolve_query_topo(&breps, &QueryExpr::CreatedByRole(id(2), FaceRole::Blend)).len(),
-        0,
-        "SCHRITT 3 dreht das auf 1"
-    );
+    let blend = resolve_query_topo(&breps, &QueryExpr::CreatedByRole(id(2), FaceRole::Blend));
+    assert_eq!(blend.len(), 1, "qCreatedBy(fillet, BLEND) bindet die Verrundungsfläche");
+    // Die Hilfsflächen des Cutters sind davon getrennt — sie sind KEINE Blends.
+    let all = resolve_query_topo(&breps, &QueryExpr::CreatedBy(id(2)));
+    assert!(all.len() > blend.len(), "der Cutter hinterlässt auch Hilfsflächen");
+}
+
+/// Schritt 3, zweite Hälfte: **auch die Fase ist ein Blend.** Onshape zählt
+/// `chamfer` zur selben Familie und benennt ihre Fläche ebenfalls
+/// `BLEND_FACE`; im Kernel ist sie die dem Körper zugewandte Ebene der
+/// Bevel-Box (`sub 1` im Frame `(m, s, w)`). Ohne die Rolle wäre sie von den
+/// fünf Hilfs-Ebenen derselben Box nicht zu unterscheiden.
+#[test]
+fn hard_cutter_chamfer_face_is_a_named_blend() {
+    use crate::brep::SurfaceGeometry;
+    use crate::csg::BranchId;
+    use crate::queries::{resolve_query_topo, FaceRole, QueryExpr};
+    use fielddraft_protocol::HalfSpace;
+
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    let he = 10.0f32;
+    let d = 3.0f32;
+    let (edge_hash, _mid) = cube_pxpy_edge(&registry, &mut ctx, he);
+    registry
+        .regenerate(
+            &mut ctx,
+            &[FeatureCall::new(
+                "chamfer_edge",
+                id(2),
+                json!({
+                    "edge": format!("qEdge({edge_hash})"),
+                    "distance": { "value": d, "unit": "mm" },
+                }),
+            )],
+            None,
+        )
+        .unwrap();
+    let hard = crate::csg::CsgNode::from_decoded(&ctx.features);
+    let chamfered = hard.apply_edge_chamfers(&ctx.edge_chamfers);
+    let body = crate::bvh::BoundedCsg::from_csg(&chamfered);
+    let bb = body.aabb();
+    let largest = bb.size().into_iter().fold(0.0_f32, f32::max);
+    let octree = crate::brep::octree::Octree::build(&body, (largest / 48.0).clamp(1e-3, 10.0));
+    let brep = crate::brep::weaving::weave(&body, &octree);
+
+    let breps = vec![brep];
+    let blend = resolve_query_topo(&breps, &QueryExpr::CreatedByRole(id(2), FaceRole::Blend));
+    assert_eq!(blend.len(), 1, "qCreatedBy(chamfer, BLEND) bindet genau die Fasenfläche");
+
+    // Sie liegt auf dem Bisektor der beiden gefasten Wände: n = (1,1,0)/√2.
+    let face = breps[0]
+        .faces
+        .iter()
+        .find(|f| f.branch_id.sub() == BranchId::BLEND_SUB)
+        .expect("Fasenfläche gewoben");
+    let SurfaceGeometry::Analytic { surface: HalfSpace::Plane { normal, .. }, transform } =
+        &face.surface
+    else {
+        panic!("die Fase ist eine Ebene, got {:?}", face.surface)
+    };
+    // `normal` steht im lokalen Frame der Box; die Drehung bringt sie in die Welt.
+    let world = crate::transform::quat_rotate(transform.rotation, *normal);
+    let s = 1.0 / 2.0f32.sqrt();
+    for (got, want) in world.iter().zip([-s, -s, 0.0]) {
+        assert!(
+            (got.abs() - want.abs()).abs() < 1e-3,
+            "Bisektor-Normale erwartet, got {world:?}"
+        );
+    }
 }

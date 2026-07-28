@@ -140,6 +140,15 @@ impl fmt::Display for FaceRole {
 /// authority mapping the existing bit layout (and the blend surface
 /// class) onto [`FaceRole`]. Blend wins first: a fillet's carrier face is
 /// minted at sub 0, which would otherwise read as `Wall`.
+///
+/// Blends reach the B-Rep on two different routes and both must read as
+/// `Blend` (DERIVED-NAMING-PLAN, Schritt 3):
+///
+/// - the **smin** path (curved edges) mints a `HalfSpace::Blend` carrier, so
+///   the surface class alone identifies it;
+/// - the **hard cutter** path (straight convex edges, and every chamfer) mints
+///   an ordinary cylinder/plane and marks it in the *name* instead —
+///   [`BranchId::BLEND_SUB`], assigned by `csg::cutter_sub`.
 pub fn face_role(face: &crate::brep::Face) -> FaceRole {
     use crate::brep::SurfaceGeometry;
     use crate::csg::BranchId;
@@ -151,6 +160,9 @@ pub fn face_role(face: &crate::brep::Face) -> FaceRole {
     // The inner-wall flag rides ON TOP of the outer sub-id, so an inner CAP
     // still carries the reserved cap sub — strip the flag before classifying.
     let sub = branch.sub() & !BranchId::INNER_WALL_FLAG;
+    if sub == BranchId::BLEND_SUB {
+        return FaceRole::Blend;
+    }
     let cap = match sub {
         BranchId::EXTRUDE_CAP_TOP_SUB => Some(true),
         BranchId::EXTRUDE_CAP_BOTTOM_SUB => Some(false),

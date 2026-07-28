@@ -59,7 +59,12 @@ use crate::brep::{BRep, EdgeGeometry, EdgeId, FaceId, SurfaceGeometry, VertexId}
 ///   instead of being told apart by a positional `spatial_index`. Every
 ///   `id_hash` in every document changed with this bump — that is the point
 ///   of the marker.
-pub const NAMING_SCHEMA_VERSION: u32 = 3;
+/// - **4** — reserved cutter sub-bands (DERIVED-NAMING-PLAN Schritt 3): the
+///   sub-solids of a hard fillet/chamfer cutter no longer share one sub range,
+///   and the rounding/bevel face itself moved to [`BranchId::BLEND_SUB`] so it
+///   reads as `FaceRole::Blend`. Narrower than bump 3 — only faces of a cutter
+///   and the edges touching them re-key — but the same guarantee applies.
+pub const NAMING_SCHEMA_VERSION: u32 = 4;
 use crate::csg::BranchId;
 
 // ─── deterministic hash ───────────────────────────────────────────────────
