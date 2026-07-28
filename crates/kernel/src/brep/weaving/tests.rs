@@ -2795,3 +2795,99 @@ fn sector_flank_normals_point_out_of_the_wedge() {
         }
     }
 }
+
+/// #437 Klasse B, the MINIMAL case: a face on a coincidence-class carrier
+/// whose edge list is not a ring because it also contains the carrier's
+/// INTERIOR seams.
+///
+/// Two flush boxes, the second one narrower in x:
+///
+///     A   x ∈ [-1, 1]   y ∈ [-1, 1]   z ∈ [-1, 1]
+///     B   x ∈ [ 0, 1]   y ∈ [ 1, 3]   z ∈ [-1, 1]
+///
+/// A's `+y` plane (y = 1) is therefore only PARTIALLY a membrane: over
+/// x ∈ [0, 1] B sits on it and it is interior; over x ∈ [-1, 0] it is a real
+/// exterior face. `cull_membrane_branches` is all-or-nothing per branch, so
+/// the plane survives whole — and `materialize_faces` hands its face EVERY
+/// edge whose signature names it, interior ones included. Measured here: the
+/// face gets **7 edges** where its ring needs 4, with `(4098, 4100)` and
+/// `(4098, 4101)` appearing TWICE (the ±z rims split at x = 0, one half on
+/// each side of B) plus the divider `(4098, 8193)` running through the middle.
+/// The ring walk consumes the divider in its first ring and then finds no
+/// closure for the rest — the „could not order face loops" fallback.
+///
+/// That is exactly the #419 shape: branch 41087 there carries 7 edges with a
+/// degree histogram of {2: 4, 3: 2} and one interior divider, and none of its
+/// edges names 41087 in its signature. The reproduction settles that the cause
+/// is a PARTIAL membrane on a coincident carrier and needs no #419 document.
+///
+/// This test is an INSTRUMENT, not a repair: it pins the defect so it cannot
+/// drift unwatched. `open_face_count() == 1` and `is_closed == false` are the
+/// current, wrong answers; the correct ones are 0 and `true`, and the fix
+/// belongs to the follow-up (per-region membership attribution, which the
+/// existing `reattribute_coincident_memberships` does not do — measured: it
+/// leaves the count at 1). Both directions matter, so this asserts equality.
+#[test]
+fn partial_membrane_on_coincident_carrier_leaves_face_boundary_open() {
+    let a = CsgNode::Leaf {
+        id: FeatureId::from_u32(1),
+        primitive: Primitive::Box { center: [0.0, 0.0, 0.0], half_extents: [1.0, 1.0, 1.0] },
+    };
+    let b = CsgNode::Leaf {
+        id: FeatureId::from_u32(2),
+        primitive: Primitive::Box { center: [0.5, 2.0, 0.0], half_extents: [0.5, 1.0, 1.0] },
+    };
+    let body = BoundedCsg::from_csg(&CsgNode::Union(Box::new(a), Box::new(b)));
+    let brep = weave_parametric(&body).expect("two flush boxes are parametric-weavable");
+
+    // The offending face: A's +y plane, the partial membrane.
+    let bad: Vec<&Face> = brep
+        .faces
+        .iter()
+        .filter(|f| !f.outer.is_connected_ring(&brep.edges))
+        .collect();
+    assert_eq!(bad.len(), 1, "exactly one face fails to close into a ring");
+    assert_eq!(
+        bad[0].outer.edges.len(),
+        7,
+        "the partial membrane's face collects both sides' rims plus the divider"
+    );
+
+    assert_eq!(
+        brep.open_face_count(),
+        1,
+        "#437 Klasse B: the partial membrane's face has no traversable boundary"
+    );
+    assert!(
+        !brep.shells[0].is_closed,
+        "and the body is consequently not watertight"
+    );
+
+    // The union's TRUE topology is a 2×4×2 L-prism: 12 faces would already be
+    // too many. Recorded so a repair that changes the face count is visible.
+    assert_eq!(
+        (brep.vertex_count(), brep.edge_count(), brep.face_count()),
+        (14, 23, 11),
+        "topology of the flush-box T-junction (instrument, not a target)"
+    );
+}
+
+/// The same construction WITHOUT the partial membrane — B spans the full x
+/// range, so A's `+y` plane is a membrane everywhere and gets culled whole.
+/// This one weaves closed, which is what makes the test above a statement
+/// about PARTIAL membranes rather than about flush contact in general.
+#[test]
+fn full_membrane_on_coincident_carrier_still_weaves_closed() {
+    let a = CsgNode::Leaf {
+        id: FeatureId::from_u32(1),
+        primitive: Primitive::Box { center: [0.0, 0.0, 0.0], half_extents: [1.0, 1.0, 1.0] },
+    };
+    let b = CsgNode::Leaf {
+        id: FeatureId::from_u32(2),
+        primitive: Primitive::Box { center: [0.0, 2.0, 0.0], half_extents: [1.0, 1.0, 1.0] },
+    };
+    let body = BoundedCsg::from_csg(&CsgNode::Union(Box::new(a), Box::new(b)));
+    let brep = weave_parametric(&body).expect("two flush boxes are parametric-weavable");
+    assert_eq!(brep.open_face_count(), 0, "every face closes into a ring");
+    assert!(brep.shells[0].is_closed, "the flush stack is watertight");
+}
