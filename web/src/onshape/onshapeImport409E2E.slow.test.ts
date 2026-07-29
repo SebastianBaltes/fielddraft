@@ -14,6 +14,13 @@
  *   GET /api/v6/parts/d/{did}/w/{wid}/e/{eid}       → 33 solid parts
  *   GET …/partid/{id}/boundingboxes                 → the AABBs, unioned below
  *
+ * That endpoint answers Onshape's LOOSE box, which cost #416's suite three
+ * tickets of hunting (#449). Here it costs nothing, and that was re-measured
+ * rather than assumed: `evBox3d` over all 33 solids returns min (0, −550, 0)
+ * max (960, 40, 1840) with `tight: true` AND with `tight: false` — the two
+ * boxes agree to the last digit on every bound. This assembly is all boxes and
+ * cylinders; the slack lives on blended and spline faces, and there are none.
+ *
  * Needs a current `just build-wasm` (the stale-wasm trap).
  */
 import { beforeAll, describe, expect, it } from "vitest";

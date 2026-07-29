@@ -23,6 +23,13 @@
  * just the exact one. (Recorded because the 0.31 mm looked for a while like a
  * missing feature, and it is not one.)
  *
+ * #449 named the mechanism behind that hunch and confirmed the choice: the
+ * endpoint returns `evBox3d(tight: false)` verbatim. Asking this document for
+ * BOTH boxes gives loose z max 32.8103 against tight 32.5000 — the numbers
+ * below to the digit, and the x/y bounds identical either way. The suspicion
+ * that guided this file was right; #416's suite, which trusted the endpoint,
+ * spent three tickets hunting 0.63 mm of material that was never missing.
+ *
  * The unit tests prove the TRANSLATION; this file proves the kernel ACCEPTS
  * what we write — a `boolean` feature call that regenerates, document variables
  * that survive `setVariable`, and a `thicken` that grows the walls to exactly

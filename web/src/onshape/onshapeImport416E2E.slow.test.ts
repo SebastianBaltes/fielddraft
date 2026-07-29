@@ -10,7 +10,12 @@
  * from our own resolution (the methodology lesson of #412):
  *
  *   GET /api/v6/parts/d/{did}/w/{wid}/e/{eid}       → ONE solid part, "Part 1"
- *   GET …/partid/JHD/boundingboxes                  → the AABB below
+ *   POST …/featurescript, evBox3d(tight: true)      → the AABB below
+ *
+ * NOT `GET …/partid/JHD/boundingboxes`, which is what this file used to ask —
+ * see {@link GROUND_TRUTH}. That endpoint returns Onshape's LOOSE box, and on
+ * this document it is 0.63 mm too big in `y`. Believing it cost #447/#448/#449
+ * three rounds of hunting for material that was never missing.
  *
  * Needs a current `just build-wasm` (the stale-wasm trap).
  */
@@ -47,13 +52,52 @@ const sketches3d = (): unknown =>
 /**
  * Onshape's own answer for this document, in mm (the API reports metres).
  * ONE solid part, `JHD` / „Part 1“.
+ *
+ * This is Onshape's TIGHT box, and the distinction is the whole of #449.
+ * `evBox3d` takes a `tight` flag; with `tight: false` it bounds the SURFACES'
+ * control hulls rather than the trimmed solid, and that is precisely what the
+ * `…/partid/{id}/boundingboxes` REST endpoint returns. Measured on this
+ * document, both boxes in one FeatureScript call over
+ * `qBodyType(qEverything(EntityType.BODY), BodyType.SOLID)`:
+ *
+ *   loose  min (−70.0501, −26.7740, −73.0819)  max (3.0740, 7.1292, 35.0000)
+ *   TIGHT  min (−70.0001, −26.7000, −73.0013)  max (3.0000, 6.5000, 35.0000)
+ *
+ * Cross-checked against a THIRD Onshape answer that owes nothing to either:
+ * `…/tessellatedfaces` at a 0.05 mm chord tolerance, 68 faces / 43 993 facets,
+ * spans min (−70.0002, −26.7000, −73.0013) max (3.0000, 6.5000, 35.0000) — the
+ * tight box to 0.0001 mm on all six bounds.
+ *
+ * The slack is per-bound and can be large: 0.6292 mm on `y max` here, 0.31 mm
+ * on #415's `z max` (which that suite had already corrected by hand, off the
+ * tessellation, without naming the mechanism) and 0.1285 mm on #414's `y min`.
+ * #409's document, which carries no blends, has none at all.
+ *
+ * So a bound may be asked for either way, but never mixed, and this file asks
+ * for the exact one. Reproduce with:
+ *
+ *   POST /api/v6/partstudios/d/204cc6691c558887e7c25a87
+ *        /w/f787f4ae715f3298d95591cc/e/a24d92526c6c8b6a71401989/featurescript
+ *   { "script": "function(context is Context, queries) {
+ *        var b = qBodyType(qEverything(EntityType.BODY), BodyType.SOLID);
+ *        return { \"loose\": evBox3d(context, { topology: b, tight: false }),
+ *                 \"tight\": evBox3d(context, { topology: b, tight: true }) }; }" }
  */
 const GROUND_TRUTH = {
   parts: 1,
+  x: [-70.0001, 3.0],
+  y: [-26.7, 6.5],
+  z: [-73.0013, 35.0],
+};
+
+/** What `…/partid/JHD/boundingboxes` answers — kept so the wrong number is
+ *  recognisable rather than re-derived. Nothing asserts against it. */
+const GROUND_TRUTH_LOOSE = {
   x: [-70.0501, 3.074],
   y: [-26.774, 7.1292],
   z: [-73.0819, 35.0],
 };
+void GROUND_TRUTH_LOOSE;
 
 /** The document's revolve: a half-disc of R = 4.94 mm (arc `2hz9RlIR7uPq`,
  *  centred on the sketch origin) spun a full turn around the construction line
@@ -265,78 +309,75 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
    */
   it("builds ONE part, where it used to build four", () => {
     expect(kernel.raw.bodyCount()).toBe(GROUND_TRUTH.parts);
-    // FIVE of the six bounds, to better than 0.09 mm. Three of them are the
-    // ones no feature of the document overshoots: the far end of `Extrude 3`,
-    // the top of Sketch 1, and — since #445 — the bottom of its profile
-    // rectangle. `y min` was −33.17 while `Extrude 9` hung off a mis-named
-    // wall; it is −26.70 against Onshape's −26.77 now.
+    // FIVE of the six bounds, to 5 µm — a hundred times tighter than the
+    // 0.5 mm this asserted before #449, because the numbers turned out to be
+    // exact and a 0.5 mm gate cannot tell exact from nearly.
     //
-    // `x max` and `z min` JOINED them in #448, and no code changed for it —
-    // only this suite's kernel double did. `Extrude 9`'s 8.17 mm wedge grows
+    // `y max` JOINED them in #449 and NOTHING moved geometrically: 6.500 was
+    // always right, and the 7.1292 it was measured against was Onshape's loose
+    // box (see {@link GROUND_TRUTH}). `x min`, `x max` and `y min` moved from
+    // „within 0.09 mm" to „within 0.0001 mm" for the same reason.
+    //
+    // `x max` and `z min` joined in #448, and no code changed for that either
+    // — only this suite's kernel double did. `Extrude 9`'s 8.17 mm wedge grows
     // out of `Extrude 4`'s cap, and its sketch sits on a mate connector. The
     // old hand-built double had no `resolvedMateConnectors`, so
     // `resolvePlaneFrame` fell through to the FACE under that connector and
     // synthesised a basis from its normal — a frame turned 90° inside its own
-    // plane. The wedge therefore pointed +x (x max 11.17 against Onshape's
-    // 3.07) instead of −z (z min −65 against −73.08). With the connector's own
-    // CSYS, which is what the app has always passed, it points where Onshape
-    // has it: x max 3.000, z min −73.169. Suppressing `Extrude 9` is what
+    // plane. The wedge therefore pointed +x (x max 11.17) instead of −z (z min
+    // −65). With the connector's own CSYS, which is what the app has always
+    // passed, it points where Onshape has it. Suppressing `Extrude 9` is what
     // moves `z min` back to −65 — measured, so the attribution is not a story.
     const bb = kernel.sceneAabb!() as { min: number[]; max: number[] };
-    expect(bb.min[0], "x min").toBeCloseTo(GROUND_TRUTH.x[0], 0);
-    expect(bb.max[0], "x max").toBeCloseTo(GROUND_TRUTH.x[1], 0);
-    expect(bb.min[1], "y min").toBeCloseTo(GROUND_TRUTH.y[0], 0);
-    expect(bb.min[2], "z min").toBeCloseTo(GROUND_TRUTH.z[0], 0);
-    expect(bb.max[2], "z max").toBeCloseTo(GROUND_TRUTH.z[1], 0);
+    expect(bb.min[0], "x min").toBeCloseTo(GROUND_TRUTH.x[0], 2);
+    expect(bb.max[0], "x max").toBeCloseTo(GROUND_TRUTH.x[1], 2);
+    expect(bb.min[1], "y min").toBeCloseTo(GROUND_TRUTH.y[0], 2);
+    expect(bb.max[1], "y max").toBeCloseTo(GROUND_TRUTH.y[1], 2);
+    expect(bb.max[2], "z max").toBeCloseTo(GROUND_TRUTH.z[1], 2);
   });
 
   /**
-   * The full extent, pinned as a FAILING test on purpose. ONE bound is left
-   * over, and #448 changed WHICH one — the answer this comment gave until now
-   * was measured on a kernel double the app never had.
+   * The ONE bound that is genuinely off, pinned to the tenth of a micrometre
+   * in BOTH directions — this used to be an `it.fails` over `y max`, and the
+   * 0.63 mm it chased never existed (#449).
    *
-   * What it used to say: the mate connector under `Sketch 6` was turned 90°
-   * inside its own plane, because an edge anchor takes its secondary axis from
-   * whichever adjacent face has the smaller branch word. That reading came
-   * from a double WITHOUT `resolvedMateConnectors`, where the sketch plane was
-   * never the connector's CSYS at all but the face beneath it, with a basis
-   * synthesised from the face normal. Give this suite the surface the app
-   * passes and the rotation is simply gone: `x max` 11.17 → 3.000 (Onshape
-   * 3.07) and `z min` −65 → −73.169 (Onshape −73.08), both folded into the
-   * test above. #447 then measured this document's connector directly: origin
-   * and plane of `Sketch 6` land on Onshape's own 3D answer exactly, and what
-   * is left is a MIRROR (our x/y swapped) that `alignSketchFrame` divides out
-   * in full. The secondary-axis rule the ticket suspected is real but costs
-   * nothing here — do not turn a sign on it without a case that hurts.
+   * The obituary of that pin, because three tickets ran on it. #447/#448 had
+   * narrowed the document to a single missing bound, `y max` 6.500 against
+   * „Onshape's 7.1292", and the hunt for the missing 0.63 mm of material ruled
+   * out, in turn: a rotated mate connector (it is a mirror, and
+   * `alignSketchFrame` divides it out in full), one missing solid (suppressing
+   * any single feature leaves `y max` at 6.500) and a missing CONCAVE blend
+   * (which cannot extend an AABB at all — its material lies in the wedge
+   * between two faces, so every extreme point of it already lies on one of
+   * them; and the three failing edge names sit at y ≈ −19 and y = −26.7 in any
+   * case). Every one of those refutations was correct. The premise was not:
+   * 7.1292 is Onshape's LOOSE box, its own tight answer is 6.5000, and the SDF
+   * bisection that kept reporting the top face AS the plane y = 6.5 had been
+   * right about the solid all along.
    *
-   * What is actually left is `y max`: 6.500 against Onshape's 7.1292, short by
-   * 0.63 mm. It is NOT one missing solid — suppressing any single feature of
-   * the import leaves `y max` at 6.500, so several bodies share that plane and
-   * nothing we build reaches over it. The shortfall predates #448 — the poorer
-   * double measured the same 6.500.
+   * What IS left is `z min`: we reach −73.1688, Onshape −73.0013, so we
+   * OVERSHOOT by 0.1675 mm. Three things make that a real finding rather than
+   * a second loose-box story:
    *
-   * The lead this comment used to carry — a missing blend on a CONCAVE edge is
-   * the one kind that ADDS material — is REFUTED (#447, now tracked as #449),
-   * on two independent grounds. By LOCATION: of the three failing edge names,
-   * `Fillet 5` sits at y ≈ −19 and `Chamfer 2` plus the two failing `Fillet 2`
-   * edges at y = −26.7, while the one `Fillet 2` edge that touches y = 6.5
-   * already imports. And IN PRINCIPLE: a concave blend cannot extend an AABB
-   * at all — its material lies in the wedge between two faces, so every
-   * extreme point of it lies ON one of them, hence already on the solid. The
-   * SDF confirms the top face IS the plane y = 6.5 (`bodySdfEval` reads
-   * exactly `y − 6.5` above it; the four mesh vertices at y = 7.10 are QEF
-   * artefacts with SDF ≈ +0.6, i.e. air).
+   *  - it points the other way. A loose bound reads too FAR out, and Onshape's
+   *    loose `z min` is −73.0819 — still short of ours. No slack explains it.
+   *  - `sceneAabb` is documented loose (`CsgNode::aabb`, „good enough to bound
+   *    the mesher grid"), so it is not evidence on its own. The SDF is: a
+   *    0.25 mm (x, y) sweep at z = −73.1 finds solid over x ∈ [2.5, 3.0],
+   *    y ∈ [−12.5, −7.75], and bisecting that column downward puts the surface
+   *    at −73.168. Material really is there.
+   *  - that patch is the TIP of `Extrude 9`'s 8.17 mm wedge, the feature this
+   *    suite already knows drives `z min` (suppressing it moves the bound back
+   *    to −65). A wedge tip 0.17 mm long on a 108 mm part is a sub-degree
+   *    difference in how the wedge is aimed or ended — not a missing feature.
    *
-   * `it.fails` keeps that honest in both directions: the day the last 0.63 mm
-   * arrives, this starts failing and forces someone to fold it into the test
-   * above, as x max and z min just were.
+   * Pinned as a plain `it` on the measured number: the day someone closes it,
+   * this fails and forces the line to be edited, exactly as an `it.fails`
+   * would have — without asserting that the import is wrong in the meantime.
    */
-  it.fails("matches the ground-truth AABB (open: y max, 0.63 mm short)", () => {
+  it("overshoots `z min` by 0.1675 mm — the one bound that is really off", () => {
     const bb = kernel.sceneAabb!() as { min: number[]; max: number[] };
-    for (const [c, [lo, hi]] of [GROUND_TRUTH.x, GROUND_TRUTH.y, GROUND_TRUTH.z].entries()) {
-      expect(bb.min[c], `axis ${c} min`).toBeCloseTo(lo, 0);
-      expect(bb.max[c], `axis ${c} max`).toBeCloseTo(hi, 0);
-    }
+    expect(GROUND_TRUTH.z[0] - bb.min[2], `scene ${JSON.stringify(bb)}`).toBeCloseTo(0.1675, 3);
   });
 });
 

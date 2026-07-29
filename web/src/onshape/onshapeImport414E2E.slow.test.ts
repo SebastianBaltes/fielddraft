@@ -10,7 +10,12 @@
  * from our own resolution (the methodology lesson of #412):
  *
  *   GET /api/v6/parts/d/{did}/w/{wid}/e/{eid}                → ONE part, "JHD"
- *   GET …/partid/JHD/boundingboxes                           → the AABB below
+ *   POST …/featurescript, evBox3d(tight: true)               → the AABB below
+ *
+ * NOT `GET …/partid/JHD/boundingboxes`: that endpoint answers Onshape's LOOSE
+ * box, which on this document is 0.0547 mm too wide in `x min` and 0.1285 mm
+ * in `y min` (#449 — see `onshapeImport416E2E.slow.test.ts`, where the same
+ * mistake was worth 0.63 mm and three tickets of hunting).
  *
  * Needs a current `just build-wasm` (the stale-wasm trap).
  */
@@ -48,12 +53,19 @@ const sketches3d = (): unknown =>
 
 /**
  * Onshape's own answer for this document, in mm (the API reports metres).
- * ONE solid part, `JHD`.
+ * ONE solid part, `JHD`. This is the TIGHT box; both were read in one call:
+ *
+ *   loose  min (−65.0547, −70.1285, −50)  max (65, 0, 50)
+ *   TIGHT  min (−65.0000, −70.0000, −50)  max (65, 0, 50)
+ *
+ * Only the two bounds that touch this part's blends carry any slack, and both
+ * of them are `min`s — which is why the full-AABB pin below used to fail while
+ * the `z` pin passed. Nothing about the import changed with #449.
  */
 const GROUND_TRUTH = {
   parts: 1,
-  x: [-65.0547, 65.0],
-  y: [-70.1285, 0.0],
+  x: [-65.0, 65.0],
+  y: [-70.0, 0.0],
   z: [-50.0, 50.0],
 };
 
@@ -173,34 +185,35 @@ describe("Onshape import — #414 against the Onshape ground truth", () => {
   }, 180_000);
 
   /**
-   * The remaining #414 gap, pinned as a FAILING test on purpose.
+   * The FULL extent, and it is EXACT — all six bounds to better than 5 µm.
+   * This was an `it.fails` until #449, and no geometry moved to green it.
    *
-   * X and Y still overshoot the ground truth — but by much less since the
-   * sketch-frame transform landed (#415): this document's `Sketch 3` sits on a
-   * body face, and importing Onshape's 2D coordinates verbatim stretched the
-   * render mesh to y ∈ [−104.00, 2.74] mm. With Onshape's own 3D answer
-   * measured and the coordinates rotated into FieldDraft's basis it now reads
-   * y ∈ [−70.03, 2.86] against Onshape's [−70.13, 0] — the gross overshoot is
-   * gone, the residual ~2.8 mm in x and y is not.
+   * The history is worth keeping, because the comment on the failing pin was
+   * wrong in a way that took a measurement to see. It read: „X and Y still
+   * overshoot… the residual ~2.8 mm in x and y", and blamed the region-profile
+   * provenance gap of docs/SKETCH-REGION-IMPRINT-PLAN.md §5. The 2.8 mm was
+   * real once — it is not now, and nobody noticed it go, because the pin kept
+   * failing for a completely different reason: the ground truth was Onshape's
+   * LOOSE box (x min −65.0547, y min −70.1285) and the tolerance here is
+   * 0.05 mm. The import had been landing on Onshape's tight −65.0000 /
+   * −70.0000 exactly, and the suite called that a failure.
    *
-   * That residual is NOT the chamfer or hole translation either, but the kernel
-   * follow-up recorded in
-   * docs/SKETCH-REGION-IMPRINT-PLAN.md §5: a region-restricted profile carries
-   * no entity provenance, so its wall subs fall back to POSITIONAL numbering.
-   * Every later feature that names a wall of the region-restricted `Extrude 1`
-   * — the chamfer's cap rim, the plane of `Sketch 2` (which in turn carries the
-   * hole's target point) and six fillets — therefore resolves to nothing.
+   * The provenance gap itself is NOT closed — it is what the twenty-odd
+   * failing edge names below are — it just costs this document no extent.
    *
-   * `it.fails` keeps that honest in both directions: today the suite is green
-   * WITH the gap documented, and the day the provenance lands this test starts
-   * failing and forces someone to promote it to a plain `it`.
+   * Asserted at 5 µm rather than the old 0.05 mm: the numbers are exact, and a
+   * gate two orders of magnitude wider than the quantity it guards cannot tell
+   * exact from nearly. That is the whole lesson of #449 in one line.
    */
-  it.fails("matches the FULL ground-truth AABB (open: region-profile provenance)", () => {
+  it("matches the FULL ground-truth AABB, exactly", () => {
     const bb = kernel.sceneAabb!() as { min: number[]; max: number[] };
-    expect(bb.min[0]).toBeCloseTo(GROUND_TRUTH.x[0], 1);
-    expect(bb.max[0]).toBeCloseTo(GROUND_TRUTH.x[1], 1);
-    expect(bb.min[1]).toBeCloseTo(GROUND_TRUTH.y[0], 1);
-    expect(bb.max[1]).toBeCloseTo(GROUND_TRUTH.y[1], 1);
+    const where = `scene ${JSON.stringify(bb)}`;
+    expect(bb.min[0], where).toBeCloseTo(GROUND_TRUTH.x[0], 2);
+    expect(bb.max[0], where).toBeCloseTo(GROUND_TRUTH.x[1], 2);
+    expect(bb.min[1], where).toBeCloseTo(GROUND_TRUTH.y[0], 2);
+    expect(bb.max[1], where).toBeCloseTo(GROUND_TRUTH.y[1], 2);
+    expect(bb.min[2], where).toBeCloseTo(GROUND_TRUTH.z[0], 2);
+    expect(bb.max[2], where).toBeCloseTo(GROUND_TRUTH.z[1], 2);
   });
 });
 
