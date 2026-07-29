@@ -315,7 +315,7 @@ describe("#419 multi-part assembly", () => {
    * (18 ↔ 24 faces), so the cutter reaches the body — it just takes no volume.
    * That is the open layer, and it is a boolean question, not a sketch one.
    */
-  it("still removes NO material with `Extrude 15` — the open layer (#452)", async () => {
+  it("cuts with `Extrude 15`, and only where Onshape does (#452)", async () => {
     const { kernel } = await importFixture();
     const calls = JSON.parse(kernel.raw.toJson()).feature_calls as any[];
     const ex15 = calls.find((c) => c.params?.display_name === "Extrude 15")!;
@@ -327,7 +327,7 @@ describe("#419 multi-part assembly", () => {
     //     SDF standing — with `Extrude 15` suppressed the body's face count
     //     moves 18 ↔ 24 while not one of 10 925 sampled SDF values changes by
     //     more than 1e-6. Any SDF measurement taken across a suppress toggle
-    //     therefore measures nothing (own ticket);
+    //     therefore measures nothing (#455);
     //   * turning it into a NEW body instead leaves its PRISM standing as a
     //     body, so points inside the prism flip for that reason alone — 1 698
     //     of them, which reads exactly like a cut and is not one.
@@ -352,26 +352,41 @@ describe("#419 multi-part assembly", () => {
         return m;
       });
     };
-    // The SELECTED region's own prism: (u, v) across the triangle, `off < 0`
-    // into the material (the body lies on the −normal side of its carrier).
+    // (a) INSIDE the selected region's prism: material has to go. `off < 0` is
+    // into the body, which lies on the −normal side of its carrier.
     const inside: number[][] = [];
     for (let u = 4; u <= 31; u += 1.5)
       for (let v = -16; v <= 20; v += 1.5)
         for (let off = -1; off >= -34; off -= 1.5) inside.push(world(u, v, off));
-    const withCut = scene(kernel, inside);
-    const without = scene(base, inside);
-    const solid = inside.filter((_, i) => without[i] < 0).length;
-    const removed = inside.filter((_, i) => without[i] < 0 && withCut[i] >= 0).length;
-    const added = inside.filter((_, i) => without[i] >= 0 && withCut[i] < 0).length;
+    const cutIn = scene(kernel, inside);
+    const rawIn = scene(base, inside);
+    const solid = inside.filter((_, i) => rawIn[i] < 0).length;
+    const removed = inside.filter((_, i) => rawIn[i] < 0 && cutIn[i] >= 0).length;
 
-    // There IS material in the prism to take — otherwise „removes nothing"
-    // would be a statement about the probe, not about the feature.
+    // (b) OUTSIDE it — the OTHER half of the same carrier, which Onshape's
+    // `side: +1` does not select: nothing may move there.
+    const outside: number[][] = [];
+    for (let u = -1.2; u <= 1.2; u += 0.3)
+      for (let v = -20; v <= 20; v += 1)
+        for (let off = -1; off >= -34; off -= 1) outside.push(world(u, v, off));
+    const cutOut = scene(kernel, outside);
+    const rawOut = scene(base, outside);
+
     expect(solid, "material inside the selected region's prism").toBeGreaterThan(5_000);
-    // BOTH directions, and both are the finding: the REMOVE takes nothing away
-    // and puts nothing back. The day `removed` stops being 0, #452 is done —
-    // move this pin and say by how much.
-    expect(removed, "Extrude 15 removes nothing (the open layer)").toBe(0);
-    expect(added, "and adds nothing either").toBe(0);
+    // BOTH directions. It took 470 of 6 601 when this pin was written — the
+    // cut is a corner of the triangle, not the whole prism, because only part
+    // of it stands in material. Bounded generously so a better cut is a
+    // failure that has to be looked at, not a silent drift.
+    expect(removed, "Extrude 15 takes material away").toBeGreaterThan(200);
+    expect(removed).toBeLessThan(2_000);
+    expect(
+      inside.filter((_, i) => rawIn[i] >= 0 && cutIn[i] < 0).length,
+      "and adds none",
+    ).toBe(0);
+    expect(
+      outside.filter((_, i) => rawOut[i] < 0 && cutOut[i] >= 0).length,
+      "the half Onshape did NOT select keeps everything",
+    ).toBe(0);
   }, 900_000);
 
   it("extrudes `Sketch 2`'s ELLIPSE, the whole profile it has (#451)", async () => {

@@ -3799,3 +3799,84 @@ nicht gibt.
 Dass die Buchhaltung sich zusaetzlich in einem Bereich irrt, den das Werkzeug
 gar nicht erreicht, ist der zweite Teil desselben Befunds: sie ist nicht bloss
 optimistisch, sie ist an dieser Stelle falsch.
+
+## Update 2026-07-29 (20) — ein Zielkörper ist ein KÖRPER (#456), und #452 ist zu
+
+Update (19) hinterliess zwei Kernel-Fragen. Beide sind beantwortet, und die
+Antwort ist eine einzige Zeile Semantik.
+
+### 1. Die Sonde, die es entschieden hat
+
+Dasselbe Feature, dieselbe Geometrie, nur die Operation und der Scope
+variiert — gegen einen Zweit-Import ohne das Feature gemessen:
+
+| Operation | `targets` | weggenommen | hinzugefuegt | Koerper |
+|---|---|---:|---:|---:|
+| `remove` | `qCreatedBy(44)` | **0** | 0 | 18 |
+| `add` | `qCreatedBy(44)` | 0 | 1 698 | 18 |
+| `intersect` | `qCreatedBy(44)` | 0 | 0 | 18 |
+| `new` | — | 0 | 1 698 | 19 |
+| `remove` | **`qCreatedBy(47)`** | **470** | 0 | 18 |
+
+Der Schnitt funktioniert also — er trifft nur den falschen Teil. Damit war die
+Frage nicht mehr „warum erreicht der Difference-Zweig den SDF nicht", sondern
+„auf welchen Teilbaum wird er angewandt".
+
+### 2. Die Ursache: `targets` nannte ein FEATURE, gemeint war ein KOERPER
+
+`crate::csg::wrap_targeted` steigt in den Baum des Koerpers ab und wendet die
+Operation auf den TEILBAUM an, der ein Ziel-Id enthaelt. Ein Scope, der ein
+Mitglied eines mehrteiligen Koerpers nennt, subtrahiert deshalb nur von diesem
+Mitglied. `Extrude 15` nennt `Extrude 5` (den Seed eines fuenfteiligen
+Koerpers), waehrend das Material unter seinem Profil zu `Extrude 14` gehoert —
+also wurde von einem Prisma abgezogen, das dort gar nicht steht.
+
+Die Doku von `target_ids_from_queries` sagt seit jeher „a seed feature **whose
+body** the boolean op folds into". Die Implementierung nahm das Feature. Genau
+diese Erweiterung macht `offset.rs` seit #399 mit
+`expand_to_owner_body_members`; der Boolean-Pfad tat es nicht.
+
+Behoben in `resolve_merge_scope` (extrude, revolve, loft, helix, sweep) und an
+den drei Stellen, die daran vorbeigingen (`primitives`, `gyroid`,
+`imported_mesh`). Kein Dokument-Sonderfall, keine Schwelle.
+
+### 3. Und Frage 2 loest sich mit auf
+
+Die zurueckgezogene AABB und die sechs verlorenen B-Rep-Flaechen aus Update
+(19) waren die FOLGE, nicht die Ursache: der Difference sass am falschen
+Teilbaum, und die Buchhaltung rechnete mit einem Schnitt, den die Geometrie
+nicht hatte. Mit dem richtigen Teilbaum stimmen beide wieder ueberein.
+
+### 4. `Extrude 15` fraest
+
+| | Wert |
+|---|---:|
+| feste Punkte im Prisma der gewaehlten Region | 6 601 |
+| davon weggenommen | **470** |
+| hinzugefuegt | 0 |
+| in der ANDEREN Haelfte des Traegers weggenommen | **0** |
+| Regen-Zensus #419 | 0 |
+| Koerperzahl / `sceneAabb` / alle Regionen-Pins | unveraendert |
+
+Der Pin der #419-Suite heisst jetzt „cuts with `Extrude 15`, and only where
+Onshape does" und misst beide Richtungen: Material weg, wo Onshapes `side: +1`
+hinzeigt, und kein einziger Punkt in der Haelfte, die es nicht waehlt.
+
+### 5. Die Bilanz von #452, fuenf Schichten
+
+| # | Schicht | Befund | erledigt in |
+|---|---|---|---|
+| 1 | keine Region | Skizze auf einer Flaeche braucht deren Rand als Zaun | 0.48.0 |
+| 2 | Traeger 16,983 mm daneben | EIN Ausreisser-Stuetzpunkt von 32 kostete `Sketch 11` den Frame | 0.49.1 (#454) |
+| 3 | Linie 70 mm daneben | Onshapes zwei Antworten widersprechen sich; Geometrie direkt aus der 3D-Antwort | 0.50.0 |
+| 4 | regeneriert, fraest nicht | Boolean-Scope nannte ein Feature statt eines Koerpers | 0.50.1 (#456) |
+| — | Messwerkzeug | `setFeatureSuppressed` laesst den SDF stehen | offen (#455) |
+
+### 6. Methodik-Lehre
+
+**Eine Operation, die aufloest, kann trotzdem am falschen Ort wirken.** Der
+Scope war nie leer und nie unaufloesbar — deshalb hat auch nie eine Warnung
+gefeuert. Was fehlte, war die Frage, WORAUF er angewandt wird; und die liess
+sich nur beantworten, indem man dasselbe Feature mit einem anderen Ziel laufen
+liess und die Differenz zaehlte. Ein Parameter, dessen Doku „body" sagt und
+dessen Code „feature" liest, faellt sonst niemandem auf.
