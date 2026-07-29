@@ -32,13 +32,30 @@ pub(crate) fn target_ids_from_queries(
 /// of every body that exists *before* this feature in the spine. A resolved
 /// scope routes the body through the explicit targeted-dock path in
 /// [`crate::body::partition`] — touching solids never merge implicitly.
+///
+/// An explicit target names, as [`target_ids_from_queries`] says, "a seed
+/// feature **whose body** the boolean op folds into" — the BODY, not the one
+/// feature. That distinction is not cosmetic: [`crate::csg::wrap_targeted`]
+/// descends the body's tree and applies the operation to the SUB-TREE that
+/// holds a target id, so a scope naming one member of a multi-feature body
+/// subtracts from that member alone. On the #419 document (#456) that made
+/// `Extrude 15` a silent no-op: its scope names `Extrude 5`, the seed of a
+/// five-member body, while the material under its profile belongs to
+/// `Extrude 14` — naming 44 removed 0 sample points, naming 47 removed 470 of
+/// the same 6 601. No warning fired, because the scope was neither empty nor
+/// unresolvable; it was simply narrower than a body.
+///
+/// So an explicit scope is expanded to every member of the owner body, exactly
+/// as `offset.rs` has always done for its own body-scoped post-process (#399).
+/// `wrap_targeted` then finds targets in both operands of the body's union and
+/// wraps the WHOLE body — which is what "folds into that body" meant all along.
 pub(crate) fn resolve_merge_scope(
     ctx: &Context<'_>,
     explicit: Vec<FeatureId>,
     merge_with_all: bool,
 ) -> Vec<FeatureId> {
     if !explicit.is_empty() {
-        return explicit;
+        return expand_to_owner_body_members(&ctx.features, &explicit);
     }
     if merge_with_all {
         return ctx.current_body_seed_ids();

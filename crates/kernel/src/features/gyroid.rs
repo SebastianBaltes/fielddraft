@@ -6,7 +6,7 @@ use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
 
 use crate::csg::{DecodedFeature, PrimitiveModifiers};
 
-use super::merge_scope::target_ids_from_queries;
+use super::merge_scope::{expand_to_owner_body_members, target_ids_from_queries};
 use super::{Context, FeatureError, FeatureKind, FeatureSchema, optional_display_name, optional_rotation, optional_scale, positive_f32};
 // ─── K11.0: Gyroid TPMS Infill ───────────────────────────────────
 //
@@ -101,7 +101,9 @@ impl FeatureKind for GyroidFeature {
         let rotation = optional_rotation(def);
         let scale = optional_scale(def);
 
-        let target_ids = target_ids_from_queries(&d.targets);
+        // #456: an explicit scope names a BODY, not one of its members.
+        let target_ids =
+            expand_to_owner_body_members(&ctx.features, &target_ids_from_queries(&d.targets));
 
         ctx.features.push(DecodedFeature::from_parts(
             id.child("0"),

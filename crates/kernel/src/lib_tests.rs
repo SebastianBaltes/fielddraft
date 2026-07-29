@@ -4875,3 +4875,53 @@ fn an_unrelated_body_does_not_shift_pattern_hashes() {
     );
 }
 
+
+/// #456 — a boolean scope names a BODY, not the one feature it points at.
+///
+/// `targets` is documented as "a seed feature **whose body** the boolean op
+/// folds into", but [`crate::csg::wrap_targeted`] descends the body's tree and
+/// applies the op to the SUB-TREE that holds a target id. A scope naming one
+/// member of a multi-feature body therefore used to subtract from that member
+/// alone — silently, because the scope was neither empty nor unresolvable and
+/// no warning fires for "resolved but too narrow".
+///
+/// The constellation is #419's `Extrude 15` in miniature: a body assembled
+/// from TWO boxes, and a Remove that names the SEED while its prism overlaps
+/// only the OTHER member. On the real document that was 0 removed sample
+/// points against 470 when the same cut named the other member instead.
+///
+/// Driven through the REAL API chain (`add_feature_call` → `body_sdf_eval`),
+/// not through `build_bounded_*` directly: the fillet series paid for that
+/// lesson twice — a direct builder call never sees a cache or hash mistake.
+#[test]
+fn boolean_scope_names_the_whole_body_not_one_member() {
+    let mut k = Kernel::new();
+    // Member A: x ∈ [−10, 0]. Member B: x ∈ [0, 10], docked onto A → ONE body.
+    k.add_feature_call("box", r#"{"half_extents":[5.0,5.0,5.0],"center":[-5.0,0.0,0.0]}"#)
+        .unwrap();
+    k.add_feature_call(
+        "box",
+        r#"{"half_extents":[5.0,5.0,5.0],"center":[5.0,0.0,0.0],"op":"add","targets":"qCreatedBy(1)"}"#,
+    )
+    .unwrap();
+    assert_eq!(k.body_count(), 1, "the two boxes are one body");
+    let solid = |k: &Kernel, p: [f32; 3]| k.body_sdf_eval(0, p[0], p[1], p[2]) < 0.0;
+    assert!(solid(&k, [7.0, 0.0, 0.0]), "member B is there to be cut");
+
+    // The cut sits entirely inside member B — and names member A, the SEED.
+    k.add_feature_call(
+        "box",
+        r#"{"half_extents":[2.0,2.0,6.0],"center":[7.0,0.0,0.0],"op":"remove","targets":"qCreatedBy(1)"}"#,
+    )
+    .unwrap();
+    assert_eq!(k.body_count(), 1, "a Remove does not split the body");
+    assert!(
+        !solid(&k, [7.0, 0.0, 0.0]),
+        "the scope names the BODY: a cut inside member B bites even though the \
+         query points at member A (#456)"
+    );
+    // …and it takes only what it covers: member A and the far side of B stay.
+    assert!(solid(&k, [-7.0, 0.0, 0.0]), "member A untouched");
+    assert!(solid(&k, [2.0, 0.0, 0.0]), "B on the near side of the cut stays");
+    assert!(solid(&k, [7.0, 4.0, 0.0]), "B beside the cut stays");
+}

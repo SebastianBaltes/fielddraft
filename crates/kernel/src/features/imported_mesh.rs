@@ -6,7 +6,7 @@ use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
 
 use crate::csg::{DecodedFeature, PrimitiveModifiers};
 
-use super::merge_scope::target_ids_from_queries;
+use super::merge_scope::{expand_to_owner_body_members, target_ids_from_queries};
 use super::{Context, FeatureError, FeatureKind, FeatureSchema, optional_display_name, optional_rotation};
 // ─── K13.1: Imported Mesh as CSG Solid ───────────────────────────
 //
@@ -103,7 +103,9 @@ impl FeatureKind for ImportedMeshFeature {
             base_rotation
         };
 
-        let target_ids = target_ids_from_queries(&d.targets);
+        // #456: an explicit scope names a BODY, not one of its members.
+        let target_ids =
+            expand_to_owner_body_members(&ctx.features, &target_ids_from_queries(&d.targets));
         if let Some(w) = ctx.merge_scope_warning(d.op, &target_ids) {
             ctx.warn_feature(id, w);
         }

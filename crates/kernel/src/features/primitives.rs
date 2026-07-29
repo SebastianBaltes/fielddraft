@@ -7,7 +7,7 @@ use fielddraft_protocol::{BoolOp, FeatureId, MultiQuery, Primitive, Transform};
 
 use crate::csg::{DecodedFeature, PrimitiveModifiers};
 
-use super::merge_scope::target_ids_from_queries;
+use super::merge_scope::{expand_to_owner_body_members, target_ids_from_queries};
 use super::{Context, FeatureError, FeatureKind, FeatureSchema, optional_display_name, optional_rotation, optional_scale, positive_f32};
 // ─── built-in K1 primitives ──────────────────────────────────────
 //
@@ -46,7 +46,11 @@ fn push_primitive(
     // (`qCreatedBy(...)`) names the bodies it folds into; with none, warn and
     // let the partition pass seed a standalone (red preview) body. (New = a
     // fresh standalone solid, never warned.)
-    let target_ids = target_ids_from_queries(targets);
+    // #456: the query names a seed feature whose BODY the op folds into —
+    // expand it, or a scope naming one member of a multi-feature body
+    // subtracts from that member alone (see `resolve_merge_scope`).
+    let target_ids =
+        expand_to_owner_body_members(&ctx.features, &target_ids_from_queries(targets));
     if let Some(w) = ctx.merge_scope_warning(op, &target_ids) {
         ctx.warn_feature(id, w);
     }

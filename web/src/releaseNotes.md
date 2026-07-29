@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.50.1
+- fix(kernel) #456 #452: Ein Boolean-Zielkörper meint jetzt wirklich den KÖRPER. „Zielkörper wählen" nannte bisher nur das eine Feature, auf das die Auswahl zeigte — bei einem Körper aus mehreren Features schnitt ein Entfernen deshalb nur aus diesem einen Teil und ließ den Rest stehen. Ohne Warnung, weil die Auswahl ja aufgelöst hatte. Im #419-Dokument war das der Grund, warum `Extrude 15` regenerierte und trotzdem kein Material abtrug; es fräst jetzt.
+
 ## 0.50.0
 - feat(onshape) #452: Eine Onshape-Skizze, für die sich überhaupt kein Frame messen lässt — weil Onshapes 3D-Antwort seinem eigenen 2D-Payload widerspricht —, wird jetzt Linie für Linie dorthin gelegt, wo die 3D-Antwort sie meldet. Keine geschätzte Drehung, kein Restfehler: die Endpunkte werden in die aufgelöste Ebene projiziert. Im #419-Dokument landet `Sketch 12` damit exakt auf den beiden Rändern seiner Trägerfläche statt 70 mm daneben, und jedes Feature des Dokuments regeneriert.
 
