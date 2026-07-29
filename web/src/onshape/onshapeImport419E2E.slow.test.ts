@@ -321,44 +321,52 @@ describe("#419 multi-part assembly", () => {
     const ex15 = calls.find((c) => c.params?.display_name === "Extrude 15")!;
     expect(ex15.params.profiles, "the triangle Onshape names").toBe("qRegion(48, 1)");
 
+    // The baseline is a SECOND import with the feature REMOVED outright, not
+    // the same one with it suppressed. Two reasons, both measured:
+    //   * `setFeatureSuppressed` re-weaves the B-Rep but leaves the compiled
+    //     SDF standing — with `Extrude 15` suppressed the body's face count
+    //     moves 18 ↔ 24 while not one of 10 925 sampled SDF values changes by
+    //     more than 1e-6. Any SDF measurement taken across a suppress toggle
+    //     therefore measures nothing (own ticket);
+    //   * turning it into a NEW body instead leaves its PRISM standing as a
+    //     body, so points inside the prism flip for that reason alone — 1 698
+    //     of them, which reads exactly like a cut and is not one.
+    const base = wrapImportKernel(new WasmKernel());
+    base.raw.setSyncMeshing(true);
+    await importOnshapeFeatures(fixture("onshape-419-features.json"), base, {
+      sketches3d: fixture("onshape-419-sketches3d.json"),
+    });
+    const baseCalls = JSON.parse(base.raw.toJson()).feature_calls as any[];
+    base.raw.removeFeature(baseCalls.find((c) => c.params?.display_name === "Extrude 15")!.id);
+
     const frame = resolvePlaneFrame("qWall(44, 35)", kernel as unknown as PlaneFrameKernel)!;
     const world = (u: number, v: number, off: number) =>
       [0, 1, 2].map(
         (c) => frame.origin[c] + u * frame.xAxis[c] + v * frame.yAxis[c] + off * frame.normal[c],
       );
-    const at = (t: number[]) => {
-      let m = Infinity;
-      for (let b = 0; b < kernel.raw.bodyCount(); b++) {
-        m = Math.min(m, kernel.raw.bodySdfEval(b, t[0], t[1], t[2]));
-      }
-      return m;
+    const scene = (k: typeof kernel, ps: number[][]) => {
+      const n = k.raw.bodyCount();
+      return ps.map((p) => {
+        let m = Infinity;
+        for (let b = 0; b < n; b++) m = Math.min(m, k.raw.bodySdfEval(b, p[0], p[1], p[2]));
+        return m;
+      });
     };
-    // WARM the suppress path once before measuring. The first toggle re-weaves
-    // and re-compiles, and comparing the as-imported field against a
-    // post-toggle one shows a handful of sign flips on the boundary that are
-    // that difference and not a cut — four of them, at a coarse grid, all with
-    // |sdf| in the µm range. Toggled once first, the comparison is like for
-    // like and the count is 0 either way round.
-    kernel.raw.setFeatureSuppressed(ex15.id, true);
-    kernel.raw.setFeatureSuppressed(ex15.id, false);
-
     // The SELECTED region's own prism: (u, v) across the triangle, `off < 0`
     // into the material (the body lies on the −normal side of its carrier).
-    const pts: number[][] = [];
-    for (let u = 3; u <= 32; u += 1)
-      for (let v = -17; v <= 21; v += 1)
-        for (let off = -1; off >= -35; off -= 1) pts.push(world(u, v, off));
-    const withCut = pts.map(at);
-    kernel.raw.setFeatureSuppressed(ex15.id, true);
-    const without = pts.map(at);
-    kernel.raw.setFeatureSuppressed(ex15.id, false);
+    const inside: number[][] = [];
+    for (let u = 4; u <= 31; u += 1.5)
+      for (let v = -16; v <= 20; v += 1.5)
+        for (let off = -1; off >= -34; off -= 1.5) inside.push(world(u, v, off));
+    const withCut = scene(kernel, inside);
+    const without = scene(base, inside);
+    const solid = inside.filter((_, i) => without[i] < 0).length;
+    const removed = inside.filter((_, i) => without[i] < 0 && withCut[i] >= 0).length;
+    const added = inside.filter((_, i) => without[i] >= 0 && withCut[i] < 0).length;
 
-    const solid = pts.filter((_, i) => without[i] < 0).length;
-    const removed = pts.filter((_, i) => without[i] < 0 && withCut[i] >= 0).length;
-    const added = pts.filter((_, i) => without[i] >= 0 && withCut[i] < 0).length;
     // There IS material in the prism to take — otherwise „removes nothing"
     // would be a statement about the probe, not about the feature.
-    expect(solid, "material inside the selected region's prism").toBeGreaterThan(10_000);
+    expect(solid, "material inside the selected region's prism").toBeGreaterThan(5_000);
     // BOTH directions, and both are the finding: the REMOVE takes nothing away
     // and puts nothing back. The day `removed` stops being 0, #452 is done —
     // move this pin and say by how much.
