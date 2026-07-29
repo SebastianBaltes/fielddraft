@@ -35,8 +35,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import initWasm, { Kernel as WasmKernel } from "../wasm/fielddraft_kernel";
-import { importOnshapeFeatures, type ImportKernel } from "./onshapeImport";
-import type { SketchSubCall } from "./onshapeSketch";
+import { importOnshapeFeatures } from "./onshapeImport";
+import { wrapImportKernel, type SuiteKernel } from "./importKernelDouble";
 import type { MesherRebuildRequest } from "../mesher.worker";
 
 const wasmDir = join(__dirname, "..", "wasm");
@@ -125,34 +125,6 @@ const featureOfType = (doc: { features: any[] }, type: string): any =>
 const paramOf = (feat: any, id: string): any =>
   feat.parameters.map((p: any) => p.message ?? p).find((p: any) => p.parameterId === id);
 
-function wrap(k: WasmKernel): ImportKernel & { raw: WasmKernel } {
-  return {
-    raw: k,
-    addSketch: (planeQuery: string, subCalls: SketchSubCall[]) =>
-      k.addSketch(
-        planeQuery,
-        JSON.stringify(
-          subCalls.map((c, i) => ({ type: c.type, id: String(i + 1), params: c.params })),
-        ),
-      ),
-    addFeatureCall: (type: string, paramsJson: string) => k.addFeatureCall(type, paramsJson),
-    resolveQuery: (q: string) => {
-      const parsed = JSON.parse(k.resolveQuery(q)) as unknown;
-      return Array.isArray(parsed) ? (parsed as any[]) : [];
-    },
-    sceneAabb: () => JSON.parse(k.sceneAabb()),
-    bodyCount: () => k.bodyCount(),
-    bodyBrepFaces: (i: number) => JSON.parse(k.bodyBrepFaces(i)),
-    bodyPlacement: (i: number) => JSON.parse(k.bodyPlacement(i)),
-    regionQueryAtPoint: (sketchId: number, u: number, v: number) =>
-      k.regionQueryAtPoint(sketchId, u, v),
-    listSketchRegions: (sketchId: number, resolution: number) =>
-      k.listSketchRegions(sketchId, resolution),
-    setSyncMeshing: (enabled: boolean) => k.setSyncMeshing(enabled),
-    setVariable: (name: string, value: number, kind: string, formula?: string) =>
-      k.setVariable(name, value, kind, formula),
-  };
-}
 
 /** Per-feature regeneration errors, keyed by feature id. */
 function regenErrors(k: WasmKernel): Map<string, string> {
@@ -189,7 +161,7 @@ function variableFeature(
 describe("#415 — document variables reach the real kernel", () => {
   it("stores a variable chain with its value, kind and formula", async () => {
     const doc = ticket415();
-    const kernel = wrap(new WasmKernel());
+    const kernel = wrapImportKernel(new WasmKernel());
     const result = await importOnshapeFeatures(
       {
         features: [
@@ -215,7 +187,7 @@ describe("#415 — document variables reach the real kernel", () => {
   });
 
   it("imports the document's own variable", async () => {
-    const kernel = wrap(new WasmKernel());
+    const kernel = wrapImportKernel(new WasmKernel());
     await importOnshapeFeatures(ticket415(), kernel);
     const bohrloch = variablesOf(kernel.raw).find((v) => v.name === "Bohrloch");
     expect(bohrloch, JSON.stringify(variablesOf(kernel.raw))).toBeTruthy();
@@ -225,11 +197,11 @@ describe("#415 — document variables reach the real kernel", () => {
 });
 
 describe("#415 — the Boolean the real kernel regenerates", () => {
-  let kernel: ImportKernel & { raw: WasmKernel };
+  let kernel: SuiteKernel;
   let result: Awaited<ReturnType<typeof importOnshapeFeatures>>;
 
   beforeAll(async () => {
-    kernel = wrap(new WasmKernel());
+    kernel = wrapImportKernel(new WasmKernel());
     result = await importOnshapeFeatures(ticket415(), kernel, {
       sketches3d: sketches3d() as any,
     });
@@ -294,7 +266,7 @@ describe("#415 — the Boolean the real kernel regenerates", () => {
     // Sketch 2 + Extrude 2 + Thicken 1, i.e. the block whose walls are
     // thickened and nothing else. The rest of the document only cuts into it
     // (and drags in the wall-frame gap below), which would hide the wall.
-    const sub = wrap(new WasmKernel());
+    const sub = wrapImportKernel(new WasmKernel());
     const feats = doc.features.map((f: any) => f.message ?? f);
     const subResult = await importOnshapeFeatures(
       {
@@ -411,7 +383,7 @@ describe("#415 — the Boolean the real kernel regenerates", () => {
   /** The counter-proof: WITHOUT Onshape's 3D answer the very same document
    *  still lands rotated. Keeps the fix from quietly becoming a no-op. */
   it("lands rotated without Onshape's 3D sketch answer", async () => {
-    const bare = wrap(new WasmKernel());
+    const bare = wrapImportKernel(new WasmKernel());
     await importOnshapeFeatures(ticket415(), bare);
     const main = new WasmKernel();
     main.setSyncMeshing(false);

@@ -21,8 +21,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import initWasm, { Kernel as WasmKernel } from "../wasm/fielddraft_kernel";
-import { importOnshapeFeatures, type ImportKernel } from "./onshapeImport";
-import type { SketchSubCall } from "./onshapeSketch";
+import { importOnshapeFeatures } from "./onshapeImport";
+import { wrapImportKernel } from "./importKernelDouble";
 
 const wasmDir = join(__dirname, "..", "wasm");
 
@@ -36,8 +36,9 @@ const fixture = (name: string): any =>
 /**
  * Onshape's own answer for this document, in mm (the API reports metres): 17
  * solid parts, and the union of their bounding boxes. The x extent is ~3.1 m —
- * this is a long assembly, and that single number is what makes the axis
- * mix-up below unmistakable rather than a rounding argument.
+ * this is a long assembly, and that one enormous number is why an axis mix-up
+ * shows up here as a fact rather than as a rounding argument. It is what
+ * exposed one, and then what proved it gone in #448.
  */
 const GROUND_TRUTH = {
   parts: 17,
@@ -57,32 +58,44 @@ const GROUND_TRUTH = {
  * deleted — which is the point: the file has to be edited when the import gets
  * better, so the record cannot quietly go stale.
  *
- * 177 messages fall on these 97 features, and MOST of them are cascade — a
+ * 170 messages fall on these 89 features, and MOST of them are cascade — a
  * feature failing only because something it refers to never got built. Measured
- * after #444: 179 on 98 features beforehand, 190 on 107 before #443 (that
+ * after #448: 180 on 99 features beforehand, 190 on 107 before #443 (that
  * comment claimed 192, which was two stale), 216 on 118 before #424. The
  * buckets below are cut freshly from the current messages, so a single line is
  * not comparable one-to-one with the older list; the two TOTALS are:
  *
  *    45  cascade: EDGE query names a feature that was not imported   (see #425)
- *    38  chamfer/fillet edge shape with no FieldDraft counterpart    → #429
+ *    37  chamfer/fillet edge shape with no FieldDraft counterpart    → #429
  *    24  cascade: wall plane names a feature that was not imported
  *    23  cascade: profile sketch missing
- *     8  Onshape's sketch plane stands SKEW to the resolved wall — SEVEN of
- *        them are an artefact of `wrap()` below, which omits
- *        `resolvedMateConnectors` and so cannot place a sketch on a mate
- *        connector at all; the app has ONE (measured, #446 → ticket #448)
  *     8  no resolvable face / target or tool body
  *     7  cascade: cap plane names a feature that was not imported
  *     6  unknown plane-query form
- *     5  end condition UP_TO_NEXT / UP_TO_SURFACE
+ *     4  end condition UP_TO_NEXT / UP_TO_SURFACE
  *     4  `startOffset` (refused, not misplaced)
- *     1  `qWall(…)` binds 0 faces (`Sketch 30`, still open)
- *     2  pattern axis not resolvable in world coordinates
+ *     2  the resolved plane is PARALLEL to Onshape's but OFFSET
  *     2  feature type `printedHole` has no translator
- *     4  the rest: two hole positions that are not sketch points, one
- *        `CAP_EDGE` over three sketch entities, one sketch on a mate
- *        connector that was itself not imported
+ *     2  hole position that is not a sketch point
+ *     1  Onshape's sketch plane stands SKEW to the resolved one (`Sketch 9`)
+ *     1  `qWall(…)` binds 0 faces (`Sketch 30`, still open)
+ *     1  face profile in COPY form
+ *     1  `CAP_EDGE` over three sketch entities
+ *     1  `SWEPT_EDGE` over three sketch entities
+ *     1  sketch on a mate connector that was itself not imported
+ *
+ * #448 took ten names off this list and put one back, and NO import code
+ * changed for it — only the kernel double this file drives. It used to be built
+ * by hand here without `resolvedMateConnectors`, so `resolvePlaneFrame` could
+ * not place a sketch on a mate connector AT ALL; the app has always passed the
+ * whole `Kernel`. `Sketch 4`, `5`, `6`, `10`, `13`, `14`, `28` and `29` place on
+ * their connectors now, `Circular pattern 1` and `Linear pattern 1` find their
+ * axis in world coordinates (their sketch line exists), and `Extrude 28`'s
+ * UP_TO_SURFACE target resolves. Seven of the eight SKEW messages were the same
+ * artefact. `Sketch 9` is what remains and it is NEW here, not new in the app:
+ * its connector `qCreatedBy(23)` resolves to a frame 90° off Onshape's, which
+ * is ticket #447's subject — the suite simply could not see it before, because
+ * that plane never resolved at all. Body count 14 → 18 (Onshape: 17).
  *
  * Nine names left the list in #443, and only ONE of them is the fix itself:
  * `qCreatedBy(op, CAP_TOP)` binding four COPLANAR cap faces is not an
@@ -119,7 +132,6 @@ const KNOWN_GAPS = [
   "Chamfer 6",
   "Chamfer 8",
   "Chamfer 9",
-  "Circular pattern 1",
   "Extrude 12",
   "Extrude 17",
   "Extrude 18",
@@ -129,7 +141,6 @@ const KNOWN_GAPS = [
   "Extrude 24",
   "Extrude 26",
   "Extrude 27",
-  "Extrude 28",
   "Extrude 29",
   "Extrude 30",
   "Extrude 31",
@@ -165,11 +176,7 @@ const KNOWN_GAPS = [
   "Fillet 7",
   "Fillet 8",
   "Fillet 9",
-  "Linear pattern 1",
   "Shell 1",
-  "Sketch 10",
-  "Sketch 13",
-  "Sketch 14",
   "Sketch 15",
   "Sketch 16",
   "Sketch 17",
@@ -184,8 +191,6 @@ const KNOWN_GAPS = [
   "Sketch 25",
   "Sketch 26",
   "Sketch 27",
-  "Sketch 28",
-  "Sketch 29",
   "Sketch 30",
   "Sketch 31",
   "Sketch 32",
@@ -194,10 +199,8 @@ const KNOWN_GAPS = [
   "Sketch 35",
   "Sketch 36",
   "Sketch 37",
-  "Sketch 4",
-  "Sketch 5",
-  "Sketch 6",
   "Sketch 8",
+  "Sketch 9",
   "Thicken 1",
   "Thicken 2",
   "Thicken 3",
@@ -205,37 +208,9 @@ const KNOWN_GAPS = [
   "Thicken 5",
 ];
 
-function wrap(k: WasmKernel): ImportKernel & { raw: WasmKernel } {
-  return {
-    raw: k,
-    addSketch: (planeQuery: string, subCalls: SketchSubCall[]) =>
-      k.addSketch(
-        planeQuery,
-        JSON.stringify(
-          subCalls.map((c, i) => ({ type: c.type, id: String(i + 1), params: c.params })),
-        ),
-      ),
-    addFeatureCall: (type: string, paramsJson: string) => k.addFeatureCall(type, paramsJson),
-    resolveQuery: (q: string) => {
-      const parsed = JSON.parse(k.resolveQuery(q)) as unknown;
-      return Array.isArray(parsed) ? (parsed as any[]) : [];
-    },
-    sceneAabb: () => JSON.parse(k.sceneAabb()),
-    bodyCount: () => k.bodyCount(),
-    bodyBrepFaces: (i: number) => JSON.parse(k.bodyBrepFaces(i)),
-    bodyPlacement: (i: number) => JSON.parse(k.bodyPlacement(i)),
-    regionQueryAtPoint: (sketchId: number, u: number, v: number) =>
-      k.regionQueryAtPoint(sketchId, u, v),
-    listSketchRegions: (sketchId: number, resolution: number) =>
-      k.listSketchRegions(sketchId, resolution),
-    setSyncMeshing: (enabled: boolean) => k.setSyncMeshing(enabled),
-    setVariable: (n: string, v: number, kind: string, formula?: string) =>
-      k.setVariable(n, v, kind, formula),
-  };
-}
 
 async function importFixture() {
-  const kernel = wrap(new WasmKernel());
+  const kernel = wrapImportKernel(new WasmKernel());
   kernel.raw.setSyncMeshing(true);
   const result = await importOnshapeFeatures(fixture("onshape-419-features.json"), kernel, {
     sketches3d: fixture("onshape-419-sketches3d.json"),
@@ -294,7 +269,15 @@ describe("#419 multi-part assembly", () => {
     // in a different place, and the partition folds one body into another.
     // The count is a coarse proxy for „the assembly is still there"; which of
     // the extrudes make their own body is not measured here.
-    expect(kernel.raw.bodyCount()).toBe(14);
+    //
+    // 14 → 18 in #448, and no import code changed: this suite's kernel double
+    // grew the `resolvedMateConnectors` the app always had, eight sketches that
+    // stand on mate connectors place, and two patterns and an extrude follow.
+    // That is 18 against Onshape's 17 — the closest this document has come, and
+    // still not the same partition: our 18 include bodies Onshape merges and
+    // exclude parts we never build, so the number agreeing to ±1 is arithmetic,
+    // not a match. It stays pinned exactly, in both directions.
+    expect(kernel.raw.bodyCount()).toBe(18);
 
     // Without these the geometry would be a fraction of the assembly and still
     // look plausible — which is exactly how a broken import hides.
@@ -315,6 +298,12 @@ describe("#419 multi-part assembly", () => {
     const kinds = new Set(
       (JSON.parse(kernel.raw.toJson()).feature_calls as { type: string }[]).map((c) => c.type),
     );
+    //
+    // `circular_pattern` and `linear_pattern` joined the list in #448. Both
+    // take their axis from a sketch LINE (`b6zz5LCAEe08`) of a sketch that sits
+    // on a mate connector; with the plane unresolvable that line had no world
+    // coordinates and both features were skipped. Pinning them here is what
+    // makes the replication of this assembly a regression when it stops.
     for (const k of [
       "extrude",
       "revolve",
@@ -322,6 +311,8 @@ describe("#419 multi-part assembly", () => {
       "boolean",
       "mate_connector",
       "fillet_edge",
+      "circular_pattern",
+      "linear_pattern",
     ]) {
       expect([...kinds], `feature kinds: ${[...kinds].join(", ")}`).toContain(k);
     }
@@ -345,26 +336,45 @@ describe("#419 multi-part assembly", () => {
     // arrangement splits at y = −52.83 (a neighbouring rectangle's top edge
     // runs through it). #412 mapped a region to its single best face and lost
     // the upper half in silence, so the revolve came out with a 6.15 mm GAP in
-    // its radial profile — 46.68 … 52.83 local had no material at all. Face 6
-    // is that band.
-    expect(named("Revolve 1").params.profiles).toBe("qRegions(6, [4, 6, 7])");
+    // its radial profile — 46.68 … 52.83 local had no material at all. Faces 8
+    // and 9 are the two halves of that band.
+    //
+    // The INDICES moved in #448 (`[4, 6, 7]` → `[6, 8, 9]`) and the faces did
+    // not. Sketch 3 sits on the mate connector `qCreatedBy(5)`; with the
+    // connector resolvable its 2D coordinates are rotated into the connector's
+    // own frame instead of being taken literally, and the kernel's arrangement
+    // of the SAME curves comes out in a different order. So the index list is
+    // pinned together with the AREAS it has to select, which is the invariant
+    // the prose above actually claims: 7.74 × 6.15 = 47.6 mm² and
+    // 7.74 × 8.10 = 62.7 mm² for the split band.
+    expect(named("Revolve 1").params.profiles).toBe("qRegions(6, [6, 8, 9])");
+    const regions3 = JSON.parse(kernel.listSketchRegions(6, 128)) as {
+      index: number;
+      area: number;
+    }[];
+    const areaOf = (i: number) => regions3.find((r) => r.index === i)!.area;
+    expect(areaOf(8), "lower half of the split band").toBeCloseTo(47.57, 1);
+    expect(areaOf(9), "upper half of the split band").toBeCloseTo(62.65, 1);
     // Same document, same defect, other feature: Onshape's `Extrude 4` selects
     // the THREE strips one rectangle is cut into. Two of them name literally
     // the same curves and differ only in where those curves are trimmed.
-    expect(named("Extrude 4").params.profiles).toBe("qRegions(6, [3, 4, 5])");
+    expect(named("Extrude 4").params.profiles).toBe("qRegions(6, [7, 9, 12])");
 
     // And the point of the exercise: `Thicken 6` names the cylinder wall the
     // revolve sweeps at r = 7.735 mm. With the gap, that wall was buried under
     // `Extrude 4`'s block along its whole length — the face did not exist and
     // the query bound the wrong one. Now it resolves to exactly one face, on
-    // the revolve (feature 23), and it is that cylinder.
+    // the revolve (feature 25), and it is that cylinder. Body index and feature
+    // id both moved by the two pattern features #448 let in ahead of them
+    // (`Circular pattern 1` = 21, `Linear pattern 1` = 22); the face itself is
+    // the same cylinder at the same radius.
     const faces = String(named("Thicken 6").params.faces);
     const hits = kernel.resolveQuery(faces);
     expect(hits.length, `Thicken 6 faces = ${faces}`).toBe(1);
-    const body9 = JSON.parse(kernel.raw.bodyBrepFaces(9)) as any[];
-    const carrier = body9.find((f) => String(f.idHash) === String(hits[0].idHash));
-    expect(carrier, `body 9 faces: ${body9.map((f) => f.idHash).join(",")}`).toBeTruthy();
-    expect(carrier.featureId).toBe(23);
+    const body13 = JSON.parse(kernel.raw.bodyBrepFaces(13)) as any[];
+    const carrier = body13.find((f) => String(f.idHash) === String(hits[0].idHash));
+    expect(carrier, `body 13 faces: ${body13.map((f) => f.idHash).join(",")}`).toBeTruthy();
+    expect(carrier.featureId).toBe(25);
     expect(carrier.surfaceParams?.kind).toBe("cylinder");
     expect(carrier.surfaceParams?.radius).toBeCloseTo(7.735, 3);
 
@@ -378,22 +388,32 @@ describe("#419 multi-part assembly", () => {
 
     // Onshape's own answer, via `evBox3d` on `qCreatedBy(FuEM5hJm4ZF6lHu_11,
     // BODY)` in the source document: x ∈ [−5.011; 38.989], y ∈ [46.677;
-    // 64.527], z ∈ [−12.95; 31.05] mm. Only the extrude's OWN axis is asserted
-    // here — the document's 90° rotation (see the test below) maps Onshape's y
-    // onto our −x, and the other two axes additionally carry the frame offsets
-    // that are still open elsewhere in this file. Our x bounds reproduce
-    // Onshape's y bounds to 0.01 mm; before the fix the body sat at
-    // [−78.38; −62.53], a whole depth away.
-    const box = Array.from(kernel.raw.bodySdfAabb(10));
-    expect(box[0], `Extrude 16 body aabb ${box.join(",")}`).toBeCloseTo(-64.527, 1);
-    expect(box[3]).toBeCloseTo(-46.677, 1);
+    // 64.527], z ∈ [−12.95; 31.05] mm.
+    //
+    // ALL SIX bounds are asserted since #448, where until then only the
+    // extrude's own axis was — and rotated at that, because the whole document
+    // used to come in turned 90° about Z (Onshape's y onto our −x). That
+    // rotation was an artefact of this file's kernel double, not of the import:
+    // it came from the root sketches whose mate-connector planes the double
+    // could not resolve, so the web synthesised a basis from the face beneath
+    // them. With the app's surface the body lands on Onshape's own numbers to
+    // the last measured digit — this is the single sharpest evidence in the
+    // repo that #419's placement is right, and it is worth six lines.
+    const box = Array.from(kernel.raw.bodySdfAabb(14));
+    const label = `Extrude 16 body aabb ${box.join(",")}`;
+    expect(box[0], label).toBeCloseTo(-5.011, 1);
+    expect(box[1], label).toBeCloseTo(46.677, 1);
+    expect(box[2], label).toBeCloseTo(-12.95, 1);
+    expect(box[3], label).toBeCloseTo(38.989, 1);
+    expect(box[4], label).toBeCloseTo(64.527, 1);
+    expect(box[5], label).toBeCloseTo(31.05, 1);
 
     // And now both features BITE. Suppressing either one changes the B-Rep of
     // that body, which is the whole point of #440 — measured, not argued.
     for (const name of ["Boolean 1", "Thicken 6"]) {
-      const before = kernel.raw.bodyBrepCounts(10);
+      const before = kernel.raw.bodyBrepCounts(14);
       kernel.raw.setFeatureSuppressed(named(name).id, true);
-      expect(kernel.raw.bodyBrepCounts(10), `${name} moves nothing`).not.toBe(before);
+      expect(kernel.raw.bodyBrepCounts(14), `${name} moves nothing`).not.toBe(before);
       kernel.raw.setFeatureSuppressed(named(name).id, false);
     }
 
@@ -431,7 +451,7 @@ describe("#419 multi-part assembly", () => {
     // pairs colliding, and the region that should have been a slot fell on the
     // big plate — so the extrude covered the plate and its frame TOGETHER.
     expect(named("Extrude 20").params.profiles).toBe(
-      "qRegions(30, [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])",
+      "qRegions(32, [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])",
     );
 
     // The consequence, and the reason this has a ticket: with the plate in the
@@ -440,100 +460,86 @@ describe("#419 multi-part assembly", () => {
     // of them and bound nothing at all. All four resolve now, and those faces
     // are the ones `Thicken 7` asks for.
     //
-    // Wall 26 binds TWO faces since #442, and that is a consequence of MORE
-    // geometry, not of a worse name: `Extrude 25` selects this very extrude's
-    // CAP FACE, which used to fall back to a whole sketch elsewhere and now
-    // grows the boss Onshape has there — and that boss cuts wall 26 in two.
-    // Onshape reports its own wall as ONE face because it merges coplanar
-    // faces and we do not (the standing gap of `docs/DERIVED-NAMING-PLAN.md`
-    // §4/E3); the pieces are both right and both named, they just need a
-    // `qUnion` the translator does not build yet.
-    const walls = [29, 26, 17, 11].map((e) => kernel.resolveQuery(`qWall(31, ${e})`));
+    // Wall 26 bound TWO faces between #442 and #448, because `Extrude 25`
+    // selects this extrude's CAP FACE and the boss it grows there cut wall 26
+    // in two — an AMBIGUOUS name, which is dropped rather than guessed, so
+    // `Thicken 7` could only ask for three of the four. In #448 it binds ONE
+    // again and all four are asked for. Nothing about walls or `qUnion`
+    // changed: `Extrude 25` sits behind `Sketch 13`, one of the eight sketches
+    // whose mate-connector plane this suite's double could not resolve, so the
+    // boss it grows now lands where Onshape has it instead of across that wall.
+    // The `MERGE → qUnion` gap of `docs/DERIVED-NAMING-PLAN.md` §4/E3 is
+    // untouched by this — it is simply no longer reached HERE.
+    const walls = [29, 26, 17, 11].map((e) => kernel.resolveQuery(`qWall(33, ${e})`));
     for (const [i, hits] of walls.entries()) {
-      const entity = [29, 26, 17, 11][i];
-      expect(hits.length, `qWall(31, ${entity})`).toBe(entity === 26 ? 2 : 1);
+      expect(hits.length, `qWall(33, ${[29, 26, 17, 11][i]})`).toBe(1);
     }
-    // Wall 26 is the one that got cut in two, and an AMBIGUOUS name is dropped
-    // rather than guessed — thickening the wrong half adds phantom material.
-    // So `Thicken 7` asks for three of the four. Closing that needs the
-    // `MERGE → qUnion` translator of `docs/DERIVED-NAMING-PLAN.md` §4/E3: the
-    // two pieces together ARE Onshape's one face, and naming their union is the
-    // honest answer, not picking one.
     const asked = String(named("Thicken 7").params.faces);
     for (const [i, hits] of walls.entries()) {
-      if ([29, 26, 17, 11][i] === 26) continue;
-      expect(asked, `Thicken 7 faces = ${asked}`).toContain(String(hits[0].idHash));
+      expect(asked, `Thicken 7 misses wall ${[29, 26, 17, 11][i]}: ${asked}`).toContain(
+        String(hits[0].idHash),
+      );
     }
 
     // And it BITES: suppressing it moves the B-Rep of the body it thickens.
-    const before = kernel.raw.bodyBrepCounts(11);
+    const before = kernel.raw.bodyBrepCounts(15);
     kernel.raw.setFeatureSuppressed(named("Thicken 7").id, true);
-    expect(kernel.raw.bodyBrepCounts(11), "Thicken 7 moves nothing").not.toBe(before);
+    expect(kernel.raw.bodyBrepCounts(15), "Thicken 7 moves nothing").not.toBe(before);
     kernel.raw.setFeatureSuppressed(named("Thicken 7").id, false);
   }, 900_000);
 
-  it("stands 90° rotated about Z — pinned as the measured defect it is", async () => {
+  it("stands on Onshape's own axes, five bounds of six", async () => {
     const { kernel } = await importFixture();
     const bb = JSON.parse(kernel.raw.sceneAabb()) as { min: number[]; max: number[] };
+    const where = `scene ${JSON.stringify(bb)}`;
 
-    // Z is right to within 0.06 mm, so the SIZE of the import is not in doubt.
+    // This test used to be called „stands 90° rotated about Z" and pinned the
+    // mapping ours(x, y, z) = Onshape(−y, x, z) as a measured defect of the
+    // import, with the face-normal-versus-parametrisation basis rule (#415) as
+    // the suspect. That was WRONG, and #448 says how: the rotation lived in
+    // this file's kernel double, which had no `resolvedMateConnectors`. The
+    // document's root sketches sit on mate connectors; unable to resolve one,
+    // `resolvePlaneFrame` fell through to the FACE under it and synthesised a
+    // basis from that face's normal — and a root sketch hands its rotation to
+    // everything after it, which is exactly the mechanism the old comment
+    // described, applied to the wrong actor. The app passes the whole `Kernel`
+    // and always did, so the app never had this rotation.
+    //
+    // Five of the six bounds now land on Onshape's own numbers to under
+    // 0.06 mm, ON THE SAME AXIS. #414, #415 and #416 assert x/y/z directly
+    // against the same API and pass; #419 does too now.
+    expect(bb.min[0], where).toBeCloseTo(GROUND_TRUTH.x[0], 0);
+    expect(bb.min[1], where).toBeCloseTo(GROUND_TRUTH.y[0], 0);
+    expect(bb.max[1], where).toBeCloseTo(GROUND_TRUTH.y[1], 0);
+    expect(bb.min[2], where).toBeCloseTo(GROUND_TRUTH.z[0], 0);
+    expect(bb.max[2], where).toBeCloseTo(GROUND_TRUTH.z[1], 0);
+
+    // `x max` is the sixth, and it is short — 71.48 against Onshape's 85.6 —
+    // for the honest reason: 89 features do not import (KNOWN_GAPS above), so
+    // the union box cannot reach everything Onshape's does. It is asserted as
+    // an upper bound plus the distance it currently falls short, so that both
+    // directions are pinned: growing past Onshape is a bug, and closing the
+    // 14 mm is a win that has to be recorded here rather than passing silently.
     const slack = 1.0;
-    expect(bb.min[2], `scene ${JSON.stringify(bb)}`).toBeCloseTo(GROUND_TRUTH.z[0], 0);
-    expect(bb.max[2]).toBeCloseTo(GROUND_TRUTH.z[1], 0);
-
-    // X and Y are NOT. The whole document comes in turned by +90° about Z:
-    // ours(x, y, z) = Onshape(−y, x, z). Three of the four horizontal bounds
-    // match that mapping EXACTLY — our x spans [−163, 157] where Onshape's y
-    // spans [−157, 163], and our y bottoms out at −3015.4 where Onshape's x
-    // does. (Our y top is short of Onshape's 85.6 because 10 of 17 parts are
-    // missing, so that one bound is not evidence either way.)
-    //
-    // #414, #415 and #416 assert x/y/z DIRECTLY against the same API and pass,
-    // so this is not a bounding-box frame convention — it is our import. The
-    // suspect is the known one: FieldDraft derives a face-bound sketch plane's
-    // u/v basis from the face NORMAL, Onshape from the face PARAMETRISATION
-    // (gap matrix, #415). Both rules are deterministic and different, and a
-    // root sketch that sits on a face hands the rotation to everything after
-    // it. The rotation predates v0.38.3 — the AABB is bit-identical across the
-    // #424 fix, measured.
-    //
-    // So this is pinned as the mapping it actually is, NOT as a loose bound:
-    // the day the frame is right, these four lines fail and belong replaced by
-    // the direct assertion against GROUND_TRUTH.x / .y.
-    expect(bb.min[0], `scene ${JSON.stringify(bb)}`).toBeCloseTo(-GROUND_TRUTH.y[1], 0);
-    expect(bb.max[0]).toBeCloseTo(-GROUND_TRUTH.y[0], 0);
-    expect(bb.min[1]).toBeCloseTo(GROUND_TRUTH.x[0], 0);
-    expect(bb.max[1]).toBeLessThan(GROUND_TRUTH.x[1] + slack);
+    expect(bb.max[0], where).toBeLessThan(GROUND_TRUTH.x[1] + slack);
+    expect(bb.max[0], where).toBeCloseTo(71.48, 0);
   }, 900_000);
 
-  it("gives `Sketch 4`'s mirrored bores their own inside — in the APP's kernel (#446)", async () => {
-    // This one test drives the kernel THE APP DRIVES. Every other case in this
-    // file (and in the five sibling suites) builds `wrap()` by hand and leaves
-    // `resolvedMateConnectors` off it, so a sketch placed on a mate connector
-    // cannot resolve its plane at all — three of them here, and with them the
-    // features that stand on those. Measured on this fixture, same code, only
-    // the double differing: 14 bodies against 18, 99 failing features against
-    // 89, and EIGHT sketches whose plane resolves 90° skew against one. Closing
-    // that gap means re-measuring every pin in six files and has its own
-    // ticket (#448); until then this test is the one place where the numbers
-    // are the user's.
+  it("gives `Sketch 4`'s mirrored bores their own inside (#446)", async () => {
+    const { kernel, result } = await importFixture();
+
+    // `Sketch 4`'s four keyhole slots are one drawing plus three MIRRORED
+    // copies, and a mirror flips a circle's parametrisation to CLOCKWISE.
+    // Onshape states its region flank against that direction; we flattened
+    // every full circle counter-clockwise regardless, so for the two mirrored
+    // Ø 1.9 mm bores „left of the edge" pointed outward and the veto elected
+    // the plate around them. Three extrudes therefore LOST those two regions.
     //
-    // And it is not academic. `Sketch 4`'s four keyhole slots are one drawing
-    // plus three MIRRORED copies, and a mirror flips a circle's parametrisation
-    // to CLOCKWISE. Onshape states its region flank against that direction; we
-    // flattened every full circle counter-clockwise regardless, so for the two
-    // mirrored Ø 1.9 mm bores „left of the edge" pointed outward and the veto
-    // elected the plate around them. In the app — where the flank was readable
-    // — three extrudes therefore LOST those two regions; in the double above,
-    // where no plane resolved, nobody noticed. Both configurations now name the
-    // same fourteen faces, which is the reading #444 established.
-    const kernel = wrap(new WasmKernel());
-    (kernel as any).resolvedMateConnectors = () =>
-      JSON.parse(kernel.raw.resolvedMateConnectors());
-    kernel.raw.setSyncMeshing(true);
-    const result = await importOnshapeFeatures(fixture("onshape-419-features.json"), kernel, {
-      sketches3d: fixture("onshape-419-sketches3d.json"),
-    });
+    // This case was added in #446 as the ONE test in the file that drove the
+    // app's kernel surface, because the hand-built double could not resolve
+    // `Sketch 4`'s plane and so could not see the bug at all. In #448 the whole
+    // file drives that surface, so it shares `importFixture()` with everything
+    // else — one import less, and no second definition of what „the app" means.
     const calls = JSON.parse(kernel.raw.toJson()).feature_calls as any[];
     const profiles = (n: string) =>
       String(calls.find((c) => c.params?.display_name === n)!.params.profiles);
@@ -541,11 +547,14 @@ describe("#419 multi-part assembly", () => {
       expect(profiles(n), n).toContain(", 7, ");
       expect(profiles(n), n).toContain(", 14]");
     }
-    expect(profiles("Extrude 20")).toBe(
-      "qRegions(32, [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])",
-    );
-    // The size of #448, pinned so it cannot grow unnoticed: ONE skew plane here
-    // against the eight the poorer double produces.
-    expect(result.errors.filter((e) => e.includes("schief")).length).toBe(1);
+
+    // ONE skew plane, and it is `Sketch 9` on the mate connector
+    // `qCreatedBy(23)` — ticket #447. Eight sketches reported this before #448,
+    // seven of them only because their plane never resolved at all. Pinned by
+    // NAME as well as by count so that „still one" cannot quietly become „a
+    // different one".
+    const skew = result.errors.filter((e) => e.includes("schief"));
+    expect(skew, skew.join(" | ")).toHaveLength(1);
+    expect(skew[0]).toContain("Sketch 9");
   }, 900_000);
 });

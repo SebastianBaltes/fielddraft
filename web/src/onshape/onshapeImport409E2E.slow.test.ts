@@ -21,8 +21,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import initWasm, { Kernel as WasmKernel } from "../wasm/fielddraft_kernel";
-import { importOnshapeFeatures, type ImportKernel } from "./onshapeImport";
-import type { SketchSubCall } from "./onshapeSketch";
+import { importOnshapeFeatures } from "./onshapeImport";
+import { wrapImportKernel } from "./importKernelDouble";
 
 const wasmDir = join(__dirname, "..", "wasm");
 
@@ -86,6 +86,16 @@ const GROUND_TRUTH = {
  *     points on any face without symmetry. The kernel now reports its own
  *     anchor (`planeOriginLocal`) and the web uses it, and these two sketches
  *     place without a residual.
+ *     `Sketch 8` JOINED this class in #448 without its geometry moving one
+ *     micron. It sits on the mate connector `qCreatedBy(26)`, and this file's
+ *     kernel double used to omit `resolvedMateConnectors` — so the web could
+ *     not resolve that plane AT ALL and only warned „Frame nicht auflösbar,
+ *     2D-Koordinaten wörtlich übernommen". The KERNEL always placed the sketch
+ *     on the connector regardless (which is why body count, feature count and
+ *     the whole scene AABB are bit-identical before and after), so the warning
+ *     was hiding a measurement, not a placement: the connector's plane stands
+ *     168.96 mm from where Onshape's own 3D answer puts Sketch 8. The app has
+ *     reported that offset since #409; only this suite was blind to it.
  *  C. End conditions UP_TO_NEXT / UP_TO_SURFACE (Extrude 8, 12).
  *  D. Hole positions that are not plain sketch points (both `Bohrung`s).
  *  E. CLOSED — twice, and the second time is the interesting one. A cap-edge
@@ -134,39 +144,11 @@ const KNOWN_GAPS = [
   "Sketch 11",
   "Sketch 12",
   "Sketch 14",
+  "Sketch 8",
 ];
 
-function wrap(k: WasmKernel): ImportKernel & { raw: WasmKernel } {
-  return {
-    raw: k,
-    addSketch: (planeQuery: string, subCalls: SketchSubCall[]) =>
-      k.addSketch(
-        planeQuery,
-        JSON.stringify(
-          subCalls.map((c, i) => ({ type: c.type, id: String(i + 1), params: c.params })),
-        ),
-      ),
-    addFeatureCall: (type: string, paramsJson: string) => k.addFeatureCall(type, paramsJson),
-    resolveQuery: (q: string) => {
-      const parsed = JSON.parse(k.resolveQuery(q)) as unknown;
-      return Array.isArray(parsed) ? (parsed as any[]) : [];
-    },
-    sceneAabb: () => JSON.parse(k.sceneAabb()),
-    bodyCount: () => k.bodyCount(),
-    bodyBrepFaces: (i: number) => JSON.parse(k.bodyBrepFaces(i)),
-    bodyPlacement: (i: number) => JSON.parse(k.bodyPlacement(i)),
-    regionQueryAtPoint: (sketchId: number, u: number, v: number) =>
-      k.regionQueryAtPoint(sketchId, u, v),
-    listSketchRegions: (sketchId: number, resolution: number) =>
-      k.listSketchRegions(sketchId, resolution),
-    setSyncMeshing: (enabled: boolean) => k.setSyncMeshing(enabled),
-    setVariable: (n: string, v: number, kind: string, formula?: string) =>
-      k.setVariable(n, v, kind, formula),
-  };
-}
-
 async function importFixture() {
-  const kernel = wrap(new WasmKernel());
+  const kernel = wrapImportKernel(new WasmKernel());
   kernel.raw.setSyncMeshing(true);
   const result = await importOnshapeFeatures(fixture("onshape-409-features.json"), kernel, {
     sketches3d: fixture("onshape-409-sketches3d.json"),

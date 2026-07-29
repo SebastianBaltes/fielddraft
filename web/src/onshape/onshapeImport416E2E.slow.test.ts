@@ -19,8 +19,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import initWasm, { Kernel as WasmKernel } from "../wasm/fielddraft_kernel";
-import { importOnshapeFeatures, type ImportKernel } from "./onshapeImport";
-import type { SketchSubCall } from "./onshapeSketch";
+import { importOnshapeFeatures } from "./onshapeImport";
+import { wrapImportKernel, type SuiteKernel } from "./importKernelDouble";
 import type { MesherRebuildRequest } from "../mesher.worker";
 
 const wasmDir = join(__dirname, "..", "wasm");
@@ -68,32 +68,6 @@ const featureById = (doc: { features: any[] }, id: string): any =>
 const paramOf = (feat: any, id: string): any =>
   feat.parameters.map((p: any) => p.message ?? p).find((p: any) => p.parameterId === id);
 
-function wrap(k: WasmKernel): ImportKernel & { raw: WasmKernel } {
-  return {
-    raw: k,
-    addSketch: (planeQuery: string, subCalls: SketchSubCall[]) =>
-      k.addSketch(
-        planeQuery,
-        JSON.stringify(
-          subCalls.map((c, i) => ({ type: c.type, id: String(i + 1), params: c.params })),
-        ),
-      ),
-    addFeatureCall: (type: string, paramsJson: string) => k.addFeatureCall(type, paramsJson),
-    resolveQuery: (q: string) => {
-      const parsed = JSON.parse(k.resolveQuery(q)) as unknown;
-      return Array.isArray(parsed) ? (parsed as any[]) : [];
-    },
-    sceneAabb: () => JSON.parse(k.sceneAabb()),
-    bodyCount: () => k.bodyCount(),
-    bodyBrepFaces: (i: number) => JSON.parse(k.bodyBrepFaces(i)),
-    bodyPlacement: (i: number) => JSON.parse(k.bodyPlacement(i)),
-    regionQueryAtPoint: (sketchId: number, u: number, v: number) =>
-      k.regionQueryAtPoint(sketchId, u, v),
-    listSketchRegions: (sketchId: number, resolution: number) =>
-      k.listSketchRegions(sketchId, resolution),
-    setSyncMeshing: (enabled: boolean) => k.setSyncMeshing(enabled),
-  };
-}
 
 interface FeatureCall {
   id: string | number;
@@ -185,11 +159,11 @@ function assertSphere(k: WasmKernel, bb: SceneAabb): void {
 }
 
 describe("Onshape import — #416 against the Onshape ground truth", () => {
-  let kernel: ImportKernel & { raw: WasmKernel };
+  let kernel: SuiteKernel;
   let result: Awaited<ReturnType<typeof importOnshapeFeatures>>;
 
   beforeAll(async () => {
-    kernel = wrap(new WasmKernel());
+    kernel = wrapImportKernel(new WasmKernel());
     result = await importOnshapeFeatures(ticket416(), kernel, {
       sketches3d: sketches3d() as any,
     });
@@ -211,6 +185,36 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
     const errors = result.errors.join(" | ");
     const planted = result.errors.filter((e) => e.includes("Sketch liegt auf dem Mate-Connector"));
     expect(planted, errors).toEqual([]);
+  });
+
+  /**
+   * The whole failure surface of this document, by FEATURE NAME — the same
+   * both-directions pin the #409 and #419 suites carry, and the one this file
+   * was missing (#448). Without it an improvement is as invisible as a
+   * regression: `Fillet 3` started resolving the moment this suite got the
+   * app's kernel surface and NOTHING here would have said so.
+   *
+   * `Fillet 3` used to fail on `qCommonEdge(qUnion(qWall(3, 13),
+   * qCreatedBy(6, CAP_TOP)), qCreatedBy(12, CAP_BOTTOM/TOP))` — two messages,
+   * both gone. It hangs off `Sketch 6`, which sits on the mate connector
+   * `qCommonEdge(qCreatedBy(3, CAP_TOP), qWall(3, 13))`; this suite's old
+   * hand-built double omitted `resolvedMateConnectors`, so that plane never
+   * resolved on the web side and the two features under it came out in the
+   * wrong place — near enough to build, far enough for the blend edge to miss.
+   *
+   * The three that remain are all edge NAMING, none of them geometry:
+   *  - `Chamfer 2`: a fragment of an edge a boolean SPLIT.
+   *  - `Fillet 2`: an edge a boolean MERGE created, plus two references to a
+   *    feature this document never imports.
+   *  - `Fillet 5`: `qCommonEdge(qWall(19, 4), qWall(22, 4))` binds nothing.
+   */
+  it("fails only on the three edge names that are still open (#448)", () => {
+    const failed = [...new Set(result.errors.map((e) => e.split(":")[0]))].sort();
+    expect(failed, `import errors:\n${result.errors.join("\n")}`).toEqual([
+      "Chamfer 2",
+      "Fillet 2",
+      "Fillet 5",
+    ]);
   });
 
   /**
@@ -261,45 +265,61 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
    */
   it("builds ONE part, where it used to build four", () => {
     expect(kernel.raw.bodyCount()).toBe(GROUND_TRUTH.parts);
-    // The three bounds no feature of the document overshoots: the far end of
-    // `Extrude 3`, the top of Sketch 1, and — since #445 — the bottom of its
-    // profile rectangle. `y min` was −33.17 while `Extrude 9` hung off a
-    // mis-named wall; it is −26.70 against Onshape's −26.77 now.
+    // FIVE of the six bounds, to better than 0.09 mm. Three of them are the
+    // ones no feature of the document overshoots: the far end of `Extrude 3`,
+    // the top of Sketch 1, and — since #445 — the bottom of its profile
+    // rectangle. `y min` was −33.17 while `Extrude 9` hung off a mis-named
+    // wall; it is −26.70 against Onshape's −26.77 now.
+    //
+    // `x max` and `z min` JOINED them in #448, and no code changed for it —
+    // only this suite's kernel double did. `Extrude 9`'s 8.17 mm wedge grows
+    // out of `Extrude 4`'s cap, and its sketch sits on a mate connector. The
+    // old hand-built double had no `resolvedMateConnectors`, so
+    // `resolvePlaneFrame` fell through to the FACE under that connector and
+    // synthesised a basis from its normal — a frame turned 90° inside its own
+    // plane. The wedge therefore pointed +x (x max 11.17 against Onshape's
+    // 3.07) instead of −z (z min −65 against −73.08). With the connector's own
+    // CSYS, which is what the app has always passed, it points where Onshape
+    // has it: x max 3.000, z min −73.169. Suppressing `Extrude 9` is what
+    // moves `z min` back to −65 — measured, so the attribution is not a story.
     const bb = kernel.sceneAabb!() as { min: number[]; max: number[] };
     expect(bb.min[0], "x min").toBeCloseTo(GROUND_TRUTH.x[0], 0);
+    expect(bb.max[0], "x max").toBeCloseTo(GROUND_TRUTH.x[1], 0);
     expect(bb.min[1], "y min").toBeCloseTo(GROUND_TRUTH.y[0], 0);
+    expect(bb.min[2], "z min").toBeCloseTo(GROUND_TRUTH.z[0], 0);
     expect(bb.max[2], "z max").toBeCloseTo(GROUND_TRUTH.z[1], 0);
   });
 
   /**
-   * The full extent, pinned as a FAILING test on purpose. ONE feature is left
-   * over: `Extrude 9`. Its sketch sits on a mate connector anchored on
-   * `qCommonEdge(qCreatedBy(3, CAP_TOP), qWall(3, 13))`.
+   * The full extent, pinned as a FAILING test on purpose. ONE bound is left
+   * over, and #448 changed WHICH one — the answer this comment gave until now
+   * was measured on a kernel double the app never had.
    *
-   * Up to #445 the OPEN QUESTION here was that query: `Extrude 1`'s walls fell
-   * back to POSITIONAL subs, so `qWall(3, 13)` bound a facet of a circle and
-   * the connector stood on the wrong edge entirely. That is fixed and measured
-   * — the wall is the right one now, and `y min` moved from −33.17 to −26.70
-   * (Onshape: −26.77), which is why the test above pins it.
-   *
-   * What is left is the connector's IN-PLANE ROTATION, and it is a different
-   * defect. The connector's PLANE is right: Onshape's own 3D answer puts
-   * `Sketch 6` in the plane y = −10.10, and that is exactly where ours lands
-   * (`Extrude 9`'s two caps sit at y = −7.60 / −12.60, symmetric about it). But
-   * Onshape maps the sketch's u to world −x and its v to world −z, while
-   * `resolve_mate_anchor` maps u to +z and v to +x — the frame is turned 90°
+   * What it used to say: the mate connector under `Sketch 6` was turned 90°
    * inside its own plane, because an edge anchor takes its secondary axis from
-   * whichever adjacent face has the smaller branch word (here the WALL) instead
-   * of from the cap. So the 8.17 mm wedge grows out of the cap in +x
-   * (x max 11.17 against Onshape's 3.07) instead of down in −z (z min −65
-   * against −73.08). Measured −70 … 11.17 × −26.70 … 6.5 × −65 … 35 against
-   * Onshape's −70.05 … 3.07 × −26.77 … 7.13 × −73.08 … 35.
+   * whichever adjacent face has the smaller branch word. That reading came
+   * from a double WITHOUT `resolvedMateConnectors`, where the sketch plane was
+   * never the connector's CSYS at all but the face beneath it, with a basis
+   * synthesised from the face normal. Give this suite the surface the app
+   * passes and the rotation is simply gone: `x max` 11.17 → 3.000 (Onshape
+   * 3.07) and `z min` −65 → −73.169 (Onshape −73.08), both folded into the
+   * test above. Anyone reading this to work on #447 should start from that:
+   * the 90° in-plane skew reproduced HERE was the measurement, not the kernel.
    *
-   * `it.fails` keeps that honest in both directions — the day the edge anchor
-   * picks its secondary axis the way Onshape does, this starts failing and
-   * forces someone to fold it into the test above.
+   * What is actually left is `y max`: 6.500 against Onshape's 7.1292, short by
+   * 0.63 mm. It is NOT one missing solid — suppressing any single feature of
+   * the import leaves `y max` at 6.500, so several bodies share that plane and
+   * nothing we build reaches over it. The three features that still fail are
+   * all edge names (`Chamfer 2`, `Fillet 2`, `Fillet 5`, see the census
+   * above), and a blend on a concave edge is the one thing that ADDS material;
+   * that is the open lead, unproven. The shortfall predates #448 — the poorer
+   * double measured the same 6.500.
+   *
+   * `it.fails` keeps that honest in both directions: the day the last 0.63 mm
+   * arrives, this starts failing and forces someone to fold it into the test
+   * above, as x max and z min just were.
    */
-  it.fails("matches the ground-truth AABB (open: mate-connector in-plane axis)", () => {
+  it.fails("matches the ground-truth AABB (open: y max, 0.63 mm short)", () => {
     const bb = kernel.sceneAabb!() as { min: number[]; max: number[] };
     for (const [c, [lo, hi]] of [GROUND_TRUTH.x, GROUND_TRUTH.y, GROUND_TRUTH.z].entries()) {
       expect(bb.min[c], `axis ${c} min`).toBeCloseTo(lo, 0);
@@ -324,14 +344,14 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
  * R = 4.94 mm.
  */
 describe("Onshape import — #416 revolve end-to-end (real kernel)", () => {
-  let kernel: ImportKernel & { raw: WasmKernel };
+  let kernel: SuiteKernel;
   let result: Awaited<ReturnType<typeof importOnshapeFeatures>>;
 
   beforeAll(async () => {
     const doc = ticket416();
     const sketch4 = replantedSketch4(doc);
     const revolve = structuredClone(featureById(doc, "F0K5aKkQUQzivLM_2"));
-    kernel = wrap(new WasmKernel());
+    kernel = wrapImportKernel(new WasmKernel());
     result = await importOnshapeFeatures({ features: [sketch4, revolve] }, kernel);
   }, 180_000);
 
@@ -381,7 +401,7 @@ describe("Onshape import — #416 revolve end-to-end (real kernel)", () => {
  * draws it downwards; upwards is what the kernel's flip check needs.
  */
 describe("Onshape import — #416 revolve with the axis line drawn upwards", () => {
-  let kernel: ImportKernel & { raw: WasmKernel };
+  let kernel: SuiteKernel;
   let result: Awaited<ReturnType<typeof importOnshapeFeatures>>;
 
   beforeAll(async () => {
@@ -392,7 +412,7 @@ describe("Onshape import — #416 revolve with the axis line drawn upwards", () 
       .find((e: any) => e.entityId === "nsFmMv4kYM6f");
     [axis.startParam, axis.endParam] = [axis.endParam, axis.startParam];
     const revolve = structuredClone(featureById(doc, "F0K5aKkQUQzivLM_2"));
-    kernel = wrap(new WasmKernel());
+    kernel = wrapImportKernel(new WasmKernel());
     result = await importOnshapeFeatures({ features: [sketch4, revolve] }, kernel);
   }, 180_000);
 

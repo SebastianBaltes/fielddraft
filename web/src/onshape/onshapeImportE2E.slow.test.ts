@@ -25,8 +25,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import initWasm, { Kernel as WasmKernel } from "../wasm/fielddraft_kernel";
-import { importOnshapeFeatures, type ImportKernel } from "./onshapeImport";
-import type { SketchSubCall } from "./onshapeSketch";
+import { importOnshapeFeatures } from "./onshapeImport";
+import { wrapImportKernel, type SuiteKernel } from "./importKernelDouble";
 import type { MesherRebuildRequest } from "../mesher.worker";
 import { resolvePlaneFrame } from "../sketchPlaneFrame";
 
@@ -48,38 +48,6 @@ const kabelbox = () =>
 const ticket412 = () =>
   JSON.parse(readFileSync(join(__dirname, "fixtures", "onshape-412-features.json"), "utf8"));
 
-function wrap(k: WasmKernel): ImportKernel & { raw: WasmKernel } {
-  return {
-    raw: k,
-    addSketch: (planeQuery: string, subCalls: SketchSubCall[]) =>
-      k.addSketch(
-        planeQuery,
-        JSON.stringify(
-          subCalls.map((c, i) => ({ type: c.type, id: String(i + 1), params: c.params })),
-        ),
-      ),
-    addFeatureCall: (type: string, paramsJson: string) => k.addFeatureCall(type, paramsJson),
-    resolveQuery: (q: string) => {
-      const parsed = JSON.parse(k.resolveQuery(q)) as unknown;
-      return Array.isArray(parsed) ? (parsed as any[]) : [];
-    },
-    // The geometry readers the end-condition translation measures against —
-    // the same ones the app hands the importer.
-    sceneAabb: () => JSON.parse(k.sceneAabb()),
-    bodyCount: () => k.bodyCount(),
-    bodyBrepFaces: (i: number) => JSON.parse(k.bodyBrepFaces(i)),
-    bodyPlacement: (i: number) => JSON.parse(k.bodyPlacement(i)),
-    regionQueryAtPoint: (sketchId: number, u: number, v: number) =>
-      k.regionQueryAtPoint(sketchId, u, v),
-    // The imprint-face list (#412) — ranks candidate faces by area when an
-    // Onshape region selection is resolved to an atomic face.
-    listSketchRegions: (sketchId: number, resolution: number) =>
-      k.listSketchRegions(sketchId, resolution),
-    // Exercise the #410 batch meshing deferral end-to-end: the SDF verification
-    // below then proves the deferred-mesh result is geometrically identical.
-    setSyncMeshing: (enabled: boolean) => k.setSyncMeshing(enabled),
-  };
-}
 
 interface FeatureCall {
   id: string | number;
@@ -149,11 +117,11 @@ function frameKernel(k: WasmKernel) {
 describe("Onshape import — Kabelbox end-to-end (real kernel)", () => {
   // The import weaves the body after every feature (the uniqueness gate),
   // so it is the expensive part — run it ONCE for all three assertions.
-  let kernel: ImportKernel & { raw: WasmKernel };
+  let kernel: SuiteKernel;
   let result: Awaited<ReturnType<typeof importOnshapeFeatures>>;
 
   beforeAll(async () => {
-    kernel = wrap(new WasmKernel());
+    kernel = wrapImportKernel(new WasmKernel());
     result = await importOnshapeFeatures(kabelbox(), kernel);
   }, 180_000);
 
@@ -255,11 +223,11 @@ describe("Onshape import — #412 imprint region selection (real kernel)", () =>
     emptySpot: [250, -2200, 1500] as [number, number, number],
   };
 
-  let kernel: ImportKernel & { raw: WasmKernel };
+  let kernel: SuiteKernel;
   let result: Awaited<ReturnType<typeof importOnshapeFeatures>>;
 
   beforeAll(async () => {
-    kernel = wrap(new WasmKernel());
+    kernel = wrapImportKernel(new WasmKernel());
     result = await importOnshapeFeatures(ticket412(), kernel);
   }, 120_000);
 

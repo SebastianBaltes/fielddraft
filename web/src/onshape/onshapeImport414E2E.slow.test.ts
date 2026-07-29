@@ -20,7 +20,7 @@ import { join } from "node:path";
 
 import initWasm, { Kernel as WasmKernel } from "../wasm/fielddraft_kernel";
 import { importOnshapeFeatures, type ImportKernel } from "./onshapeImport";
-import type { SketchSubCall } from "./onshapeSketch";
+import { wrapImportKernel, type SuiteKernel } from "./importKernelDouble";
 import type { MesherRebuildRequest } from "../mesher.worker";
 
 const wasmDir = join(__dirname, "..", "wasm");
@@ -57,32 +57,6 @@ const GROUND_TRUTH = {
   z: [-50.0, 50.0],
 };
 
-function wrap(k: WasmKernel): ImportKernel & { raw: WasmKernel } {
-  return {
-    raw: k,
-    addSketch: (planeQuery: string, subCalls: SketchSubCall[]) =>
-      k.addSketch(
-        planeQuery,
-        JSON.stringify(
-          subCalls.map((c, i) => ({ type: c.type, id: String(i + 1), params: c.params })),
-        ),
-      ),
-    addFeatureCall: (type: string, paramsJson: string) => k.addFeatureCall(type, paramsJson),
-    resolveQuery: (q: string) => {
-      const parsed = JSON.parse(k.resolveQuery(q)) as unknown;
-      return Array.isArray(parsed) ? (parsed as any[]) : [];
-    },
-    sceneAabb: () => JSON.parse(k.sceneAabb()),
-    bodyCount: () => k.bodyCount(),
-    bodyBrepFaces: (i: number) => JSON.parse(k.bodyBrepFaces(i)),
-    bodyPlacement: (i: number) => JSON.parse(k.bodyPlacement(i)),
-    regionQueryAtPoint: (sketchId: number, u: number, v: number) =>
-      k.regionQueryAtPoint(sketchId, u, v),
-    listSketchRegions: (sketchId: number, resolution: number) =>
-      k.listSketchRegions(sketchId, resolution),
-    setSyncMeshing: (enabled: boolean) => k.setSyncMeshing(enabled),
-  };
-}
 
 interface FeatureCall {
   id: string | number;
@@ -131,11 +105,11 @@ function meshAabb(k: WasmKernel, i: number): { min: number[]; max: number[] } {
 }
 
 describe("Onshape import — #414 against the Onshape ground truth", () => {
-  let kernel: ImportKernel & { raw: WasmKernel };
+  let kernel: SuiteKernel;
   let result: Awaited<ReturnType<typeof importOnshapeFeatures>>;
 
   beforeAll(async () => {
-    kernel = wrap(new WasmKernel());
+    kernel = wrapImportKernel(new WasmKernel());
     result = await importOnshapeFeatures(ticket414(), kernel, {
       sketches3d: sketches3d() as any,
     });
@@ -241,11 +215,11 @@ describe("Onshape import — #414 against the Onshape ground truth", () => {
  * the ground-truth AABB; it asserts what a chamfer must do to a solid.
  */
 describe("Onshape import — #414 chamfer end-to-end (real kernel)", () => {
-  let kernel: ImportKernel & { raw: WasmKernel };
+  let kernel: SuiteKernel;
   let result: Awaited<ReturnType<typeof importOnshapeFeatures>>;
 
   beforeAll(async () => {
-    kernel = wrap(new WasmKernel());
+    kernel = wrapImportKernel(new WasmKernel());
     delete (kernel as Partial<ImportKernel>).regionQueryAtPoint;
     delete (kernel as Partial<ImportKernel>).listSketchRegions;
     result = await importOnshapeFeatures(ticket414(), kernel, {
