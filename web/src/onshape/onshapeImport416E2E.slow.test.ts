@@ -25,7 +25,12 @@ import { join } from "node:path";
 
 import initWasm, { Kernel as WasmKernel } from "../wasm/fielddraft_kernel";
 import { importOnshapeFeatures } from "./onshapeImport";
-import { wrapImportKernel, type SuiteKernel } from "./importKernelDouble";
+import {
+  wrapImportKernel,
+  regenErrors,
+  regenCensus,
+  type SuiteKernel,
+} from "./importKernelDouble";
 import type { MesherRebuildRequest } from "../mesher.worker";
 
 const wasmDir = join(__dirname, "..", "wasm");
@@ -121,14 +126,6 @@ interface FeatureCall {
 
 const callsOf = (k: WasmKernel): FeatureCall[] =>
   JSON.parse(k.toJson()).feature_calls as FeatureCall[];
-
-/** Per-feature regeneration errors, keyed by feature id. */
-function regenErrors(k: WasmKernel): Map<string, string> {
-  const rows = JSON.parse(k.listFeatures()) as { id: string | number; error?: string | null }[];
-  const out = new Map<string, string>();
-  for (const r of rows) if (r.error) out.set(String(r.id), r.error);
-  return out;
-}
 
 /** Replay of `mesher.worker.ts`'s `handleRebuild` — the store→worker path that
  *  decides whether the user sees anything at all (the #412 lesson: structure
@@ -259,6 +256,36 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
       "Fillet 2",
       "Fillet 5",
     ]);
+  });
+
+  /**
+   * The SECOND failure surface — the one this document had all along and no
+   * suite asked about until #449.
+   *
+   * The census above says what the importer refused to WRITE. This says what
+   * the KERNEL refused to BUILD out of what was written, and the two are
+   * disjoint: `Chamfer 1` passes the import clean (it is not in the list
+   * above) and both of the chamfer calls it writes are then rejected at
+   * regeneration. Nothing in `result.errors` mentions it, and nothing here
+   * did either — which is how a plainly CONVEX outer edge could be reported
+   * as concave for three tickets running.
+   *
+   * TWO entries, one per call: Onshape names three edges on `Chamfer 1` and
+   * the importer resolves them to two distinguishable queries (it says so in
+   * its warnings). The label comes from `result.idMap` for the first and is
+   * carried to the second, which is why both read `Chamfer 1`.
+   *
+   * The message is pinned by the phrase that carries the whole finding. The
+   * edge is convex; the 5 mm bevel simply does not fit on a 3 mm plate, and
+   * the gate used to call that „KONKAV" (v0.47.2, `EdgeCutterReject`).
+   */
+  it("loses both of `Chamfer 1`'s cutters at REGENERATION, not at import (#449)", () => {
+    const census = regenCensus(kernel.raw, result, ticket416());
+    expect(census.map((c) => c.name)).toEqual(["Chamfer 1", "Chamfer 1"]);
+    for (const c of census) {
+      expect(c.error).toContain("ist größer als das Material an dieser Kante");
+      expect(c.error, "the gate must no longer call this edge concave").not.toContain("KONKAV");
+    }
   });
 
   /**

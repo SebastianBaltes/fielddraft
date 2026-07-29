@@ -25,7 +25,12 @@ import { join } from "node:path";
 
 import initWasm, { Kernel as WasmKernel } from "../wasm/fielddraft_kernel";
 import { importOnshapeFeatures, type ImportKernel } from "./onshapeImport";
-import { wrapImportKernel, type SuiteKernel } from "./importKernelDouble";
+import {
+  wrapImportKernel,
+  regenErrors,
+  regenCensus,
+  type SuiteKernel,
+} from "./importKernelDouble";
 import type { MesherRebuildRequest } from "../mesher.worker";
 
 const wasmDir = join(__dirname, "..", "wasm");
@@ -79,14 +84,6 @@ interface FeatureCall {
 const callsOf = (k: WasmKernel): FeatureCall[] =>
   JSON.parse(k.toJson()).feature_calls as FeatureCall[];
 
-/** Per-feature regeneration errors, keyed by feature id. */
-function regenErrors(k: WasmKernel): Map<string, string> {
-  const rows = JSON.parse(k.listFeatures()) as { id: string | number; error?: string | null }[];
-  const out = new Map<string, string>();
-  for (const r of rows) if (r.error) out.set(String(r.id), r.error);
-  return out;
-}
-
 /** Replay of `mesher.worker.ts`'s `handleRebuild` — the store→worker path that
  *  decides whether the user sees anything at all (see the #412 E2E test). */
 function replayMesherWorker(msg: MesherRebuildRequest): WasmKernel {
@@ -129,6 +126,21 @@ describe("Onshape import — #414 against the Onshape ground truth", () => {
 
   it("builds ONE solid, as Onshape does (part JHD)", () => {
     expect(kernel.raw.bodyCount(), result.errors.join(" | ")).toBe(GROUND_TRUTH.parts);
+  });
+
+  /**
+   * The SECOND failure surface, pinned in both directions (#449).
+   *
+   * `result.errors` says what the importer refused to WRITE; this says what
+   * the KERNEL refused to BUILD out of what was written, and until #449 no
+   * suite asked for the whole list — only ever for one named feature at a
+   * time. The two surfaces are disjoint, which is how #416's two rejected
+   * chamfers stayed invisible for three tickets.
+   *
+   * EMPTY here, measured.
+   */
+  it("regenerates EVERY feature it wrote (#449)", () => {
+    expect(regenCensus(kernel.raw, result, ticket414())).toEqual([]);
   });
 
   it("matches the ground-truth extent along Z", () => {

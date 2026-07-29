@@ -26,7 +26,12 @@ import { join } from "node:path";
 
 import initWasm, { Kernel as WasmKernel } from "../wasm/fielddraft_kernel";
 import { importOnshapeFeatures } from "./onshapeImport";
-import { wrapImportKernel, type SuiteKernel } from "./importKernelDouble";
+import {
+  wrapImportKernel,
+  regenErrors,
+  regenCensus,
+  type SuiteKernel,
+} from "./importKernelDouble";
 import type { MesherRebuildRequest } from "../mesher.worker";
 import { resolvePlaneFrame } from "../sketchPlaneFrame";
 
@@ -57,14 +62,6 @@ interface FeatureCall {
 
 const sketchCalls = (k: WasmKernel): FeatureCall[] =>
   (JSON.parse(k.toJson()).feature_calls as FeatureCall[]).filter((c) => c.type === "sketch");
-
-/** Per-feature regeneration errors, keyed by feature id. */
-function regenErrors(k: WasmKernel): Map<string, string> {
-  const rows = JSON.parse(k.listFeatures()) as { id: string | number; error?: string | null }[];
-  const out = new Map<string, string>();
-  for (const r of rows) if (r.error) out.set(String(r.id), r.error);
-  return out;
-}
 
 /**
  * Replay of `mesher.worker.ts`'s `handleRebuild` on a fresh kernel: the
@@ -142,6 +139,21 @@ describe("Onshape import — Kabelbox end-to-end (real kernel)", () => {
     expect(planes.filter((p) => p.startsWith("qCreatedBy(origin_plane_")).length).toBe(2);
     expect(planes.filter((p) => /qCreatedBy\(\d+, CAP_/.test(p)).length).toBe(2);
     expect(planes.filter((p) => p.includes("qWall(")).length).toBe(3);
+  });
+
+  /**
+   * The SECOND failure surface, pinned in both directions (#449).
+   *
+   * `result.errors` says what the importer refused to WRITE; this says what
+   * the KERNEL refused to BUILD out of what was written, and until #449 no
+   * suite asked for the whole list — only ever for one named feature at a
+   * time. The two surfaces are disjoint, which is how #416's two rejected
+   * chamfers stayed invisible for three tickets.
+   *
+   * EMPTY here, measured.
+   */
+  it("regenerates EVERY feature it wrote (#449)", () => {
+    expect(regenCensus(kernel.raw, result, kabelbox())).toEqual([]);
   });
 
   it("places a sketch on a SIDE of the rounded base — the tangential-seam payoff", () => {
@@ -230,6 +242,21 @@ describe("Onshape import — #412 imprint region selection (real kernel)", () =>
     kernel = wrapImportKernel(new WasmKernel());
     result = await importOnshapeFeatures(ticket412(), kernel);
   }, 120_000);
+
+  /**
+   * The SECOND failure surface, pinned in both directions (#449).
+   *
+   * `result.errors` says what the importer refused to WRITE; this says what
+   * the KERNEL refused to BUILD out of what was written, and until #449 no
+   * suite asked for the whole list — only ever for one named feature at a
+   * time. The two surfaces are disjoint, which is how #416's two rejected
+   * chamfers stayed invisible for three tickets.
+   *
+   * EMPTY here, measured.
+   */
+  it("regenerates EVERY feature it wrote (#449)", () => {
+    expect(regenCensus(kernel.raw, result, ticket412())).toEqual([]);
+  });
 
   it("resolves the profile to the three plate faces Onshape really extrudes", () => {
     const extrude = (JSON.parse(kernel.raw.toJson()).feature_calls as FeatureCall[]).find(

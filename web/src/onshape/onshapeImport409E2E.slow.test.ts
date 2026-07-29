@@ -29,7 +29,7 @@ import { join } from "node:path";
 
 import initWasm, { Kernel as WasmKernel } from "../wasm/fielddraft_kernel";
 import { importOnshapeFeatures } from "./onshapeImport";
-import { wrapImportKernel } from "./importKernelDouble";
+import { wrapImportKernel, regenCensus } from "./importKernelDouble";
 
 const wasmDir = join(__dirname, "..", "wasm");
 
@@ -173,6 +173,26 @@ describe("#409 shelving unit", () => {
     // per feature (a hole with three unresolvable positions) are one gap.
     const failed = [...new Set(result.errors.map((e) => e.split(":")[0]))].sort();
     expect(failed, `import errors:\n${result.errors.join("\n")}`).toEqual(KNOWN_GAPS);
+  }, 900_000);
+
+  /**
+   * The SECOND failure surface, pinned in both directions (#449).
+   *
+   * The census above says what the importer refused to WRITE. This says what
+   * the KERNEL refused to BUILD out of what was written, and until #449 no
+   * suite asked. The two are disjoint: a feature can pass the import clean and
+   * still be dropped at regeneration without one word of it appearing in
+   * `result.errors`. That is how #416's two rejected chamfers stayed invisible
+   * for three tickets.
+   *
+   * EMPTY for this document, measured: all 29 features the import writes
+   * regenerate. Whatever this document loses, it loses in the importer.
+   */
+  it("regenerates EVERY feature it wrote (#449)", async () => {
+    const { kernel, result } = await importFixture();
+    expect(
+      regenCensus(kernel.raw, result, fixture("onshape-409-features.json")),
+    ).toEqual([]);
   }, 900_000);
 
   it("builds the spine it can, replication features included", async () => {

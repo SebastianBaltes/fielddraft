@@ -44,6 +44,79 @@ import type { SketchSubCall } from "./onshapeSketch";
 /** {@link ImportKernel} with nothing left optional — the surface the app has. */
 export type FullImportKernel = Required<ImportKernel>;
 
+/** Per-feature regeneration errors, keyed by the kernel's feature id — the
+ *  spot-check form, for asserting that ONE named feature came out clean.
+ *  {@link regenCensus} is the whole-document form. */
+export function regenErrors(k: WasmKernel): Map<string, string> {
+  const rows = JSON.parse(k.listFeatures()) as { id: string | number; error?: string | null }[];
+  const out = new Map<string, string>();
+  for (const r of rows) if (r.error) out.set(String(r.id), r.error);
+  return out;
+}
+
+/** One feature the kernel REFUSED TO BUILD, as the census reports it. */
+export interface RegenFailure {
+  /** The kernel's own feature id. */
+  id: string;
+  /** The ONSHAPE feature's name (`"Chamfer 1"`), which is what the user sees
+   *  in the tree — or the kernel's internal label when no Onshape feature maps
+   *  to this id (one Onshape feature can write several kernel calls). */
+  name: string;
+  /** The kernel's message, verbatim. */
+  error: string;
+}
+
+/**
+ * Every feature that failed to REGENERATE, labelled by its Onshape name.
+ *
+ * The two failure surfaces of an import are disjoint, and until #449 the
+ * suites only pinned one of them. `result.errors` says what the importer
+ * refused to WRITE — an unresolvable edge query, a plane that binds nothing.
+ * THIS says what the kernel refused to BUILD out of what was written, and a
+ * feature can sail through the first and die in the second: #416 writes both
+ * of `Chamfer 1`'s cutters and the kernel rejects both, with not one word of
+ * it in `result.errors`. That whole class was invisible here — which is how a
+ * plainly convex outer edge could be reported as concave for three tickets
+ * without any suite noticing (#449).
+ *
+ * `idMap` covers Onshape featureId → the FIRST kernel feature written for it.
+ * Where one Onshape feature writes several (three Onshape edges collapsing to
+ * two chamfer calls, say), the later ones carry no map entry, so the label
+ * falls back to the nearest PRECEDING mapped feature — which is the Onshape
+ * feature that wrote them, since the importer emits a feature's calls
+ * contiguously and in order.
+ */
+export function regenCensus(
+  k: WasmKernel,
+  result: { idMap: Record<string, number> },
+  doc: { features: any[] },
+): RegenFailure[] {
+  const onshapeName = new Map<number, string>();
+  const nameOf = new Map<string, string>();
+  for (const f of doc.features) {
+    const m = (f as any).message ?? f;
+    if (m.featureId) nameOf.set(m.featureId, m.name ?? m.featureId);
+  }
+  for (const [osId, fdId] of Object.entries(result.idMap)) {
+    const n = nameOf.get(osId);
+    if (n !== undefined) onshapeName.set(fdId, n);
+  }
+  const rows = JSON.parse(k.listFeatures()) as {
+    id: string | number;
+    name?: string;
+    error?: string | null;
+  }[];
+  const out: RegenFailure[] = [];
+  let carried: string | null = null;
+  for (const r of rows) {
+    const mapped = onshapeName.get(Number(r.id));
+    if (mapped !== undefined) carried = mapped;
+    if (!r.error) continue;
+    out.push({ id: String(r.id), name: carried ?? r.name ?? String(r.id), error: r.error });
+  }
+  return out;
+}
+
 /** Fails to compile unless `T` is exactly `true`. */
 type Assert<T extends true> = T;
 

@@ -43,7 +43,12 @@ import { join } from "node:path";
 
 import initWasm, { Kernel as WasmKernel } from "../wasm/fielddraft_kernel";
 import { importOnshapeFeatures } from "./onshapeImport";
-import { wrapImportKernel, type SuiteKernel } from "./importKernelDouble";
+import {
+  wrapImportKernel,
+  regenErrors,
+  regenCensus,
+  type SuiteKernel,
+} from "./importKernelDouble";
 import type { MesherRebuildRequest } from "../mesher.worker";
 
 const wasmDir = join(__dirname, "..", "wasm");
@@ -132,14 +137,6 @@ const featureOfType = (doc: { features: any[] }, type: string): any =>
 const paramOf = (feat: any, id: string): any =>
   feat.parameters.map((p: any) => p.message ?? p).find((p: any) => p.parameterId === id);
 
-
-/** Per-feature regeneration errors, keyed by feature id. */
-function regenErrors(k: WasmKernel): Map<string, string> {
-  const rows = JSON.parse(k.listFeatures()) as { id: string | number; error?: string | null }[];
-  const out = new Map<string, string>();
-  for (const r of rows) if (r.error) out.set(String(r.id), r.error);
-  return out;
-}
 
 interface KernelVar {
   name: string;
@@ -230,6 +227,21 @@ describe("#415 — the Boolean the real kernel regenerates", () => {
 
     const errors = regenErrors(kernel.raw);
     expect(errors.get(String(booleans[0].id)), "boolean regen").toBeUndefined();
+  });
+
+  /**
+   * The SECOND failure surface, pinned in both directions (#449) — the whole
+   * document, where the line above spot-checks the one Boolean.
+   *
+   * `result.errors` says what the importer refused to WRITE; this says what
+   * the KERNEL refused to BUILD out of what was written, and until #449 no
+   * suite asked for the whole list. The two are disjoint, which is how #416's
+   * two rejected chamfers stayed invisible for three tickets.
+   *
+   * EMPTY here, measured: all 11 features regenerate.
+   */
+  it("regenerates EVERY feature it wrote (#449)", () => {
+    expect(regenCensus(kernel.raw, result, ticket415())).toEqual([]);
   });
 
   it("translates `thicken` without a single complaint of its own", () => {

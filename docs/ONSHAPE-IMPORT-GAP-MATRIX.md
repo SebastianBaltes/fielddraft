@@ -2640,3 +2640,177 @@ Spur markiert:
   Luecke also auch nicht; es ist eine ungepinnte Fehlerklasse.
 
 Beides liegt als **#449** ab, nicht hier weiterverfolgt.
+
+## Update 2026-07-29 (10) — die Ground Truth war die falsche Box (#449, v0.47.2)
+
+Ticket #449 hiess „#416-Import: y max bleibt 0,63 mm zu kurz" und brachte zwei
+Spuren mit (eine verlorene Sketch-Region; ein falsches KONKAV-Urteil). Die
+erste Spur ist gegenstandslos, die zweite bestaetigt sich — aber die
+eigentliche Antwort liegt vor beiden:
+
+**`GET …/partid/{id}/boundingboxes` liefert nicht den Umriss der Geometrie,
+sondern Onshapes LOSE Box.** Die 0,63 mm haben nie gefehlt; die Vergleichszahl
+war 0,63 mm zu gross.
+
+### 1. Die Messung, drei unabhaengige Onshape-Antworten
+
+`evBox3d` nimmt ein `tight`-Flag. Mit `tight: false` umschliesst es die
+Kontrollnetze der Flaechen statt des getrimmten Koerpers, und genau das
+liefert der REST-Endpunkt. Beide Boxen in EINEM FeatureScript-Aufruf ueber
+`qBodyType(qEverything(EntityType.BODY), BodyType.SOLID)`, #416:
+
+| | x min | y min | z min | x max | y max | z max |
+|---|---:|---:|---:|---:|---:|---:|
+| lose (= REST-Endpunkt) | −70,0501 | −26,7740 | −73,0819 | 3,0740 | **7,1292** | 35,0000 |
+| **TIGHT** | −70,0001 | −26,7000 | −73,0013 | 3,0000 | **6,5000** | 35,0000 |
+| Tessellierung (0,05 mm) | −70,0002 | −26,7000 | −73,0013 | 3,0000 | **6,5000** | 35,0000 |
+| **FieldDraft** | −70,0000 | −26,7000 | −73,1688 | 3,0000 | **6,5000** | 35,0000 |
+
+Die Tessellierung (68 Flaechen, 43 993 Facetten) schuldet weder der einen noch
+der anderen Box etwas und trifft die tight-Box auf 0,0001 mm in allen sechs
+Grenzen. Damit ist die Sache entschieden, nicht argumentiert.
+
+FieldDraft trifft **fuenf der sechs Grenzen auf ≤ 0,0001 mm**. Die
+SDF-Bisektion aus #447/#448, die immer wieder die Deckflaeche BEI y = 6,5 fand,
+hatte die ganze Zeit recht.
+
+Zensus ueber alle Fixture-Dokumente, die noch erreichbar sind:
+
+| Dokument | Schlupf lose gegen tight |
+|---|---|
+| #409 (33 Koerper) | **keiner**, alle sechs Grenzen identisch — das Dokument traegt keine Verrundungen |
+| #414 | x min 0,0547 mm · y min 0,1285 mm |
+| #415 | z max 0,3103 mm |
+| #416 | x min 0,050 · y min 0,074 · z min 0,081 · x max 0,074 · **y max 0,629** mm |
+
+Der Schlupf sitzt auf verrundeten und Spline-Flaechen; wo keine sind, gibt es
+keinen. Er ist **pro Grenze** verschieden gross, also nicht wegtolerierbar.
+
+### 2. Was das an Pins bewegt hat, einzeln
+
+* **#416** `GROUND_TRUTH` lose → tight (alle sechs Werte). `y max` wandert in
+  den bestehenden AABB-Test; die Toleranz der fuenf exakten Grenzen faellt von
+  0,5 mm auf 0,005 mm, weil ein Gate, das 100× weiter ist als die gemessene
+  Groesse, exakt nicht von beinahe unterscheiden kann.
+* **#416** `it.fails("matches the ground-truth AABB")` **entfaellt**.
+* **#414** `GROUND_TRUTH` x min −65,0547 → −65,0000, y min −70,1285 → −70,0000.
+  Damit faellt auch dort `it.fails("matches the FULL ground-truth AABB")`: das
+  Dokument importiert **exakt** auf Onshapes tight-Box, alle sechs Grenzen. Der
+  Kommentar an diesem Pin behauptete einen Restfehler von „~2,8 mm in x und y"
+  — der ist laengst weg, und niemand hat es gemerkt, weil der Pin aus einem
+  ANDEREN Grund weiter rot war. Genau das ist die Gefahr eines `it.fails`,
+  dessen Begruendung nicht nachgemessen wird.
+* **#415** unveraendert. Die Datei hatte den Schlupf (0,31 mm in z max) schon
+  von Hand gegen die Tessellierung korrigiert, ohne den Mechanismus zu kennen —
+  die Vermutung dort („der Endpunkt ist bei Blend-/Spline-Flaechen
+  approximativ") war richtig. Nur der Kopfkommentar benennt jetzt die Ursache.
+* **#409** unveraendert, nachgemessen.
+* **#419** liess sich **nicht** nachmessen: die Dokument-ID steht nirgends im
+  Repo (der Suiten-Kopf schreibt woertlich `documents/…/e/…`). Ihre Ground
+  Truth stammt aus demselben Endpunkt und ist damit potenziell ebenfalls lose.
+  Ihre Grenzen sind auf 0,1 mm gerundet und werden mit 0,5 mm Toleranz geprueft,
+  der Schlupf der anderen Dokumente liegt darunter — die Pins stehen also
+  vermutlich, aber das ist ein Argument, keine Messung. **Offener Punkt:** die
+  Dokument-IDs gehoeren in die Suiten-Koepfe, sonst ist keine Ground Truth
+  reproduzierbar.
+
+### 3. Was WIRKLICH offen bleibt: z min, 0,1675 mm zu weit
+
+Die einzige echte Abweichung von #416, und sie zeigt in die andere Richtung:
+wir reichen mit z min auf −73,1688, Onshape auf −73,0013 — wir sind
+**0,1675 mm ZU WEIT**, nicht zu kurz. Kein Losigkeits-Artefakt: die lose Box
+liegt mit −73,0819 noch diesseits unseres Wertes.
+
+`sceneAabb` ist dokumentiert lose (`CsgNode::aabb`, „good enough to bound the
+mesher grid"; `Difference` gibt den linken Operanden zurueck), taugt also
+allein nicht als Beleg. Die SDF schon: bei z = −73,1 steht Material ueber
+x ∈ [2,5; 3,0], y ∈ [−12,5; −7,75] (0,25-mm-Raster), und die Bisektion dieser
+Saeule legt die Oberflaeche auf −73,168. Das ist die **Spitze von `Extrude 9`s
+8,17-mm-Keil** — dasselbe Feature, das diese Suite schon als Treiber von z min
+kennt (unterdrueckt man es, springt die Grenze auf −65). 0,17 mm
+Keilspitze auf einem 108 mm langen Teil ist ein Bruchteil eines Grades in der
+Ausrichtung oder Endbedingung des Keils, kein fehlendes Feature. Gepinnt als
+gewoehnliches `it` auf die gemessene Zahl.
+
+### 4. Spur 1 (verlorene Sketch-Region): gegenstandslos, nicht widerlegt
+
+Die Warnung steht unveraendert: `Extrude 1` bildet vier Onshape-Regionen auf
+drei atomare Flaechen ab, drei davon nennen Sketch-Kurven, die dieser Sketch
+nicht enthaelt (Update (4) §2). Sie **kann** die y-max-Luecke aber nicht
+erklaeren, weil es keine gibt. Ob eine der vier Regionen inhaltlich verloren
+geht, bleibt die offene Frage aus Update (4) — sie kostet dieses Dokument
+nachweislich keine Ausdehnung (fuenf von sechs Grenzen exakt), was ein
+Innenliegen nicht ausschliesst.
+
+### 5. Der Fehler-Zensus sah nur die HAELFTE
+
+Die Suiten pinnten `result.errors` — was der Importer zu SCHREIBEN abgelehnt
+hat. Was der Kernel aus dem Geschriebenen zu BAUEN ablehnt, hat keine einzige
+Suite als Ganzes abgefragt; vier hatten einen privaten Helfer, der immer nur
+EIN benanntes Feature stichprobenartig prueft. Die beiden Flaechen sind
+disjunkt — `Chamfer 1` von #416 kommt sauber durch den Import und beide
+Chamfer-Aufrufe, die es schreibt, werden danach abgelehnt, ohne ein Wort davon
+in `result.errors`.
+
+Neu: `regenCensus()` in `importKernelDouble.ts`, beschriftet ueber
+`result.idMap` mit dem ONSHAPE-Namen. Die vier privaten Kopien sind durch
+`regenErrors()` aus derselben Datei ersetzt. Gemessene Pins, alle sechs Suiten:
+
+| Suite | Features | Regen-Fehler |
+|---|---:|---|
+| E2E Kabelbox | 19 | 0 |
+| E2E #412 | 2 | 0 |
+| #409 | 29 | 0 |
+| #414 | 15 | 0 |
+| #415 | 11 | 0 |
+| #416 | 29 | **2** — `Chamfer 1`, beide Aufrufe |
+| #419 | 66 | **2** — `Extrude 2`, `Extrude 15` |
+
+**Neuer Befund (#419):** `Extrude 2` und `Extrude 15` werden geschrieben,
+angenommen und dann vom Kernel abgelehnt: „sketch has no closed regions to
+extrude". Beide stehen NICHT in `KNOWN_GAPS` dieser Suite, beide sind ueber
+`result.idMap` direkt beschriftet (nicht abgeleitet). Nicht diagnostiziert.
+
+### 6. Das KONKAV-Urteil war falsch — gemessen, und repariert (v0.47.2)
+
+`edge_cutter_frame` hat ZWEI Gruende, einen harten Cutter abzulehnen, und hat
+beide `Concave` genannt:
+
+1. die zwei MIXED-Quadranten-Sonden — sie lesen die Form des Dihedrals;
+2. `node.sdf(inner) > −0,5·reach` — der Rollkugel-Mittelpunkt liegt `reach`
+   hinter BEIDEN Flaechen und damit ausserhalb des Koerpers.
+
+(2) sagt nichts ueber die Kante, sondern etwas ueber die GROESSE des Cutters.
+Am selben, unveraenderten konvexen Aussenkanten-Dihedral gemessen
+(`f449_edge_cutter_gate_separates_concave_from_oversized`):
+
+| Geometrie | 0,5 mm | 1 mm | 1,5 mm | 2 mm | 3 mm | 5 mm |
+|---|---|---|---|---|---|---|
+| 3 mm dicke Platte | OK | OK | OK | OK | **abgelehnt** | **abgelehnt** |
+| 20 mm dicke Platte | OK | OK | OK | OK | OK | OK |
+| echte Innenkante | **abgelehnt** | **abgelehnt** | — | — | — | **abgelehnt** |
+
+Ein Urteil, das bei unveraenderter Geometrie mit `reach` kippt, ist kein
+Konvexitaets-Urteil. Die Konvexitaets-Sonde fragt jetzt ZUERST (sie misst nur
+die Ecke innerhalb `eps`, nicht wie weit das Material dahinter reicht), die
+Passt-der-Cutter-Sonde danach, und ihr Ergebnis heisst `LargerThanMaterial`.
+
+Das Gate **entscheidet bitgleich wie vorher** — dieselbe Menge wird angenommen,
+dieselbe abgelehnt, nur der Grund stimmt. Die Schutz-Eigenschaft (Gate-Fail →
+kein harter Cutter, nie falsche Geometrie) bleibt unveraendert, `id_hash`es
+bewegen sich nicht, also kein `NAMING_SCHEMA_VERSION`-Bump.
+
+Am echten Dokument: #416s `Chamfer 1` ist eine 5-mm-Fase auf einer **3 mm
+dicken** Platte (Nachbarnormalen (−1, 0, 0) und (0, 0, 1) — eine gewoehnliche
+Aussenkante). Meldung vorher „sie ist KONKAV", jetzt „die Fase (5 mm) ist
+groesser als das Material an dieser Kante". Koerperzahl und Fehlerzahl
+unveraendert; das Feature geht weiterhin nicht (P3 in
+`docs/FILLET-CUTTER-PLAN.md` bleibt offen und ist NICHT dieser Fall).
+
+### 7. Methodik-Lehre
+
+Der bisherige Merksatz war „Ground Truth kommt von Onshape, nie von uns"
+(#412). Er reicht nicht: **Onshape beantwortet zwei verschiedene Fragen, und
+der bequemere Endpunkt beantwortet die falsche.** Fuer Ausdehnungen gilt ab
+jetzt `evBox3d(tight: true)` oder die Tessellierung, und ein Pin, dessen
+Begruendung nicht nachgemessen wird, verrottet auch dann, wenn er rot bleibt.

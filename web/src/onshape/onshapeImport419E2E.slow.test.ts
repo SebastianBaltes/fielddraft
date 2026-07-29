@@ -22,7 +22,7 @@ import { join } from "node:path";
 
 import initWasm, { Kernel as WasmKernel } from "../wasm/fielddraft_kernel";
 import { importOnshapeFeatures } from "./onshapeImport";
-import { wrapImportKernel } from "./importKernelDouble";
+import { wrapImportKernel, regenCensus } from "./importKernelDouble";
 
 const wasmDir = join(__dirname, "..", "wasm");
 
@@ -227,6 +227,29 @@ describe("#419 multi-part assembly", () => {
     // per feature (a hole with three unresolvable positions) are one gap.
     const failed = [...new Set(result.errors.map((e) => e.split(":")[0]))].sort();
     expect(failed, `import errors:\n${result.errors.join("\n")}`).toEqual(KNOWN_GAPS);
+  }, 900_000);
+
+  /**
+   * The SECOND failure surface, pinned in both directions (#449).
+   *
+   * The census above says what the importer refused to WRITE. This says what
+   * the KERNEL refused to BUILD out of what was written, and until #449 no
+   * suite asked. The two are disjoint — every name here passed the import
+   * clean — which is how #416's two rejected chamfers stayed invisible for
+   * three tickets.
+   *
+   * TWO features on this document, and neither appears in `KNOWN_GAPS`:
+   * `Extrude 2` and `Extrude 15` are written, accepted, and then refused by
+   * the kernel because the sketch they name carries no closed region. Both
+   * were found by introducing this pin, both are labelled from `result.idMap`
+   * directly (not inferred), and neither is diagnosed yet — see
+   * docs/ONSHAPE-IMPORT-GAP-MATRIX.md, Update (10).
+   */
+  it("loses exactly two features at REGENERATION, both to empty profiles (#449)", async () => {
+    const { kernel, result } = await importFixture();
+    const census = regenCensus(kernel.raw, result, fixture("onshape-419-features.json"));
+    expect(census.map((c) => c.name)).toEqual(["Extrude 2", "Extrude 15"]);
+    for (const c of census) expect(c.error).toContain("no closed regions to extrude");
   }, 900_000);
 
   it("builds the spine it can, every translator represented", async () => {
