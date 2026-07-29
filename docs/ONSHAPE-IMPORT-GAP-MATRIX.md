@@ -1635,3 +1635,125 @@ Reparatur. #419 importiert wieder in **37 s**, `Thicken 7` in 2,0 s statt 374 s.
    liegen nicht auf dem Rand des vereinigten Profils.
 3. **#416** ist aus Klasse A herausgemessen (Update 2026-07-27 (7)) und hat ein
    eigenes Ticket.
+
+---
+
+## Update 2026-07-29 (2) — koplanare Kappen sind EINE Ebene; die zwei `Thicken-7`-Waende sind ein Arrangement-Befund (#443, v0.43.2)
+
+### 1. `qCreatedBy(op, CAP_TOP)` bindet vier Kappen — gemessen, nicht geschaetzt
+
+Der Ebenen-Pfad des Importers verlangte genau eine Flaeche. Gemessen wurde,
+was die vier Treffer von `#419 Sketch 11` GEOMETRISCH sind, mitten in der
+Historie (also in dem Zustand, in dem der Importer die Query prueft):
+
+| Fläche | Normale (Welt) | Versatz d = n·p (mm) |
+|---|---|---:|
+| 4830837308608304756 | (−1,000000000; −0,000000181; −0,000000251) | 74,627293084 |
+| 16358552656622588677 | dieselbe auf 9 Nachkommastellen | 74,627294789 |
+| 9439523930927320982 | dieselbe auf 9 Nachkommastellen | 74,627291379 |
+| 2520495205232053287 | dieselbe auf 9 Nachkommastellen | 74,627293084 |
+
+Alle vier gehoeren zu Feature 39 und liegen im **selben Koerper** (11).
+Normalen-Streuung: unterhalb der neunten Nachkommastelle. Versatz-Streuung:
+**3,41e-6 mm**.
+
+Die Schwellen sind daher nicht geraten, sondern die zwei, mit denen derselbe
+Importer eine Ebene ohnehin beurteilt: `alignSketchFrame` nennt eine Ebene ab
+|1 − n·n₀| > 1e-6 „schief" und ab |Δd| > 1e-3 mm „daneben". Die gemessene
+Versatz-Streuung liegt **293-fach** unter der Offset-Schwelle, die
+Normalen-Streuung um Groessenordnungen unter der anderen. Antiparallel
+(n·n₀ ≈ −1) zaehlt NICHT als koplanar: geometrisch dieselbe Ebene, aber ein
+gespiegelter Sketch-Frame.
+
+**Gespeichert wird die kanonische Element-Query EINER dieser Flaechen**, nicht
+die Rollen-Query. Das ist kein Bequemlichkeits-Kurzschluss, sondern
+Determinismus: der Sketch-Frame hat seinen URSPRUNG im Schwerpunkt der
+aufgeloesten Flaeche. Kernel (`resolve_face_frame`: erste Flaeche des ersten
+passenden Koerpers) und Web-Spiegel (`resolvePlaneFrame`: erster Treffer ueber
+alle Koerper) muessen dieselbe waehlen, sonst laege der Sketch um den Abstand
+zweier Kappen-Schwerpunkte verschoben IN seiner Ebene. Eine Flaeche zu benennen
+macht die Wahl fuer beide Seiten identisch — dieselbe Form, die `thicken`
+ohnehin verlangt, und sie heilt ueber ihren Fingerprint.
+
+### 2. `Thicken 7`: die beiden Kurven liegen bei ONSHAPE auf dem Rand, bei uns nicht
+
+Zu messen war laut Ticket, welche Regionen Onshape fuer `Extrude 20` wirklich
+waehlt und wo die Kurven liegen. Beides ist offline aus der Fixture
+entscheidbar.
+
+**Onshape waehlt 14 Regionen** (nicht elf — elf ist unsere Abbildung davon).
+Zaehlt man die Rand-Stuecke **getrimmt** (Kurve + beide Trimm-Vertices, denn
+dieselbe lange Linie begrenzt ein Profil oft an mehreren getrennten
+Abschnitten), dann gilt: ein Stueck, das GENAU EINE gewaehlte Region nennt, ist
+Rand; eines, das zwei nennt, ist innen.
+
+| Kurve (Onshape-Id, unser Entity) | Stuecke | davon Rand |
+|---|---:|---:|
+| `fhLiiJlX79hL.0` (29) | 4 | **4** |
+| `VtFQu4lRFe6v.0` (11) | 5 | **3** |
+| `3HvpPu0qDC3j.0` (26) | 4 | 4 |
+| `1KZGONLBXaZf.0` (17) | 4 | 4 |
+
+Bei Onshape hat `Extrude 20` also auf ALLEN vier Kurven Wand. Bei uns nur auf
+zweien — und der Grund steht in unserer eigenen Anordnung.
+
+Die vier Kurven sind die vier Seiten EINES Rechtecks (38 × 38 mm,
+x ∈ [−35,989; 2,011], y ∈ [−9,95; 28,05] in Sketch-4-Koordinaten). Es liegt in
+einem zweiten, 1,5 mm groesseren Rechteck `Ut9pwxjnnLNt` (41 × 41 mm). Unser
+Imprint-Arrangement macht aus dem 1,5 mm breiten RING dazwischen **eine
+einzige** atomare Flaeche: Index 1, Flaecheninhalt **237,0 mm²** = 41² − 38².
+Und diese Ringflaeche ist der Seed von Onshapes Region 0, gehoert also zum
+Profil.
+
+Beidseitige Probe entlang jeder Kurve (±0,02 mm, 39 Stationen; Faces mit `*`
+sind im Profil):
+
+    Entity 29 (links):  1* | 2*, 8*, 10*      → beide Seiten im Profil, KEINE Wand
+    Entity 11 (oben):   1* | 10*, 8*, 2*      → beide Seiten im Profil, KEINE Wand
+    Entity 26 (unten):  2*, 4*, 5 | 1*        → Face 5 nicht gewaehlt → Wand
+    Entity 17 (rechts): 5, 2*, 9* | 1*        → Face 5 nicht gewaehlt → Wand
+
+Der Ring beruehrt also alle vier Innenkanten von aussen; weil er im Profil ist
+und die Innenflaechen auch, verschwinden die Kanten links und oben im Inneren
+der Vereinigung. Unten und rechts ueberlebt eine Wand nur, weil dort ein
+Stueck weit die nicht gewaehlte Flaeche 5 (4,8 mm²) anliegt.
+
+Onshape zerschneidet denselben Ring; seine Region 0 ist nur ein Teil davon
+(ihr Rand nennt drei Seiten des aeusseren Rechtecks und Stuecke NUR der
+Innen-Oberkante). Der Rest des Rings gehoert nicht zur Auswahl — deshalb
+bleiben dort die Innenkanten Rand.
+
+Dieselbe Groebe zeigt sich noch einmal in der Abbildung selbst: **14
+Onshape-Regionen → 11 unserer Flaechen**, mit drei Kollisionen (Face 6 ←
+Regionen 2 und 13, Face 7 ← 3 und 12, Face 13 ← 4 und 11) und **zwei
+entarteten Flaechen mit Flaecheninhalt 0** (Index 3 und 11) in unserer
+Anordnung. Kein `conflict`, kein `unknownCurve` — jede Region loest auf genau
+eine unserer Flaechen auf, es sind nur zu wenige.
+
+**Damit ist die Ursache NICHT im Importer.** Er darf den Ring weder weglassen
+(Onshapes Region 0 ist ausgewaehlt) noch aufteilen (unsere Anordnung hat dort
+nichts zu teilen). Was fehlt, ist die Imprint-artige Regionen-Subdivision im
+Sketch-Regionenmodell des Kernels, die diese Datei seit #412 unter „Offene
+Kernel-Arbeit" fuehrt: Flaechen an inneren Sehnen/Kurven wirklich trennen statt
+per SDF-Union-Flood-Fill zu fluten. Eigenes Ticket.
+
+### Zahlen, gemessen (Ende zu Ende, #419)
+
+| | vorher (v0.43.1) | nachher (v0.43.2) |
+|---|---:|---:|
+| Meldungen | 190 | **179** |
+| Feature-Namen in `KNOWN_GAPS` | 107 | **98** |
+| Koerper | 12 | **15** |
+| Import-Dauer | 37,1 s | **40,9 s** |
+
+Neu importierend: `Sketch 11`, `Sketch 12`, `Boolean 3`, `Extrude 5`,
+`Extrude 11`, `Extrude 14`, `Extrude 15`, `Extrude 45`, `Extrude 47`. Kein
+einziger Name kommt HINZU.
+
+### Offen
+
+1. **`Thicken 7`** (und alles, was am selben Ring haengt): Regionen-Subdivision
+   im Kernel, siehe oben. Solange sie fehlt, binden `qWall(31, 29)` und
+   `qWall(31, 11)` nichts.
+2. **#416** ist aus Klasse A herausgemessen (Update 2026-07-27 (7)) und hat ein
+   eigenes Ticket.

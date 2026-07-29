@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  faceWorldPlanes,
   planeBasisFromNormal,
   planeToWorld,
   rayToPlaneUv,
@@ -111,6 +112,35 @@ describe("sketchPlaneFrame (tickets yx6a/bxoo)", () => {
     const f = resolvePlaneFrame("qCreatedBy(origin_plane_xy)", kernelWith([]))!;
     expect(rayToPlaneUv([0, 0, 10], [1, 0, 0], f)).toBeNull();
     expect(rayToPlaneUv([0, 0, 10], [0, 0, 1], f)).toBeNull();
+  });
+
+  it("faceWorldPlanes reports normal + offset in WORLD space (#443)", () => {
+    // Ein Körper, um 90° um X gedreht und verschoben: nur so trennt der Test
+    // Weltebene von Körperebene. Zwei Flächen desselben Extrudes, koplanar in
+    // der Körper-Ebene z = 12,1 — die Frage, für die es die Funktion gibt.
+    const placement: Placement = {
+      translate: [5, 0, 0],
+      rotation: [Math.SQRT1_2, 0, 0, Math.SQRT1_2], // +90° um X
+      scale: [1, 1, 1],
+    };
+    const k = kernelWith(
+      [
+        face("a", 3, [0, 0, 12.1], [0, 0, 1]),
+        face("b", 3, [40, 0, 12.1], [0, 0, 1]),
+        face("c", 3, [0, 0, 0], [1, 0, 0]),
+      ],
+      placement,
+    );
+    const planes = faceWorldPlanes(["a", "b"], k);
+    expect(planes.size).toBe(2);
+    // +Z des Körpers zeigt nach −Y der Welt, der Versatz bleibt 12,1.
+    for (const h of ["a", "b"]) {
+      const p = planes.get(h)!;
+      expect(p.normal[1]).toBeCloseTo(-1, 6);
+      expect(p.offset).toBeCloseTo(12.1, 6);
+    }
+    // Unbekannte Hashes fehlen schlicht — der Aufrufer sieht das an der Größe.
+    expect(faceWorldPlanes(["a", "zzz"], k).size).toBe(1);
   });
 
   it("basis is orthonormal and right-handed for arbitrary normals", () => {

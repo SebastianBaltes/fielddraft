@@ -247,6 +247,118 @@ describe("loft import (#385 / #376 C-channel)", () => {
   });
 });
 
+/**
+ * Eine Ebenen-Query, die N **koplanare** Flächen bindet, ist keine
+ * Mehrdeutigkeit (#443). Onshape faltet koplanare Kappen desselben Extrudes zu
+ * EINER Fläche (ein `MERGE` zweier `CAP_FACE`s); FieldDraft verschmilzt nichts,
+ * also bindet dieselbe Query bei uns mehrere. Für eine EBENE ist das egal —
+ * solange alle Treffer wirklich dieselbe Ebene aufspannen.
+ */
+describe("Ebenen-Query auf koplanare Kappen (#443)", () => {
+  /** Kabelbox: Sketch 1 → Extrude 1 → Sketch 2 auf dessen Kappe. */
+  function capDoc() {
+    const feats = (kabelbox().features as any[]).map((f) => f.message ?? f);
+    const pick = (name: string) => JSON.parse(JSON.stringify(feats.find((f) => f.name === name)));
+    return { features: [pick("Sketch 1"), pick("Extrude 1"), pick("Sketch 2")] };
+  }
+
+  /** Ein Kernel-Double, dessen Kappen-Query MEHRERE Flächen bindet, mit frei
+   *  wählbarer Geometrie je Fläche — die Zahlen sind das, was der Importer
+   *  prüft. `geometry: false` lässt die B-Rep-Leser weg (Testumgebung ohne
+   *  Geometrie): dann darf gar nichts gefaltet werden. */
+  function multiCapKernel(
+    faces: { normalLocal: [number, number, number]; centroidLocal: [number, number, number] }[],
+    geometry = true,
+  ) {
+    const k = mockKernel() as ReturnType<typeof mockKernel> & Record<string, any>;
+    const brep = faces.map((f, i) => ({
+      faceIndex: i,
+      idHash: String(9000 + i),
+      query: `qFace(${9000 + i})`,
+      kind: "face" as const,
+      branchId: 2 * 4096,
+      featureId: 2,
+      surfaceKind: "plane" as const,
+      ...f,
+    }));
+    const real = k.resolveQuery.bind(k);
+    k.resolveQuery = (q: string) =>
+      q.includes("CAP_")
+        ? brep.map((f) => ({ kind: "face", idHash: f.idHash, query: f.query }))
+        : real(q);
+    if (geometry) {
+      k.bodyCount = () => 1;
+      k.bodyBrepFaces = () => brep;
+      k.bodyPlacement = () => ({
+        translate: [0, 0, 0] as [number, number, number],
+        rotation: [0, 0, 0, 1] as [number, number, number, number],
+        scale: [1, 1, 1] as [number, number, number],
+      });
+    }
+    return k;
+  }
+
+  const sketchCalls = (k: ReturnType<typeof mockKernel>) =>
+    k.calls.filter((c) => c.type === "sketch");
+
+  it("nimmt vier koplanare Kappen als EINE Ebene an", async () => {
+    // Die gemessenen #419-Zahlen: vier Deckflächen desselben Extrudes, Normalen
+    // identisch, Versatz-Streuung 3,4e-6 mm.
+    const kernel = multiCapKernel([
+      { normalLocal: [0, 0, 1], centroidLocal: [0, 0, 12.1] },
+      { normalLocal: [0, 0, 1], centroidLocal: [40, 0, 12.100002] },
+      { normalLocal: [0, 0, 1], centroidLocal: [0, 40, 12.099998] },
+      { normalLocal: [0, 0, 1], centroidLocal: [40, 40, 12.100001] },
+    ]);
+    const result = await importOnshapeFeatures(capDoc(), kernel);
+
+    expect(sketchCalls(kernel)).toHaveLength(2);
+    // Gespeichert wird EINE Fläche, nicht die Rollen-Query: Kernel und
+    // Web-Spiegel müssen dieselbe wählen, sonst wandert der Sketch-Ursprung.
+    expect(sketchCalls(kernel)[1].params.planeQuery).toBe("qFace(9000)");
+    expect(result.errors.join(" | ")).not.toContain("Flächen auf (erwartet 1)");
+    expect(result.warnings.join(" | ")).toContain("4 koplanare Flächen");
+  });
+
+  it("meldet Flächen in VERSCHIEDENEN Ebenen weiter als Mehrdeutigkeit", async () => {
+    const kernel = multiCapKernel([
+      { normalLocal: [0, 0, 1], centroidLocal: [0, 0, 12.1] },
+      { normalLocal: [0, 0, 1], centroidLocal: [40, 0, 13.1] },
+    ]);
+    const result = await importOnshapeFeatures(capDoc(), kernel);
+
+    expect(sketchCalls(kernel)).toHaveLength(1);
+    expect(result.errors.join(" | ")).toContain("löst auf 2 Flächen auf (erwartet 1)");
+  });
+
+  it("faltet ANTIPARALLELE Flächen nicht — gleiche Ebene, gespiegelter Frame", async () => {
+    const kernel = multiCapKernel([
+      { normalLocal: [0, 0, 1], centroidLocal: [0, 0, 12.1] },
+      { normalLocal: [0, 0, -1], centroidLocal: [40, 0, 12.1] },
+    ]);
+    const result = await importOnshapeFeatures(capDoc(), kernel);
+
+    expect(sketchCalls(kernel)).toHaveLength(1);
+    expect(result.errors.join(" | ")).toContain("löst auf 2 Flächen auf (erwartet 1)");
+  });
+
+  it("faltet NICHTS, wenn der Kernel keine Geometrie herausgibt", async () => {
+    // Ohne B-Rep-Leser ist Koplanarität nicht messbar — und ungemessen wird
+    // nicht angenommen.
+    const kernel = multiCapKernel(
+      [
+        { normalLocal: [0, 0, 1], centroidLocal: [0, 0, 12.1] },
+        { normalLocal: [0, 0, 1], centroidLocal: [40, 0, 12.1] },
+      ],
+      false,
+    );
+    const result = await importOnshapeFeatures(capDoc(), kernel);
+
+    expect(sketchCalls(kernel)).toHaveLength(1);
+    expect(result.errors.join(" | ")).toContain("löst auf 2 Flächen auf (erwartet 1)");
+  });
+});
+
 describe("cap side follows the extrude direction (Ticket #339)", () => {
   /** The REAL Kabelbox base: Sketch 1 → Extrude 1 → Sketch 2 (on the extrude's
    *  START cap), with the extrude's direction flipped on demand. Hand-writing

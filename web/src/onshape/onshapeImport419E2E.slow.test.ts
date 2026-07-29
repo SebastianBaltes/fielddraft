@@ -57,27 +57,34 @@ const GROUND_TRUTH = {
  * deleted — which is the point: the file has to be edited when the import gets
  * better, so the record cannot quietly go stale.
  *
- * 192 messages fall on these 107 features, and MOST of them are cascade — a
+ * 179 messages fall on these 98 features, and MOST of them are cascade — a
  * feature failing only because something it refers to never got built. Measured
- * after #424 (was 216 on 118 features):
+ * after #443: 190 on 107 features beforehand (this comment claimed 192, which
+ * was two stale — remeasured today), 216 on 118 before #424. The
+ * buckets below are cut freshly from the current messages, so a single line is
+ * not comparable one-to-one with the older list; the two TOTALS are:
  *
- *    44  chamfer/fillet edge shape with no FieldDraft counterpart    → #429
- *    31  cascade: profile sketch missing
- *    27  cascade: wall plane names a feature that was not imported
- *    25  cascade: EDGE query names a sweep that was not imported     (see #425)
- *     5  `qWall(…)` binds 0 faces                                    → #424 rest
- *     5  Onshape's sketch plane stands SKEW to the resolved wall
+ *    45  cascade: EDGE query names a feature that was not imported   (see #425)
+ *    38  chamfer/fillet edge shape with no FieldDraft counterpart    → #429
+ *    24  cascade: wall plane names a feature that was not imported
+ *    23  cascade: profile sketch missing
+ *     8  Onshape's sketch plane stands SKEW to the resolved wall
+ *     8  no resolvable face / target or tool body
+ *     7  cascade: cap plane names a feature that was not imported
+ *     6  unknown plane-query form
+ *     5  end condition UP_TO_NEXT / UP_TO_SURFACE
  *     4  `startOffset` (refused, not misplaced)
- *     3  end condition UP_TO_NEXT / UP_TO_SURFACE
- *     3  no resolvable face / target or tool body for a boolean
+ *     3  `qWall(…)` binds 0 faces                                    → #443 rest
  *     2  pattern axis not resolvable in world coordinates
- *     2  hole position is not a plain sketch point
  *     2  feature type `printedHole` has no translator
- *     2  unknown plane-query form
- *    37  the rest: cap planes naming unimported features, undecodable
- *        edge/face query types, `qCreatedBy(op, CAP_TOP)` binding SEVERAL
- *        faces (Sketch 11 — a new shape, exposed only once the extrudes
- *        around it started importing)
+ *     4  the rest: two hole positions that are not sketch points, one
+ *        `CAP_EDGE` over three sketch entities, one sketch on a mate
+ *        connector that was itself not imported
+ *
+ * Nine names left the list in #443, and only ONE of them is the fix itself:
+ * `qCreatedBy(op, CAP_TOP)` binding four COPLANAR cap faces is not an
+ * ambiguity for a PLANE, so `Sketch 11` imports — and with it `Sketch 12`,
+ * `Boolean 3` and the extrudes 5, 11, 14, 15, 45, 47 that hung on the two.
  *
  * The edge count moved 42+23 → 29+61 in #425 without a single message
  * disappearing, and that IS the finding: the 65 edge queries that used to fail
@@ -91,7 +98,6 @@ const KNOWN_GAPS = [
   "3D Printed Hole 2",
   "3D Printed Hole 3",
   "Bohrung Ø5.6 mm",
-  "Boolean 3",
   "Boolean 5",
   "Boolean 7",
   "Boolean 8",
@@ -105,10 +111,7 @@ const KNOWN_GAPS = [
   "Chamfer 8",
   "Chamfer 9",
   "Circular pattern 1",
-  "Extrude 11",
   "Extrude 12",
-  "Extrude 14",
-  "Extrude 15",
   "Extrude 17",
   "Extrude 18",
   "Extrude 19",
@@ -132,10 +135,7 @@ const KNOWN_GAPS = [
   "Extrude 41",
   "Extrude 42",
   "Extrude 44",
-  "Extrude 45",
   "Extrude 46",
-  "Extrude 47",
-  "Extrude 5",
   "Extrude 50",
   "Extrude 51",
   "Extrude 52",
@@ -159,8 +159,6 @@ const KNOWN_GAPS = [
   "Linear pattern 1",
   "Shell 1",
   "Sketch 10",
-  "Sketch 11",
-  "Sketch 12",
   "Sketch 14",
   "Sketch 15",
   "Sketch 16",
@@ -269,7 +267,15 @@ describe("#419 multi-part assembly", () => {
     // carry their sketch entity again, `qWall(24, 121/133/136)` binds, and
     // eleven features (Boolean 1, Boolean 6, eight extrudes, one hole) left
     // KNOWN_GAPS above. 216 → 192 messages.
-    expect(kernel.raw.bodyCount()).toBe(12);
+    //
+    // 12 → 15 in #443: `Sketch 11` sits on a plane Onshape names as a MERGE of
+    // coplanar cap faces, so our gate saw four faces and skipped the sketch —
+    // and with it everything downstream. Nine names left KNOWN_GAPS (190 → 179
+    // messages), six of them extrudes and one a boolean — and the NET effect on
+    // the body partition is +3, which is the honest reading: how many of the
+    // six extrudes make their own body and how many merge into one is not
+    // measured here, only the total is.
+    expect(kernel.raw.bodyCount()).toBe(15);
 
     // Without these the geometry would be a fraction of the assembly and still
     // look plausible — which is exactly how a broken import hides.

@@ -51,7 +51,11 @@ import {
   type OnshapeSketch3d,
   type OnshapeSketches3d,
 } from "./onshapeSketchFrame";
-import { resolvePlaneFrame, type PlaneFrameKernel } from "../sketchPlaneFrame";
+import {
+  faceWorldPlanes,
+  resolvePlaneFrame,
+  type PlaneFrameKernel,
+} from "../sketchPlaneFrame";
 import { evalFormula, type VarKind } from "../variableInput";
 
 /** The kernel surface the importer drives — matches `Kernel` in
@@ -531,6 +535,64 @@ function applySecondDirection(
 function frameOf(kernel: ImportKernel, query: string) {
   if (typeof kernel.bodyCount !== "function") return null;
   return resolvePlaneFrame(query, kernel as PlaneFrameKernel);
+}
+
+/** „Dieselbe Ebene" für den Ebenen-Pfad: Normale parallel UND gleichgerichtet,
+ *  Versatz gleich. Beides sind die Schwellen, mit denen dieselbe Datei den
+ *  Sketch-Frame beurteilt — `alignSketchFrame` nennt eine Ebene ab
+ *  |1 − n·n₀| > 1e-6 „schief" und ab |Δd| > 1e-3 mm „daneben". Gemessen an
+ *  #419s vier Deckflächen (`qCreatedBy(39, CAP_TOP)`): Normalen bis auf die
+ *  neunte Nachkommastelle identisch, Versatz-Streuung 3,4e-6 mm — also 293-fach
+ *  unter der Offset-Schwelle und um Größenordnungen unter der Normalen-Schwelle.
+ *  Antiparallel (n·n₀ ≈ −1) zählt NICHT: geometrisch dieselbe Ebene, aber ein
+ *  gespiegelter Sketch-Frame. */
+const PLANE_NORMAL_TOL = 1e-6;
+const PLANE_OFFSET_TOL_MM = 1e-3;
+
+/** Onshapes eigene Query für eine Sketch-Ebene ist oft ein `MERGE` mehrerer
+ *  **koplanarer** Flächen desselben Extrudes (vier getrennte Kreise → vier
+ *  Deckflächen bei derselben Höhe). FieldDraft verschmilzt Berührendes bewusst
+ *  nicht, also bindet dieselbe Query bei uns N Flächen. Für eine EBENE ist das
+ *  keine Mehrdeutigkeit: spannen alle Treffer dieselbe Ebene auf, ist die Ebene
+ *  eindeutig bestimmt.
+ *
+ *  Zurück kommt dann die kanonische Element-Query EINER dieser Flächen — nicht
+ *  die parametrische Rollen-Query. Der Grund ist Determinismus, nicht Bequem-
+ *  lichkeit: der Sketch-Frame hat seinen URSPRUNG im Schwerpunkt der
+ *  aufgelösten Fläche, und Kernel (`resolve_face_frame`, erste Fläche des
+ *  ersten passenden Körpers) und Web-Spiegel (`resolvePlaneFrame`, erster
+ *  Treffer über alle Körper) müssen dieselbe wählen, sonst läge der Sketch um
+ *  den Abstand zweier Kappen-Schwerpunkte verschoben in seiner Ebene. Eine
+ *  Fläche zu benennen macht die Wahl für beide Seiten identisch — dieselbe
+ *  Form, die `thicken` ohnehin verlangt, und sie heilt über ihren Fingerprint.
+ *
+ *  `null`, wenn die Treffer NICHT koplanar sind oder die Geometrie-Leser des
+ *  Kernels fehlen (Test-Double): dann bleibt es beim sichtbaren Fehler. */
+function coplanarPlaneFold(
+  matches: { kind: string; idHash: string; query: string }[],
+  kernel: ImportKernel,
+): { query: string; normalDev: number; offsetSpreadMm: number } | null {
+  if (matches.length < 2 || matches.some((m) => m.kind !== "face")) return null;
+  if (typeof kernel.bodyCount !== "function") return null;
+  const planes = faceWorldPlanes(
+    matches.map((m) => m.idHash),
+    kernel as PlaneFrameKernel,
+  );
+  if (planes.size !== matches.length) return null;
+  const ref = planes.get(matches[0].idHash)!;
+  let normalDev = 0;
+  let offsetMin = ref.offset;
+  let offsetMax = ref.offset;
+  for (const m of matches.slice(1)) {
+    const p = planes.get(m.idHash)!;
+    const dot =
+      p.normal[0] * ref.normal[0] + p.normal[1] * ref.normal[1] + p.normal[2] * ref.normal[2];
+    normalDev = Math.max(normalDev, Math.abs(1 - dot));
+    offsetMin = Math.min(offsetMin, p.offset);
+    offsetMax = Math.max(offsetMax, p.offset);
+  }
+  if (normalDev > PLANE_NORMAL_TOL || offsetMax - offsetMin > PLANE_OFFSET_TOL_MM) return null;
+  return { query: matches[0].query, normalDev, offsetSpreadMm: offsetMax - offsetMin };
 }
 
 /** Build the FieldDraft plane query for a decoded Onshape plane ref.
@@ -1233,10 +1295,14 @@ async function importFeatures(
           continue;
         }
         // Uniqueness gate for face-level planes: the stored query must
-        // bind exactly ONE face right now (mid-history resolution).
+        // bind exactly ONE PLANE right now (mid-history resolution). Several
+        // faces are an ambiguity only when they lie in DIFFERENT planes;
+        // coplanar hits are Onshape's `MERGE` seen through our decomposition
+        // (see {@link coplanarPlaneFold}).
         if (!built.query.startsWith("qCreatedBy(origin_plane_")) {
           const matches = kernel.resolveQuery(built.query);
-          if (matches.length !== 1) {
+          const fold = matches.length === 1 ? null : coplanarPlaneFold(matches, kernel);
+          if (matches.length !== 1 && !fold) {
             result.errors.push(
               `${name}: Ebenen-Query "${built.query}" löst auf ${matches.length} Flächen auf (erwartet 1) — Sketch übersprungen.` +
                 (built.query.includes("qWall(") && matches.length === 0
@@ -1244,6 +1310,15 @@ async function importFeatures(
                   : ""),
             );
             continue;
+          }
+          if (fold) {
+            result.warnings.push(
+              `${name}: Ebenen-Query "${built.query}" bindet ${matches.length} koplanare Flächen ` +
+                `(Normalen-Abweichung ${fold.normalDev.toExponential(1)}, Versatz-Streuung ` +
+                `${fold.offsetSpreadMm.toExponential(1)} mm) — Onshapes MERGE in unserer ` +
+                `Zerlegung; die Ebene ist eindeutig, der Sketch sitzt auf einer davon`,
+            );
+            built.query = fold.query;
           }
         }
         planeQuery = built.query;

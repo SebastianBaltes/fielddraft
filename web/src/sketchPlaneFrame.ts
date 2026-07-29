@@ -187,6 +187,50 @@ export function resolvePlaneFrame(
   return null;
 }
 
+/** The world-space PLANE a face lies in: its unit normal and the signed
+ *  offset `d = n · p` of any of its points. Everything a caller needs to ask
+ *  whether two faces span the SAME plane — which is not the same question as
+ *  whether they are the same face (Onshape merges coplanar cap faces into one,
+ *  we do not; see the Onshape importer's plane gate).
+ *
+ *  One pass over the bodies for the whole list, so asking about four faces
+ *  costs one scan and not four. Faces the current bodies do not carry are
+ *  absent from the result — the caller sees the shortfall in the map size. */
+export function faceWorldPlanes(
+  idHashes: readonly string[],
+  kernel: PlaneFrameKernel,
+): Map<string, { normal: Vec3; offset: number }> {
+  const out = new Map<string, { normal: Vec3; offset: number }>();
+  const want = new Set(idHashes);
+  if (want.size === 0) return out;
+  let count = 0;
+  try {
+    count = kernel.bodyCount();
+  } catch {
+    return out;
+  }
+  for (let i = 0; i < count && out.size < want.size; i++) {
+    let faces: BRepFace[];
+    let placement: Placement;
+    try {
+      faces = kernel.bodyBrepFaces(i);
+      placement = kernel.bodyPlacement(i);
+    } catch {
+      continue;
+    }
+    for (const face of faces) {
+      if (!want.has(face.idHash) || out.has(face.idHash)) continue;
+      const normal = normalize(rotateByPlacement(face.normalLocal, placement));
+      const p = localToWorld(face.centroidLocal, placement);
+      out.set(face.idHash, {
+        normal,
+        offset: normal[0] * p[0] + normal[1] * p[1] + normal[2] * p[2],
+      });
+    }
+  }
+  return out;
+}
+
 /** Lift sketch-plane (u, v) coordinates into world space. */
 export function planeToWorld(
   u: number,
