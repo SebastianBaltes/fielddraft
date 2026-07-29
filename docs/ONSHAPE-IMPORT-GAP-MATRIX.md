@@ -3380,3 +3380,109 @@ Fehlermeldung — die von Anfang an dieselbe war.
 Das ist kein Argument gegen das schrittweise Vorgehen, sondern eines fuer die
 Reihenfolge: gemessen wurde jedes Mal ZUERST, und jede Schicht steht seither
 mit einer Zahl da statt mit einer Vermutung.
+
+## Update 2026-07-29 (15) — die Ebene ist richtig BENANNT und falsch GELEGT (#452 → #454)
+
+Update (14) hat die Reihenfolge festgelegt: erst die Ebene, dann die Lage
+darin, dann die Haelfte. Diese Runde hat die Ebene vermessen. Sie ist kein
+Namens-Problem — die beiden bekannten `qWall`-Mechanismen treffen beide nicht —
+sondern ein Lage-Problem, dessen Ursache vier Features weiter oben sitzt und
+ein eigenes Ticket bekommen hat (**#454**).
+
+### 1. Elfte Widerlegung: es ist KEIN `qWall`-Fehler
+
+Verdaechtigt waren (a) region-eingeschraenkte Profile ohne Entity-Provenienz
+(`SKETCH-REGION-IMPRINT-PLAN` §5, letzter Punkt) und (b) der
+`POSITIONAL_WALL_FLAG` aus #445, der positionell zurueckgefallene Wand-Tabellen
+fuer `qWall` strukturell unauffindbar macht. Gemessen trifft keiner von beiden:
+
+| | Ergebnis |
+|---|---|
+| `qWall(44, 35)` (`Extrude 5`) | **1** Fläche, `sub = 35`, `POSITIONAL_WALL_FLAG` **nicht** gesetzt |
+| `qWall(47, 35)` (`Extrude 14`) | **1** Fläche, `sub = 35`, Flag nicht gesetzt |
+| Lage beider | x = +3,972, Normale (−1, 0, 0) — **koplanar** |
+
+Beide Subs sind echte Entity-Ordinale, keine positionellen Indizes. Und die
+beiden Waende sind GENAU das Paar, das Onshapes Ebenen-Query als `MERGE`
+nennt (`FRLqXQ83tJHM7Lj_13` = `Extrude 5`, `FbKE2kiRYXa1rde_13` = `Extrude 14`,
+beide aus der Kurve `pozkE6lurT5A.right` von `Sketch 11`). Die Flaechen-
+Identitaet ist einwandfrei — es ist derselbe koplanare Flicken, den der Zaun aus
+(13) ohnehin schon zu EINEM Rechteck zusammenfasst.
+
+Der Nebenbefund gehoert notiert: der letzte Punkt von `SKETCH-REGION-IMPRINT-PLAN`
+§5 („Region-eingeschraenkte Profile tragen noch keine Entity-Provenienz") ist
+seit #424 ueberholt; `docs/ARCHITECTURE.md` sagt es bereits richtig.
+
+### 2. Was stattdessen zutrifft: die Geometrie liegt 16,983 mm daneben
+
+Onshapes Sketch-Ebene fuer `Sketch 12` ist x = −13,011 (aus seiner eigenen
+3D-Antwort fuer die Linie). Unter allen **171 ebenen Flaechen** der 18 Koerper
+gibt es dort **keine einzige** mit x-Normale; die naechsten liegen bei −15,405
+und −17,405. Unsere beiden Waende liegen bei x = +3,972 — 16,983 mm daneben,
+und das ist auf die dritte Stelle der `outOfPlane`-Betrag aus Update (14).
+
+Die Kette dahinter ist end-to-end gemessen:
+
+1. `Sketch 11` faellt bei `measureOnshapeSketchFrame` durch und wird WOERTLICH
+   uebernommen. Sein FieldDraft-Frame-Ursprung liegt bei x = 16,983, Onshapes
+   bei x ≈ 0 — die Geometrie landet um genau diesen Betrag verschoben, IN der
+   Ebene (die Ebene selbst stimmt: `outOfPlane` = 1,6e-5 mm).
+2. `Extrude 5` und `Extrude 14` stehen auf dieser Skizze, ihre Waende erben den
+   Versatz.
+3. `Sketch 12` steht auf genau diesen Waenden — seine Traegerflaeche ist damit
+   16,983 mm verschoben.
+4. `Extrude 15` fraest 16,983 mm neben dem Ziel, gleich was an Region und
+   Frame noch repariert wird.
+
+### 3. Warum `Sketch 11` durchfaellt — und dass es nicht muss
+
+`measureOnshapeSketchFrame` verlangt, dass JEDER Stuetzpunkt auf 1e-6 mm
+rekonstruiert wird. Verwirft man iterativ den groessten Ausreisser und passt
+neu an, ergibt sich:
+
+| Dokument | Skizze | Paare | verworfen | Rest | \|x\| / \|y\| |
+|---|---|---:|---:|---:|---|
+| #419 | Sketch 11 | 32 | **1** (1,035 mm) | 5,6e-14 mm | 1,000000000 / 1,000000000 |
+| #419 | Sketch 20 | 19 | 5 | 4,2e-14 mm | 1,000000000 / 1,000000000 |
+| #419 | Sketch 23 / 24 | 16 | 8 | — | 1,0184 / 1,1826 |
+| #419 | Sketch 30 | 33 | 23 | — | 0,9952 / 0,9874 |
+| #409 | Sketch 2 | 32 | 16 | — | 1,0000 / **1,1000** |
+| #409 | Sketch 3 | 32 | 16 | — | 1,0000 / 1,0957 |
+
+Die Familie zerfaellt damit sauber in zwei Klassen, und die Trennlinie ist die
+ORTHONORMALITAET der ueberlebenden Basis:
+
+- **(A) ausreisser-verseucht, aber starr**: `Sketch 11` und `Sketch 20`. Nach
+  dem Verwerfen ist die Basis auf neun Stellen orthonormal — zehnfach
+  ueberbestimmt, also eine Messung. Hier ist ein Frame da und wird verschenkt.
+- **(B) wirklich nicht starr**: die uebrigen fuenf. Dort ueberlebt eine
+  SKALIERUNG (`|y| = 1,1000` in #409 `Sketch 2`, auf vier Stellen glatt), und
+  eine Skalierung ist kein Frame. Die Ablehnung ist dort richtig.
+
+Das ist der Inhalt von **#454**: die Anpassung an die konsistente MEHRHEIT
+legen und die verworfenen Punkte BENENNEN, statt die Toleranz aufzuweichen.
+`Sketch 11` haengt an einem einzigen Punkt von 32.
+
+### 4. Warum #452 darauf parkt
+
+Die drei Schichten aus (14) §5 sind jetzt alle vermessen, und die unterste ist
+nicht #452s: es ist eine familienweite Ursache ueber elf Skizzen in fuenf
+Dokumenten, und ihre Reparatur bewegt Frames in Dokumenten, die mit `Extrude 15`
+nichts zu tun haben. Sie gehoert unter eigene Messung und eigene Pins — daher
+#454. Ist sie behoben, ist #452 wieder eine Frage von zwei Schichten, und beide
+sind gebaut: der Zaun (0.48.0) und der Zwei-Punkte-Frame (0.49.0). Offen bleibt
+dann nur noch die HAELFTE, mit den zwei Wegen aus (13) §5.
+
+### 5. Methodik-Lehre
+
+**Eine Query kann richtig benannt sein und trotzdem ins Leere zeigen.** Drei
+Runden lang war die Vermutung, `qWall(44, 35)` treffe die falsche Flaeche —
+zuletzt gestuetzt auf zwei bekannte, real existierende Fehlerklassen des
+Wall-Namings. Gemessen trifft die Query GENAU die Flaeche, die Onshape meint;
+sie liegt nur woanders. Der Unterschied ist nicht akademisch: gegen ein
+Namens-Problem haette man am Query-Pfad gearbeitet, und dort ist nichts kaputt.
+
+Was den Unterschied sichtbar gemacht hat, war eine einzige Frage in
+Weltkoordinaten — „welche unserer 171 ebenen Flaechen liegt in Onshapes
+Sketch-Ebene?" — mit der Antwort „keine". Ein Name laesst sich nur pruefen,
+wenn man weiss, wonach er zeigen SOLL.
