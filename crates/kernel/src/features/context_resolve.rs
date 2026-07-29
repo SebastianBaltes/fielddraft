@@ -1074,6 +1074,34 @@ impl<'a> Context<'a> {
                     auto_secondary: None,
                 })
             }
+            // A SKETCH REGION — a closed face of the sketch's own imprint
+            // arrangement, the same thing an extrude names as its profile. It
+            // is not woven geometry, so no face query reaches it; the region's
+            // centroid and the sketch plane ARE its coordinate system.
+            //
+            // Onshape anchors here whenever a connector sits on the filled
+            // inside of a sketch rather than on one of its curves, and calls
+            // that inference `CENTROID` (#447). The centroid is taken as
+            // Onshape takes it — the area centroid, which for a RING falls in
+            // the hole. That is not a defect to guard against: a mate connector
+            // is a coordinate system, not a pick point, and Onshape puts its
+            // origin in exactly that spot.
+            QueryExpr::Region(sketch_id, index) => {
+                let sketch = self.sketches.get(sketch_id)?;
+                let regions = crate::sketch_regions::find_regions(&sketch.sub_calls);
+                let c = regions.get(*index as usize)?.centroid;
+                let frame = &sketch.frame;
+                let origin = [
+                    frame.origin[0] + c[0] * frame.x_axis[0] + c[1] * frame.y_axis[0],
+                    frame.origin[1] + c[0] * frame.x_axis[1] + c[1] * frame.y_axis[1],
+                    frame.origin[2] + c[0] * frame.x_axis[2] + c[1] * frame.y_axis[2],
+                ];
+                Some(MateAnchorFrame {
+                    origin,
+                    primary: Some(frame.normal),
+                    auto_secondary: None,
+                })
+            }
             // `qCreatedBy(x)` is a PLANE-shaped anchor, so it goes through the
             // one plane ladder ([`Context::resolve_plane_frame`]): an origin
             // datum plane, a placed mate connector (whose resolved CSYS was

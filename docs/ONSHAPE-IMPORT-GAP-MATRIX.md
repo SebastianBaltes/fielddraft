@@ -2502,3 +2502,141 @@ Zwei Dinge daran sind wichtiger als die Zahlen:
 Ein #419-Import kostet mit der reicheren Attrappe 56,2 s statt 54,0 s (+4 %) —
 sie baut mehr Features. Die ganze Datei liegt bei 355 s (sechs Importe). Die
 fünf übrigen Suiten zusammen bleiben unter 14 s. Kein Perf-Stoppsignal.
+
+## Update 2026-07-29 (9) — der Anker-Typ stand im Dokument, gelesen wurde der Tokenstrom (#447, v0.47.1)
+
+Ticket #447 hiess „Mate-Connector auf Kante 90 Grad in der Ebene verdreht" und
+vermutete die Ursache in der SEKUNDAERachse: `resolve_mate_anchor` waehlt die
+Nachbarflaeche eines Kanten-Ankers ueber `edge.signature.0`, und diese Signatur
+ist nach Branch-Wort kanonisiert — eine Sortier-Konvention, keine Geometrie.
+
+Diese Vermutung ist **weder die Ursache noch ueberhaupt ein messbarer Fehler**,
+und der beschriebene Twist existiert nicht mehr. Was stattdessen gefunden wurde,
+sitzt eine Ebene frueher: **wir haben den Anker-Typ falsch gelesen.**
+
+### 1. Was am #416-Fall wirklich steht (die Ticket-These, nachgemessen)
+
+`Sketch 6` von #416, der Fall aus dem Ticket, sitzt heute exakt richtig. Gegen
+Onshapes eigene 3D-Antwort:
+
+| `Sketch 6` (#416) | Ursprung | x-Achse | y-Achse | Normale |
+|---|---|---|---|---|
+| Onshape | (3,000; −10,100; −65,000) | (1, 0, 0) | (0, 0, −1) | (0, 1, 0) |
+| FieldDraft | (3,000; −10,100; −65,000) | (0, 0, −1) | (1, 0, 0) | (0, −1, 0) |
+
+Ursprung identisch, Ebene identisch. Der Unterschied ist eine **Spiegelung**
+(x und y vertauscht), keine Drehung um 90 Grad — und `alignSketchFrame` rechnet
+sie exakt heraus, weshalb `x max` und `z min` dieses Dokuments
+ground-truth-genau sind. Es bleibt eine `det < 0`-Warnung, kein Fehler und
+keine falsche Geometrie. Die Sekundaerachsen-Regel bleibt damit **unbelegt**:
+sie waehlt hier die WAND, wo Onshape die KAPPE waehlt, aber der Importer
+kompensiert das vollstaendig. Nicht anfassen ohne einen Fall, der weh tut.
+
+### 2. Der echte Defekt: `entityType` aus dem Tokenstrom statt aus dem Dokument
+
+`decodeMateAnchor` las den Entity-Typ des Ankers als **erstes**
+`EDGE|VERTEX|FACE`-Token nach dem ersten `entityType`-Schluessel. Onshape haengt
+aber einen `disambiguationData`-Block **vor** die beiden Felder, die die Frage
+beantworten, und jede Entity darin traegt einen eigenen `entityType` — die
+Kurven, die eine Flaeche einzaeunen, sind EDGEs. Der Scan beantwortete damit
+eine andere Frage („was zaeunt es ein?" statt „was IST es?"), und zwar fuer
+jeden Anker falsch, den Onshape disambiguiert.
+
+Zensus ueber alle acht Fixtures, 16 Anker, gegen das jeweils geparste
+Top-Level-Dokument:
+
+| Dokument · Connector | Onshape | gelesen | Folge |
+|---|---|---|---|
+| #419 `Sketch 9` | `FACE`/`IMPRINT` | `EDGE` | Ebene **90,0 Grad** schief |
+| #409 `Sketch 8` | `FACE`/`IMPRINT` | `EDGE` | Ursprung **168,96 mm** daneben |
+| #416 `Sketch 4` | `FACE`/`CAP_FACE` | `EDGE` | folgenlos (`CENTER` griff vorher) |
+| #419 `Sketch 21` | `FACE`/`CAP_FACE` | `EDGE` | folgenlos (Kaskade dahinter) |
+| #419 `#featureName` | `FACE`/`SPLIT` | `EDGE` | folgenlos (Bohrung, nie gelesen) |
+| #409 `#featureName` ×2 | `EDGE`/`COPY` | `VERTEX` | folgenlos (Bohrung, nie gelesen) |
+| #409 `Sketch 1` | `VERTEX`/`DUMMY` | Ursprungspunkt | korrekt (Sonderfall vorher) |
+| die uebrigen 8 | — | — | korrekt |
+
+Warum das keine Etiketten-Frage ist: das +Z eines Connectors IST die Achse
+seines Ankers. Eine FLAECHE als eine ihrer Randkanten gelesen stellt das ganze
+Koordinatensystem — und die Skizze darauf — um 90 Grad auf (`Sketch 9`, exakt
+gemessene 90,0 Grad) oder schiebt den Ursprung an dieser Kante entlang
+(`Sketch 8`, 168,96 mm).
+
+### 3. `FACE`/`IMPRINT` ist eine Sketch-REGION, und die konnten wir schon
+
+Onshapes Imprint-Flaeche ist genau die Form, die ein Extrude-Profil auch hat:
+eine Region, benannt durch ihren Zaun aus Sketch-Kurven mit dem `±1`-Flanken-
+Vorzeichen je Kurve. Der Dekoder dafuer (`decodeRegionQuery` /
+`resolveRegionFaces`, #412/#442/#446) steht seit Langem — der Anker-Pfad hatte
+nur seinen eigenen, aermeren Leser. Er benutzt jetzt denselben, und
+`regionReaders()` ist die eine gemeinsame Definition der beiden Leser, die
+`resolveRegionFaces` rankt (vorher inline im Profil-Pfad).
+
+Kernel-seitig ist `qRegion(sketch, i)` als Mate-Anker neu
+(`resolve_mate_anchor`): eine Region ist keine gewobene Geometrie, also erreicht
+sie keine Flaechen-Query. Ihr Schwerpunkt (`SketchRegion::centroid`, durch den
+Sketch-Frame gehoben) ist der Ursprung, die Sketch-Normale ist +Z — genau
+Onshapes `CENTROID`-Inferenz. Der Schwerpunkt wird genommen, wie Onshape ihn
+nimmt: als Flaechen-Schwerpunkt, der bei einem RING im Loch liegt. Ein
+Mate-Connector ist ein Koordinatensystem, kein Klickpunkt.
+
+Die Eindeutigkeits-Schranke in `emitMateConnector` nimmt `qRegion(` neben
+`qSketchLine(` und den Datum-Ebenen aus: beide benennen keine B-Rep-Entity, also
+meldet `resolveQuery` nichts ueber sie, und „0 Elemente" waere die Schranke
+dabei, eine nie gestellte Frage zu beantworten.
+
+### 4. Was sich gemessen bewegt hat
+
+Diff der vollstaendigen Fehler-/Warnungslisten von #409, #416 und #419, vorher
+gegen nachher — **drei Zeilen, sonst nichts**:
+
+- **#409** `Sketch 8: die aufgelöste FieldDraft-Ebene "qCreatedBy(26)" liegt
+  −168.9620 mm neben Onshapes Sketch-Ebene` — **weg**. Klasse B verliert diesen
+  Eintrag, den Update (8) erst sichtbar gemacht hatte.
+- **#419** `Sketch 9: Onshapes Sketch-Ebene steht 90.0° schief` — **weg**. Damit
+  hat #419 **keine schiefe Ebene mehr**; der Zensus-Pin steht auf 0.
+- **#419** `Sketch 21`: der Ankertext heisst `FACE der End-Deckflaeche` statt
+  `EDGE der End-Deckflaeche`. Dieselbe Kaskade (`Extrude 9` fehlt), richtiger
+  benannt.
+
+Koerperzahl und Szenen-AABB aller drei Dokumente sind **bis aufs Bit
+unveraendert**. Das ist die ehrliche Lesart und war zu erwarten: beide
+reparierten Skizzen tragen kein Volumen, das an ihnen haengende `Extrude 7`
+bzw. `Extrude 9` scheitert unabhaengig an `startOffset` (Klasse H). Die Ebenen
+stimmen jetzt gegen Onshapes eigene 3D-Antwort — das ist die Aussage, nicht
+eine groessere AABB.
+
+### 5. Was #416 offen laesst — und was es NICHT ist (gemessen)
+
+Der `it.fails`-Pin von #416 („y max, 0,63 mm zu kurz", 6,500 gegen 7,1292)
+bleibt offen. Die in #448 notierte Spur — ein fehlender KONKAVER Blend koenne
+`y max` anheben — ist **widerlegt**, aus zwei unabhaengigen Gruenden:
+
+1. **Lage, gemessen.** Die drei offenen Kantennamen-Fehler liegen anderswo:
+   `Fillet 5` (r = 2,43) sitzt bei y ≈ −19 an der Kugel von `Revolve 1`;
+   `Chamfer 2` (5 mm/45 Grad) und die zwei scheiternden `Fillet 2`-Kanten
+   (r = 1,21) liegen auf der `.left`-Seite bei y = −26,7. Die EINE
+   `Fillet 2`-Kante, die y = 6,5 beruehrt, importiert bereits.
+2. **Ein konkaver Blend kann eine AABB grundsaetzlich nicht vergroessern.** Das
+   Material, das er in eine einspringende Kante fuellt, liegt vollstaendig im
+   Keil zwischen den beiden Nachbarflaechen; jeder Extrempunkt davon liegt auf
+   einer dieser Flaechen, also schon auf dem Koerper. Und die SDF sagt, dass die
+   oberste Flaeche exakt die Ebene y = 6,5 ist (`bodySdfEval` liefert darueber
+   genau `y − 6,5`; die vier Mesh-Spitzen bei y = 7,10 sind QEF-Artefakte des
+   Dual Contouring mit SDF ≈ +0,6, also Luft).
+
+Zwei neue Spuren aus derselben Messung, **nicht** vermessen und deshalb als
+Spur markiert:
+
+- `Sketch 1` von #416 traegt zwei Kreise r = 4,5 um (6,5; ±35), die bis
+  Sketch-x = 11,0 reichen — Onshapes 7,1292 liegt zwischen 6,5 und 11,0. Der
+  Import warnt, dass `Extrude 1` vier Onshape-Regionen auf drei atomare Flaechen
+  abbildet, davon „3 nennen Sketch-Kurven, die dieser Sketch nicht enthaelt".
+- Der Fehler-Zensus der Suiten sieht **keine Regenerierungs-Fehler**, nur
+  Import-Fehler. `listFeatures()` zeigt in #416 zwei: beide `Chamfer 1`, vom
+  Kernel mit „Kante ist KONKAV" abgelehnt — an einer Kante, deren
+  Nachbarnormalen (−1, 0, 0) und (0, 0, 1) sie offensichtlich KONVEX machen.
+  Ein unterdruecktes 5-mm-Chamfer laesst mehr Material stehen, erklaert die
+  Luecke also auch nicht; es ist eine ungepinnte Fehlerklasse.
+
+Beides ist als eigenes Ticket abgelegt, nicht hier weiterverfolgt.

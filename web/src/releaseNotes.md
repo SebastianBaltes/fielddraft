@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.47.1
+- fix(onshape) #447: Eine Skizze, die auf einem Mate-Connector MITTEN AUF einer Fläche sitzt, landet jetzt in Onshapes Ebene. Bisher las der Import statt der Fläche eine ihrer Randkurven — der Connector stand dann 90 Grad auf, oder sein Ursprung rutschte an dieser Kante entlang (im #419-Dokument exakt 90,0 Grad, im #409-Dokument 168,96 mm).
+
 ## 0.47.0
 - feat(onshape) #446: Onshapes Angabe, auf WELCHER Seite einer Kante die gewählte Region liegt, wird jetzt für jede Skizze gelesen — bisher nur dort, wo ein Abgleich mit Onshapes 3D-Antwort sie bestätigen konnte. Ein Profil kann damit nicht mehr die Bohrung erwischen, um die es gezäunt ist.
 - fix(onshape) #446: Ein gespiegelt kopierter Vollkreis behält beim Import seine Umlaufrichtung. Vorher lag die Region an ihm auf der falschen Seite: die zwei Schlüsselloch-Bohrungen im #419-Dokument wählten das Material um sich herum statt ihr eigenes Inneres.

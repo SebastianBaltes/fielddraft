@@ -58,10 +58,11 @@ const GROUND_TRUTH = {
  * deleted — which is the point: the file has to be edited when the import gets
  * better, so the record cannot quietly go stale.
  *
- * 170 messages fall on these 89 features, and MOST of them are cascade — a
+ * 169 messages fall on these 88 features, and MOST of them are cascade — a
  * feature failing only because something it refers to never got built. Measured
- * after #448: 180 on 99 features beforehand, 190 on 107 before #443 (that
- * comment claimed 192, which was two stale), 216 on 118 before #424. The
+ * after #447: 170 on 89 before it, 180 on 99 before #448, 190 on 107 before
+ * #443 (that comment claimed 192, which was two stale), 216 on 118 before #424.
+ * The
  * buckets below are cut freshly from the current messages, so a single line is
  * not comparable one-to-one with the older list; the two TOTALS are:
  *
@@ -77,7 +78,6 @@ const GROUND_TRUTH = {
  *     2  the resolved plane is PARALLEL to Onshape's but OFFSET
  *     2  feature type `printedHole` has no translator
  *     2  hole position that is not a sketch point
- *     1  Onshape's sketch plane stands SKEW to the resolved one (`Sketch 9`)
  *     1  `qWall(…)` binds 0 faces (`Sketch 30`, still open)
  *     1  face profile in COPY form
  *     1  `CAP_EDGE` over three sketch entities
@@ -92,10 +92,13 @@ const GROUND_TRUTH = {
  * their connectors now, `Circular pattern 1` and `Linear pattern 1` find their
  * axis in world coordinates (their sketch line exists), and `Extrude 28`'s
  * UP_TO_SURFACE target resolves. Seven of the eight SKEW messages were the same
- * artefact. `Sketch 9` is what remains and it is NEW here, not new in the app:
- * its connector `qCreatedBy(23)` resolves to a frame 90° off Onshape's, which
- * is ticket #447's subject — the suite simply could not see it before, because
- * that plane never resolved at all. Body count 14 → 18 (Onshape: 17).
+ * artefact. `Sketch 9` was what remained, and #447 closed it: its connector
+ * `qCreatedBy(23)` resolved to a frame 90.0° off Onshape's because the anchor
+ * decoder read the first `entityType` in the token stream — one of the bounding
+ * EDGES of the IMPRINT FACE Onshape actually names — and made that edge's
+ * tangent the connector's +Z. Read from the query DOCUMENT instead, the anchor
+ * is a sketch REGION, its +Z is the sketch normal, and this document has NO
+ * skew plane left. Body count 14 → 18 (Onshape: 17), unchanged by #447.
  *
  * Nine names left the list in #443, and only ONE of them is the fix itself:
  * `qCreatedBy(op, CAP_TOP)` binding four COPLANAR cap faces is not an
@@ -200,7 +203,6 @@ const KNOWN_GAPS = [
   "Sketch 36",
   "Sketch 37",
   "Sketch 8",
-  "Sketch 9",
   "Thicken 1",
   "Thicken 2",
   "Thicken 3",
@@ -548,13 +550,18 @@ describe("#419 multi-part assembly", () => {
       expect(profiles(n), n).toContain(", 14]");
     }
 
-    // ONE skew plane, and it is `Sketch 9` on the mate connector
-    // `qCreatedBy(23)` — ticket #447. Eight sketches reported this before #448,
-    // seven of them only because their plane never resolved at all. Pinned by
-    // NAME as well as by count so that „still one" cannot quietly become „a
-    // different one".
+    // NO skew plane left in this document. Eight sketches reported one before
+    // #448, seven of them only because their plane never resolved at all in
+    // this file's kernel double; the eighth was `Sketch 9` on the mate
+    // connector `qCreatedBy(23)`, and #447 closed it — Onshape anchors that
+    // connector on an IMPRINT FACE, and reading the anchor's type from the
+    // query document instead of from the first token in its stream makes its
+    // +Z the sketch normal rather than one bounding edge's tangent.
+    //
+    // Kept as an assertion on the COUNT rather than deleted: a skew plane is
+    // the loudest symptom a wrong frame has, and this is the one document with
+    // enough mate connectors to produce one again.
     const skew = result.errors.filter((e) => e.includes("schief"));
-    expect(skew, skew.join(" | ")).toHaveLength(1);
-    expect(skew[0]).toContain("Sketch 9");
+    expect(skew, skew.join(" | ")).toHaveLength(0);
   }, 900_000);
 });

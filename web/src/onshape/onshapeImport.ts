@@ -707,6 +707,54 @@ function wallQuery(
 }
 
 /**
+ * The two readers [`resolveRegionFaces`] ranks candidate imprint faces with:
+ * which atomic face covers a sketch point, and each face's area/perimeter.
+ *
+ * ONE definition, because there are now two callers with the same need and no
+ * reason to disagree — an extrude PROFILE (#412) and a mate-connector ANCHOR
+ * (#447) both take an Onshape region query and have to land on the same face
+ * for it. `null` when the kernel has no sketch reading at all (a small
+ * unit-test double); that is a test environment, not a finding.
+ */
+function regionReaders(
+  kernel: ImportKernel,
+  rec: SketchRecord,
+): {
+  faceAt: (u: number, v: number) => number | null;
+  metrics: (i: number) => FaceMetrics | null;
+  /** How many atomic faces the sketch's imprint arrangement has at all. */
+  faceCount: number;
+} | null {
+  if (
+    typeof kernel.regionQueryAtPoint !== "function" ||
+    typeof kernel.listSketchRegions !== "function"
+  ) {
+    return null;
+  }
+  const faceAt = (u: number, v: number): number | null => {
+    const q = kernel.regionQueryAtPoint!(rec.fdId, u, v);
+    const m = q.match(/^qRegion\(\s*\d+\s*,\s*(\d+)\s*\)$/);
+    return m ? Number(m[1]) : null;
+  };
+  const faceMetrics = new Map<number, FaceMetrics>();
+  try {
+    const rows = JSON.parse(kernel.listSketchRegions!(rec.fdId, 128)) as {
+      index: number;
+      area: number;
+      perimeter: number;
+    }[];
+    for (const r of rows) faceMetrics.set(r.index, { area: r.area, perimeter: r.perimeter });
+  } catch {
+    faceMetrics.clear();
+  }
+  return {
+    faceAt,
+    metrics: (i: number) => faceMetrics.get(i) ?? null,
+    faceCount: faceMetrics.size,
+  };
+}
+
+/**
  * The FieldDraft ANCHOR query for a decoded mate-connector anchor, plus the
  * position `t` along it. FieldDraft's `mate_connector` derives its +Z the same
  * way Onshape does — an edge's tangent, a face's normal — so the translation is
@@ -724,10 +772,47 @@ function mateAnchorQuery(
   idMap: Record<string, number>,
   sketches: Map<string, SketchRecord>,
   sweeps: Map<string, SweepRecord>,
+  kernel: ImportKernel,
 ): { query?: string; t?: number; error?: string; sketchLine?: boolean } {
   const a = mc.anchor;
   if (a.kind === "unsupported") {
     return { error: `${featureName}: Mate-Connector-Anker nicht lesbar (${a.reason})` };
+  }
+
+  // An IMPRINT FACE — a sketch REGION. It is resolved by the SAME reading an
+  // extrude profile gets (`resolveRegionFaces`), because it is the same
+  // question with the same answer: Onshape names the region by its fence, and
+  // the fence elects one atomic face of our imprint arrangement. The kernel
+  // then reads that face's centroid and the sketch plane's normal as the
+  // connector's origin and +Z (#447).
+  if (a.kind === "region") {
+    const rec = sketches.get(a.sketchFeatureId);
+    if (!rec) {
+      return {
+        error: `${featureName}: Mate-Connector-Anker liegt auf nicht importiertem Sketch ${a.sketchFeatureId}`,
+      };
+    }
+    const readers = regionReaders(kernel, rec);
+    if (!readers) {
+      return { error: `${featureName}: Mate-Connector-Anker ist eine Sketch-Region, die dieser Kernel nicht auflösen kann` };
+    }
+    const seed = resolveRegionFaces(
+      a.edges,
+      rec.entityGeom,
+      readers.faceAt,
+      readers.metrics,
+      rec.basisDet,
+    ).seed;
+    if (seed === null) {
+      return {
+        error:
+          `${featureName}: Mate-Connector-Anker ist eine Sketch-Region von ${a.sketchFeatureId}, ` +
+          `deren ${a.edges.length} Randkurven keine Fläche benennen`,
+      };
+    }
+    // A region binds no B-Rep element, so the uniqueness gate in
+    // `emitMateConnector` must skip it — the same reason a raw sketch line does.
+    return { query: `qRegion(${rec.fdId}, ${seed})`, sketchLine: true };
   }
 
   // The part studio ORIGIN. Onshape's origin point carries no frame of its own,
@@ -817,13 +902,14 @@ function mateConnectorParams(
   idMap: Record<string, number>,
   sketches: Map<string, SketchRecord>,
   sweeps: Map<string, SweepRecord>,
+  kernel: ImportKernel,
 ): { params?: Record<string, any>; error?: string; warning?: string } {
   if (mc.originType !== "ON_ENTITY") {
     return {
       error: `${featureName}: Mate-Connector-Ursprung "${mc.originType}" wird nicht importiert (nur ON_ENTITY)`,
     };
   }
-  const anchor = mateAnchorQuery(mc, featureName, idMap, sketches, sweeps);
+  const anchor = mateAnchorQuery(mc, featureName, idMap, sketches, sweeps, kernel);
   if (anchor.error || !anchor.query) {
     return { error: anchor.error ?? `${featureName}: Mate-Connector-Anker nicht übersetzbar` };
   }
@@ -955,29 +1041,9 @@ async function resolveProfiles(
   );
   if (regionQueries.length === 0) return whole;
 
-  // Each resolved query is a `qRegion(sketch, i)`; collect the DISTINCT atomic
-  // face indices the imprint arrangement (#412) assigns.
-  const faceAt = (u: number, v: number): number | null => {
-    const q = kernel.regionQueryAtPoint!(rec.fdId, u, v);
-    const m = q.match(/^qRegion\(\s*\d+\s*,\s*(\d+)\s*\)$/);
-    return m ? Number(m[1]) : null;
-  };
-  // Perimeter + area rank the candidate faces (see `resolveRegionFaces`).
-  const faceMetrics = new Map<number, FaceMetrics>();
-  try {
-    const rows = JSON.parse(kernel.listSketchRegions(rec.fdId, 128)) as {
-      index: number;
-      area: number;
-      perimeter: number;
-    }[];
-    for (const r of rows) faceMetrics.set(r.index, { area: r.area, perimeter: r.perimeter });
-  } catch {
-    faceMetrics.clear();
-  }
-  const metrics = (i: number) => faceMetrics.get(i) ?? null;
-
+  const readers = regionReaders(kernel, rec)!;
   const resolutions = regionQueries.map((d) =>
-    resolveRegionFaces(d.edges, rec.entityGeom, faceAt, metrics, rec.basisDet),
+    resolveRegionFaces(d.edges, rec.entityGeom, readers.faceAt, readers.metrics, rec.basisDet),
   );
   const seeds = resolutions.map((r) => r.seed).filter((s): s is number => s !== null);
   const seedSet = new Set(seeds);
@@ -1041,7 +1107,7 @@ async function resolveProfiles(
   // the sketch's entity provenance; a region-restricted profile falls back to
   // positional wall numbering (docs/SKETCH-REGION-IMPRINT-PLAN.md §5), which
   // silently breaks the `qWall(...)` plane queries of every LATER feature.
-  if (faceMetrics.size === 1 && indices.size === 1) return whole;
+  if (readers.faceCount === 1 && indices.size === 1) return whole;
 
   const sorted = [...indices].sort((a, b) => a - b);
   return {
@@ -1150,14 +1216,22 @@ async function emitMateConnector(
   const mc = await readMateConnector(feature, (pm, fallback, want) =>
     quantityParam(pm, fallback, env, want),
   );
-  const built = mateConnectorParams(mc, featureName, result.idMap, sketches, sweeps);
+  const built = mateConnectorParams(mc, featureName, result.idMap, sketches, sweeps, kernel);
   if (built.warning) result.warnings.push(built.warning);
   if (built.error || !built.params) {
     result.errors.push(built.error ?? `${featureName}: Mate-Connector nicht übersetzbar`);
     return { fdId: null, mc };
   }
   const anchor = built.params.anchor as string;
-  if (!anchor.startsWith("qCreatedBy(origin_plane_") && !anchor.startsWith("qSketchLine(")) {
+  // Exempt: everything that names no B-Rep entity at all, so `resolveQuery`
+  // reports nothing about it and there is no ambiguity for the gate to catch —
+  // a datum plane, a raw sketch LINE, and a sketch REGION (#447). Failing them
+  // on „0 Elemente" would be the gate answering a question it was never asked.
+  const namesNoTopology =
+    anchor.startsWith("qCreatedBy(origin_plane_") ||
+    anchor.startsWith("qSketchLine(") ||
+    anchor.startsWith("qRegion(");
+  if (!namesNoTopology) {
     let matches = 0;
     try {
       matches = kernel.resolveQuery(anchor).length;

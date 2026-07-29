@@ -132,7 +132,7 @@ function vertexCurves(v: Obj): string[] {
  *  lowers how much of a candidate face the boundary accounts for, which is
  *  exactly the effect it should have on the ranking — while refusing the whole
  *  query would throw away a selection Onshape made. */
-function regionBoundary(doc: Obj): RegionBoundaryEdge[] {
+export function regionBoundary(doc: { [k: string]: BtonValue }): RegionBoundaryEdge[] {
   const out: RegionBoundaryEdge[] = [];
   for (const [edge, side] of topologyPairs(doc)) {
     const entityId = sketchEntityOf(edge);

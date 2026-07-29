@@ -131,16 +131,33 @@ describe("implicit mate connectors — decoding", () => {
     expect(anchorT(mc)).toBeNull();
   });
 
-  it("reads #419's CENTROID connector, and only calls it a midpoint on a STRAIGHT edge", async () => {
+  it("reads #419's CENTROID connector as the sketch REGION it names, not one of its edges", async () => {
     const doc419 = JSON.parse(
       readFileSync(join(__dirname, "fixtures", "onshape-419-features.json"), "utf8"),
     );
     const mc = await connectorOf(doc419, "FTYfIm6bhe5zwOg_7"); // Sketch 9
     expect(mc.inference).toBe("CENTROID");
-    // Straightness is the caller's to establish (it holds the sketch record);
-    // without that vouch a centroid is not a position along the edge at all.
+    // Ticket #447. This anchor's query says `entityType: FACE`,
+    // `queryType: IMPRINT` at its top level, and hangs a `disambiguationData`
+    // block in FRONT of both that names the four sides of the rectangle
+    // `DThSZU2d8ySx` — each with the ±1 flank the face lies on. Reading the
+    // first type token in the stream therefore answered „EDGE, the rectangle's
+    // bottom", and the connector's +Z became that line's TANGENT instead of the
+    // face's NORMAL: Onshape's own 3D answer put `Sketch 9` at 90.0° to where
+    // we placed it. The type has to come from the DOCUMENT, not the stream.
+    expect(mc.anchor.kind).toBe("region");
+    if (mc.anchor.kind !== "region") throw new Error("unreachable");
+    expect(mc.anchor.sketchFeatureId).toBe("F5TEqDQMJSgYkmZ_0");
+    expect(mc.anchor.edges.map((e) => e.entityId).sort()).toEqual([
+      "DThSZU2d8ySx.bottom",
+      "DThSZU2d8ySx.left",
+      "DThSZU2d8ySx.right",
+      "DThSZU2d8ySx.top",
+    ]);
+    // The flank is what tells the region from the hole around it (#442).
+    expect(mc.anchor.edges.map((e) => e.side)).toEqual([-1, 1, 1, -1]);
+    // A FACE has no position along an edge, whatever the inference says.
     expect(anchorT(mc)).toBeNull();
-    expect(anchorT(mc, true)).toBe(0.5);
   });
 
   it("reads the realignment: this document adds none", async () => {

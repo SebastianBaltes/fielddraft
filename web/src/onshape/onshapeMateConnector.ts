@@ -36,10 +36,13 @@
 import {
   decodeOnshapeQueryString,
   extractQueryRefs,
+  parseBton,
   tokenizeBton,
   type BtonToken,
+  type BtonValue,
   type OnshapeEntityOrigin,
 } from "./onshapeQuery";
+import { regionBoundary, type RegionBoundaryEdge } from "./onshapeRegion";
 
 /** Which point of the anchor entity the connector sits on. Onshape's
  *  `EntityInferenceType`, restricted to the values that name a POINT. */
@@ -62,6 +65,13 @@ export type OnshapeMateAnchor =
       isStart: boolean;
       origin: OnshapeEntityOrigin;
     }
+  /** An IMPRINT FACE: the sketch REGION a sketch imprints onto the geometry,
+   *  named — exactly as an extrude profile is — by the sketch curves that fence
+   *  it in and by which FLANK of each the face lies on. Onshape anchors a
+   *  connector here whenever the user clicks the filled inside of a sketch
+   *  rather than one of its lines, and its `CENTROID` is that face's centroid,
+   *  its +Z that face's normal (#447). */
+  | { kind: "region"; sketchFeatureId: string; edges: RegionBoundaryEdge[] }
   /** The part studio's ORIGIN point — Onshape's `Origin`/`pointOp` creation
    *  query. No geometry under it at all: this is what the FIRST connector of a
    *  document anchors on, since nothing has been built yet. Its CSYS is the
@@ -141,17 +151,34 @@ export function implicitMateConnectors(
  *  opaque — every discriminating field appears as a literal on first use). */
 const literals = (tokens: BtonToken[]): BtonToken[] => tokens.filter((t) => t.t === "str");
 
+const isObj = (v: BtonValue | undefined): v is { [k: string]: BtonValue } =>
+  !!v && typeof v === "object" && !Array.isArray(v);
+
 /**
  * Decode a mate-connector ANCHOR query (`originQuery` / `secondaryOriginQuery`).
  *
- * The grammar is the ordinary creation-query one, read for different markers
- * than a plane query needs: the ENTITY TYPE of the anchor, the sketch entity it
- * derives from, and — when the anchor is an entity of an extrude's cap — the
- * sweep operation plus the `isStart` side.
+ * WHAT the anchor is comes from the query DOCUMENT'S OWN top-level
+ * `entityType`/`queryType`, never from the flat token stream. That distinction
+ * is the whole of ticket #447. Onshape hangs a `disambiguationData` block in
+ * FRONT of those two fields, and every entity inside it carries an
+ * `entityType` of its own — the curves that fence a face in are EDGEs. Reading
+ * the first type token therefore answered a different question than the one
+ * asked ("what fences it?" instead of "what is it?"), and it answered it wrong
+ * for every anchor Onshape disambiguates: measured over the six import
+ * fixtures, five of sixteen anchors, three of them FACEs read as EDGEs.
+ *
+ * What that cost was not a mislabelled string. A connector's +Z is its
+ * anchor's axis, so a FACE read as one of its bounding EDGES stands its whole
+ * coordinate system — and the sketch drawn on it — up at 90° (#419 `Sketch 9`,
+ * measured exactly 90.0°) or slides its origin along that edge (#409
+ * `Sketch 8`, 168.96 mm).
+ *
+ * The rest of the reading (which sketch entity, which cap, which side) still
+ * walks the tokens: `parseBton` collapses the back-references that carry the
+ * ORDER those markers are read in.
  */
 export function decodeMateAnchor(tokens: BtonToken[]): OnshapeMateAnchor {
   const strs = literals(tokens);
-  const has = (v: string) => strs.some((t) => t.p1 === v && !t.p2);
 
   // The part studio's ORIGIN point, which Onshape names as an operation
   // called `Origin` of type `pointOp`. It carries no `sketchEntityId` and no
@@ -162,16 +189,40 @@ export function decodeMateAnchor(tokens: BtonToken[]): OnshapeMateAnchor {
     return { kind: "originPoint" };
   }
 
-  // Anchor entity type: the FIRST `entityType` value in the stream. A cap
-  // query states the derived entity first and the cap's own type after it.
-  const typeIdx = tokens.findIndex((t) => t.t === "str" && t.p1 === "entityType" && !t.p2);
-  const entityType = tokens
-    .slice(typeIdx + 1)
-    .find(
-      (t) => t.t === "str" && !t.p2 && (t.p1 === "EDGE" || t.p1 === "VERTEX" || t.p1 === "FACE"),
-    )?.p1 as "EDGE" | "VERTEX" | "FACE" | undefined;
-  if (typeIdx < 0 || !entityType) {
-    return { kind: "unsupported", reason: "Anker-Query nennt keinen Entity-Typ" };
+  let doc: BtonValue;
+  try {
+    doc = parseBton(tokens);
+  } catch (e) {
+    return {
+      kind: "unsupported",
+      reason: `Anker-Query nicht lesbar (${e instanceof Error ? e.message : String(e)})`,
+    };
+  }
+  if (!isObj(doc)) {
+    return { kind: "unsupported", reason: "Anker-Query ist kein Query-Dokument" };
+  }
+  const entityType = doc.entityType;
+  const queryType = doc.queryType;
+  if (entityType !== "EDGE" && entityType !== "VERTEX" && entityType !== "FACE") {
+    return { kind: "unsupported", reason: `Anker-Entity-Typ "${String(entityType)}" unbekannt` };
+  }
+
+  const { wires, ops } = extractQueryRefs(tokens);
+
+  // An IMPRINT FACE is a sketch REGION, and it is named the way every region
+  // is: by its fence. It has no `sketchEntityId` of its own, so it has to be
+  // recognised before the single-entity reading below — which is precisely
+  // what used to swallow it, one fence curve at a time.
+  if (queryType === "IMPRINT" && entityType === "FACE") {
+    const wire = wires[0];
+    if (!wire) {
+      return { kind: "unsupported", reason: "Imprint-Anker ohne Sketch-Operation" };
+    }
+    const edges = regionBoundary(doc);
+    if (edges.length === 0) {
+      return { kind: "unsupported", reason: "Imprint-Anker ohne lesbare Regionsgrenze" };
+    }
+    return { kind: "region", sketchFeatureId: wire.featureId, edges };
   }
 
   // The sketch entity the anchor derives from: the string token right after
@@ -188,7 +239,6 @@ export function decodeMateAnchor(tokens: BtonToken[]): OnshapeMateAnchor {
   }
 
   // Which sketch owns it: the closest preceding wire marker.
-  const { wires, ops } = extractQueryRefs(tokens);
   const wire = [...wires].reverse().find((w) => w.idx < idIdx);
   if (!wire) {
     return { kind: "unsupported", reason: `Anker-Sketch von "${entityId}" nicht bestimmbar` };
@@ -196,26 +246,30 @@ export function decodeMateAnchor(tokens: BtonToken[]): OnshapeMateAnchor {
   const origin: OnshapeEntityOrigin = { sketchFeatureId: wire.featureId, entityId };
 
   // A cap anchor: the entity belongs to an extrude's CAP, not to the raw wire.
-  if (has("CAP_FACE") || has("CAP_EDGE")) {
+  if (queryType === "CAP_FACE" || queryType === "CAP_EDGE") {
     const extrude = ops.find((o) => o.op.op === "opExtrude");
     if (!extrude) {
       return { kind: "unsupported", reason: "Cap-Anker ohne Extrude-Operation" };
     }
-    const isStartIdx = tokens.findIndex((t) => t.t === "str" && t.p1 === "isStart");
-    const boolTok =
-      isStartIdx >= 0 ? tokens.slice(isStartIdx + 1).find((t) => t.t === "bool") : undefined;
-    if (!boolTok) {
+    const isStart = doc.isStart;
+    if (typeof isStart !== "boolean") {
       return { kind: "unsupported", reason: "Cap-Anker ohne isStart-Flag" };
     }
     return {
       kind: "capEntity",
       entityType,
       opFeatureId: extrude.op.featureId,
-      isStart: boolTok.v === true,
+      isStart,
       origin,
     };
   }
 
+  if (queryType !== "SKETCH_ENTITY") {
+    return {
+      kind: "unsupported",
+      reason: `Anker-Query-Form "${String(queryType)}" wird nicht gelesen`,
+    };
+  }
   return { kind: "sketchEntity", entityType, origin };
 }
 
@@ -321,8 +375,9 @@ export function anchorT(mc: OnshapeMateConnector, straightEdge = false): number 
   if (mc.inference !== "POINT") return null;
   const sec = mc.secondary;
   // Only an anchor that NAMES a sketch entity can say which end it means; the
-  // origin point and an unreadable query both leave `t` undetermined.
+  // origin point, a region and an unreadable query all leave `t` undetermined.
   if (!sec || sec.kind === "unsupported" || sec.kind === "originPoint") return null;
+  if (sec.kind === "region") return null;
   if (sec.origin.entityId.endsWith(".start")) return 0.0;
   if (sec.origin.entityId.endsWith(".end")) return 1.0;
   return null;
@@ -335,6 +390,8 @@ export function describeAnchor(a: OnshapeMateAnchor): string {
       return `Sketch-Entity ${a.origin.entityId} (${a.entityType})`;
     case "capEntity":
       return `${a.entityType} der ${a.isStart ? "Start" : "End"}-Deckfläche von ${a.opFeatureId} (aus ${a.origin.entityId})`;
+    case "region":
+      return `Sketch-Region von ${a.sketchFeatureId} (${a.edges.length} Randkurven)`;
     case "originPoint":
       return "Ursprung des Part Studios";
     case "unsupported":

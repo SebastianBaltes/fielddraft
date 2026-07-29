@@ -4904,6 +4904,101 @@ fn mate_connector_offset_between_and_owner() {
     assert_eq!(mid.owner_id, None, "no owner query → None");
 }
 
+/// Ticket #447: a connector may anchor on a SKETCH REGION — the filled inside
+/// of a sketch, which is what Onshape names when the user clicks there rather
+/// than on one of the sketch's curves (`entityType: FACE`, `queryType: IMPRINT`,
+/// inference `CENTROID`). A region is not woven geometry, so no face query
+/// reaches it; the frame is the sketch plane and the origin is the region's own
+/// centroid, LIFTED through that plane rather than taken as a 2D pair.
+///
+/// The sketch below is drawn OFF its own origin on a plane that is itself off
+/// the world origin, because that is the only arrangement in which lifting and
+/// not lifting differ — the bug this replaces read one of the region's bounding
+/// LINES instead, and stood the connector's +Z up along it.
+#[test]
+fn mate_connector_anchors_to_a_sketch_region_centroid() {
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+
+    // A box gives the sketch a face to sit on: +Z at z = 10.
+    registry
+        .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+        .unwrap();
+    let woven = crate::body::weave_all(&ctx.features);
+    let (brep, placement) = &woven[0];
+    let top_hash = (0..brep.face_count())
+        .map(|i| crate::brep::FaceId(i as u32))
+        .find(|f| (crate::sketch::face_plane_frame(brep, *f, placement).normal[2] - 1.0).abs() < 1e-4)
+        .map(|f| crate::brep::naming::TopoRef::from_face(brep, f).id_hash)
+        .expect("box has a +Z face");
+
+    let calls = vec![
+        box_call(1, 10.0),
+        FeatureCall::new(
+            "sketch",
+            id(2),
+            json!({
+                "plane": format!("qFace({top_hash})"),
+                "sub_calls": [
+                    { "type": "sketch_rectangle", "id": "r1",
+                      "params": { "corner_a": [1.0, 2.0], "corner_b": [5.0, 8.0] } }
+                ]
+            }),
+        ),
+        FeatureCall::new(
+            "mate_connector",
+            id(3),
+            json!({ "anchor": format!("qRegion({}, 0)", id(2)) }),
+        ),
+    ];
+    registry.regenerate(&mut ctx, &calls, None).unwrap();
+
+    assert_eq!(ctx.mate_connectors.len(), 1, "the region anchor must resolve");
+    let mc = &ctx.mate_connectors[0];
+    // +Z is the sketch plane's normal — NOT a bounding line's direction, which
+    // is what a rectangle side would have given (±X or ±Y).
+    assert!(
+        (mc.normal[2] - 1.0).abs() < 1e-3,
+        "the region's +Z is the sketch normal, got {:?}",
+        mc.normal
+    );
+    // The rectangle's centroid is (3, 5) in sketch coordinates, on a plane at
+    // z = 10 whose own origin is the face centroid (0, 0, 10).
+    let f = &ctx.sketches.get(&id(2)).expect("sketch placed").frame;
+    let want = [
+        f.origin[0] + 3.0 * f.x_axis[0] + 5.0 * f.y_axis[0],
+        f.origin[1] + 3.0 * f.x_axis[1] + 5.0 * f.y_axis[1],
+        f.origin[2] + 3.0 * f.x_axis[2] + 5.0 * f.y_axis[2],
+    ];
+    for k in 0..3 {
+        assert!(
+            (mc.origin[k] - want[k]).abs() < 1e-2,
+            "origin is the region centroid lifted through the sketch frame: \
+             want {want:?}, got {:?}",
+            mc.origin
+        );
+    }
+
+    // A region index the sketch does not have resolves to NOTHING rather than
+    // to region 0 — a connector on a guessed face is worse than none.
+    ctx.mate_connectors.clear();
+    let bad = registry.regenerate(
+        &mut ctx,
+        &[
+            box_call(1, 10.0),
+            calls[1].clone(),
+            FeatureCall::new(
+                "mate_connector",
+                id(3),
+                json!({ "anchor": format!("qRegion({}, 7)", id(2)) }),
+            ),
+        ],
+        None,
+    );
+    assert!(bad.is_err() || ctx.mate_connectors.is_empty(), "region 7 must not resolve");
+}
+
 #[test]
 fn mate_connector_anchors_to_edge_midpoint_and_vertex() {
     let registry = FeatureRegistry::with_builtins();

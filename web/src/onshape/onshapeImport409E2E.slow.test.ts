@@ -86,16 +86,20 @@ const GROUND_TRUTH = {
  *     points on any face without symmetry. The kernel now reports its own
  *     anchor (`planeOriginLocal`) and the web uses it, and these two sketches
  *     place without a residual.
- *     `Sketch 8` JOINED this class in #448 without its geometry moving one
- *     micron. It sits on the mate connector `qCreatedBy(26)`, and this file's
- *     kernel double used to omit `resolvedMateConnectors` — so the web could
- *     not resolve that plane AT ALL and only warned „Frame nicht auflösbar,
- *     2D-Koordinaten wörtlich übernommen". The KERNEL always placed the sketch
- *     on the connector regardless (which is why body count, feature count and
- *     the whole scene AABB are bit-identical before and after), so the warning
- *     was hiding a measurement, not a placement: the connector's plane stands
- *     168.96 mm from where Onshape's own 3D answer puts Sketch 8. The app has
- *     reported that offset since #409; only this suite was blind to it.
+ *     `Sketch 8` JOINED this class in #448 and LEFT it again in #447, and both
+ *     moves are measurements rather than geometry: its body count, feature
+ *     count and scene AABB have been bit-identical throughout.
+ *     #448 made it visible — this file's kernel double used to omit
+ *     `resolvedMateConnectors`, so the web could not resolve the plane of the
+ *     mate connector `qCreatedBy(26)` AT ALL and only warned „Frame nicht
+ *     auflösbar". Resolved, it stood 168.96 mm from Onshape's own 3D answer.
+ *     #447 found why, and it was not an offset at all: Onshape anchors that
+ *     connector on an IMPRINT FACE — the filled inside of a sketch region —
+ *     and the anchor decoder read the first `entityType` in the token stream,
+ *     which belongs to one of the region's bounding EDGES. The connector's +Z
+ *     therefore became that edge's tangent, and its origin slid 168.96 mm
+ *     along it. Reading the type from the query DOCUMENT puts the plane on
+ *     Onshape's to under a micron.
  *  C. End conditions UP_TO_NEXT / UP_TO_SURFACE (Extrude 8, 12).
  *  D. Hole positions that are not plain sketch points (both `Bohrung`s).
  *  E. CLOSED — twice, and the second time is the interesting one. A cap-edge
@@ -144,7 +148,6 @@ const KNOWN_GAPS = [
   "Sketch 11",
   "Sketch 12",
   "Sketch 14",
-  "Sketch 8",
 ];
 
 async function importFixture() {
