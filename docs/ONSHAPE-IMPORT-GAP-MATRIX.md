@@ -2705,14 +2705,19 @@ keinen. Er ist **pro Grenze** verschieden gross, also nicht wegtolerierbar.
   die Vermutung dort („der Endpunkt ist bei Blend-/Spline-Flaechen
   approximativ") war richtig. Nur der Kopfkommentar benennt jetzt die Ursache.
 * **#409** unveraendert, nachgemessen.
-* **#419** liess sich **nicht** nachmessen: die Dokument-ID steht nirgends im
-  Repo (der Suiten-Kopf schreibt woertlich `documents/…/e/…`). Ihre Ground
-  Truth stammt aus demselben Endpunkt und ist damit potenziell ebenfalls lose.
-  Ihre Grenzen sind auf 0,1 mm gerundet und werden mit 0,5 mm Toleranz geprueft,
-  der Schlupf der anderen Dokumente liegt darunter — die Pins stehen also
-  vermutlich, aber das ist ein Argument, keine Messung. **Offener Punkt:** die
-  Dokument-IDs gehoeren in die Suiten-Koepfe, sonst ist keine Ground Truth
-  reproduzierbar.
+* **#419** war zunaechst nicht nachmessbar: die Dokument-ID stand nirgends im
+  Repo — der Suiten-Kopf schrieb woertlich `documents/…/e/…`. Sie liess sich
+  ueber einen Sweep von 68 Dokumenten nach „17 Vollkoerper" zurueckholen
+  („Bath Interferometer", `a40fbe5244d0a1c6abfe8c96` /
+  `w/f7007df96ecd69d81728cd05` / `e/450a3eda61b15636607c33c5`) und steht jetzt
+  im Kopf. Nachgemessen: lose UND tight liefern dieselben sechs Zahlen. Die
+  Ground Truth ist von 0,1-mm-Rundungen auf die exakten Werte gehoben
+  (x [−3015,405; 85,635] · y [−157; 163] · z [−150,95; 169,05]); die Toleranz
+  bleibt 0,5 mm und kein Pin bewegt sich.
+
+  **Lehre daraus, unabhaengig vom Ergebnis:** eine Ground Truth ohne
+  Dokument-ID ist nicht reproduzierbar. Die Dokument-IDs gehoeren in JEDEN
+  Suiten-Kopf.
 
 ### 3. Was WIRKLICH offen bleibt: z min, 0,1675 mm zu weit
 

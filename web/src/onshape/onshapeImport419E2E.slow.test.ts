@@ -2,17 +2,24 @@
  * End-to-end acceptance of the #419 part studio against the REAL wasm kernel.
  *
  * Ticket #419 asked for the document
- * `cad.onshape.com/documents/…/e/…` — a large multi-part assembly — to import.
- * It does NOT, and this file is the honest measurement of how far it gets.
- * Until now #419 had NO test at all: the numbers in the gap matrix came from a
- * throwaway probe that was deleted afterwards, so nothing in the repo could
- * reproduce them and nothing would have noticed them changing.
+ * `cad.onshape.com/documents/a40fbe5244d0a1c6abfe8c96
+ *  /w/f7007df96ecd69d81728cd05/e/450a3eda61b15636607c33c5` („Bath
+ * Interferometer") — a large multi-part assembly — to import. It does NOT, and
+ * this file is the honest measurement of how far it gets. Until now #419 had
+ * NO test at all: the numbers in the gap matrix came from a throwaway probe
+ * that was deleted afterwards, so nothing in the repo could reproduce them and
+ * nothing would have noticed them changing.
+ *
+ * The document id is written out because #449 could not find it: this header
+ * used to say `documents/…/e/…`, and an unreproducible ground truth is the one
+ * failure mode this file exists to prevent. It had to be recovered by sweeping
+ * 68 documents for one with 17 solid parts.
  *
  * GROUND TRUTH comes from the Onshape REST API of that very document, never
  * from our own resolution (the methodology lesson of #412):
  *
  *   GET /api/v6/parts/d/{did}/w/{wid}/e/{eid}       → 17 solid parts
- *   GET …/partid/{id}/boundingboxes                 → the AABBs, unioned below
+ *   POST …/featurescript, evBox3d(tight: true)      → the AABB below
  *
  * Needs a current `just build-wasm` (the stale-wasm trap).
  */
@@ -40,11 +47,21 @@ const fixture = (name: string): any =>
  * shows up here as a fact rather than as a rounding argument. It is what
  * exposed one, and then what proved it gone in #448.
  */
+/**
+ * Onshape's TIGHT box over all 17 solids, exact (the values here used to be
+ * rounded to 0.1 mm, from `…/partid/{id}/boundingboxes` unioned by hand).
+ *
+ * That endpoint answers Onshape's LOOSE box, which cost #416's suite three
+ * tickets of hunting (#449). Here it costs nothing, and that is a measurement:
+ * `evBox3d` returns THE SAME six numbers with `tight: true` and with
+ * `tight: false` on this document. The slack lives on blended and spline
+ * faces; this assembly's box is set by plain prismatic and turned parts.
+ */
 const GROUND_TRUTH = {
   parts: 17,
-  x: [-3015.4, 85.6],
-  y: [-157, 163],
-  z: [-151, 169],
+  x: [-3015.405, 85.635],
+  y: [-157.0, 163.0],
+  z: [-150.95, 169.05],
 };
 
 /**
