@@ -3870,7 +3870,7 @@ hinzeigt, und kein einziger Punkt in der Haelfte, die es nicht waehlt.
 | 2 | Traeger 16,983 mm daneben | EIN Ausreisser-Stuetzpunkt von 32 kostete `Sketch 11` den Frame | 0.49.1 (#454) |
 | 3 | Linie 70 mm daneben | Onshapes zwei Antworten widersprechen sich; Geometrie direkt aus der 3D-Antwort | 0.50.0 |
 | 4 | regeneriert, fraest nicht | Boolean-Scope nannte ein Feature statt eines Koerpers | 0.50.1 (#456) |
-| — | Messwerkzeug | `setFeatureSuppressed` laesst den SDF stehen | offen (#455) |
+| — | Messwerkzeug | `setFeatureSuppressed` laesst den SDF stehen — **widerlegt**, s. Update (21) | #455 zu |
 
 ### 6. Methodik-Lehre
 
@@ -3880,3 +3880,104 @@ gefeuert. Was fehlte, war die Frage, WORAUF er angewandt wird; und die liess
 sich nur beantworten, indem man dasselbe Feature mit einem anderen Ziel laufen
 liess und die Differenz zaehlte. Ein Parameter, dessen Doku „body" sagt und
 dessen Code „feature" liest, faellt sonst niemandem auf.
+
+## Update 2026-07-29 (21) — der Suppress-Pfad war nie stehengeblieben (#455)
+
+Update (18) §2 hat `setFeatureSuppressed` vorgeworfen, den B-Rep neu zu weben
+und den kompilierten SDF-Strom stehen zu lassen; Update (20) §5 fuehrte das als
+letzten offenen Punkt der #452-Bilanz. Die Sonde dieser Runde widerlegt es —
+die **vierzehnte** Widerlegung der Serie, und diesmal traf sie das eigene
+Messwerkzeug.
+
+### 1. Die Kontrolle, die es entschieden hat
+
+Der Vorwurf war „ueber einen Toggle bewegt sich nichts". Die Frage dazu ist
+nicht „bewegt sich etwas", sondern **„bewegt sich dasselbe wie ohne das
+Feature"**. Also derselbe Zweit-Import wie in Update (19) — Feature per
+`removeFeature` ganz entfernt — gegen den Suppress-Zustand gehalten, Punkt fuer
+Punkt auf demselben 10 925-Punkte-Gitter, das die Ticket-Tabelle benutzt hat:
+
+| Kernel | fest ohne Feature | Suppress nimmt weg | `removeFeature` nimmt weg | Suppress ≠ removeFeature | Toggle zurueck ≠ Ausgang |
+|---|---:|---:|---:|---:|---:|
+| **v0.50.0** (Stand von Update (18)) | 6 601 | **0** | **0** | **0** | 0 |
+| **v0.50.1** (mit #456) | 6 601 | **470** | **470** | **0** | 0 |
+
+Die entscheidende Spalte ist die dritte: auf dem Kernel, auf dem #455 gemessen
+wurde, hat auch das **vollstaendige Entfernen** des Features null Punkte bewegt.
+Die Null war die Geometrie, nicht der Cache — `Extrude 15` hat damals nichts
+abgetragen, und genau das war **#456**. Seit dessen Fix bewegt der Suppress-Pfad
+dieselben 470 Punkte wie das Entfernen, und zwar exakt dieselben.
+
+(Nachgemessen mit `git checkout f22da973 -- crates/` und frisch gebauter WASM,
+also auf genau dem Kernel-Stand, den Update (18) vor sich hatte.)
+
+### 2. Der Widerspruch loest sich, ohne dass etwas kaputt war
+
+„B-Rep bewegt sich (18/51 ↔ 24/67), SDF nicht" — beide Haelften stimmen, und
+beide sind richtig. Update (19) §2 hat dieselben Flaechen- und Kantenzahlen
+ueber ZWEI unabhaengige Kernel gemessen (24/67 ohne, 18/51 mit dem Feature).
+Der Suppress-Pfad lieferte also schon damals genau das, was das Entfernen
+lieferte — auf beiden Seiten. Ein no-op-Difference bewegt den B-Rep trotzdem,
+weil er die Koerper-AABB per `subtract_cap` zurueckzieht und damit die Domaene
+aendert, ueber der gewebt wird (Update (19) §3); dieselbe Buchhaltung erklaert
+auch die „vier gekippten Randpunkte" aus Update (17), die Update (18) einem
+Teil-Refresh zugeschrieben hat. Ein Teil-Refresh war es nie.
+
+### 3. Warum der Cache den Toggle gar nicht verpassen kann
+
+`set_feature_suppressed` schaltet das Flag am `FeatureCall` und ruft
+`bootstrap_features_from_calls`: die Regen-Schleife ueberspringt unterdrueckte
+Aufrufe, das Feature faellt also **aus dem `decoded`-Rueckgrat heraus**. Damit
+aendert sich die Index-Liste des Koerpers — und `hash_body_payload_split`
+hasht `indices.len()` und je Feature `id`, `op.tag()` und die Geometrie. Der
+Suppress-Zustand braucht im Hash gar nicht vorzukommen; er ist als
+Anwesenheit/Abwesenheit des Features schon drin. Der Vergleich mit #405
+(`edge_fillets` fehlten im Hash) traegt nicht: ein Fillet aendert den Baum, ohne
+ein Feature aus dem Rueckgrat zu nehmen, ein Suppress tut genau das.
+
+Gemessen am Opcode-Strom, der die Frage direkt beantwortet:
+
+| | mit Feature | suppressed | `removeFeature` |
+|---|---:|---:|---:|
+| `bodySdfOpcodesLen(16)`, `Extrude 15` | 413 | **371** | 371 |
+| `bodySdfOpcodesLen(0)`, `Extrude 2` | 168 | **49** | 49 |
+
+### 4. Was die Null wirklich war: ein zu grobes Gitter
+
+Die 10 925 Punkte der Ticket-Tabelle lagen im Prisma der gewaehlten Region und
+mussten schon deshalb still bleiben. Aber auch die zweite Zahl der Runde („0 von
+10 925 ueber ALLE 18 Koerper") ist so entstanden: mit einem 6³-Gitter je Koerper
+(69 984 Auswertungen) bewegen sich heute **16** Werte — 0,02 %. Ein Gitter
+dieser Weite trifft einen Schnitt von 470 Punkten in 10 925 schlicht nicht
+zuverlaessig; „0 Treffer" ist dabei kein Befund ueber das Feld.
+
+Dasselbe gilt fuer den zweiten Verdachtsfall aus dem Ticket, den Pin zu
+`Extrude 2` (#451): dort stand „`bodySdfEval` liest mit unterdrucktem Feature
+bitgleich, der Schnitt liegt unter der 10-µm-Bautoleranz". Ueber ein 14³-Gitter
+(2 744 Punkte) bewegen sich **134** Werte — dieselben 134 wie beim vollstaendigen
+Entfernen. Kein Punkt wechselt das Vorzeichen (1 372 fest mit wie ohne), die
+AABB kann sich nicht bewegen: der ±5-µm-Kratzer nimmt kein Volumen, steht aber
+sehr wohl im kompilierten Feld. Der Pin sagt das jetzt so und prueft es am
+Opcode-Strom.
+
+### 5. Was daraus im Repo steht
+
+- `suppress_toggle_moves_brep_and_compiled_sdf` (Kernel, echte API-Kette):
+  Box + REMOVE-Box, unterdrueckt, und das Feld muss dem eines Dokuments
+  gleichen, das das Feature **nie hatte** — nicht bloss „sich geaendert haben".
+  Mutationsgeprueft: laesst man `rebuild_mesh_internal` den alten
+  `compiled_sdf` stehen, faellt der Test.
+- Der `Extrude 15`-Pin der #419-Suite nimmt seine Basis wieder ueber den
+  Suppress-Toggle (ein Import statt zwei, ~75 s schneller) und prueft die
+  Umkehrbarkeit selbst mit.
+
+### 6. Methodik-Lehre
+
+**Eine Null ohne Kontrolle ist keine Messung.** „Nichts bewegt sich, wenn ich
+das Feature abschalte" hat genau zwei Erklaerungen — das Werkzeug misst nicht,
+oder das Feature tut nichts — und die Runde, die das Ticket geschrieben hat,
+hatte die zweite bereits in derselben Datei stehen. Die Kontrolle, die beide
+trennt, kostet eine Zeile: dasselbe nochmal ueber einen Pfad, der den Verdacht
+nicht teilt. Update (18) §5 hat diese Lehre selbst formuliert („wo zwei
+Verfahren sich widersprechen, braucht es ein drittes") und sie im naechsten
+Absatz nicht auf sich selbst angewandt.
