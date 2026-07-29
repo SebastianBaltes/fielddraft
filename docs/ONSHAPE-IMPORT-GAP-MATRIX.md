@@ -3729,3 +3729,73 @@ ueber die Geometrie berichtet; es war zur Haelfte ein Befund ueber das
 Messwerkzeug. Erst der dritte, unabhaengige Pfad — ein zweiter Import ohne das
 Feature — hat beide Haelften trennen koennen. Wo zwei Verfahren sich
 widersprechen, braucht es ein drittes, das von keinem der beiden abhaengt.
+
+## Update 2026-07-29 (19) — die Vermutung faellt, und der Schnitt bleibt aus (#452 → #456)
+
+Update (18) endete mit einer ausdruecklich als Vermutung markierten Spur:
+`targets` sei `qCreatedBy(44)` und 44 ein BOOLEAN, also womoeglich kein
+Koerper-Wurzel-Id, das die Partition wiederfindet. Sie ist vermessen und
+**falsch** — die dreizehnte Widerlegung dieser Serie.
+
+### 1. Die Aufloesung stimmt in jedem Schritt
+
+| | Wert |
+|---|---|
+| Feature 49 (`Extrude 15`) | `op: Remove`, `targets: ["44"]` |
+| Feature 44 | existiert, `op: New` |
+| Partition | 18 Teile, in beiden Kernels identische Seeds |
+| Teil 16 | `seed: "44"`, 5 Mitglieder, **enthaelt Feature 49** |
+
+Der Remove haengt am richtigen Koerper. Nebenbefund: `expand_to_owner_body_members`
+ist auf dem Extrude-Pfad ueberhaupt nicht beteiligt — nur `offset.rs` ruft es;
+der Extrude reicht ueber `resolve_merge_scope` die expliziten Ids durch. Die
+Vermutung hatte also schon im Ansatz keinen Ort.
+
+### 2. B-Rep und AABB sehen den Schnitt, der kompilierte SDF nicht
+
+Gemessen ueber ZWEI unabhaengig gebaute Kernel (zweiter Import, in dem das
+Feature per `removeFeature` fehlt) — der Suppress-Pfad aus #455 ist damit
+draussen, und beide Kernel haben dieselben 18 Teile mit denselben Seeds:
+
+| Koerper 16 | ohne Feature | mit Feature |
+|---|---|---|
+| B-Rep Flaechen / Kanten / offen | 24 / 67 / 5 | **18 / 51 / 9** |
+| `bodySdfAabb` z | −26,00 … 23,55 | **−20,95 … 23,55** |
+| SDF-Punkte im PRISMA, die sich aendern | — | **0 von 950 festen** |
+
+### 3. Und was sich bewegt, liegt dort, wo das Werkzeug nicht ist
+
+In z ∈ [−26; −19] — UNTERHALB des Prismas, das erst bei z = −16,83 beginnt —
+unterscheiden sich 667 von 13 455 Punkten, und der Koerper verliert dort 167
+feste Punkte (3 755 → 3 588).
+
+Das ist die Signatur einer BUCHHALTUNG, nicht eines Schnitts: `body.rs` zieht
+bei einem Remove die Koerper-AABB per `subtract_cap` zurueck, und diese Box ist
+die Domaene, ueber der gewebt und kompiliert wird. Sie zieht sich hier in einen
+z-Bereich zurueck, den das Werkzeug nicht beruehrt; der Verlust von sechs
+Flaechen und der Zuwachs von vier offenen passen dazu.
+
+### 4. Der Mechanismus selbst ist in Ordnung
+
+Minimal nachgestellt schneidet er (Update (18) §1): 2 314 von 7 581 festen
+Punkten werden zu Luft. Was das #419-Dokument davon unterscheidet, ist NICHT
+vermessen und wird hier nicht geraten. Zwei Fragen bleiben, beide im Kernel und
+beide in **#456**:
+
+1. Warum erreicht der Difference-Zweig den kompilierten SDF-Strom des Koerpers
+   nicht, obwohl das Feature in `feature_indices` seines Teils steht?
+2. Warum zieht `subtract_cap` die Box in einen Bereich zurueck, den das
+   Werkzeug nicht abdeckt — und beschaedigt darueber den B-Rep?
+
+### 5. Methodik-Lehre
+
+**Drei Instrumente, drei Antworten — und die Mehrheit hat nicht recht.**
+Partition, AABB und B-Rep sagen „hier wird geschnitten", der SDF sagt „nein".
+Zwei gegen eins, und trotzdem ist die eine die maßgebliche: der SDF IST die
+Geometrie, die anderen sind Buchhaltung ueber sie. Wer hier nach Mehrheit
+entschieden haette, haette #452 geschlossen und ein Loch ausgeliefert, das es
+nicht gibt.
+
+Dass die Buchhaltung sich zusaetzlich in einem Bereich irrt, den das Werkzeug
+gar nicht erreicht, ist der zweite Teil desselben Befunds: sie ist nicht bloss
+optimistisch, sie ist an dieser Stelle falsch.
