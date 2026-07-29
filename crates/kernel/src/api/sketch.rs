@@ -159,24 +159,42 @@ impl Kernel {
         sketch_id: u32,
         resolution: u32,
     ) -> Result<String, JsError> {
+        let _ = resolution; // the arrangement is exact — no grid resolution needed
+        let regions = self.with_sketch_spine(sketch_id, sketch_regions::find_regions)?;
+        serde_json::to_string(&regions).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Run `f` on the sub-spine a sketch's regions are arranged from: whatever
+    /// the last regeneration BUILT it from (`Kernel::sketch_spines` — the
+    /// document's own sub-calls plus the derived fence curves of #452), falling
+    /// back to the document alone for a sketch that never regenerated.
+    ///
+    /// Both region readers go through here so the index they report addresses
+    /// the same face `resolve_profile_query` builds from `Context::sketches`.
+    /// A closure rather than a returned `Vec` because the readers are hot — the
+    /// Onshape import calls `regionQueryAtPoint` 64 times per boundary edge —
+    /// and the captured spine can be lent out instead of copied.
+    fn with_sketch_spine<R>(
+        &self,
+        sketch_id: u32,
+        f: impl FnOnce(&[fielddraft_protocol::FeatureCall]) -> R,
+    ) -> Result<R, JsError> {
         let target = FeatureId::from_u32(sketch_id);
+        if let Some(spine) = self.sketch_spines.get(&target) {
+            return Ok(f(spine));
+        }
         let call = self
             .document
             .feature_calls
             .iter()
             .find(|c| c.id == target && c.type_name == "sketch")
             .ok_or_else(|| JsError::new(&format!("feature {sketch_id} is not a sketch")))?;
-
         let sub_calls: Vec<serde_json::Value> = call
             .params
             .get("sub_calls")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
-
-        let _ = resolution; // the arrangement is exact — no grid resolution needed
-        let calls = crate::sketch::parse_raw_sub_calls(&sub_calls);
-        let regions = sketch_regions::find_regions(&calls);
-        serde_json::to_string(&regions).map_err(|e| JsError::new(&e.to_string()))
+        Ok(f(&crate::sketch::parse_raw_sub_calls(&sub_calls)))
     }
 
     /// Ticket dhjn: the `qRegion(sketch_id, i)` query string for the closed
@@ -192,20 +210,9 @@ impl Kernel {
         u: f32,
         v: f32,
     ) -> Result<String, JsError> {
-        let target = FeatureId::from_u32(sketch_id);
-        let call = self
-            .document
-            .feature_calls
-            .iter()
-            .find(|c| c.id == target && c.type_name == "sketch")
-            .ok_or_else(|| JsError::new(&format!("feature {sketch_id} is not a sketch")))?;
-        let sub_calls: Vec<serde_json::Value> = call
-            .params
-            .get("sub_calls")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-        let calls = crate::sketch::parse_raw_sub_calls(&sub_calls);
-        match sketch_regions::region_index_at_point(&calls, [u, v]) {
+        let hit = self
+            .with_sketch_spine(sketch_id, |c| sketch_regions::region_index_at_point(c, [u, v]))?;
+        match hit {
             Some(i) => Ok(format!("qRegion({sketch_id}, {i})")),
             None => Ok(String::new()),
         }

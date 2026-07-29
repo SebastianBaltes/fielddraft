@@ -3698,3 +3698,163 @@ fn arrange_keeps_a_cut_arc_of_an_arc_entity() {
     assert_eq!(xs.len(), 2, "one chord foot per stretch: {slab:?}");
     assert!((xs[0] + foot).abs() < 1e-4 && (xs[1] - foot).abs() < 1e-4, "{xs:?}");
 }
+
+// ─── #452: the carrier face fences the sketch ───────────────────────────────
+
+/// Regenerate `[box sketch, extrude, sketch on the extrude's top cap]` and hand
+/// back the resolved sub-spine of that third feature — the sub-calls the fence
+/// was appended to. The block is 20 × 20 mm, so its cap is a 400 mm² square
+/// centred on the sketch frame's origin whichever in-plane axes the basis
+/// convention picks.
+fn fenced_cap_sketch(sub_calls: serde_json::Value) -> Vec<FeatureCall> {
+    let calls: Vec<FeatureCall> = serde_json::from_value(sub_calls).unwrap();
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = Document::default();
+    let mut ctx = Context::new(&mut doc);
+    registry
+        .regenerate(
+            &mut ctx,
+            &[
+                FeatureCall::new("sketch", id(1), json!({
+                    "plane": "qCreatedBy(origin_plane_xy)",
+                    "sub_calls": [{"type":"sketch_rectangle","id":"1",
+                        "params":{"corner_a":[-10.0,-10.0],"corner_b":[10.0,10.0]}}] })),
+                FeatureCall::new("extrude", id(2), json!({
+                    "profiles": "qCreatedBy(1)", "depth": {"value": 10.0, "unit": "mm"} })),
+                FeatureCall::new("sketch", id(3), json!({
+                    "plane": "qCreatedBy(2, CAP_TOP)", "sub_calls": calls })),
+            ],
+            None,
+        )
+        .unwrap();
+    ctx.sketches[&id(3)].sub_calls.clone()
+}
+
+/// A single LINE drawn across the face a sketch stands on closes TWO regions —
+/// the case #452 is about. FieldDraft used to report none: it built regions
+/// from sketch curves alone, and one line encloses nothing.
+///
+/// The line runs past both edges of the 20 × 20 cap, so the two halves are
+/// 200 mm² each and nothing is left over.
+#[test]
+fn a_line_across_the_carrier_face_closes_two_regions() {
+    let spine = fenced_cap_sketch(json!([
+        {"type":"sketch_line","id":"1","params":{"start":[-15.0,0.0],"end":[15.0,0.0]}}
+    ]));
+    assert_eq!(spine.len(), 5, "one drawn line + the cap's four edges as fence");
+    assert_eq!(
+        spine.iter().filter(|c| crate::sketch::is_fence_call(c)).count(),
+        4,
+        "the fence is the carrier's own boundary"
+    );
+
+    let regions = crate::sketch_regions::find_regions(&spine);
+    assert_eq!(regions.len(), 2, "the line halves the face");
+    for r in &regions {
+        assert!((r.area - 200.0).abs() < 1e-2, "half the 400 mm² cap: {}", r.area);
+    }
+
+    // A fence curve is NOT extrudable: the whole-sketch profile is what the
+    // user DREW, and one line is no area at all. Only the regions are new.
+    assert!(
+        matches!(build_sketch2d_from_sub_calls(&spine), Sketch2d::Empty),
+        "the fence must not leak into `qCreatedBy(<sketch>)`"
+    );
+}
+
+/// The other half of the rule: a fence may CLOSE a region, never CUT one.
+///
+/// The same carrier, with a closed 8 × 8 rectangle drawn on it. Its 64 mm²
+/// region has to come out EXACTLY as it does without a carrier — not cut into
+/// pieces by the cap's edges, and not joined by a second region for the rest of
+/// the face (which the sketch drew nothing of and which is addressable as a
+/// FACE profile in its own right).
+#[test]
+fn a_closed_profile_on_the_carrier_face_is_left_alone() {
+    let drawn = json!([
+        {"type":"sketch_rectangle","id":"1","params":{"corner_a":[-4.0,-4.0],"corner_b":[4.0,4.0]}}
+    ]);
+    let spine = fenced_cap_sketch(drawn.clone());
+    assert_eq!(
+        spine.iter().filter(|c| crate::sketch::is_fence_call(c)).count(),
+        4,
+        "the carrier is fenced all the same"
+    );
+    let regions = crate::sketch_regions::find_regions(&spine);
+    assert_eq!(regions.len(), 1, "one region, as without a fence");
+    assert!((regions[0].area - 64.0).abs() < 1e-2, "{}", regions[0].area);
+
+    // And the walls that region mints still carry the DRAWN rectangle's own
+    // entity ids — the fence takes the ids behind them, so nothing renumbers
+    // (the #451 failure mode).
+    let bare: Vec<FeatureCall> = serde_json::from_value(drawn).unwrap();
+    let (tree, traced) = build_sketch2d_traced(&bare);
+    let mut want = wall_sub_table(&tree, &traced).expect("rectangle names its walls");
+    let face = crate::sketch_arrangement::arrange_union(&spine, &[0]).expect("the region");
+    let mut got = wall_sub_table(&face.profile, &face.traces).expect("the region names its walls");
+    // The SET, not the order: a region's contour starts at its own G1 break, so
+    // the four walls come out rotated against the lowering's emission order.
+    want.sort_unstable();
+    got.sort_unstable();
+    assert_eq!(got, want, "the fenced region names the same four curve entities");
+}
+
+/// A fence that runs THROUGH what the sketch drew is trimmed to the open area:
+/// an 8 × 8 rectangle straddling the cap's edge stays ONE region of 64 mm².
+///
+/// This is not a nicety. Our carrier face need not be Onshape's — Onshape folds
+/// coplanar faces into one and we keep one per feature (#443) — so a seam that
+/// exists only in OUR partition must not cut a region the sketch closed itself.
+#[test]
+fn a_fence_crossing_drawn_geometry_does_not_split_it() {
+    let spine = fenced_cap_sketch(json!([
+        {"type":"sketch_rectangle","id":"1","params":{"corner_a":[6.0,-4.0],"corner_b":[14.0,4.0]}}
+    ]));
+    let regions = crate::sketch_regions::find_regions(&spine);
+    let drawn = regions
+        .iter()
+        .find(|r| (r.area - 64.0).abs() < 1e-2)
+        .unwrap_or_else(|| panic!("the 8 × 8 rectangle, whole: {:?}",
+            regions.iter().map(|r| r.area).collect::<Vec<_>>()));
+    assert!(drawn.area > 0.0);
+}
+
+/// The region a fence closes really BUILDS: extruded, it is a solid half the
+/// cap, standing on the cap.
+#[test]
+fn a_fenced_region_extrudes_to_real_material() {
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = Document::default();
+    let mut ctx = Context::new(&mut doc);
+    registry
+        .regenerate(
+            &mut ctx,
+            &[
+                FeatureCall::new("sketch", id(1), json!({
+                    "plane": "qCreatedBy(origin_plane_xy)",
+                    "sub_calls": [{"type":"sketch_rectangle","id":"1",
+                        "params":{"corner_a":[-10.0,-10.0],"corner_b":[10.0,10.0]}}] })),
+                FeatureCall::new("extrude", id(2), json!({
+                    "profiles": "qCreatedBy(1)", "depth": {"value": 10.0, "unit": "mm"} })),
+                FeatureCall::new("sketch", id(3), json!({
+                    "plane": "qCreatedBy(2, CAP_TOP)",
+                    "sub_calls": [{"type":"sketch_line","id":"1",
+                        "params":{"start":[-15.0,0.0],"end":[15.0,0.0]}}] })),
+                FeatureCall::new("extrude", id(4), json!({
+                    "profiles": "qRegion(3, 0)",
+                    "depth": {"value": 6.0, "unit": "mm"} })),
+            ],
+            None,
+        )
+        .unwrap();
+
+    // Two bodies: the block and the half-lid on top of it (no implicit merge).
+    let woven = crate::body::weave_all(&ctx.features);
+    assert_eq!(woven.len(), 2, "block plus the extruded half");
+    // The half-lid's own footprint is 20 × 10 mm — half the cap.
+    let node = crate::csg::CsgNode::from_decoded(&ctx.features);
+    let bb = node.aabb();
+    let (lo, hi) = (bb.min, bb.max);
+    assert!((hi[0] - lo[0] - 20.0).abs() < 0.1, "{lo:?} {hi:?}");
+    assert!((hi[1] - lo[1] - 20.0).abs() < 0.1, "{lo:?} {hi:?}");
+}

@@ -73,6 +73,35 @@ pub use lower::*;
 pub use spline_math::*;
 pub use tools::*;
 
+// ─── #452: fence curves ─────────────────────────────────────────
+
+/// Param key that marks a sketch sub-call as a **fence** curve: geometry the
+/// sketch did not draw but is bounded by — today the projected boundary of the
+/// FACE the sketch stands on (see [`feature::carrier_fence_sub_calls`]).
+///
+/// A fence curve is deliberately NOT a third kind of sub-call but the ordinary
+/// `sketch_line` / `sketch_arc` / `sketch_circle` with one extra flag, exactly
+/// as `construction` is. The two flags are the two halves of a table:
+///
+/// |               | region arrangement | extrudable profile |
+/// |---------------|--------------------|--------------------|
+/// | plain         | yes                | yes                |
+/// | `construction`| no                 | no                 |
+/// | `fence`       | yes                | **no**             |
+///
+/// So a fence can CLOSE a region the user's own curves leave open, while
+/// `qCreatedBy(<sketch>)` — the whole-sketch profile — comes out bit-identical
+/// to a sketch without one.
+pub const FENCE_PARAM: &str = "fence";
+
+/// Is this sub-call a [fence](FENCE_PARAM) curve?
+pub fn is_fence_call(call: &FeatureCall) -> bool {
+    call.params
+        .get(FENCE_PARAM)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 // ─── K7.0: Context-side sketch handle ───────────────────────────
 
 /// Bundle of everything a downstream feature (extrude, revolve,

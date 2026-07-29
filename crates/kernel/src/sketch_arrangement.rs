@@ -81,18 +81,23 @@ struct Piece {
 /// Collect every non-construction entity's exact boundary segments, each
 /// tagged with the SKETCH CURVE ENTITY it came from (`None` = the tool has no
 /// per-segment curve entity to name, e.g. the point-only polygon/slot/path
-/// tools). The ids come from the same registry replay the whole-sketch
-/// provenance trace uses ([`crate::sketch::replay_allocations`]), so the two
-/// paths can never drift apart.
+/// tools) and with whether it is a FENCE curve (#452). The ids come from the
+/// same registry replay the whole-sketch provenance trace uses
+/// ([`crate::sketch::replay_allocations`]), so the two paths can never drift
+/// apart.
 ///
 /// LOCKSTEP: for a multi-curve tool the emission order below must match the
 /// tool's `apply()` allocation order. Today that is only `sketch_rectangle`
 /// (bottom, right, top, left in both) — anything else emits one curve or none.
-fn collect_sources(sub_calls: &[FeatureCall]) -> (Vec<SketchSegment>, Vec<Option<u32>>) {
+fn collect_sources(
+    sub_calls: &[FeatureCall],
+) -> (Vec<SketchSegment>, Vec<Option<u32>>, Vec<bool>) {
     let allocs = crate::sketch::replay_allocations(sub_calls);
     let mut out: Vec<SketchSegment> = Vec::new();
     let mut src_ids: Vec<Option<u32>> = Vec::new();
+    let mut src_fence: Vec<bool> = Vec::new();
     for (ci, call) in sub_calls.iter().enumerate() {
+        let fence = crate::sketch::is_fence_call(call);
         let curves: &[u32] = allocs.get(ci).map(|a| a.curves.as_slice()).unwrap_or(&[]);
         // Everything this call pushes gets attributed at the end of the arm.
         let before = out.len();
@@ -247,9 +252,10 @@ fn collect_sources(sub_calls: &[FeatureCall]) -> (Vec<SketchSegment>, Vec<Option
                 n if n == pushed => Some(curves[k]),
                 _ => None,
             });
+            src_fence.push(fence);
         }
     }
-    (out, src_ids)
+    (out, src_ids, src_fence)
 }
 
 fn push_polygon(out: &mut Vec<SketchSegment>, flat: &[f32]) {
@@ -444,7 +450,15 @@ struct RawFace {
 }
 
 /// Build the arrangement and return its bounded faces + the vertex pool.
-fn build_faces(sources: &[SketchSegment]) -> (Vec<RawFace>, Vec<[f64; 2]>, Vec<Edge>) {
+///
+/// `fence` marks, per source, whether it is a FENCE curve (#452) — the carrier
+/// face's own boundary rather than something the sketch drew. A fence curve may
+/// **close** a region, never **cut** one, so before anything else the fence is
+/// trimmed to the area the drawn curves leave open ([`trim_fence_to_open_area`]).
+fn build_faces(
+    sources: &[SketchSegment],
+    fence: &[bool],
+) -> (Vec<RawFace>, Vec<[f64; 2]>, Vec<Edge>) {
     // 1. Flatten every source into straight pieces tagged with the source id
     //    AND the parameter span each piece covers on it.
     let mut pieces: Vec<Piece> = Vec::new();
@@ -463,14 +477,70 @@ fn build_faces(sources: &[SketchSegment]) -> (Vec<RawFace>, Vec<[f64; 2]>, Vec<E
             }
         }
     }
+    let pieces = trim_fence_to_open_area(pieces, fence);
+    faces_from_pieces(pieces)
+}
 
-    // 2. Planarize: split every piece at intersections + interior T-junctions.
+/// Drop every fence piece that runs through area the DRAWN curves already
+/// bound (#452).
+///
+/// Without this a fence would SUBDIVIDE what the sketch itself encloses, and
+/// that is wrong twice over. Semantically: the carrier's edge is a boundary
+/// only where the sketch has none of its own — the whole point of the fence is
+/// to close what is open, and a drawn rectangle is not open. Practically: our
+/// carrier face need not be Onshape's. Onshape folds coplanar faces into ONE
+/// (#443) and we do not, so a sketch whose curves reach past OUR piece of that
+/// plane would be cut at a seam Onshape's model has nowhere — measured on
+/// #419's `Sketch 4`, whose 44 × 44 plate stands on a 38 × 38 wall and came
+/// apart into 19 regions instead of 15. Trimmed, the fence can only ADD regions
+/// where there were none, never split one that exists.
+///
+/// „Already bound" means: inside any BOUNDED face of the drawn-only
+/// arrangement. That includes the inside of a hole (a hole is a bounded face
+/// too), which is right — the drawn curves fence it either way.
+///
+/// The test is per SUB-PIECE, and the fence is cut against the drawn pieces
+/// first: a fence line that enters and leaves a drawn region has to lose only
+/// the stretch INSIDE it. Judged whole, a line crossing a rectangle would be
+/// kept or dropped by its midpoint alone — which split #419's `Sketch 43`
+/// region in two, the very thing this function exists to prevent.
+fn trim_fence_to_open_area(pieces: Vec<Piece>, fence: &[bool]) -> Vec<Piece> {
+    let is_fence = |p: &Piece| fence.get(p.src).copied().unwrap_or(false);
+    if !pieces.iter().any(is_fence) {
+        return pieces;
+    }
+    let (drawn, fence_pieces): (Vec<Piece>, Vec<Piece>) =
+        pieces.into_iter().partition(|p| !is_fence(p));
+    if drawn.is_empty() {
+        return fence_pieces;
+    }
+    let (faces, verts, _) = faces_from_pieces(drawn.clone());
+    let polys: Vec<Vec<[f64; 2]>> = faces
+        .iter()
+        .map(|f| f.verts.iter().map(|&i| verts[i]).collect())
+        .collect();
+    let mut out = drawn;
+    out.extend(
+        split_pieces_at(&fence_pieces, &out, false)
+            .into_iter()
+            .filter(|p| {
+                let mid = [(p.a[0] + p.b[0]) * 0.5, (p.a[1] + p.b[1]) * 0.5];
+                !polys.iter().any(|poly| point_in_poly(mid, poly))
+            }),
+    );
+    out
+}
+
+/// Split every piece of `targets` where a piece of `against` crosses it or
+/// ends on its interior — the planarization cut, shared by the arrangement
+/// itself (`targets == against`) and by the fence trim, which cuts fence
+/// pieces against the DRAWN ones only.
+fn split_pieces_at(targets: &[Piece], against: &[Piece], same: bool) -> Vec<Piece> {
     let mut sub_pieces: Vec<Piece> = Vec::new();
-    for i in 0..pieces.len() {
-        let pi = &pieces[i];
+    for (i, pi) in targets.iter().enumerate() {
         let mut cuts: Vec<f64> = Vec::new();
-        for (j, pj) in pieces.iter().enumerate() {
-            if i == j {
+        for (j, pj) in against.iter().enumerate() {
+            if same && i == j {
                 continue;
             }
             if let Some((t, _)) = seg_intersection(pi.a, pi.b, pj.a, pj.b) {
@@ -519,6 +589,13 @@ fn build_faces(sources: &[SketchSegment]) -> (Vec<RawFace>, Vec<[f64; 2]>, Vec<E
             });
         }
     }
+    sub_pieces
+}
+
+/// Planarize a piece soup into the arrangement's bounded faces.
+fn faces_from_pieces(pieces: Vec<Piece>) -> (Vec<RawFace>, Vec<[f64; 2]>, Vec<Edge>) {
+    // 2. Planarize: split every piece at intersections + interior T-junctions.
+    let sub_pieces = split_pieces_at(&pieces, &pieces, true);
 
     // 3. Weld endpoints → graph edges (dedup unordered vertex pairs).
     let mut pool = VertexPool::new();
@@ -745,6 +822,8 @@ fn union_loops(
 struct Arrangement {
     sources: Vec<SketchSegment>,
     src_ids: Vec<Option<u32>>,
+    /// Per source segment: does it come from a FENCE sub-call (#452)?
+    src_fence: Vec<bool>,
     faces: Vec<RawFace>,
     edges: Vec<Edge>,
     verts: Vec<[f64; 2]>,
@@ -758,11 +837,11 @@ impl Arrangement {
         if has_unarrangeable(sub_calls) {
             return None;
         }
-        let (sources, src_ids) = collect_sources(sub_calls);
+        let (sources, src_ids, src_fence) = collect_sources(sub_calls);
         if sources.is_empty() {
             return None;
         }
-        let (faces, verts, edges) = build_faces(&sources);
+        let (faces, verts, edges) = build_faces(&sources, &src_fence);
         if faces.is_empty() {
             return None;
         }
@@ -793,7 +872,28 @@ impl Arrangement {
         let children: Vec<Vec<usize>> = (0..n)
             .map(|j| (0..n).filter(|&i| parent[i] == Some(j)).collect())
             .collect();
-        Some(Self { sources, src_ids, faces, edges, verts, polys, children })
+        Some(Self { sources, src_ids, src_fence, faces, edges, verts, polys, children })
+    }
+
+    /// Does this face's OUTER boundary carry at least one DRAWN (non-fence)
+    /// curve? A fence curve — the carrier face's own boundary, projected into
+    /// the sketch plane (#452) — may CLOSE a region the user's curves leave
+    /// open, but it never bounds one on its own.
+    ///
+    /// The face whose outer loop is pure fence is the carrier face itself
+    /// (minus whatever the sketch drew on it): the sketch says nothing about
+    /// it, and it is already addressable — better named — as a FACE profile
+    /// (`qWall(…)` / `qFace(…)`, the #442 path). Handing it out here as well
+    /// would add a region to EVERY face-mounted sketch and renumber all the
+    /// others, for a selection that is a duplicate.
+    ///
+    /// A pure-fence face nested INSIDE a drawn one is a different matter: it
+    /// is a hole of the carrier (there is no material there), and it stays a
+    /// hole — this filter only decides who is a REGION of its own.
+    fn has_drawn_boundary(&self, f: &RawFace) -> bool {
+        f.half_edges
+            .iter()
+            .any(|&h| !self.src_fence[self.edges[h >> 1].src])
     }
 
     fn profile_of(&self, face: &RawFace) -> (Sketch2d, crate::sketch::TracedPrim) {
@@ -912,6 +1012,7 @@ impl Arrangement {
     /// its RAW face index (what [`union_loops`] needs).
     fn atomic_faces(&self) -> Vec<(usize, AtomicFace)> {
         let mut out: Vec<(usize, AtomicFace)> = (0..self.faces.len())
+            .filter(|&i| self.has_drawn_boundary(&self.faces[i]))
             .filter_map(|i| {
                 let f = std::slice::from_ref(&self.faces[i]);
                 self.assemble(f, &self.children[i]).map(|a| (i, a))

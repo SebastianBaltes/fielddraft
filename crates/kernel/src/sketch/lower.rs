@@ -446,6 +446,7 @@ pub fn build_sketch2d_traced(sub_calls: &[FeatureCall]) -> (Sketch2d, Vec<Traced
             .get("construction")
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
+            || super::is_fence_call(call)
         {
             continue;
         }
@@ -535,11 +536,17 @@ pub fn build_sketch2d_traced(sub_calls: &[FeatureCall]) -> (Sketch2d, Vec<Traced
         // constraint solve (the TS side still builds solver entities for
         // it) but never contributes to the extrudable region. The flag
         // is a plain param so it costs nothing in the tool schemas.
+        //
+        // A FENCE curve (#452) is excluded here for the mirror reason: it is
+        // reference geometry too, only of the opposite kind — it DOES imprint
+        // (it bounds regions in `sketch_arrangement`) but it was never drawn,
+        // so it must not add area to the whole-sketch profile.
         if call
             .params
             .get("construction")
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
+            || super::is_fence_call(call)
         {
             continue;
         }

@@ -45,18 +45,30 @@ impl<'a> Context<'a> {
         &mut self,
         expr: &crate::queries::QueryExpr,
     ) -> Option<crate::sketch::SketchFrame> {
+        let (bi, fid) = self.locate_plane_face(expr)?;
+        let woven = self.brep_cache.ensure(&self.features);
+        let (brep, placement) = &woven[bi];
+        Some(crate::sketch::face_plane_frame(brep, fid, placement))
+    }
+
+    /// The FIRST face a face-yielding query selects, as `(body index, face)`
+    /// into the woven B-Rep — the located half of [`Self::resolve_face_frame`],
+    /// split out so a caller that needs the face ITSELF (its boundary, #452)
+    /// resolves it exactly the same way the frame did, rather than through a
+    /// second walk that could pick a different face.
+    pub(crate) fn locate_plane_face(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Option<(usize, crate::brep::FaceId)> {
         use crate::brep::FaceId;
         use crate::queries::QueryExpr;
 
         let woven = self.brep_cache.ensure(&self.features);
         if let QueryExpr::Face(eref) = expr {
-            let (bi, fid) = locate_face(woven, eref)?;
-            let (brep, placement) = &woven[bi];
-            return Some(crate::sketch::face_plane_frame(brep, fid, placement));
+            return locate_face(woven, eref);
         }
-        for (brep, placement) in woven {
+        for (bi, (brep, _)) in woven.iter().enumerate() {
             for i in 0..brep.faces.len() {
-                let fid = FaceId(i as u32);
                 let hit = match expr {
                     QueryExpr::CreatedBy(f) | QueryExpr::FaceOf(f) => f
                         .as_u32_or_root()
@@ -64,16 +76,14 @@ impl<'a> Context<'a> {
                     _ => false,
                 };
                 if hit {
-                    return Some(crate::sketch::face_plane_frame(
-                        brep, fid, placement,
-                    ));
+                    return Some((bi, FaceId(i as u32)));
                 }
             }
         }
         // Every RICHER form (`qCreatedBy(op, ROLE)`, `qWall`, `qIntersection`,
         // `qAdjacentTo`, …) goes through the shared element resolver instead of
         // a second match arm here that would forever lag the query grammar.
-        for (brep, placement) in woven {
+        for (bi, (brep, _)) in woven.iter().enumerate() {
             let refs = crate::queries::resolve_query_topo(std::slice::from_ref(brep), expr);
             let Some(r) = refs
                 .iter()
@@ -82,10 +92,106 @@ impl<'a> Context<'a> {
                 continue;
             };
             if let Some(fid) = face_by_hash(brep, r.id_hash) {
-                return Some(crate::sketch::face_plane_frame(brep, fid, placement));
+                return Some((bi, fid));
             }
         }
         None
+    }
+
+    /// #452: the boundary of the CARRIER a sketch stands on, projected into that
+    /// sketch's `frame` as closed rings of analytic 2D segments — the sketch's
+    /// **fence**.
+    ///
+    /// The carrier is **not** the one B-Rep face the plane query happens to
+    /// name, but the whole COPLANAR PATCH of that face's body: every planar
+    /// face lying in the same plane, with the seams between them removed. That
+    /// is Onshape's face, and ours only by accident. Onshape folds coplanar
+    /// faces into ONE (#443, measured); FieldDraft keeps one face per feature,
+    /// so `Sketch 12` of the #419 document stands on what Onshape calls a
+    /// `MERGE` of two extrudes' walls and we call `qWall(44, 35)` — a 12 mm
+    /// fragment, 40 mm away from the line the sketch draws. Fenced by the
+    /// fragment the sketch closes nothing; fenced by the patch it closes
+    /// exactly the region Onshape names.
+    ///
+    /// Empty when the sketch has no bounded carrier at all: a datum plane and a
+    /// mate connector are INFINITE, so their "boundary" is nothing, and both
+    /// are checked here in the same order [`Self::resolve_plane_frame`] resolves
+    /// them so the two answers can never disagree about what the plane is.
+    /// Empty as well for a curved carrier, which has no single `(u, v)` plane
+    /// (the same limit [`crate::brep::face_profile`] draws everywhere else).
+    pub fn resolve_carrier_fence(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+        frame: &crate::sketch::SketchFrame,
+    ) -> Vec<Vec<::fielddraft_protocol::sketch2d::SketchSegment>> {
+        use crate::brep::FaceId;
+
+        if let crate::queries::QueryExpr::CreatedBy(d) = expr {
+            if crate::sketch::datum_plane_frame(d).is_some() {
+                return Vec::new();
+            }
+            let target = d.as_u32_or_root();
+            if self
+                .mate_connectors
+                .iter()
+                .any(|mc| mc.id.as_u32_or_root() == target)
+            {
+                return Vec::new();
+            }
+        }
+        let Some((bi, fid)) = self.locate_plane_face(expr) else {
+            return Vec::new();
+        };
+        let woven = self.brep_cache.ensure(&self.features);
+        let (brep, placement) = &woven[bi];
+
+        // The coplanar patch: every planar face of this body in the sketch's
+        // own plane. `face_plane_frame` gives each face's own frame, so the
+        // test is "same normal, same offset" and needs no surface algebra.
+        let n0 = frame.normal;
+        let patch: Vec<FaceId> = (0..brep.faces.len())
+            .map(|i| FaceId(i as u32))
+            .filter(|&f| {
+                let ff = crate::sketch::face_plane_frame(brep, f, placement);
+                let n = ff.normal;
+                if crate::vec3f::dot(n, n0).abs() < 1.0 - 1e-6 {
+                    return false;
+                }
+                let d = [
+                    ff.origin[0] - frame.origin[0],
+                    ff.origin[1] - frame.origin[1],
+                    ff.origin[2] - frame.origin[2],
+                ];
+                crate::vec3f::dot(d, n0).abs() < 1e-3
+            })
+            .collect();
+        if patch.len() <= 1 {
+            return crate::brep::face_profile::face_boundary_rings_2d(brep, fid, frame, placement);
+        }
+
+        // With several faces in the plane, a ring stretch shared by two of them
+        // is a SEAM — interior to their union and no fence at all. It is found
+        // by asking what lies on either side: patch material on BOTH means the
+        // curve separates two pieces of the same carrier.
+        let areas: Vec<::fielddraft_protocol::Sketch2d> = patch
+            .iter()
+            .filter_map(|&f| {
+                crate::brep::face_profile::face_region_2d(brep, f, frame, placement)
+            })
+            .collect();
+        let inside = |p: [f32; 2]| areas.iter().any(|a| a.sdf(p) < 0.0);
+        patch
+            .iter()
+            .flat_map(|&f| {
+                crate::brep::face_profile::face_boundary_rings_2d(brep, f, frame, placement)
+            })
+            .map(|ring| {
+                ring.into_iter()
+                    .filter(|seg| !seam_of_patch(seg, &inside))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|ring: &Vec<_>| !ring.is_empty())
+            .collect()
     }
 
     /// Resolve a B-Rep face query to the world-space [`OpenSurface`] that removes
@@ -1345,4 +1451,68 @@ fn planar_face_normal(
         }
     }
     None
+}
+
+/// Does this fence segment separate two pieces of the SAME coplanar carrier
+/// patch (#452)? Such a seam is interior to the patch and no boundary at all —
+/// it is only there because FieldDraft keeps one face per feature where
+/// Onshape merges (#443).
+///
+/// The test is local and geometric: step a little off the curve to either side
+/// at three stations along it and ask whether both sides are patch material.
+/// The offset is a fraction of the segment's own length so it scales with the
+/// model, clamped into a band that stays above the projection's float noise
+/// (~2e-5 mm) and below any real feature.
+fn seam_of_patch(
+    seg: &::fielddraft_protocol::sketch2d::SketchSegment,
+    inside: &dyn Fn([f32; 2]) -> bool,
+) -> bool {
+    use ::fielddraft_protocol::sketch2d::SketchSegment;
+    // Point + unit normal at parameter `t ∈ [0, 1]`.
+    let at = |t: f32| -> Option<([f32; 2], [f32; 2])> {
+        match seg {
+            SketchSegment::Line { start, end } => {
+                let d = [end[0] - start[0], end[1] - start[1]];
+                let l = (d[0] * d[0] + d[1] * d[1]).sqrt();
+                if l < 1e-9 {
+                    return None;
+                }
+                Some((
+                    [start[0] + d[0] * t, start[1] + d[1] * t],
+                    [-d[1] / l, d[0] / l],
+                ))
+            }
+            SketchSegment::Arc { center, radius, start_angle, sweep_angle } => {
+                if *radius <= 1e-9 {
+                    return None;
+                }
+                let a = start_angle + sweep_angle * t;
+                Some((
+                    [center[0] + radius * a.cos(), center[1] + radius * a.sin()],
+                    [a.cos(), a.sin()],
+                ))
+            }
+            SketchSegment::QuadBezier { .. } => None,
+        }
+    };
+    let len = match seg {
+        SketchSegment::Line { start, end } => {
+            ((end[0] - start[0]).powi(2) + (end[1] - start[1]).powi(2)).sqrt()
+        }
+        SketchSegment::Arc { radius, sweep_angle, .. } => radius * sweep_angle.abs(),
+        SketchSegment::QuadBezier { .. } => 0.0,
+    };
+    if len < 1e-6 {
+        return false;
+    }
+    let off = (len * 1e-3).clamp(1e-3, 0.05);
+    for t in [0.25f32, 0.5, 0.75] {
+        let Some((p, n)) = at(t) else { return false };
+        let a = inside([p[0] + n[0] * off, p[1] + n[1] * off]);
+        let b = inside([p[0] - n[0] * off, p[1] - n[1] * off]);
+        if !(a && b) {
+            return false;
+        }
+    }
+    true
 }

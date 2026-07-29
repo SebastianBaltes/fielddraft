@@ -38,6 +38,58 @@ pub fn face_region_2d(
     frame: &SketchFrame,
     placement: &Transform,
 ) -> Option<Sketch2d> {
+    let kept = face_rings(brep, face_id, frame, placement)?;
+
+    let mut it = kept.into_iter();
+    let outer = ring_to_segments(&it.next()?);
+    if outer.is_empty() {
+        return None;
+    }
+    let mut region = Sketch2d::Prim(Sketch2dPrimitive::Path { segments: outer, closed: true });
+    for ring in it {
+        let hseg = ring_to_segments(&ring);
+        if !hseg.is_empty() {
+            region = Sketch2d::Difference(
+                Box::new(region),
+                Box::new(Sketch2d::Prim(Sketch2dPrimitive::Path { segments: hseg, closed: true })),
+            );
+        }
+    }
+    Some(region)
+}
+
+/// The same planar face's boundary as SEPARATE closed rings of analytic 2D
+/// segments — outer ring first, then every hole — instead of the filled region
+/// [`face_region_2d`] assembles them into.
+///
+/// This is what a sketch standing ON that face needs (#452): its carrier's
+/// boundary joins the region arrangement as FENCE curves, and a fence is a set
+/// of curves, not an area. Both callers share `face_rings` below, so a fence
+/// can never be drawn from a different boundary than the one a face extrude
+/// would sweep.
+pub fn face_boundary_rings_2d(
+    brep: &BRep,
+    face_id: FaceId,
+    frame: &SketchFrame,
+    placement: &Transform,
+) -> Vec<Vec<SketchSegment>> {
+    face_rings(brep, face_id, frame, placement)
+        .unwrap_or_default()
+        .iter()
+        .map(ring_to_segments)
+        .filter(|segs| !segs.is_empty())
+        .collect()
+}
+
+/// Project a planar face's boundary loops into `frame` and clean them up into
+/// the ring pool both readings above consume: index 0 is the outer ring, the
+/// rest are holes. `None` for a curved face or a boundary that leaves nothing.
+fn face_rings(
+    brep: &BRep,
+    face_id: FaceId,
+    frame: &SketchFrame,
+    placement: &Transform,
+) -> Option<Vec<Ring>> {
     // Planar faces only — a curved face has no single (u, v) plane here.
     match &brep.face(face_id).surface {
         SurfaceGeometry::Analytic { surface: HalfSpace::Plane { .. }, .. } => {}
@@ -93,23 +145,7 @@ pub fn face_region_2d(
         });
         kept.insert(0, outer_ring);
     }
-
-    let mut it = kept.into_iter();
-    let outer = ring_to_segments(&it.next()?);
-    if outer.is_empty() {
-        return None;
-    }
-    let mut region = Sketch2d::Prim(Sketch2dPrimitive::Path { segments: outer, closed: true });
-    for ring in it {
-        let hseg = ring_to_segments(&ring);
-        if !hseg.is_empty() {
-            region = Sketch2d::Difference(
-                Box::new(region),
-                Box::new(Sketch2d::Prim(Sketch2dPrimitive::Path { segments: hseg, closed: true })),
-            );
-        }
-    }
-    Some(region)
+    Some(kept)
 }
 
 /// One assembled boundary ring: the ordered, consistently-oriented projected

@@ -34,6 +34,7 @@ impl Kernel {
             edge_chamfers: Vec::new(),
             global_round: None,
             mate_connectors: Vec::new(),
+            sketch_spines: std::collections::HashMap::new(),
             feature_errors: std::collections::HashMap::new(),
             feature_warnings: std::collections::HashMap::new(),
             feature_capabilities: std::collections::HashMap::new(),

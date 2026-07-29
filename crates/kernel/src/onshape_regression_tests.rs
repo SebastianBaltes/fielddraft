@@ -315,6 +315,20 @@ fn onshape_419_full_import_stays_bounded() {
     // (23, 30, 17) → (20, 27, 13); every other body is unchanged face for face,
     // body 9 included. The same exactness is what takes this replay from
     // 16 579 ms to 5 441 ms.
+    // #452 did NOT move these numbers, and the recording is why. Fencing a
+    // face-mounted sketch with its carrier's boundary adds regions where the
+    // sketch's own curves bound nothing, and an added region RENUMBERS the ones
+    // after it (`arrange` orders by aabb.min.y, then min.x, then area). Three
+    // of this recording's sketches gained exactly one region at index 0 —
+    // `Sketch 16`, `30` and `38`, each by +1 — so the frozen `qRegion(30, 4)`
+    // and its seven siblings named a DIFFERENT face than the importer meant
+    // them to, and the census went to [.., 6, 1]. The indices in the testdata
+    // were shifted with them, which is what keeps the recording what its header
+    // says it is: the sequence the importer produces. That the old region set
+    // survives the shift bit for bit — same areas, same order, one prepended —
+    // is the measurement that the fence CLOSES and never CUTS
+    // (`trim_fence_to_open_area`); had it split anything, no renumbering would
+    // have brought these twelve counts back.
     assert_eq!(
         open_faces(&mut kernel),
         vec![0, 0, 0, 0, 0, 0, 2, 0, 0, 1, 4, 0],

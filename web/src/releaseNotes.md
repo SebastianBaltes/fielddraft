@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.48.0
+- feat(kernel) #452: Eine Skizze, die auf einer FLÄCHE steht, wird jetzt von deren Rand eingezäunt. Eine einzelne Linie quer über die Fläche schließt damit zwei Regionen — bisher schloss sie gar keine, weil FieldDraft Regionen allein aus den gezeichneten Kurven baute, und ein Extrude darauf brach mit „kein geschlossenes Profil“ ab. Der Zaun kann nur SCHLIESSEN, nie SCHNEIDEN: was die eigenen Kurven schon umranden, bleibt Stück für Stück wie es war, und in das extrudierbare Profil der ganzen Skizze geht der Zaun nicht ein. Die Trägerfläche ist dabei die ganze ebene Umgebung unter der Skizze, nicht die eine Teilfläche, in die unsere Zerlegung sie zufällig schneidet.
+
 ## 0.47.4
 - fix(kernel) #450: Ein Kanten-Fillet rundet jetzt auch dort, wo die beiden Flächen NICHT im rechten Winkel zusammenstoßen — bisher tat es an einer solchen Kante schweigend nichts: keine Fehlermeldung, keine Änderung an der Geometrie. Dasselbe gilt für die Fase. Gemessen am #416-Dokument, wo Onshape die 82,75-Grad-Keilspitze eines Extrudes mit 1,36 mm rundet und wir sie scharf stehen ließen.
 

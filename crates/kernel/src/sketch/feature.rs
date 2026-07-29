@@ -180,6 +180,83 @@ pub(crate) fn resolve_projected_sub_calls(
     }
 }
 
+/// Build the sketch's FENCE sub-calls (#452): the boundary of the FACE it
+/// stands on, projected into `frame` and expressed as ordinary sketch curves
+/// carrying [`crate::sketch::FENCE_PARAM`].
+///
+/// Two design points, both load-bearing:
+///
+///  * **They are appended BEHIND every user sub-call.** Sketch entity ids come
+///    from one monotonic counter replayed through the real tool registry
+///    ([`crate::sketch::replay_allocations`]), and the web side mirrors that
+///    replay byte-for-byte. Inserting anywhere else would shift the id of every
+///    entity after the insertion point — which is exactly the class of bug
+///    #451 was (one curve gaining entities renumbered the rest). Behind the
+///    user's own curves, the fence takes the ids nobody else has claimed, and
+///    a sketch whose carrier changes renumbers only its own fence.
+///  * **They are ordinary curves, not a new sub-call type.** A fence line is a
+///    `sketch_line`; it allocates its two points and its line exactly like a
+///    drawn one, so the walls a fenced region mints carry a real entity ordinal
+///    and `qWall(op, entity)` binds on them instead of falling back to
+///    positional subs.
+///
+/// The carrier's boundary is *derived* geometry: it moves when the body under
+/// the sketch moves. That is the same associativity `sketch_project` has, and
+/// it is why this is resolved in `execute` (which has a [`Context`]) rather
+/// than stored in the document.
+pub(crate) fn carrier_fence_sub_calls(
+    ctx: &mut Context<'_>,
+    id: &FeatureId,
+    frame: &SketchFrame,
+    plane: &crate::queries::QueryExpr,
+) -> Vec<FeatureCall> {
+    use fielddraft_protocol::sketch2d::SketchSegment;
+
+    let rings = ctx.resolve_carrier_fence(plane, frame);
+    let mut out = Vec::new();
+    for seg in rings.iter().flatten() {
+        let (type_name, params) = match seg {
+            SketchSegment::Line { start, end } => (
+                "sketch_line",
+                serde_json::json!({ "start": start, "end": end }),
+            ),
+            // A full turn is a `sketch_circle`: `sketch_arc` would have to
+            // carry a ±2π sweep, and the arrangement's exact-closure fixup is
+            // written for the circle tool's own emission.
+            SketchSegment::Arc { center, radius, start_angle, sweep_angle }
+                if sweep_angle.abs() >= std::f32::consts::TAU - 1e-4 =>
+            {
+                let _ = start_angle;
+                ("sketch_circle", serde_json::json!({ "center": center, "radius": radius }))
+            }
+            SketchSegment::Arc { center, radius, start_angle, sweep_angle } => (
+                "sketch_arc",
+                serde_json::json!({
+                    "center": center,
+                    "radius": radius,
+                    "start_angle": start_angle,
+                    "sweep_angle": sweep_angle,
+                }),
+            ),
+            // `face_profile::edge_to_segments` classifies every projected edge
+            // as a Line or an Arc — a general spline comes back as a polyline
+            // of Lines — so no Bézier can reach here. Skipped rather than
+            // approximated, so a future producer cannot smuggle one in.
+            SketchSegment::QuadBezier { .. } => continue,
+        };
+        let mut params = params;
+        if let Some(obj) = params.as_object_mut() {
+            obj.insert(crate::sketch::FENCE_PARAM.to_string(), serde_json::Value::Bool(true));
+        }
+        out.push(FeatureCall::new(
+            type_name,
+            id.child(format!("fence{}", out.len())),
+            params,
+        ));
+    }
+    out
+}
+
 impl FeatureKind for SketchFeature {
     fn type_name(&self) -> &'static str {
         Self::TYPE_NAME
@@ -229,6 +306,13 @@ impl FeatureKind for SketchFeature {
         // current coordinates too.
         let mut sub_calls = parsed.sub_calls;
         resolve_projected_sub_calls(ctx, &frame, &mut sub_calls);
+
+        // #452: a sketch that stands on a FACE is fenced in by that face's own
+        // boundary — Onshape imprints the sketch onto the carrier, so a single
+        // line drawn across a face closes TWO regions there while it closes
+        // none of ours. The fence curves join the sub-spine (and with it the
+        // region arrangement) but never the extrudable profile.
+        sub_calls.extend(carrier_fence_sub_calls(ctx, id, &frame, &expr));
 
         let mut state = SketchState::with_origin();
         self.tools.apply_all(&mut state, &sub_calls)?;

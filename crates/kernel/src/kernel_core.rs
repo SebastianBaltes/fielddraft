@@ -102,6 +102,21 @@ pub struct Kernel {
     /// regenerate pass, so the viewport can render datum triads without
     /// re-resolving the face query on the JS side.
     pub(crate) mate_connectors: Vec<features::ResolvedMateConnector>,
+    /// #452: the sub-spine every sketch was actually BUILT from in the last
+    /// regenerate pass — the document's own sub-calls plus whatever `execute`
+    /// derived on top of them (today: the projected boundary of the carrier
+    /// face, as fence curves).
+    ///
+    /// `listSketchRegions` / `regionQueryAtPoint` read the DOCUMENT, the
+    /// extrude/revolve profile resolution reads `Context::sketches`. A derived
+    /// curve exists only in the second, so without this the two would arrange
+    /// DIFFERENT curve sets and a region index would mean two different faces
+    /// — the UI picking one and the kernel building another. Captured here,
+    /// both read the same spine. A sketch that never regenerated (rollback, a
+    /// plane that does not resolve) has no entry and falls back to the
+    /// document's own sub-calls, which is exactly what it is.
+    pub(crate) sketch_spines:
+        std::collections::HashMap<FeatureId, Vec<fielddraft_protocol::FeatureCall>>,
     /// Per-feature regen errors from the last `bootstrap_features_from_calls`
     /// (ticket sx5a, Onshape semantics): a failing feature stays in the
     /// document, contributes no geometry, and carries its message here —
@@ -796,6 +811,12 @@ impl Kernel {
             self.global_round = ctx.global_round.take();
             // C2: capture resolved mate-connector CSYS for the viewport.
             self.mate_connectors = std::mem::take(&mut ctx.mate_connectors);
+            // #452: capture the sub-spine each sketch was built from, fence
+            // curves included, so the region readers arrange the same curves.
+            self.sketch_spines = std::mem::take(&mut ctx.sketches)
+                .into_iter()
+                .map(|(id, data)| (id, data.sub_calls))
+                .collect();
             // Merge-scope warnings collected during regen (non-fatal).
             self.feature_warnings = std::mem::take(&mut ctx.feature_warnings)
                 .into_iter()
