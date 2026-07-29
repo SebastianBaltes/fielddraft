@@ -3041,3 +3041,87 @@ fn weave_edges_lie_on_the_folded_opcode_field() {
         }
     }
 }
+
+// ─── #449: the edge-cutter gate must not call a convex edge concave ───────
+
+/// #449: `edge_cutter_frame` refuses a blend that is bigger than the wall it
+/// sits on — rightly, since nothing can be cut out of material that is not
+/// there — but it used to report that refusal as `Concave`, i.e. as an INSIDE
+/// corner. The two are different facts, and the difference is measurable:
+/// convexity is a property of the DIHEDRAL, so a verdict that flips when only
+/// `reach` changes cannot be one.
+///
+/// That mislabel is what sent #449 looking for an inside corner in the #416
+/// document. There is none: the document chamfers a 5 mm bevel onto a 3 mm
+/// plate, and `Chamfer 1`'s two edges are plainly convex outer edges (adjacent
+/// normals (−1, 0, 0) and (0, 0, 1)).
+///
+/// The gate is unchanged in what it ACCEPTS — this test pins both halves:
+/// the accept/reject boundary (2 mm passes, 3 mm does not, on a 3 mm plate)
+/// and which REASON each side of it gets.
+#[test]
+fn f449_edge_cutter_gate_separates_concave_from_oversized() {
+    let plate = |hx: f32| CsgNode::Leaf {
+        id: FeatureId::from_u32(1),
+        primitive: Primitive::Box { center: [0.0; 3], half_extents: [hx, 40.0, 40.0] },
+    };
+    // The edge between the +x face and the +z face of a plate: an OUTER,
+    // convex edge, running along y. Its dihedral does not depend on `hx`.
+    let gate = |node: &CsgNode, hx: f32, reach: f32| {
+        edge_cutter_frame(node, [hx, -20.0, 40.0], [hx, 20.0, 40.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], reach)
+    };
+
+    // A 3 mm plate (hx = 1.5). The rolling-ball centre sits `reach` inside BOTH
+    // faces, so it leaves the plate through the far face at reach > 1.5 mm —
+    // and 0.5·reach of margin is required on top, which is why 2 mm still
+    // passes (the centre is 0.5 mm outside the +x face but 2 mm inside the very
+    // large −z half-space, and the box SDF reads the nearer of the two).
+    let thin = plate(1.5);
+    for reach in [0.5f32, 1.0, 1.5, 2.0] {
+        assert!(gate(&thin, 1.5, reach).is_ok(), "3 mm plate, {reach} mm cutter: must still fit");
+    }
+    for reach in [3.0f32, 5.0] {
+        assert_eq!(
+            gate(&thin, 1.5, reach).err(),
+            Some(EdgeCutterReject::LargerThanMaterial),
+            "3 mm plate, {reach} mm cutter: too big for the wall — and NOT concave",
+        );
+    }
+
+    // The SAME edge on a thick plate takes every one of those cutters. This is
+    // the control that makes the point: nothing about the corner changed.
+    let thick = plate(10.0);
+    for reach in [0.5f32, 1.0, 1.5, 2.0, 3.0, 5.0] {
+        assert!(gate(&thick, 10.0, reach).is_ok(), "20 mm plate, {reach} mm cutter: must fit");
+    }
+
+    // And a genuinely CONCAVE edge stays refused as concave at every size,
+    // including one far smaller than the material — the property the gate
+    // exists for (a hard cutter there would carve material out of an inside
+    // corner). Two slabs meeting in an inside corner at (1.5, ·, 1.5).
+    let corner = CsgNode::Union(
+        Box::new(CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box { center: [20.0, 0.0, 0.0], half_extents: [20.0, 40.0, 1.5] },
+        }),
+        Box::new(CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Box { center: [0.0, 0.0, 20.0], half_extents: [1.5, 40.0, 20.0] },
+        }),
+    );
+    for reach in [0.5f32, 1.0, 5.0] {
+        assert_eq!(
+            edge_cutter_frame(
+                &corner,
+                [1.5, -20.0, 1.5],
+                [1.5, 20.0, 1.5],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                reach,
+            )
+            .err(),
+            Some(EdgeCutterReject::Concave),
+            "inside corner, {reach} mm cutter: concave at every size",
+        );
+    }
+}

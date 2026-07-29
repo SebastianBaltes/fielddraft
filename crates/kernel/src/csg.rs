@@ -4331,7 +4331,20 @@ pub enum EdgeCutterReject {
     /// (P2 in `docs/FILLET-CUTTER-PLAN.md` generalises to skew prisms).
     NonOrthogonal,
     /// The edge is concave: material would have to be ADDED, not removed.
+    ///
+    /// Decided by the two MIXED-quadrant probes alone, which read the shape of
+    /// the dihedral and nothing else. Everything about how BIG the cutter is
+    /// belongs to [`Self::LargerThanMaterial`] — a verdict that flipped with
+    /// `reach` on unchanged geometry is not a convexity verdict (#449).
     Concave,
+    /// The edge is convex, but the cutter does not fit: its rolling-ball centre
+    /// sits `reach` inside BOTH faces, and there is no material that far in.
+    ///
+    /// The commonest cause is a blend larger than the wall it sits on — a 5 mm
+    /// chamfer on a 3 mm plate. Refusing is right (nothing can be cut from
+    /// material that is not there); calling it CONCAVE was not, and cost #449
+    /// a round of hunting for an inside corner that does not exist.
+    LargerThanMaterial,
 }
 
 /// The local frame an analytic edge cutter is built in (#383/#406/#414).
@@ -4413,20 +4426,20 @@ pub fn edge_cutter_frame(
         mid[1] - k * (na[1] + nb[1]),
         mid[2] - k * (na[2] + nb[2]),
     ];
-    // The cutter's own anchor point must sit comfortably INSIDE the solid,
-    // otherwise there is nothing here to cut.
-    if node.sdf(inner, EvalMode::Visual) > -0.5 * reach {
-        return Err(R::Concave);
-    }
-    // CONVEXITY. Note that `inner` alone cannot decide it: at `u = v = −reach`
-    // the material is present for a convex edge (`u ≤ 0 AND v ≤ 0`) *and* for a
-    // concave one (`u ≤ 0 OR v ≤ 0`) — the original P1 gate therefore accepted
-    // reflex edges and would have cut material out of an inside corner.
+    // CONVEXITY, asked FIRST — it is a property of the dihedral, and asking it
+    // first is what keeps the two rejections from being confused (#449).
+    //
+    // Note that `inner` alone cannot decide it: at `u = v = −reach` the material
+    // is present for a convex edge (`u ≤ 0 AND v ≤ 0`) *and* for a concave one
+    // (`u ≤ 0 OR v ≤ 0`) — the original P1 gate therefore accepted reflex edges
+    // and would have cut material out of an inside corner.
     //
     // The discriminating probes are the two MIXED quadrants (`u > 0, v < 0` and
     // `u < 0, v > 0`): both are empty at a convex edge and both are solid at a
     // concave one. Requiring BOTH to be outside also rejects the half-open
-    // (tangential/degenerate) configurations.
+    // (tangential/degenerate) configurations. They read the shape of the corner
+    // within `eps` of the edge, so — unlike `inner` — they do not care how far
+    // the material extends behind it.
     let eps = (0.25 * reach).clamp(1e-3, 0.5);
     let mixed = |sa: f32| {
         let q = [
@@ -4438,6 +4451,13 @@ pub fn edge_cutter_frame(
     };
     if mixed(1.0) < 0.2 * eps || mixed(-1.0) < 0.2 * eps {
         return Err(R::Concave);
+    }
+    // The cutter's own anchor point must sit comfortably INSIDE the solid,
+    // otherwise there is nothing here to cut. The edge is known convex by now,
+    // so a failure here is about the cutter's SIZE, not the corner's shape: a
+    // 5 mm chamfer on a 3 mm plate puts `inner` 2 mm outside the far face.
+    if node.sdf(inner, EvalMode::Visual) > -0.5 * reach {
+        return Err(R::LargerThanMaterial);
     }
     Ok(EdgeCutterFrame { mid, u, v, w, len, na, nb, cdot, inner })
 }

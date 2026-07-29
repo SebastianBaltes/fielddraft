@@ -267,9 +267,17 @@ fn chamfer_reject_message(why: crate::csg::EdgeCutterReject, distance: f32) -> S
              Dort müsste Material hinzugefügt statt weggeschnitten werden — P3 in \
              docs/FILLET-CUTTER-PLAN.md."
                 .to_string(),
+        R::LargerThanMaterial => format!(
+            "Chamfer kann diese Kante noch nicht schneiden: die Fase ({distance} mm) ist \
+             größer als das Material an dieser Kante. Der Fräser-Mittelpunkt läge \
+             {distance} mm hinter BEIDEN Flächen und damit außerhalb des Körpers — \
+             typisch für eine Fase, die breiter ist als die Wand, auf der sie sitzt. \
+             Die Kante selbst ist KONVEX (siehe docs/FILLET-CUTTER-PLAN.md)."
+        ),
         R::Degenerate => format!(
-            "Chamfer kann diese Kante nicht schneiden: die Kantengeometrie ist entartet, \
-             oder die Fase ({distance} mm) ist zu groß für den umgebenden Körper."
+            "Chamfer kann diese Kante nicht schneiden: die Kantengeometrie ist entartet \
+             (Nulllänge, oder eine Flächennormale steht nicht senkrecht auf der Kante). \
+             Fase: {distance} mm."
         ),
     }
 }

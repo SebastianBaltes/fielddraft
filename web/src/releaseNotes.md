@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.47.2
+- fix(kernel) #449: Eine Fase, die breiter ist als die Wand, auf der sie sitzt, wird nicht mehr als „konkave Innenkante“ abgelehnt. Sie geht weiterhin nicht — aber die Meldung sagt jetzt, woran es liegt: der Fräser-Mittelpunkt läge hinter beiden Flächen. Im #416-Dokument betraf das eine 5-mm-Fase auf einer 3-mm-Platte, deren Kante eine ganz gewöhnliche Außenkante ist.
+
 ## 0.47.1
 - fix(onshape) #447: Eine Skizze, die auf einem Mate-Connector MITTEN AUF einer Fläche sitzt, landet jetzt in Onshapes Ebene. Bisher las der Import statt der Fläche eine ihrer Randkurven — der Connector stand dann 90 Grad auf, oder sein Ursprung rutschte an dieser Kante entlang (im #419-Dokument exakt 90,0 Grad, im #409-Dokument 168,96 mm).
 
