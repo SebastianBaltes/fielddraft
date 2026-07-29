@@ -11,6 +11,7 @@ use fielddraft_solver::{Constraint, ConstraintId, EntityId};
 use serde_json::Value;
 
 use crate::features::{Context, FeatureError, FeatureRegistry};
+use crate::csg::BranchId;
 use crate::sketch2d::{Sketch2d, Sketch2dPrimitive, SketchSegment};
 
 #[test]
@@ -3186,6 +3187,126 @@ fn wall_sub_table_two_adjacent_regions_name_every_wall() {
     // 3, 9, 12 = the square's remaining sides; 15, 18 = the triangle's two
     // free sides. Entity 6 — the shared line — is gone, as it must be.
     assert_eq!(got, vec![3, 9, 12, 15, 18]);
+}
+
+/// #424: two DISJOINT regions fenced by the SAME two long lines — the shape of
+/// Onshape's `Extrude 4` in the #409 document (a 920x500 frame's two rails).
+///
+/// Naming the walls by the sketch entity alone makes the two long lines appear
+/// twice, which used to make the whole table collapse to positional subs: every
+/// wall of the extrude lost its name, including the four whose curve is unique,
+/// and `qWall(op, entity)` could never bind again. The occurrence ordinal keeps
+/// the repeats apart and the rest intact.
+#[test]
+fn wall_sub_table_two_disjoint_regions_share_their_fencing_lines() {
+    // Two 4-wide rails at x in [0;4] and x in [16;20], both fenced above and
+    // below by ONE long line each (entities 3 and 6).
+    let calls: Vec<FeatureCall> = serde_json::from_value(json!([
+        {"type":"sketch_line","id":"1","params":{"start":[0.0,0.0],"end":[20.0,0.0]}},
+        {"type":"sketch_line","id":"2","params":{"start":[0.0,10.0],"end":[20.0,10.0]}},
+        {"type":"sketch_line","id":"3","params":{"start":[0.0,0.0],"end":[0.0,10.0]}},
+        {"type":"sketch_line","id":"4","params":{"start":[4.0,0.0],"end":[4.0,10.0]}},
+        {"type":"sketch_line","id":"5","params":{"start":[16.0,0.0],"end":[16.0,10.0]}},
+        {"type":"sketch_line","id":"6","params":{"start":[20.0,0.0],"end":[20.0,10.0]}}
+    ]))
+    .unwrap();
+    let mut sketches = HashMap::new();
+    sketches.insert(
+        id(1),
+        SketchData {
+            state: SketchState::with_origin(),
+            sub_calls: calls.clone(),
+            frame: SketchFrame::IDENTITY,
+        },
+    );
+    let faces = crate::sketch_arrangement::arrange(&calls);
+    let left = faces.iter().position(|f| f.interior[0] < 4.0).expect("left rail");
+    let right = faces.iter().position(|f| f.interior[0] > 16.0).expect("right rail");
+
+    let (both, _, traced) =
+        resolve_profile_query(&format!("qRegions(1, [{left}, {right}])"), &sketches).unwrap();
+    assert!(both.sdf([2.0, 5.0]) < 0.0, "left rail kept");
+    assert!(both.sdf([18.0, 5.0]) < 0.0, "right rail kept");
+    assert!(both.sdf([10.0, 5.0]) > 0.0, "the middle panel is NOT part of the profile");
+
+    let table = wall_sub_table(&both, &traced).expect("disjoint regions are nameable");
+    assert_eq!(table.len(), 8, "four walls per rail");
+    let sub = |n: &u32| n & BranchId::SUB_MASK_U32;
+    let occ = |n: &u32| n >> BranchId::SUB_BITS;
+    let mut subs: Vec<u32> = table.iter().map(sub).collect();
+    subs.sort_unstable();
+    // Entities 3 and 6 (the long lines) fence BOTH rails, so each names two
+    // walls; 9, 12, 15 and 18 (the four verticals) name one each.
+    assert_eq!(subs, vec![3, 3, 6, 6, 9, 12, 15, 18], "sketch entities of the eight walls");
+    // …and the repeats differ only in the occurrence ordinal, so no two walls
+    // share a branch.
+    let mut names = table.clone();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), table.len(), "every wall has its own name: {table:?}");
+    for entity in [3u32, 6] {
+        let mut o: Vec<u32> = table.iter().filter(|n| sub(n) == entity).map(occ).collect();
+        o.sort_unstable();
+        assert_eq!(o, vec![0, 1], "entity {entity} fences two walls, ranked 0 and 1");
+    }
+}
+
+/// #424, the second shape the occurrence ordinal exists for — and the one a
+/// per-CONTOUR ordinal could not have solved: ONE closed outline that a single
+/// long line fences along TWO separate stretches. Onshape's `Extrude 20` in the
+/// #419 document unions eleven regions into exactly this.
+#[test]
+fn wall_sub_table_one_line_fencing_one_contour_twice() {
+    // A U: the bottom line runs the full width, the notch in the middle of the
+    // top splits the top line's run into two stretches of the SAME entity.
+    let calls: Vec<FeatureCall> = serde_json::from_value(json!([
+        {"type":"sketch_line","id":"1","params":{"start":[0.0,0.0],"end":[20.0,0.0]}},
+        {"type":"sketch_line","id":"2","params":{"start":[20.0,0.0],"end":[20.0,10.0]}},
+        {"type":"sketch_line","id":"3","params":{"start":[20.0,10.0],"end":[0.0,10.0]}},
+        {"type":"sketch_line","id":"4","params":{"start":[0.0,10.0],"end":[0.0,0.0]}},
+        {"type":"sketch_line","id":"5","params":{"start":[8.0,10.0],"end":[8.0,4.0]}},
+        {"type":"sketch_line","id":"6","params":{"start":[8.0,4.0],"end":[12.0,4.0]}},
+        {"type":"sketch_line","id":"7","params":{"start":[12.0,4.0],"end":[12.0,10.0]}}
+    ]))
+    .unwrap();
+    let mut sketches = HashMap::new();
+    sketches.insert(
+        id(1),
+        SketchData {
+            state: SketchState::with_origin(),
+            sub_calls: calls.clone(),
+            frame: SketchFrame::IDENTITY,
+        },
+    );
+    let faces = crate::sketch_arrangement::arrange(&calls);
+    // The U itself is the big region; the notch is the small one.
+    let u = faces
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.area.partial_cmp(&b.1.area).unwrap())
+        .map(|(i, _)| i)
+        .expect("the U");
+
+    let (profile, _, traced) =
+        resolve_profile_query(&format!("qRegion(1, {u})"), &sketches).unwrap();
+    assert!(profile.sdf([2.0, 5.0]) < 0.0, "left leg");
+    assert!(profile.sdf([18.0, 5.0]) < 0.0, "right leg");
+    assert!(profile.sdf([10.0, 8.0]) > 0.0, "the notch is not material");
+
+    let table = wall_sub_table(&profile, &traced).expect("one contour, repeated entity");
+    let sub = |n: &u32| n & BranchId::SUB_MASK_U32;
+    let occ = |n: &u32| n >> BranchId::SUB_BITS;
+    // Entity 9 is the top line; it fences the outline left of the notch and
+    // right of it — twice, in ONE contour.
+    let top: Vec<u32> = table.iter().filter(|n| sub(n) == 9).map(occ).collect();
+    assert_eq!(top.len(), 2, "the top line fences this one outline twice: {table:?}");
+    let mut top = top;
+    top.sort_unstable();
+    assert_eq!(top, vec![0, 1]);
+    let mut names = table.clone();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), table.len(), "every wall has its own name: {table:?}");
 }
 
 /// The union must keep a hole that only ONE of the selected regions owns —

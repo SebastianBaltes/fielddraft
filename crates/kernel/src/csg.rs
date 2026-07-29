@@ -28,20 +28,35 @@ use crate::{quat_rotate, sdf_primitive, world_to_local};
 /// primitive's six faces (or a sketch's many segments) each get a
 /// distinct, Copy, hashable identity.
 ///
-/// Layout (#429/E1) — 44 significant bits, low to high:
+/// Layout (#429/E1, boundary loop #424) — 49 significant bits, low to high:
 ///
 /// | bits | field | meaning |
 /// | --- | --- | --- |
 /// | 0..11 | `sub` | per-feature sub-face (sketch entity ordinal, cap, inner-wall flag) |
-/// | 12..23 | `instance` | pattern instance ordinal; 0 = the original |
-/// | 24..43 | `feature` | flat feature id (root ancestor) |
-/// | 44..63 | — | reserved, always 0 |
+/// | 12..16 | `occurrence` | which wall of this sweep the sketch entity in `sub` produced |
+/// | 17..28 | `instance` | pattern instance ordinal; 0 = the original |
+/// | 29..48 | `feature` | flat feature id (root ancestor) |
+/// | 49..63 | — | reserved, always 0 |
 ///
-/// **Why 44 bits and not 64:** the packed id crosses the wasm boundary as
+/// **Field ORDER is load-bearing, not cosmetic.** Branch words are sorted in
+/// several places that then act on the order — the coincidence classes of
+/// `weaving::canonicalize`, whose greedy first-occurrence-survives dedup
+/// decides which of two coplanar walls keeps its face. Sorting must therefore
+/// stay feature-major: `(feature, instance, occurrence, sub)` reads as the
+/// nesting it is — a feature has copies, a copy has walls, a wall may be one
+/// of several the same sketch curve produced. Putting the new field ABOVE the
+/// feature would have saved the `id_hash` of every body that never repeats an
+/// entity (ordinal 0 → unchanged word) but interleaved the branches of
+/// DIFFERENT features by it, which measurably moved unrelated topology
+/// (`onshape_419_revolve_remove_stays_bounded` gained two coplanar duplicate
+/// faces). Cheap ids are not worth a reshuffled weave.
+///
+/// **Why 49 bits and not 64:** the packed id crosses the wasm boundary as
 /// a plain JSON number (`branchId` in `bodyBrepFaces`, `a`/`b` in
 /// `bodyBrepEdges`). JavaScript integers are exact only below 2^53, so the
-/// layout deliberately stays inside that range — 2^44−1 ≈ 1.76e13. Anything
-/// that widens a field further has to move the wire to strings first.
+/// layout deliberately stays inside that range — 2^49−1 ≈ 5.6e14, a factor 16
+/// of headroom. Anything that widens a field further has to move the wire to
+/// strings first.
 ///
 /// Being a plain `u32` newtype makes [`Contributors`] `Copy`, which the
 /// hot evaluate path relies on.
@@ -54,13 +69,33 @@ impl BranchId {
     /// sub-ids per feature (enough for sketch segments).
     pub const SUB_BITS: u32 = 12;
     const SUB_MASK: u64 = 0xFFF;
+    /// The sub field's mask, as a `u32`, for callers that carry a packed wall
+    /// name (loop ordinal above the sub) and need the sub alone.
+    pub const SUB_MASK_U32: u32 = Self::SUB_MASK as u32;
+    /// Bits reserved for the wall-occurrence ordinal (#424). 5 bits → one
+    /// sketch curve may fence up to 32 walls of one sweep;
+    /// [`crate::sketch::wall_sub_table`] refuses a profile that needs more
+    /// rather than aliasing occurrence 32 back onto occurrence 0.
+    pub const OCCURRENCE_BITS: u32 = 5;
+    const OCCURRENCE_MASK: u64 = 0x1F;
+    pub const OCCURRENCE_SHIFT: u32 = Self::SUB_BITS;
+    /// Highest occurrence ordinal the field can hold.
+    pub const OCCURRENCE_MAX: u32 = Self::OCCURRENCE_MASK as u32;
+    /// Width of a packed **wall name** — occurrence plus sub, the pair
+    /// [`from_feature_sub`](Self::from_feature_sub) takes and
+    /// [`crate::sketch::wall_sub_table`] hands out.
+    pub const NAME_BITS: u32 = Self::OCCURRENCE_BITS + Self::SUB_BITS;
     /// Bits reserved for the pattern instance ordinal (#429/E1). 12 bits →
     /// 4095 copies plus the original.
     pub const INSTANCE_BITS: u32 = 12;
     const INSTANCE_MASK: u64 = 0xFFF;
+    pub const INSTANCE_SHIFT: u32 = Self::NAME_BITS;
     /// Where the flat feature id starts. 20 bits ≈ 1M feature ids.
-    pub const FEATURE_SHIFT: u32 = Self::SUB_BITS + Self::INSTANCE_BITS;
+    pub const FEATURE_SHIFT: u32 = Self::INSTANCE_SHIFT + Self::INSTANCE_BITS;
+    pub const FEATURE_BITS: u32 = 20;
     const FEATURE_MASK: u64 = 0xF_FFFF;
+    /// Total significant width of a packed branch word.
+    pub const LAYOUT_BITS: u32 = Self::FEATURE_SHIFT + Self::FEATURE_BITS;
 
     /// Bit 11 of the 12-bit sub field, reserved as the inner-wall flag (DL-75).
     /// A shelled body's inner wall is the outer face offset inward by the wall
@@ -104,7 +139,13 @@ impl BranchId {
         Self::from_feature_sub(id, 0)
     }
 
-    /// Branch id for sub-face `sub` of feature `id`.
+    /// Branch id for sub-face `name` of feature `id`.
+    ///
+    /// `name` is a packed **wall name**: the low [`SUB_BITS`](Self::SUB_BITS)
+    /// bits are the sub-index, anything above them is the occurrence ordinal
+    /// (#424). A plain sub — a cap, a primitive face, a positional group — is
+    /// simply a name whose occurrence is 0, so every existing caller passes
+    /// one unchanged.
     ///
     /// The instance ordinal comes from the *id*, not from the geometry:
     /// [`FeatureId::instance_ordinal`] reads it off the hierarchical clone
@@ -113,21 +154,35 @@ impl BranchId {
     /// moves the body, not the ordinal (#429/E1).
     ///
     /// The sub-index is re-keyed for the sub-solids of a hard edge cutter
-    /// ([`cutter_sub`]). Doing it *here* is what keeps the mapping single —
-    /// every reader of a branch id (weave, seed pairs, hot-SDF attribution,
-    /// queries) goes through this one function.
-    pub fn from_feature_sub(id: &FeatureId, sub: u32) -> Self {
+    /// ([`cutter_sub`]). Doing the split and the re-key *here* is what keeps
+    /// the mapping single — every reader of a branch id (weave, seed pairs,
+    /// hot-SDF attribution, queries) goes through this one function.
+    pub fn from_feature_sub(id: &FeatureId, name: u32) -> Self {
         let (feature, instance) = id.branch_identity();
-        Self::from_parts(feature, instance, cutter_sub(id, sub))
+        let sub = name & Self::SUB_MASK_U32;
+        let occurrence = name >> Self::SUB_BITS;
+        Self::from_parts_occ(feature, instance, occurrence, cutter_sub(id, sub))
     }
 
-    /// Pack the three fields. Each is masked to its width — a feature id
-    /// ≥ 2^20, an ordinal ≥ 4096 or a sub ≥ 4096 aliases rather than
-    /// corrupting a neighbouring field.
+    /// Pack the three fields (occurrence 0). Each is masked to its width —
+    /// a feature id ≥ 2^20, an ordinal ≥ 4096 or a sub ≥ 4096 aliases rather
+    /// than corrupting a neighbouring field.
     pub fn from_parts(feature: u32, instance: u32, sub: u32) -> Self {
+        Self::from_parts_occ(feature, instance, 0, sub)
+    }
+
+    /// Pack all four fields, occurrence ordinal included (#424). The argument
+    /// order mirrors the bit layout, outermost field first.
+    pub fn from_parts_occ(
+        feature: u32,
+        instance: u32,
+        occurrence: u32,
+        sub: u32,
+    ) -> Self {
         Self(
             ((feature as u64 & Self::FEATURE_MASK) << Self::FEATURE_SHIFT)
-                | ((instance as u64 & Self::INSTANCE_MASK) << Self::SUB_BITS)
+                | ((instance as u64 & Self::INSTANCE_MASK) << Self::INSTANCE_SHIFT)
+                | ((occurrence as u64 & Self::OCCURRENCE_MASK) << Self::OCCURRENCE_SHIFT)
                 | (sub as u64 & Self::SUB_MASK),
         )
     }
@@ -141,15 +196,37 @@ impl BranchId {
     /// every branch that a pattern did not copy reads 0, so the field is
     /// invisible to models without patterns.
     pub fn instance(self) -> u32 {
-        ((self.0 >> Self::SUB_BITS) & Self::INSTANCE_MASK) as u32
+        ((self.0 >> Self::INSTANCE_SHIFT) & Self::INSTANCE_MASK) as u32
     }
 
-    /// Same feature and sub-face, but on instance `instance` of a pattern
-    /// whose feature id is `feature`. This is the whole of `qInstance`'s
-    /// resolution rule: a copy's branch differs from the original's only in
-    /// the feature and instance fields.
+    /// WHICH of the walls its sketch entity produced this branch is (#424).
+    /// `0` for everything the entity fences exactly once — which is nearly
+    /// everything, so the field is invisible to ordinary models.
+    ///
+    /// One sketch curve can legitimately sweep SEVERAL disjoint walls: a
+    /// profile of two separate rails fenced by the same two long lines
+    /// (#409's `Extrude 4`), or one contour a long line bounds along two
+    /// separate stretches (#419's `Extrude 20`). Ordering is the profile's
+    /// canonical DFS — contours in `sketch_arrangement`'s geometric order,
+    /// each starting at a G1 break — so the ordinal is a property of the
+    /// SHAPE, not of the traversal.
+    ///
+    /// `qWall(op, entity)` deliberately says nothing about it and binds every
+    /// occurrence: Onshape's own `SWEPT_FACE` query carries no such
+    /// distinction either (measured on #409's `Mirror 2`). The ordinal exists
+    /// to keep two disjoint walls off ONE branch, exactly as
+    /// [`INNER_WALL_FLAG`](Self::INNER_WALL_FLAG) keeps a shell's inner wall
+    /// off its outer one.
+    pub fn occurrence(self) -> u32 {
+        ((self.0 >> Self::OCCURRENCE_SHIFT) & Self::OCCURRENCE_MASK) as u32
+    }
+
+    /// Same sub-face and occurrence, but on instance `instance` of a
+    /// pattern whose feature id is `feature`. This is the whole of
+    /// `qInstance`'s resolution rule: a copy's branch differs from the
+    /// original's only in the feature and instance fields.
     pub fn on_instance(self, feature: u32, instance: u32) -> Self {
-        Self::from_parts(feature, instance, self.sub())
+        Self::from_parts_occ(feature, instance, self.occurrence(), self.sub())
     }
 
     /// The per-feature sub-index (the low [`SUB_BITS`](Self::SUB_BITS) bits,

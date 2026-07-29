@@ -793,6 +793,24 @@ impl Arrangement {
         face_profile(face, &self.sources, &self.src_ids, &self.verts, &self.src_use)
     }
 
+    /// Sort key of one boundary loop: ascending `aabb.min.y`, then
+    /// `aabb.min.x`, then area — the SAME rule [`Self::atomic_faces`] orders
+    /// regions by.
+    ///
+    /// The order of the loops decides their boundary-loop ORDINAL (#424), and
+    /// an ordinal is part of a wall's persistent name. Left to the order they
+    /// arrive in it would be a traversal artefact: [`union_loops`] starts at
+    /// the lowest kept half-edge index, and `children` lists holes by raw face
+    /// index — both change the moment the arrangement is built in a different
+    /// order, which would silently re-name every wall of a multi-contour
+    /// profile. Keying off the geometry makes the ordinal a property of the
+    /// SHAPE, the same reasoning [`rotate_to_g1_break`] applies inside one loop.
+    fn loop_key(&self, f: &RawFace) -> (f64, f64, f64) {
+        let poly: Vec<[f64; 2]> = f.verts.iter().map(|&i| self.verts[i]).collect();
+        let bb = poly_aabb_f(&poly);
+        (bb.min[1] as f64, bb.min[0] as f64, f.area)
+    }
+
     /// Assemble one [`AtomicFace`] from a set of outer loops plus the holes
     /// they enclose. `outer_area` is the loops' gross area.
     ///
@@ -800,13 +818,25 @@ impl Arrangement {
     /// DFS order is o1, o2, …, h1, h2 — the order
     /// [`crate::sketch::wall_sub_table`] walks in, so the trace list is pushed
     /// in exactly that order and the two sequences stay aligned by
-    /// construction.
+    /// construction. Both groups are put in [`Self::loop_key`] order first, so
+    /// that DFS position — the wall's boundary-loop ordinal — is geometric.
     fn assemble(&self, outer: &[RawFace], holes: &[usize]) -> Option<AtomicFace> {
+        let mut order: Vec<&RawFace> = outer.iter().collect();
+        order.sort_by(|a, b| {
+            self.loop_key(a).partial_cmp(&self.loop_key(b)).unwrap()
+        });
+        let mut holes: Vec<usize> = holes.to_vec();
+        holes.sort_by(|&a, &b| {
+            self.loop_key(&self.faces[a])
+                .partial_cmp(&self.loop_key(&self.faces[b]))
+                .unwrap()
+        });
+        let holes = &holes[..];
         let mut profile = Sketch2d::Empty;
         let mut traces = Vec::new();
         let mut outer_polys: Vec<Vec<[f64; 2]>> = Vec::new();
         let mut outer_area = 0.0;
-        for lo in outer {
+        for lo in order {
             let (p, t) = self.profile_of(lo);
             if matches!(p, Sketch2d::Empty) {
                 continue;

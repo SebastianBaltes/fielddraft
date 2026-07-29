@@ -548,19 +548,26 @@ pub(crate) fn extrude_rim_corner(
         return None;
     };
     // Exactly the two same-feature wall groups (non-cap, non-inner) —
-    // translated back from their STABLE subs to positional groups when
+    // translated back from their STABLE names to positional groups when
     // the sweep carries a wall_subs table (the sketch-tree walk below is
     // positional by construction).
-    let to_positional = |s: u32| match wall_subs {
-        Some(t) => t.iter().position(|&x| x == s).map(|p| p as u32),
-        None => Some(s),
+    //
+    // The lookup key is the WHOLE wall name, occurrence ordinal included
+    // (#424): the table stores `occurrence << SUB_BITS | entity`, and one
+    // sketch curve may legitimately fence several of the profile's walls.
+    // Searching for the bare `sub()` finds none of the repeats, `walls` comes
+    // back short, and every rim corner around them silently degrades from the
+    // exact sketch endpoint to the octree-quantised one.
+    let to_positional = |name: u32| match wall_subs {
+        Some(t) => t.iter().position(|&x| x == name).map(|p| p as u32),
+        None => Some(name & BranchId::SUB_MASK_U32),
     };
     let walls: Vec<u32> = branches
         .iter()
         .filter(|b| {
             b.feature_id() == feat && !is_cap(b.sub()) && b.sub() & BranchId::INNER_WALL_FLAG == 0
         })
-        .filter_map(|b| to_positional(b.sub()))
+        .filter_map(|b| to_positional(b.occurrence() << BranchId::SUB_BITS | b.sub()))
         .collect();
     if walls.len() != 2 {
         return None;

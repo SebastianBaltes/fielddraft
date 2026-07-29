@@ -6,10 +6,10 @@
  * body that own the geometry, so the sidebar can render the matching
  * Features rows and Parts row as selected.
  *
- * Branch ids pack `feature << SUB_BITS | sub` (see `BranchId` in
- * crates/kernel/src/csg.rs); stripping the low {@link SUB_BITS} bits yields
- * the flat feature id — the same id space as `FeatureSummary.id`, which is
- * what the Outliner keys its rows on.
+ * Branch ids pack a feature id with its per-feature fields (see `BranchId` in
+ * crates/kernel/src/csg.rs); stripping the low {@link FEATURE_SHIFT} bits
+ * yields the flat feature id — the same id space as `FeatureSummary.id`, which
+ * is what the Outliner keys its rows on.
  */
 
 import type { BRepEdge, BRepFace, BRepVertex } from "./kernel";
@@ -17,26 +17,36 @@ import type { PickedElement } from "./elementQuery";
 
 /**
  * Mirrors the `BranchId` field layout in crates/kernel/src/csg.rs:
- * `feature (20) | instance (12) | sub (12)`, 44 significant bits. The kernel
- * caps the layout at 44 bits precisely so a packed branch stays an EXACT
- * JavaScript integer (2^44 ≪ 2^53) and can cross the wasm boundary as a plain
- * JSON number.
+ * `feature (20) | instance (12) | occurrence (5) | sub (12)`, 49
+ * significant bits. The kernel caps the layout well under 53 bits precisely so
+ * a packed branch stays an EXACT JavaScript integer (2^49 ≪ 2^53) and can
+ * cross the wasm boundary as a plain JSON number.
  *
  * Never decode a branch with `>>` / `&`: JavaScript bit operators truncate to
  * 32 bits and would silently return garbage for any feature id ≥ 256.
  */
 export const SUB_BITS = 12;
+export const OCCURRENCE_BITS = 5;
+export const OCCURRENCE_SHIFT = SUB_BITS;
 export const INSTANCE_BITS = 12;
-export const FEATURE_SHIFT = SUB_BITS + INSTANCE_BITS;
+export const INSTANCE_SHIFT = SUB_BITS + OCCURRENCE_BITS;
+export const FEATURE_SHIFT = INSTANCE_SHIFT + INSTANCE_BITS;
+export const FEATURE_BITS = 20;
 
 /** Flat feature id of a packed branch id. */
 export function branchFeatureId(branchId: number): number {
-  return Math.floor(branchId / 2 ** FEATURE_SHIFT);
+  return Math.floor(branchId / 2 ** FEATURE_SHIFT) % 2 ** FEATURE_BITS;
+}
+
+/** Wall-occurrence ordinal of a packed branch id; 0 unless one sketch curve
+ *  fenced several of the sweep's walls (#424). */
+export function branchOccurrence(branchId: number): number {
+  return Math.floor(branchId / 2 ** OCCURRENCE_SHIFT) % 2 ** OCCURRENCE_BITS;
 }
 
 /** Pattern instance ordinal of a packed branch id; 0 is the original (#429/E1). */
 export function branchInstance(branchId: number): number {
-  return Math.floor(branchId / 2 ** SUB_BITS) % 2 ** INSTANCE_BITS;
+  return Math.floor(branchId / 2 ** INSTANCE_SHIFT) % 2 ** INSTANCE_BITS;
 }
 
 /** Per-feature sub-face index of a packed branch id. */

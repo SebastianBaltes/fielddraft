@@ -1017,7 +1017,7 @@ pub(crate) fn slot_path_segments(
 
 // ─── stable wall-sub table (Onshape-Import Schritt 2) ────────────────────
 
-/// Build the positional-group → stable-sub table for a profile tree.
+/// Build the positional-group → stable-**wall-name** table for a profile tree.
 ///
 /// Walks `tree` in the same in-order DFS the global boundary-group
 /// numbering uses (`sdf_with_edges`' `edge_count` offsets) and matches
@@ -1026,31 +1026,91 @@ pub(crate) fn slot_path_segments(
 /// prims may have been axis-stripped (revolve profiles); both are handled.
 /// The concatenated per-prim id lists form the table.
 ///
+/// A name is `occurrence << BranchId::SUB_BITS | sketch_entity_ordinal`
+/// (#424). ONE sketch curve can legitimately fence SEVERAL of a sweep's walls:
+///
+/// - across contours — Onshape's `Extrude 4` in the #409 document extrudes the
+///   two separate rails of one frame, and the same two long lines fence both;
+/// - within ONE contour — `Extrude 20` in #419 unions eleven regions into a
+///   single outline that a long line bounds along two separate stretches.
+///
+/// Naming those walls by the entity alone makes the ids repeat, which used to
+/// cost the WHOLE table: every wall of the sweep, including the ones whose
+/// curve is unique, fell back to a positional sub nothing can name. The
+/// occurrence ordinal — the wall's rank among the ones that curve produced, in
+/// the profile's canonical DFS order — separates them and keeps the rest.
+///
+/// Why the occurrence and not the CONTOUR index (the first shape this took):
+/// a contour ordinal cannot separate the second case at all, and it is the
+/// less stable name — inserting a contour renumbers every later one, while an
+/// occurrence ordinal only moves if that very curve gains or loses a wall.
+///
+/// Ordering is canonical, not incidental: `sketch_arrangement` puts a
+/// profile's contours in geometric order (`loop_key`) and starts each at a G1
+/// break (`rotate_to_g1_break`), so the rank is a property of the shape.
+///
 /// Returns `None` — positional fallback, never a half-translated table —
 /// when any surviving prim lacks stable sources (sketch_path, mirror,
-/// replay failure), a prim can't be matched, or an id would collide with
-/// the reserved sub range (caps at `0x7FE`/`0x7FF`, inner-wall flag).
+/// replay failure), a prim can't be matched, an id would collide with
+/// the reserved sub range (caps at `0x7FE`/`0x7FF`, inner-wall flag), or one
+/// curve fences more walls than the occurrence field holds.
 pub fn wall_sub_table(tree: &Sketch2d, traced: &[TracedPrim]) -> Option<Vec<u32>> {
-    let mut out = Vec::new();
-    let mut cursor = 0usize;
-    collect_wall_subs(tree, traced, &mut cursor, &mut out)?;
-    if out
-        .iter()
-        .any(|&s| s >= crate::csg::BranchId::EXTRUDE_CAP_BOTTOM_SUB)
-    {
-        return None;
-    }
-    // Two walls that shared a sub would collapse into ONE branch (and one
-    // face). A table that can't name every wall distinctly is no table.
-    let mut seen: Vec<u32> = out.clone();
-    seen.sort_unstable();
-    seen.dedup();
-    if seen.len() != out.len() {
-        return None;
-    }
-    Some(out)
+    wall_sub_table_diag(tree, traced).ok()
 }
 
+/// Why [`wall_sub_table`] handed back a positional fallback.
+///
+/// Its own type because „the table is `None`" was, three tickets running, the
+/// hardest thing here to measure: the same silent fallback covered a merged
+/// mantle, an unattributable profile, an id collision and a reserved-range
+/// clash, and #424's entire diagnosis consisted of telling them apart by hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WallSubRefusal {
+    /// A prim could not be matched against the trace, or carries no stable
+    /// sources at all (`sketch_path`, mirror copy, replay failure).
+    Unattributable,
+    /// One sketch curve fences more walls than
+    /// [`crate::csg::BranchId::OCCURRENCE_MAX`] + 1 — carries the entity.
+    TooManyOccurrences(u32),
+    /// A sketch entity ordinal reaches into the reserved sub range.
+    ReservedSub(u32),
+}
+
+/// [`wall_sub_table`] with the refusal reason kept.
+pub fn wall_sub_table_diag(
+    tree: &Sketch2d,
+    traced: &[TracedPrim],
+) -> Result<Vec<u32>, WallSubRefusal> {
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    collect_wall_subs(tree, traced, &mut cursor, &mut out)
+        .ok_or(WallSubRefusal::Unattributable)?;
+    if let Some(&bad) = out
+        .iter()
+        .find(|&&s| s >= crate::csg::BranchId::EXTRUDE_CAP_BOTTOM_SUB)
+    {
+        return Err(WallSubRefusal::ReservedSub(bad));
+    }
+    // Rank each wall among the ones its curve produced, in DFS order. Doing it
+    // here — over the finished list rather than per prim — is what makes the
+    // ordinal count OCCURRENCES and not contours: a curve that fences one
+    // outline twice is ranked just like one that fences two outlines.
+    let mut seen: std::collections::HashMap<u32, u32> = Default::default();
+    for name in out.iter_mut() {
+        let slot = seen.entry(*name).or_insert(0);
+        let occurrence = *slot;
+        *slot += 1;
+        if occurrence > crate::csg::BranchId::OCCURRENCE_MAX {
+            return Err(WallSubRefusal::TooManyOccurrences(*name));
+        }
+        *name |= occurrence << crate::csg::BranchId::SUB_BITS;
+    }
+    Ok(out)
+}
+
+/// Collect the raw sketch-entity ids of `tree`'s walls, in the DFS order the
+/// global boundary-group numbering uses. Occurrence ranking happens in
+/// [`wall_sub_table_diag`], over the finished list.
 fn collect_wall_subs(
     tree: &Sketch2d,
     traced: &[TracedPrim],

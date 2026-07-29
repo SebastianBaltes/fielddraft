@@ -771,9 +771,10 @@ pub fn resolve_query_topo(
             if seed.is_empty() {
                 return Vec::new();
             }
-            let shift = |b: crate::csg::BranchId| {
-                crate::csg::BranchId::from_parts(b.feature_id(), *ordinal, b.sub())
-            };
+            // The boundary loop travels WITH the copy (#424): a pattern moves
+            // the body, it does not renumber the contours of the profile that
+            // swept it — so only the instance field may differ.
+            let shift = |b: crate::csg::BranchId| b.on_instance(b.feature_id(), *ordinal);
             let mut want_face: std::collections::HashSet<crate::csg::BranchId> = Default::default();
             let mut want_edge: std::collections::HashSet<(u64, u64)> = Default::default();
             let mut want_vertex: std::collections::HashSet<Vec<u64>> = Default::default();

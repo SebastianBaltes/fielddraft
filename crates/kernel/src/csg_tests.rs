@@ -335,6 +335,47 @@ fn inner_wall_branch_id_scheme() {
     assert_ne!(cap.as_u64(), cap.inner_wall().as_u64());
 }
 
+/// #424: the occurrence field is a real fourth field — it packs, unpacks,
+/// survives a pattern instance shift, and does not disturb the three fields
+/// beside it.
+#[test]
+fn branch_id_carries_the_wall_occurrence_ordinal() {
+    // A wall name is `occurrence << SUB_BITS | sub`; `from_feature_sub` splits it.
+    let name = (2 << BranchId::SUB_BITS) | 45;
+    let b = BranchId::from_feature_sub(&FeatureId::from_u32(9), name);
+    assert_eq!(b.feature_id(), 9);
+    assert_eq!(b.sub(), 45);
+    assert_eq!(b.occurrence(), 2);
+    assert_eq!(b.instance(), 0);
+    // A plain sub is simply occurrence 0 — every pre-#424 caller passes one.
+    let plain = BranchId::from_feature_sub(&FeatureId::from_u32(9), 45);
+    assert_eq!(plain.occurrence(), 0);
+    assert_ne!(plain.as_u64(), b.as_u64(), "the ordinal is part of the name");
+
+    // A pattern copy moves the body, not the profile's contours: `qInstance`
+    // shifts the instance field and must leave the occurrence alone.
+    let copy = b.on_instance(9, 3);
+    assert_eq!(copy.instance(), 3);
+    assert_eq!(copy.occurrence(), 2);
+    assert_eq!(copy.sub(), 45);
+
+    // The layout stays feature-major, which the weave's coincidence classes
+    // sort on: a later feature outranks any occurrence of an earlier one.
+    let later = BranchId::from_feature_sub(&FeatureId::from_u32(10), 0);
+    let high = BranchId::from_feature_sub(
+        &FeatureId::from_u32(9),
+        (BranchId::OCCURRENCE_MAX << BranchId::SUB_BITS) | BranchId::SUB_MASK_U32,
+    );
+    assert!(high.as_u64() < later.as_u64(), "feature-major ordering");
+
+    // …and the whole word stays an exact JavaScript integer (the wire is a
+    // plain JSON number).
+    const { assert!(BranchId::LAYOUT_BITS < 53) };
+
+    // The inner-wall flag rides inside the SUB field, below the occurrence.
+    const { assert!(BranchId::INNER_WALL_FLAG < 1 << BranchId::SUB_BITS) };
+}
+
 // ─── #384 Phase D2: closed-shell → complement-duality expansion ──────────────
 
 fn box_leaf(id: u32, half: [f32; 3]) -> CsgNode {

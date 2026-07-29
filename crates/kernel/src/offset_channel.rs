@@ -2378,9 +2378,9 @@ fn synthesize_contact_prisms(
 // führen wir stattdessen den bereits berechneten **Owner** (kleinste beteiligte
 // Eltern-Member-Feature-Id) verlustfrei durch die Synthese.
 //
-// Die Feature-Id wird beim Branch-Enumerieren des Extrude mit `<< 12`
-// (`BranchId::SUB_BITS`) in die Branch-Id gehoben, also MUSS sie in 20 Bit
-// passen (sonst überläuft die Branch-Id den u32). Bit-Layout (20 Bit):
+// Die Feature-Id wird beim Branch-Enumerieren des Extrude in ihr eigenes Feld
+// der Branch-Id gehoben (`BranchId::FEATURE_SHIFT`), also MUSS sie in 20 Bit
+// passen (sonst aliast sie im Feature-Feld). Bit-Layout (20 Bit):
 //
 //   bit 19    = 1              PRISM_MARKER — reserviert die obere Hälfte des
 //                              20-Bit-Raums für synthetische Prismen. Echte

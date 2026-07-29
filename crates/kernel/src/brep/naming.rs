@@ -64,7 +64,14 @@ use crate::brep::{BRep, EdgeGeometry, EdgeId, FaceId, SurfaceGeometry, VertexId}
 ///   and the rounding/bevel face itself moved to [`BranchId::BLEND_SUB`] so it
 ///   reads as `FaceRole::Blend`. Narrower than bump 3 — only faces of a cutter
 ///   and the edges touching them re-key — but the same guarantee applies.
-pub const NAMING_SCHEMA_VERSION: u32 = 4;
+/// - **5** — wall-occurrence ordinal (#424): the branch word grew a fourth
+///   field ([`BranchId::occurrence`]) recording WHICH of the walls its sketch
+///   curve produced a sweep wall is, so one curve can fence several walls
+///   without their names colliding. The field sits between `instance` and
+///   `sub` — inside the feature's own namespace, so branch words still sort
+///   feature-major — which shifts `instance` and `feature` up by five bits and
+///   therefore changes every `id_hash` in every document, as bump 3 did.
+pub const NAMING_SCHEMA_VERSION: u32 = 5;
 use crate::csg::BranchId;
 
 // ─── deterministic hash ───────────────────────────────────────────────────
