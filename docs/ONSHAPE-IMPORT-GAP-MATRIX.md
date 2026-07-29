@@ -3101,3 +3101,160 @@ eine einzige Zahl bewegt haette — der Pin fragte `sceneAabb`, und die kann ein
 Subtraktion nicht sehen. Ein Test, der ueber eine konservative Schranke misst,
 kann nur nach EINER Seite Auskunft geben, und in welche Richtung das ist, muss
 dastehen.
+
+## Update 2026-07-29 (13) — der Zaun steht, `Extrude 15` steht trotzdem nicht (#452)
+
+Ticket #452 hatte eine These: eine Sketch-Region, die Onshape gegen die
+TRAEGERFLAECHE schliesst, hat bei uns keinen Rand, und zu schliessen sei das
+nur, indem die Berandung dieser Flaeche als zusaetzliche, nicht-extrudierbare
+Zaunkurven mit ins Arrangement geht. Der erste Teil stimmt und ist jetzt gebaut.
+Der zweite — dass DAMIT `Extrude 15` faellt — stimmt nicht: das Feature haengt
+an einer zweiten, davon unabhaengigen Luecke, die vor dem Zaun liegt.
+
+### 1. Die Messung vorher, reproduziert
+
+| | Wert |
+|---|---:|
+| Regen-Zensus #419 | **1** (`Extrude 15`), Meldung „sketch has no closed regions to extrude" |
+| Import-Fehler | 169 Meldungen / 88 Features |
+| Koerperzahl | 18 |
+| `sceneAabb` x max | 71,4809 |
+| Import-Dauer | 56,4 s |
+
+Von den 17 Skizzen des Dokuments stehen **elf** auf einer echten B-Rep-Flaeche
+(`planeFaces = 1`); die uebrigen sechs auf einer Ursprungsebene oder einem
+Mate-Connector, die beide UNENDLICH sind und deshalb keinen Rand haben.
+
+### 2. Was der Zaun ist — und was er ausdruecklich nicht ist
+
+Eine Skizze auf einer Flaeche bekommt in `SketchFeature::execute` die
+projizierte Berandung dieser Flaeche als zusaetzliche Sub-Calls angehaengt,
+markiert mit `fence: true`. Die drei Sorten Sub-Call stehen damit in einer
+Tabelle:
+
+| | Regionenfindung | extrudierbares Profil |
+|---|---|---|
+| normal | ja | ja |
+| `construction` | nein | nein |
+| `fence` | ja | **nein** |
+
+Zwei Entscheidungen tragen das Ganze:
+
+**Der Zaun kann SCHLIESSEN, nie SCHNEIDEN** (`trim_fence_to_open_area`). Vor
+dem Arrangement wird jede Zaunkurve an den gezeichneten Kurven aufgeteilt und
+jedes Stueck verworfen, das durch eine Flaeche des NUR-GEZEICHNETEN
+Arrangements laeuft. Ohne das waere der Preis dieser Aenderung enorm gewesen:
+`Sketch 4` (44 × 44 mm Platte, 15 Regionen) steht auf einer 38 × 38 mm grossen
+Wand, deren Rand mitten durch die Platte laeuft — ungetrimmt zerfiel die Skizze
+in 19 Regionen, drei alte in je zwei Stuecke geschnitten (255 → 173,31 + 81,69;
+237 → 159,81 + 77,19; 1337,62 → 738,18 + 599,44). Getrimmt bleibt **jede alte
+Region bitgleich**, in derselben Reihenfolge; hinzu kommt nur, was vorher gar
+nicht berandet war. Das ist kein Komfort, sondern eine Korrektheitsfrage: die
+38 × 38-Wand ist UNSERE Zerlegung, nicht Onshapes — Onshape faltet koplanare
+Flaechen zu einer (#443) — und eine Naht, die es nur bei uns gibt, darf keine
+Region schneiden.
+
+**Die Traegerflaeche ist der koplanare FLICKEN, nicht die eine benannte
+Teilflaeche.** `resolve_carrier_fence` sammelt jede ebene Flaeche desselben
+Koerpers, die in der Skizzenebene liegt, und entfernt die Naehte zwischen
+ihnen: eine Kurve, die auf BEIDEN Seiten Flickenmaterial hat, ist innen und
+kein Zaun. Auf `Sketch 12` sind das zwei Wandstuecke (x ∈ [−1,5; 1,5] und
+x ∈ [1,5; 33,6]), die zu EINEM Rechteck x ∈ [−1,5; 33,6] × y ∈ [−22,25; 22,25]
+zusammenwachsen — genau der `MERGE`, den Onshapes Ebenen-Query nennt.
+
+Eine Region, deren AEUSSERE Schleife nur aus Zaunkurven besteht, ist keine
+Region: das ist die Traegerflaeche selbst, die die Skizze nirgends gezeichnet
+hat, und sie ist als FLAECHEN-Profil (`qWall(…)` / `qFace(…)`, der #442-Pfad)
+ohnehin und besser benennbar.
+
+### 3. Was sich bewegt hat
+
+Auf der aufgezeichneten #419-Wiedergabe (`onshape419_full_import.json`, 49
+Kernel-Aufrufe) gewinnen drei Skizzen je EINE Region, und zwar an Index 0, was
+alle folgenden um eins verschiebt:
+
+| Skizze | vorher | nachher |
+|---|---|---|
+| 16 | 2 (1391,94 / 1449,94) | 3 (**37,94** / 1391,94 / 1449,94) |
+| 26 | 1 (1936,0) | 2 (**711,38** / 1936,0) |
+| 30 (= `Sketch 4`) | 14 | 15 (**676,85** vorangestellt) |
+| 38 | 5 | 6 (**348,23** vorangestellt) |
+| 43 | 1 (60,5) | 2 (**1408,63** / 60,5) |
+| 6 (Mate-Connector) | 15 | 15, bitgleich |
+
+Die Indizes in der Aufzeichnung wurden mitgezogen (sieben Aufrufe), weil die
+Datei laut ihrem eigenen Kopf die Folge ist, die der IMPORTER erzeugt. Dass
+danach der Offene-Flaechen-Zensus `[0,0,0,0,0,0,2,0,0,1,4,0]` wieder exakt
+herauskommt, ist die Gegenprobe zum Trimmen: haette der Zaun irgendwo
+geschnitten, brachte keine Umnummerierung diese zwoelf Zahlen zurueck.
+
+### 4. Und trotzdem: `Extrude 15` faellt nicht
+
+`Sketch 12` hat nach dem Zaun **sechs** Zaunkurven und **null** Regionen. Der
+Grund steht in den Zahlen:
+
+    Traeger (Zaun, 2D):  x ∈ [−1,5; 33,6]   y ∈ [−22,25; 22,25]
+    gezeichnete Linie:   (−68,53; 23,05) → (−36,43; −16,83)
+
+Die Linie liegt 35 mm neben ihrer eigenen Traegerflaeche. Sie kann dort nichts
+schliessen, und der Zaun ist daran unschuldig: die 2D-Koordinaten der Linie
+sind **bitgleich Onshapes eigene Sketch-Koordinaten** (aus `pntX/pntY`,
+`dirX/dirY` und `startParam/endParam` nachgerechnet: (−68,52731558; 23,05) und
+(−36,42731558; −16,832859459) — genau das, was im Sub-Call steht). Es wurde
+also gar keine In-Plane-Abbildung angewandt.
+
+Das ist die #415-Rueckfallebene, und sie greift zu Recht:
+`measureOnshapeSketchFrame` braucht DREI nicht-kollineare 2D↔3D-Paare, um
+Drehung und Verschiebung zu schaetzen. `Sketch 12` besteht aus EINER Linie, also
+aus zwei Punkten, also kollinear — das Gleichungssystem ist entartet, die
+Funktion liefert `null` statt eines geratenen Frames, und der Payload bleibt
+woertlich stehen. Onshapes eigene 3D-Antwort sagt, wo die Linie wirklich liegt:
+Weltpunkte (−13,011; 74,627; 23,55) → (−13,011; 42,527; −16,833).
+
+`Extrude 15` haette also auch mit Region ein Loch an der falschen Stelle
+gefraest. Die Luecke, an der es haengt, ist nicht die Regionenfindung, sondern
+der Sketch-FRAME.
+
+### 5. Was ein Frame aus ZWEI Punkten braucht
+
+Kollinear heisst nicht unbestimmt. Ist die Ebene bekannt (und sie ist es — die
+Traegerflaeche liefert Normale und Ursprung), so bestimmen zwei Korrespondenzen
+die In-Plane-Drehung bis auf eine SPIEGELUNG an der Linie selbst. Fuer die Lage
+der Linie ist diese Spiegelung gegenstandslos — genau das Argument, mit dem
+#442 den Ein-Punkt-Fall konzentrischer Kreise geloest hat („die Drehung ist
+nicht bloss unbekannt, sie ist gegenstandslos").
+
+Hier ist sie es aber NICHT ganz: Onshape sagt zu seiner Region `side: 1`, also
+LINKS der Kurvenrichtung, und links/rechts kippt unter der Spiegelung. Welche
+der beiden Haelften der Traegerflaeche gemeint ist, haengt damit an der
+Haendigkeit — und die ist aus zwei Punkten nicht messbar. Eine angenommene
+Haendigkeit waere geraten, und ein geratener Halbraum ist bei einem REMOVE ein
+Loch an der falschen Stelle.
+
+Zwei Auswege stehen offen, beide messend statt ratend:
+
+- Die Haendigkeit an den Skizzen desselben Dokuments ablesen, deren Frame
+  vermessen WERDEN kann, und pruefen, ob sie fuer flaechengebundene Skizzen
+  einheitlich ist. Ist sie es, ist die Uebernahme eine Induktion aus einer
+  Messung, keine Annahme.
+- Die uebrigen Randkanten von Onshapes Region-Query verwerten. `Extrude 15`
+  nennt neben der Linie eine `CAP_EDGE` von `FbKE2kiRYXa1rde_13.opExtrude` und
+  eine `MERGE`-Kante — beide gehoeren zu einem BENANNTEN Feature. Welche der
+  zwei Haelften an dessen Wandstueck grenzt, ist eine Messung an unserer
+  eigenen Geometrie. `regionBoundary` verwirft solche Kanten heute; sie
+  aufzuheben ist die generische Fassung dieses Falls und trifft auch die 26
+  weiteren Region-Queries dieses Dokuments, die Sketch-Kurven mit Koerperkanten
+  mischen.
+
+### 6. Methodik-Lehre
+
+**Ein fehlender Rand kann eine fehlende LAGE sein.** Der Zaun war die richtige
+Antwort auf die richtige Frage — die Region fehlt wirklich, und sie fehlt aus
+genau dem Grund, den das Ticket nennt. Nur macht sie das Feature nicht ganz:
+was fehlt, ist auch der Frame, und das faellt erst auf, wenn man nach dem
+Einbau nicht die Meldung, sondern die KOORDINATEN nachrechnet. Die Meldung war
+bis zuletzt dieselbe.
+
+Dass die #451-Lehre („eine gemeinsame Fehlermeldung ist kein gemeinsamer
+Befund") hier eine Stufe tiefer noch einmal gilt, ist kein Zufall: eine
+Fehlermeldung nennt den Ort des Abbruchs, nie die Ursache.
