@@ -14,6 +14,7 @@ import { join } from "node:path";
 import {
   describeXform,
   inPlaneXform,
+  measureCollinearSketchFrame,
   measureOnshapeSketchFrame,
   sketches3dByFeature,
   sketchPoints2d,
@@ -475,5 +476,136 @@ describe("parallel versetzte Ebene (#427)", () => {
       }
     }
     expect(checked).toBeGreaterThan(3);
+  });
+});
+
+describe("Frame aus KOLLINEAREN Stützpunkten (#452)", () => {
+  /** Ein Sketch aus EINER Linie — zwei Stützpunkte, also immer kollinear. */
+  const lineFeature = (
+    pnt: [number, number],
+    dir: [number, number],
+    half: number,
+  ): any => ({
+    entities: [
+      {
+        btType: "BTMSketchCurveSegment-155",
+        entityId: "L",
+        geometry: {
+          btType: "BTCurveGeometryLine-117",
+          pntX: pnt[0],
+          pntY: pnt[1],
+          dirX: dir[0],
+          dirY: dir[1],
+        },
+        startParam: -half,
+        endParam: half,
+      },
+    ],
+  });
+
+  /** Onshapes 3D-Antwort, EXAKT aus dem gegebenen Frame gerechnet — so ist die
+   *  Korrespondenz starr und die Messung muss den Frame zurückgeben. */
+  const threeFrom = (
+    feat: any,
+    origin: [number, number, number],
+    xAxis: [number, number, number],
+    yAxis: [number, number, number],
+  ): any => {
+    const g = feat.entities[0].geometry;
+    const at = (t: number) => {
+      const u = g.pntX + t * g.dirX;
+      const v = g.pntY + t * g.dirY;
+      return [0, 1, 2].map((c) => origin[c] / 1000 + u * xAxis[c] + v * yAxis[c]);
+    };
+    return {
+      geomEntities: [
+        { id: "L.start", entityType: "point", point: at(feat.entities[0].startParam) },
+        { id: "L.end", entityType: "point", point: at(feat.entities[0].endParam) },
+      ],
+    };
+  };
+
+  it("legt Ursprung UND Drehung aus zwei Punkten, wenn die Ebene bekannt ist", () => {
+    // Trägerfläche: die Ebene z = 7, FieldDrafts eigene Achsen darauf.
+    const fd = fdFrame([0, 0, 7], [0, 0, 1]);
+    // Onshapes Basis darauf, um 30° gedreht und 12/−5 mm versetzt — genau die
+    // Art Differenz, die eine wörtliche Übernahme in die Ebene hineinlegt.
+    const a = (30 * Math.PI) / 180;
+    const osX: [number, number, number] = [Math.cos(a), Math.sin(a), 0];
+    const osY: [number, number, number] = [-Math.sin(a), Math.cos(a), 0];
+    const osOrigin: [number, number, number] = [12, -5, 7];
+
+    const feat = lineFeature([0.004, -0.011], [0.6, 0.8], 0.025);
+    const three = threeFrom(feat, osOrigin, osX, osY);
+    const f = measureCollinearSketchFrame(feat, three, fd)!;
+    expect(f, "zwei kollineare Punkte reichen mit bekannter Ebene").toBeTruthy();
+    expect(f.samples).toBe(2);
+    expect(f.residualMm).toBeLessThan(1e-9);
+    for (let c = 0; c < 3; c++) {
+      expect(f.origin[c]).toBeCloseTo(osOrigin[c], 9);
+      expect(f.xAxis[c]).toBeCloseTo(osX[c], 9);
+      expect(f.yAxis[c]).toBeCloseTo(osY[c], 9);
+    }
+    // Und die In-Plane-Abbildung ist dann eine reine Drehung — keine Spiegelung.
+    expect(inPlaneXform(f, fd).det).toBeCloseTo(1, 12);
+  });
+
+  it("misst dieselbe Drehung auf einer schrägen Trägerfläche", () => {
+    const n: [number, number, number] = [0, 1 / Math.SQRT2, 1 / Math.SQRT2];
+    const fd = fdFrame([3, 4, 5], n);
+    const a = -0.7;
+    const osX: [number, number, number] = [0, 1, 2].map(
+      (c) => Math.cos(a) * fd.xAxis[c] + Math.sin(a) * fd.yAxis[c],
+    ) as [number, number, number];
+    const osY: [number, number, number] = [0, 1, 2].map(
+      (c) => -Math.sin(a) * fd.xAxis[c] + Math.cos(a) * fd.yAxis[c],
+    ) as [number, number, number];
+    const feat = lineFeature([-0.02, 0.008], [-0.28, 0.96], 0.031);
+    const three = threeFrom(feat, [3, 4, 5], osX, osY);
+    const f = measureCollinearSketchFrame(feat, three, fd)!;
+    expect(f).toBeTruthy();
+    expect(inPlaneXform(f, fd).det).toBeCloseTo(1, 12);
+    expect(inPlaneXform(f, fd).angle).toBeCloseTo(a, 9);
+  });
+
+  it("lehnt ab, wenn Onshapes zwei Antworten nicht STARR zueinander passen", () => {
+    // Genau der #419-Fall `Sketch 12`: die 3D-Antwort setzt den Anfangspunkt
+    // 0,5 mm neben den, den der 2D-Payload aus `startParam` ergibt. Zwischen
+    // zwei Punktepaaren verschiedenen Abstands gibt es keine starre Abbildung —
+    // und eine Anpassung, die das überginge, verschöbe die Geometrie.
+    const fd = fdFrame([0, 0, 0], [0, 0, 1]);
+    const feat = lineFeature([0, 0], [1, 0], 0.025);
+    const three = threeFrom(feat, [0, 0, 0], [1, 0, 0], [0, 1, 0]);
+    // LÄNGS verschoben, wie im Dokument: die beiden Antworten melden dann
+    // verschiedene ABSTÄNDE, und daran scheitert jede starre Abbildung.
+    three.geomEntities[0].point[0] -= 0.0005;
+    const report = { residualMm: NaN, samples: 0 };
+    expect(measureCollinearSketchFrame(feat, three, fd, report)).toBeNull();
+    // …und der Grund ist beziffert, nicht bloss „nicht bestimmbar".
+    expect(report.samples).toBe(2);
+    expect(report.residualMm).toBeCloseTo(0.5, 3);
+
+    // Auch eine QUER verschobene Antwort wird abgelehnt — dort ist der Rest
+    // nur kleiner (0,5²/2·50 mm), aber er ist da, und die Schwelle ist scharf.
+    const three2 = threeFrom(feat, [0, 0, 0], [1, 0, 0], [0, 1, 0]);
+    three2.geomEntities[0].point[1] += 0.0005;
+    expect(measureCollinearSketchFrame(feat, three2, fd)).toBeNull();
+  });
+
+  it("lehnt ab, wenn nur EIN Stützpunkt gemeldet ist", () => {
+    const fd = fdFrame([0, 0, 0], [0, 0, 1]);
+    const feat = lineFeature([0, 0], [1, 0], 0.025);
+    const three = threeFrom(feat, [0, 0, 0], [1, 0, 0], [0, 1, 0]);
+    three.geomEntities.pop();
+    expect(measureCollinearSketchFrame(feat, three, fd)).toBeNull();
+  });
+
+  it("lehnt ab, wenn die Linie gar nicht in der aufgelösten Ebene liegt", () => {
+    // Die Weltrichtung läuft aus der Ebene heraus: dann ist nicht der
+    // Drehwinkel falsch, sondern die Fläche.
+    const fd = fdFrame([0, 0, 0], [0, 0, 1]);
+    const feat = lineFeature([0, 0], [1, 0], 0.025);
+    const three = threeFrom(feat, [0, 0, 0], [0, 0, 1], [0, 1, 0]);
+    expect(measureCollinearSketchFrame(feat, three, fd)).toBeNull();
   });
 });

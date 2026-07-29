@@ -12,6 +12,10 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.49.0
+- feat(onshape) #452: Eine Onshape-Skizze, deren sämtliche Stützpunkte auf EINER Geraden liegen — eine einzelne Linie etwa —, wird jetzt in FieldDrafts Ebene eingepasst statt wörtlich übernommen. Bisher galt sie als „nicht bestimmbar“ und landete verdreht in ihrer Trägerfläche. Bestimmt sind dabei Lage und Drehung; die Händigkeit folgt der an 26 von 29 Skizzen gemessenen Regel, und der Import sagt das dazu.
+- feat(onshape) #452: Sagt der Import „Sketch-Frame nicht bestimmbar“, nennt er jetzt den Grund mit Zahl. Weichen Onshapes 3D-Antwort und sein eigener 2D-Payload voneinander ab — es gibt Skizzen, bei denen sie das um Millimeter tun —, dann steht der Betrag in der Meldung, statt dass „zu wenige oder kollineare Stützpunkte“ eine ganz andere Ursache nahelegt.
+
 ## 0.48.0
 - feat(kernel) #452: Eine Skizze, die auf einer FLÄCHE steht, wird jetzt von deren Rand eingezäunt. Eine einzelne Linie quer über die Fläche schließt damit zwei Regionen — bisher schloss sie gar keine, weil FieldDraft Regionen allein aus den gezeichneten Kurven baute, und ein Extrude darauf brach mit „kein geschlossenes Profil“ ab. Der Zaun kann nur SCHLIESSEN, nie SCHNEIDEN: was die eigenen Kurven schon umranden, bleibt Stück für Stück wie es war, und in das extrudierbare Profil der ganzen Skizze geht der Zaun nicht ein. Die Trägerfläche ist dabei die ganze ebene Umgebung unter der Skizze, nicht die eine Teilfläche, in die unsere Zerlegung sie zufällig schneidet.
 

@@ -43,8 +43,10 @@ import {
   type Quantity,
 } from "./onshapeExpr";
 import {
+  type CollinearFitReport,
   describeXform,
   inPlaneXform,
+  measureCollinearSketchFrame,
   measureConcentricSketchOrigin,
   measureOnshapeSketchFrame,
   sketches3dByFeature,
@@ -1394,18 +1396,42 @@ function alignSketchFrame(
   // Reicht die Korrespondenz nicht für Drehung UND Verschiebung, kann sie
   // trotzdem für die Verschiebung allein reichen — wenn die Drehung an diesem
   // Sketch nichts bewegt (#442).
+  //
+  // Dritte Stufe (#452): liegen ALLE Stützpunkte auf einer Geraden, ist die
+  // Anpassung nur ohne die Ebene entartet. Mit ihr bestimmen eine Richtung und
+  // ein Punkt den Frame — bis auf die Händigkeit, die dabei die an 26 von 29
+  // Sketches gemessene Regel `det = +1` ist und nicht eine Messung an DIESEM
+  // Sketch. Das wird gemeldet, nicht verschwiegen.
+  const collinear: CollinearFitReport = { residualMm: NaN, samples: 0 };
   const os =
-    measureOnshapeSketchFrame(feat, three) ?? measureConcentricSketchOrigin(feat, three, fd);
+    measureOnshapeSketchFrame(feat, three) ??
+    measureConcentricSketchOrigin(feat, three, fd) ??
+    measureCollinearSketchFrame(feat, three, fd, collinear);
   if (!os) {
     result.warnings.push(
-      three
-        ? `${name}: Onshapes Sketch-Frame ist aus seiner 3D-Antwort nicht bestimmbar ` +
-          `(zu wenige oder kollineare Stützpunkte) — 2D-Koordinaten wörtlich übernommen; ` +
-          `liegt der Sketch auf einer Körperfläche, kann er verdreht sein`
-        : `${name}: fehlt in Onshapes 3D-Sketch-Antwort — Frame ungeprüft, ` +
-          `2D-Koordinaten wörtlich übernommen`,
+      !three
+        ? `${name}: fehlt in Onshapes 3D-Sketch-Antwort — Frame ungeprüft, ` +
+          `2D-Koordinaten wörtlich übernommen`
+        : collinear.samples >= 2
+          ? // Der Grund ist hier BEZIFFERT: kollinear allein wäre auflösbar, es
+            // scheitert an Onshape selbst. Eine starre Abbildung zwischen
+            // 2D-Payload und 3D-Antwort gibt es nur, wenn beide dieselben
+            // Abstände melden — dieser Sketch tut es nicht.
+            `${name}: Onshapes 3D-Antwort ist mit seinem eigenen 2D-Payload nicht starr ` +
+            `vereinbar (${collinear.residualMm.toFixed(4)} mm über ${collinear.samples} ` +
+            `Stützpunkte, alle kollinear) — 2D-Koordinaten wörtlich übernommen`
+          : `${name}: Onshapes Sketch-Frame ist aus seiner 3D-Antwort nicht bestimmbar ` +
+            `(zu wenige oder kollineare Stützpunkte) — 2D-Koordinaten wörtlich übernommen; ` +
+            `liegt der Sketch auf einer Körperfläche, kann er verdreht sein`,
     );
     return LITERAL;
+  }
+  if (os.samples === collinear.samples && Number.isFinite(collinear.residualMm)) {
+    result.warnings.push(
+      `${name}: Sketch-Frame aus ${os.samples} KOLLINEAREN Stützpunkten gelegt — Lage und ` +
+        `Drehung sind damit bestimmt, die Händigkeit nicht; sie folgt der Regel „beide ` +
+        `Systeme bauen rechtshändig auf dieselbe Flächennormale"`,
+    );
   }
 
   const x = inPlaneXform(os, fd);

@@ -351,6 +351,142 @@ export function measureConcentricSketchOrigin(
   };
 }
 
+/** Was die Zwei-Punkte-Anpassung gemessen hat, auch wenn sie abgelehnt wurde —
+ *  damit der Aufrufer den GRUND beziffern kann statt „nicht bestimmbar" zu
+ *  melden. `residualMm` ist der grösste Rekonstruktionsfehler: er misst, wie
+ *  weit Onshapes 3D-Antwort und sein eigener 2D-Payload auseinanderliegen, und
+ *  eine starre Abbildung zwischen ihnen kann es nur geben, wenn er 0 ist. */
+export interface CollinearFitReport {
+  residualMm: number;
+  samples: number;
+}
+
+/**
+ * Der Sonderfall, in dem ZWEI Stützpunkte reichen: ein Sketch, dessen sämtliche
+ * benennbaren Punkte auf EINER GERADEN liegen (#452).
+ *
+ * [`measureOnshapeSketchFrame`] braucht drei nicht-kollineare Korrespondenzen,
+ * weil es Drehung UND Verschiebung frei schätzt — die Normalgleichungen sind
+ * sonst entartet, und die Funktion liefert zu Recht `null` statt eines
+ * geratenen Frames. Ein Sketch aus EINER LINIE liefert genau zwei Punkte, fällt
+ * also immer in diesen Fall. Im #419-Dokument ist das `Sketch 12`, dessen
+ * 2D-Koordinaten deshalb Onshapes eigene blieben.
+ *
+ * Frei ist die Anpassung aber nur, solange man die EBENE nicht mitrechnet. Ist
+ * sie bekannt — und sie ist es, die aufgelöste Trägerfläche liefert Ursprung
+ * und Normale —, so bleiben von den sechs Freiheitsgraden noch drei: ein
+ * Drehwinkel in der Ebene und zwei Verschiebungen. Eine Richtung und ein Punkt
+ * bestimmen alle drei, und zwei Punkte auf einer Geraden geben beides:
+ *
+ *     θ = atan2(e_y, e_x) − atan2(d_y, d_x)
+ *
+ * mit `d` = Onshapes 2D-Richtung und `e` = derselben Richtung in Weltkoordinaten,
+ * auf FieldDrafts In-Plane-Achsen projiziert.
+ *
+ * WAS DABEI ANGENOMMEN WIRD, und warum es keine Raterei ist: dass Onshapes
+ * Sketch-Basis RECHTSHÄNDIG auf derselben Flächennormalen steht wie
+ * FieldDrafts, also `det = +1`. Aus zwei kollinearen Punkten ist das nicht
+ * messbar — die Spiegelung an eben dieser Geraden bildet beide auf sich ab, und
+ * jede Gegenprobe an ihnen ist gegen sie blind. Gemessen ist es trotzdem, nur
+ * anderswo: über die fünf Dokumente mit 3D-Antwort tragen 29 Sketches einen
+ * auflösbaren Frame, davon 26 mit `det = +1`; die drei Ausreißer sind allesamt
+ * FLÄCHEN-Fehlauflösungen, die sich selbst melden (eine koinzidente Rückseite,
+ * ein verdrehter Mate-Connector, eine schiefe Ebene) — keine
+ * Konventionsdifferenz. Der Aufrufer meldet die Annahme mit.
+ *
+ * Die Gegenprobe bleibt scharf: jeder gemeldete 3D-Punkt muss aus seinem
+ * 2D-Punkt auf {@link FIT_TOL_MM} genau rekonstruiert werden. Das ist keine
+ * Formsache — im #419-Dokument fällt `Sketch 12` genau daran: Onshapes
+ * 3D-Antwort setzt den Anfangspunkt der Linie 0,5 mm neben den, den sein
+ * eigener 2D-Payload aus `startParam` ergibt, und zwischen zwei Punktepaaren
+ * mit verschiedenem Abstand gibt es keine starre Abbildung. Der Betrag steht in
+ * `report`, damit die Meldung ihn nennen kann.
+ */
+export function measureCollinearSketchFrame(
+  feat: AnyMsg,
+  three: OnshapeSketch3d | undefined,
+  fd: PlaneFrame,
+  report?: CollinearFitReport,
+): MeasuredSketchFrame | null {
+  if (!three) return null;
+  const flat = sketchPoints2d(feat);
+  const byId = new Map<string, OnshapeSketch3dEntity>();
+  for (const raw of three.geomEntities ?? []) {
+    const e = msg(raw) as OnshapeSketch3dEntity;
+    if (typeof e.id === "string") byId.set(e.id, e);
+  }
+  const pairs: { u: number; v: number; p: Vec3 }[] = [];
+  for (const [id, [u, v]] of flat) {
+    const e = byId.get(id);
+    const p = e?.point ?? e?.center;
+    if (!p || p.length !== 3) continue;
+    pairs.push({ u, v, p: [p[0], p[1], p[2]] });
+  }
+  if (pairs.length < 2) return null;
+
+  // Die beiden am weitesten auseinander liegenden Paare tragen die Richtung —
+  // je länger die Basis, desto kleiner der Winkelfehler.
+  let a = pairs[0];
+  let b = pairs[1];
+  let best = -1;
+  for (const p of pairs) {
+    for (const q of pairs) {
+      const d = Math.hypot(q.u - p.u, q.v - p.v);
+      if (d > best) {
+        best = d;
+        a = p;
+        b = q;
+      }
+    }
+  }
+  if (best * M_TO_MM < FIT_TOL_MM) return null;
+
+  const d: Vec2 = [(b.u - a.u) / best, (b.v - a.v) / best];
+  const world: Vec3 = [b.p[0] - a.p[0], b.p[1] - a.p[1], b.p[2] - a.p[2]];
+  const wl = norm3(world);
+  if (wl < EPS) return null;
+  const w: Vec3 = [world[0] / wl, world[1] / wl, world[2] / wl];
+  const fdX = fd.xAxis as Vec3;
+  const fdY = fd.yAxis as Vec3;
+  const e: Vec2 = [dot3(w, fdX), dot3(w, fdY)];
+  // Läuft die Weltrichtung aus der Ebene heraus, ist es nicht dieselbe Ebene.
+  if (Math.abs(Math.hypot(e[0], e[1]) - 1) > 1e-6) return null;
+
+  const theta = Math.atan2(e[1], e[0]) - Math.atan2(d[1], d[0]);
+  const [cs, sn] = [Math.cos(theta), Math.sin(theta)];
+  // Rechtshändig auf FieldDrafts Normale: y_os = n × x_os (s. o.).
+  const xAxis: Vec3 = [0, 1, 2].map((c) => cs * fdX[c] + sn * fdY[c]) as Vec3;
+  const yAxis: Vec3 = [0, 1, 2].map((c) => -sn * fdX[c] + cs * fdY[c]) as Vec3;
+  const origin: Vec3 = [0, 1, 2].map(
+    (c) => a.p[c] - (a.u * xAxis[c] + a.v * yAxis[c]),
+  ) as Vec3;
+
+  // Gegenprobe: der Frame trifft jeden Punkt, den er erklären soll.
+  let residualMm = 0;
+  for (const { u, v, p } of pairs) {
+    for (let c = 0; c < 3; c++) {
+      residualMm = Math.max(
+        residualMm,
+        Math.abs(origin[c] + u * xAxis[c] + v * yAxis[c] - p[c]) * M_TO_MM,
+      );
+    }
+  }
+  if (report) {
+    report.samples = pairs.length;
+    report.residualMm = residualMm;
+  }
+  if (residualMm > FIT_TOL_MM) return null;
+
+  return {
+    origin: [origin[0] * M_TO_MM, origin[1] * M_TO_MM, origin[2] * M_TO_MM],
+    xAxis,
+    yAxis,
+    normal: cross3(xAxis, yAxis),
+    residualMm,
+    samples: pairs.length,
+  };
+}
+
 // ── B_fd⁻¹ ∘ B_os ──────────────────────────────────────────────────
 
 /** Negative Null einebnen — sie vergleicht sich nicht wie 0 und hat in
