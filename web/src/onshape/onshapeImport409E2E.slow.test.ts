@@ -150,9 +150,16 @@ const KNOWN_GAPS = [
   "Extrude 8",
   "Extrude 9",
   "Mirror 1",
+  // #452: `Sketch 11` places now — Onshape's 3D answer contradicts its own 2D
+  // payload for it, so no rigid frame exists, and its lines are projected
+  // straight from that answer instead. Reaching it reaches what stands ON it,
+  // and `Mirror 2` has no FieldDraft translator: a name appearing here because
+  // an upstream feature started importing is the #425 pattern, and it is the
+  // honest report of a gap that was unreachable before.
+  "Mirror 2",
+  "Mirror 2 · Mate connector",
   "Mirror 3",
   "Sketch 10",
-  "Sketch 11",
   "Sketch 12",
   "Sketch 14",
 ];

@@ -28,6 +28,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import initWasm, { Kernel as WasmKernel } from "../wasm/fielddraft_kernel";
+import { resolvePlaneFrame, type PlaneFrameKernel } from "../sketchPlaneFrame";
 import { importOnshapeFeatures } from "./onshapeImport";
 import { wrapImportKernel, regenCensus } from "./importKernelDouble";
 
@@ -265,32 +266,104 @@ describe("#419 multi-part assembly", () => {
    * clean — which is how #416's two rejected chamfers stayed invisible for
    * three tickets.
    *
-   * TWO names stood here when the pin was introduced, `Extrude 2` and
-   * `Extrude 15`, and #451 measured them apart: they read the SAME message and
-   * have NOTHING else in common.
+   * It is EMPTY since #452/#454, and that took three layers, each measured
+   * before it was believed:
    *
-   *  - `Extrude 2` names `Sketch 2`, whose only non-construction curve is an
-   *    ELLIPSE. The translator read lines and circles and dropped it, so what
-   *    reached the kernel was five construction lines and a point — no closed
-   *    region anywhere. The kernel has had `sketch_ellipse` all along; the gap
-   *    was one missing branch in `onshapeSketch.ts`. It imports now (see the
-   *    case below).
-   *  - `Extrude 15` names `Sketch 12`, and that sketch really does carry a
-   *    single LINE. Its Onshape region is fenced by that line plus the
-   *    `CAP_EDGE` / `SWEPT_EDGE` / `MERGE` edges of the SOLID the sketch sits
-   *    on: Onshape closes a region against the underlying FACE's own boundary,
-   *    FieldDraft builds regions from sketch curves alone. No translation
-   *    closes that; it needs the sketch's carrier face in the arrangement, and
-   *    it has its own ticket (#452).
+   *  - `Sketch 12` carries a single LINE, and a line encloses nothing. Its
+   *    Onshape region is fenced by that line plus the edges of the FACE the
+   *    sketch stands on, so the kernel now fences a face-mounted sketch with
+   *    its carrier's own boundary (v0.48.0).
+   *  - The carrier sat 16,983 mm off Onshape's plane — not because the query
+   *    named the wrong face (it names exactly the pair Onshape's `MERGE`
+   *    does) but because `Sketch 11`, which carries the two extrudes under it,
+   *    was taken LITERALLY: one of its 32 support points is 1,035 mm off and
+   *    the exact frame fit refused all 32. Fitted robustly, the two walls land
+   *    on Onshape's own plane to 3 µm (v0.49.1, #454).
+   *  - `Sketch 12` itself still has no measurable frame: Onshape's 3D answer
+   *    contradicts its own 2D payload by 0,5 mm at the start point, so no
+   *    rigid map explains both. Its line is therefore placed straight from the
+   *    3D answer — projected into the resolved plane it lands at
+   *    (1,5000; 22,2500) → (33,6000; −18,1329), which are the carrier's own
+   *    seam and right edge, 9 nm out of plane (v0.50.0).
    *
-   * The name that stays is therefore a MODEL gap, not a translation one — and
-   * a name reappearing here is a regression, as before.
+   * A name appearing here is a regression, as before.
    */
-  it("loses exactly one feature at REGENERATION, to a face-fenced region (#451)", async () => {
+  it("regenerates every feature it wrote (#452)", async () => {
     const { kernel, result } = await importFixture();
     const census = regenCensus(kernel.raw, result, fixture("onshape-419-features.json"));
-    expect(census.map((c) => c.name)).toEqual(["Extrude 15"]);
-    for (const c of census) expect(c.error).toContain("no closed regions to extrude");
+    expect(census.map((c) => `${c.name}: ${c.error}`)).toEqual([]);
+  }, 900_000);
+
+  /**
+   * …and the honest other half: `Extrude 15` BUILDS and still takes nothing
+   * away. Pinned so it cannot be mistaken for finished — the #416 lesson
+   * („a feature that does nothing and says nothing is only distinguishable
+   * from one that works by its geometry") applies to this document too.
+   *
+   * Everything about the cutter measures right. As a NEW body the very same
+   * feature occupies x ∈ [−13,01; 6226,75] — starting exactly on the carrier
+   * plane and running 6239 mm INTO the material (a positive depth puts it on
+   * the other side, so the sign is right too), spanning the selected region's
+   * y and z. It selects `qRegion(48, 1)`, the 648,14 mm² triangle, which is
+   * what BOTH independent readings predict: Onshape's `side: +1` under the
+   * measured `det = +1` rule, and the fact that its region query names a
+   * `CAP_EDGE` of `Extrude 14` and no edge of `Extrude 5` at all.
+   *
+   * And as a REMOVE it changes nothing: over a 26³ grid across the target
+   * body's own box, 9859 of 19683 points are solid and NOT ONE of them
+   * changes when the feature is suppressed. The B-Rep of that body does move
+   * (18 ↔ 24 faces), so the cutter reaches the body — it just takes no volume.
+   * That is the open layer, and it is a boolean question, not a sketch one.
+   */
+  it("still removes NO material with `Extrude 15` — the open layer (#452)", async () => {
+    const { kernel } = await importFixture();
+    const calls = JSON.parse(kernel.raw.toJson()).feature_calls as any[];
+    const ex15 = calls.find((c) => c.params?.display_name === "Extrude 15")!;
+    expect(ex15.params.profiles, "the triangle Onshape names").toBe("qRegion(48, 1)");
+
+    const frame = resolvePlaneFrame("qWall(44, 35)", kernel as unknown as PlaneFrameKernel)!;
+    const world = (u: number, v: number, off: number) =>
+      [0, 1, 2].map(
+        (c) => frame.origin[c] + u * frame.xAxis[c] + v * frame.yAxis[c] + off * frame.normal[c],
+      );
+    const at = (t: number[]) => {
+      let m = Infinity;
+      for (let b = 0; b < kernel.raw.bodyCount(); b++) {
+        m = Math.min(m, kernel.raw.bodySdfEval(b, t[0], t[1], t[2]));
+      }
+      return m;
+    };
+    // WARM the suppress path once before measuring. The first toggle re-weaves
+    // and re-compiles, and comparing the as-imported field against a
+    // post-toggle one shows a handful of sign flips on the boundary that are
+    // that difference and not a cut — four of them, at a coarse grid, all with
+    // |sdf| in the µm range. Toggled once first, the comparison is like for
+    // like and the count is 0 either way round.
+    kernel.raw.setFeatureSuppressed(ex15.id, true);
+    kernel.raw.setFeatureSuppressed(ex15.id, false);
+
+    // The SELECTED region's own prism: (u, v) across the triangle, `off < 0`
+    // into the material (the body lies on the −normal side of its carrier).
+    const pts: number[][] = [];
+    for (let u = 3; u <= 32; u += 1)
+      for (let v = -17; v <= 21; v += 1)
+        for (let off = -1; off >= -35; off -= 1) pts.push(world(u, v, off));
+    const withCut = pts.map(at);
+    kernel.raw.setFeatureSuppressed(ex15.id, true);
+    const without = pts.map(at);
+    kernel.raw.setFeatureSuppressed(ex15.id, false);
+
+    const solid = pts.filter((_, i) => without[i] < 0).length;
+    const removed = pts.filter((_, i) => without[i] < 0 && withCut[i] >= 0).length;
+    const added = pts.filter((_, i) => without[i] >= 0 && withCut[i] < 0).length;
+    // There IS material in the prism to take — otherwise „removes nothing"
+    // would be a statement about the probe, not about the feature.
+    expect(solid, "material inside the selected region's prism").toBeGreaterThan(10_000);
+    // BOTH directions, and both are the finding: the REMOVE takes nothing away
+    // and puts nothing back. The day `removed` stops being 0, #452 is done —
+    // move this pin and say by how much.
+    expect(removed, "Extrude 15 removes nothing (the open layer)").toBe(0);
+    expect(added, "and adds nothing either").toBe(0);
   }, 900_000);
 
   it("extrudes `Sketch 2`'s ELLIPSE, the whole profile it has (#451)", async () => {

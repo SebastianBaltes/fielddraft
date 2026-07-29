@@ -3569,3 +3569,88 @@ schlechtesten.** Die 1e-6 mm waren richtig und sind geblieben; falsch war, sie
 ueber ein UNGEFILTERTES Ensemble zu fuehren. 31 exakte Punkte sagen mehr als
 der 32. widerlegt — aber nur, wenn man ihn benennen darf, statt ihn entweder zu
 tolerieren oder an ihm zu scheitern.
+
+## Update 2026-07-29 (17) — jedes Feature regeneriert, und eines davon tut nichts (#452)
+
+Mit #454 stand die Ebene. Diese Runde legt die letzte der drei Schichten aus
+Update (14) §5 — die LAGE in der Ebene — und misst danach das, was das Ticket
+eigentlich will: fraest `Extrude 15` an der richtigen Stelle? Die Antwort ist
+noch nein, und sie ist jetzt zum ersten Mal praezise.
+
+### 1. Gebaut: Geometrie direkt aus der 3D-Antwort
+
+Fuer `Sketch 12` gibt es keine starre Abbildung — Onshapes 3D-Antwort setzt den
+Anfangspunkt der Linie 0,5 mm neben den, den sein eigener 2D-Payload aus
+`startParam` ergibt (Update (14) §2). Eine Abbildung braucht es aber nicht: die
+3D-Antwort sagt fuer jede Linie, wo ihre Endpunkte im RAUM liegen, und die in
+die aufgeloeste Ebene zu projizieren ist exakt.
+
+`placeSketchFromThreeD` tut genau das, streng begrenzt auf Sketches, deren
+Entities alle LINIEN sind und fuer die die 3D-Antwort jede davon als
+`lineSegment` mit beiden Endpunkten meldet — ein Bogen oder ein Spline hat mehr
+als Endpunkte, und was die Antwort davon nicht meldet, duerfte die Funktion
+sonst stillschweigend erfinden. Zusaetzlich muss jeder Endpunkt IN der
+aufgeloesten Ebene liegen (`PLANE_OFFSET_TOL_MM`), sonst ist nicht die Lage
+falsch, sondern die Flaeche.
+
+Gemessen an `Sketch 12`:
+
+| | u | v | Abstand zur Ebene |
+|---|---:|---:|---:|
+| Anfang | 1,5000 | 22,2500 | 3,3e-6 mm |
+| Ende | 33,6000 | −18,1329 | 9,1e-6 mm |
+
+`u = 1,5` ist die NAHT des koplanaren Flickens, `u = 33,6` seine rechte Kante
+(Update (13)). Die Linie spannt ihren Traeger also exakt von einem Rand zum
+anderen — woertlich uebernommen lag sie bei (−68,53; 23,05) → (−36,43; −16,83),
+70 mm daneben. Der Zaun schliesst daraufhin **zwei** Regionen, 913,80 mm² und
+648,14 mm².
+
+### 2. Der Regen-Zensus ist LEER
+
+    vorher:   ["Extrude 15"]      nachher:  []
+
+Zum ersten Mal regeneriert jedes Feature, das der Import fuer dieses Dokument
+schreibt. Und `Extrude 15` waehlt `qRegion(48, 1)` — die 648,14 mm² grosse
+Dreiecksflaeche —, was BEIDE unabhaengigen Lesarten vorhersagen: Onshapes
+`side: +1` unter der gemessenen `det = +1`-Regel, und die Tatsache, dass seine
+Region-Query eine `CAP_EDGE` von `Extrude 14` nennt und keine einzige Kante von
+`Extrude 5`. Die Gegenprobe aus Update (13) §5 ist damit gezogen, und sie
+stimmt.
+
+### 3. Und trotzdem nimmt es nichts weg
+
+Alles am Schneider misst richtig. Dasselbe Feature als NEUER Koerper belegt
+
+    x ∈ [−13,01; 6226,75]   y ∈ [42,53; 74,63]   z ∈ [−16,83; 23,55]
+
+— es beginnt exakt auf der Traegerebene und laeuft 6239 mm IN das Material
+hinein (mit positiver Tiefe liegt es auf der anderen Seite, das Vorzeichen
+stimmt also auch), und es deckt die y/z-Ausdehnung der gewaehlten Region ab.
+
+Als REMOVE bewegt es nichts: ueber ein Gitter durch das PRISMA der gewaehlten
+Region (u ∈ [3; 32], v ∈ [−17; 21], 1 mm bis 35 mm ins Material) sind ueber
+10 000 Punkte fest, und **kein einziger** davon aendert sich, wenn man das
+Feature unterdrueckt — in beide Richtungen, es kommt auch nichts hinzu. Der
+B-Rep des Koerpers bewegt sich sehr wohl (18 ↔ 24 Flaechen) — der Schneider
+erreicht ihn also —, nur Volumen nimmt er keines.
+
+Eine Messfalle steckt darin, und sie ist gepinnt: der ERSTE
+`setFeatureSuppressed`-Zyklus webt und kompiliert neu, und vergleicht man das
+Feld wie-importiert gegen ein Feld nach dem Zyklus, kippen vier Randpunkte
+eines groben Gitters — mit |sdf| im µm-Bereich. Das ist dieser Unterschied und
+kein Schnitt. Einmal vorgewaermt, ist die Zahl in beiden Richtungen 0.
+
+Das ist die naechste Schicht, und sie ist eine BOOLEAN-Frage, keine
+Sketch-Frage. Beide Zahlen sind gepinnt (`still removes NO material` in der
+#419-Suite), in beide Richtungen: der Tag, an dem `removed` nicht mehr 0 ist,
+ist der Tag, an dem #452 fertig ist — und der Pin zwingt dazu, ihn zu bemerken.
+
+### 4. Methodik-Lehre
+
+**Ein leerer Fehler-Zensus ist kein Erfolgsnachweis.** Drei Schichten lang war
+„`Extrude 15` regeneriert nicht" die Frage; jetzt regeneriert es, und die
+Antwort auf die eigentliche Frage — fraest es? — musste erst gestellt werden.
+Haette diese Runde beim Zensus aufgehoert, waere das Ticket geschlossen worden
+und das Loch waere nie entstanden. Das ist woertlich der Befund von Update (12),
+nur eine Ebene hoeher: dort tat ein Fillet nichts, hier ein Extrude.

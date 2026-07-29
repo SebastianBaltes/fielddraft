@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.50.0
+- feat(onshape) #452: Eine Onshape-Skizze, für die sich überhaupt kein Frame messen lässt — weil Onshapes 3D-Antwort seinem eigenen 2D-Payload widerspricht —, wird jetzt Linie für Linie dorthin gelegt, wo die 3D-Antwort sie meldet. Keine geschätzte Drehung, kein Restfehler: die Endpunkte werden in die aufgelöste Ebene projiziert. Im #419-Dokument landet `Sketch 12` damit exakt auf den beiden Rändern seiner Trägerfläche statt 70 mm daneben, und jedes Feature des Dokuments regeneriert.
+
 ## 0.49.1
 - fix(onshape) #454: Ein einzelner Stützpunkt, den Onshapes 3D-Antwort woanders meldet als sein eigener 2D-Payload, kostet eine Skizze nicht mehr ihre ganze Einpassung. Bisher fiel sie dann durch und wurde wörtlich übernommen — im #419-Dokument landete `Sketch 11` deswegen 16,983 mm neben seinem Platz, und alles, was darauf steht, mit ihm. Der Frame wird jetzt an die konsistente Mehrheit gelegt, und die verworfenen Punkte stehen mitsamt ihrer Abweichung in der Meldung. Die Schwellen bleiben scharf: passt der Rest nur, wenn eine Verzerrung überlebt, wird weiterhin abgelehnt.
 

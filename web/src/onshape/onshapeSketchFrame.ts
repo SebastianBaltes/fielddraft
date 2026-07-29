@@ -43,6 +43,10 @@ const M_TO_MM = 1000;
 const EPS = 1e-9;
 /** Toleranz für die Messung selbst: Onshape liefert Doubles in Metern. */
 const FIT_TOL_MM = 1e-6;
+/** „In derselben Ebene" für die 3D-Direktplatzierung — dieselbe Schranke, mit
+ *  der `alignSketchFrame` eine parallel versetzte Ebene als Fehler meldet.
+ *  Gemessen liegt #419s `Sketch 12` mit 9e-6 mm rund hundertfach darunter. */
+const PLANE_OFFSET_TOL_MM = 1e-3;
 
 // ── Onshape `sketches?output3D=true` (die gelesene Teilmenge) ───────
 
@@ -618,6 +622,98 @@ export function measureCollinearSketchFrame(
     residualMm,
     samples: pairs.length,
   };
+}
+
+/**
+ * Der letzte Ausweg, wenn KEIN Frame messbar ist: die Geometrie dort hinlegen,
+ * wo Onshapes eigene 3D-Antwort sie meldet — Entity für Entity, ohne Umweg über
+ * eine Abbildung (#452).
+ *
+ * Für einen Sketch, dessen Stützpunkte kollinear sind UND dessen zwei Antworten
+ * sich widersprechen, gibt es keine starre Abbildung, die beide erklärt
+ * ({@link measureCollinearSketchFrame} lehnt genau das ab). Eine Abbildung
+ * braucht es aber gar nicht: die 3D-Antwort sagt für jede Linie, wo ihre
+ * Endpunkte im RAUM liegen, und die in FieldDrafts Ebene zu projizieren ist
+ * exakt — keine Drehung zu schätzen, keine Händigkeit zu raten, kein Residuum.
+ *
+ * Gemessen an dem Fall, für den das gebaut ist (#419 `Sketch 12`): projiziert
+ * landet die Linie bei (1,5000; 22,2500) → (33,6000; −18,1329), also GENAU auf
+ * zwei Rändern ihrer Trägerfläche (deren Naht bei u = 1,5 und deren rechte
+ * Kante bei u = 33,6), und ihr Abstand zur Ebene ist 3e-6 bzw. 9e-6 mm. Der
+ * wörtlich übernommene 2D-Payload legt dieselbe Linie nach (−68,53; 23,05) →
+ * (−36,43; −16,83) — 70 mm daneben, weil er in ONSHAPES Basis steht.
+ *
+ * Streng begrenzt, aus demselben Grund wie {@link measureConcentricSketchOrigin}:
+ * NUR Linien, und nur wenn die 3D-Antwort für JEDE von ihnen ein
+ * `lineSegment` mit beiden Endpunkten meldet und alle Endpunkte IN der
+ * aufgelösten Ebene liegen. Ein Bogen, eine Ellipse, ein Spline hat mehr als
+ * Endpunkte, und was die 3D-Antwort davon nicht meldet, dürfte diese Funktion
+ * sonst stillschweigend erfinden.
+ */
+export function placeSketchFromThreeD(
+  feat: AnyMsg,
+  three: OnshapeSketch3d | undefined,
+  fd: PlaneFrame,
+): { feature: AnyMsg; lines: number } | null {
+  if (!three) return null;
+  const segs = new Map<string, { a: Vec3; b: Vec3 }>();
+  for (const raw of three.geomEntities ?? []) {
+    const e = msg(raw) as OnshapeSketch3dEntity & { startPoint?: number[]; endPoint?: number[] };
+    if (typeof e.id !== "string") continue;
+    const a = e.startPoint;
+    const b = e.endPoint;
+    if (a?.length === 3 && b?.length === 3) {
+      segs.set(e.id, { a: [a[0], a[1], a[2]], b: [b[0], b[1], b[2]] });
+    }
+  }
+  if (segs.size === 0) return null;
+
+  const fdX = fd.xAxis as Vec3;
+  const fdY = fd.yAxis as Vec3;
+  const fdN = fd.normal as Vec3;
+  /** Weltpunkt (METER) → (u, v) der Ebene, in METERN; plus Abstand zur Ebene. */
+  const project = (p: Vec3): { uv: Vec2; offMm: number } => {
+    const d: Vec3 = [
+      p[0] - fd.origin[0] / M_TO_MM,
+      p[1] - fd.origin[1] / M_TO_MM,
+      p[2] - fd.origin[2] / M_TO_MM,
+    ];
+    return { uv: [dot3(d, fdX), dot3(d, fdY)], offMm: dot3(d, fdN) * M_TO_MM };
+  };
+
+  const out: AnyMsg = structuredClone(feat);
+  let lines = 0;
+  for (const raw of (out.geometry ?? out.entities ?? []) as AnyMsg[]) {
+    const e = msg(raw);
+    const id = e.entityId as string | undefined;
+    const g = msg(e.geometry);
+    const bt = typeof g?.btType === "string" ? g.btType : "";
+    // Ein reiner PUNKT trägt keine Fläche und darf fehlen; alles andere nicht.
+    if (typeof e.x === "number" && typeof e.y === "number") continue;
+    if (!id || !bt.startsWith("BTCurveGeometryLine")) return null;
+    const seg = segs.get(id);
+    if (!seg) return null;
+    const a = project(seg.a);
+    const b = project(seg.b);
+    // Liegt die Antwort nicht in DIESER Ebene, ist nicht die Lage falsch,
+    // sondern die Fläche — dann hilft kein Projizieren.
+    if (Math.abs(a.offMm) > PLANE_OFFSET_TOL_MM || Math.abs(b.offMm) > PLANE_OFFSET_TOL_MM) {
+      return null;
+    }
+    const dx = b.uv[0] - a.uv[0];
+    const dy = b.uv[1] - a.uv[1];
+    const len = Math.hypot(dx, dy);
+    if (!(len > 0)) return null;
+    // Onshapes Linien-Parametrisierung ist Bogenlänge entlang `dir` ab `pnt`.
+    g.pntX = nz(a.uv[0]);
+    g.pntY = nz(a.uv[1]);
+    g.dirX = nz(dx / len);
+    g.dirY = nz(dy / len);
+    e.startParam = 0;
+    e.endParam = len;
+    lines += 1;
+  }
+  return lines > 0 ? { feature: out, lines } : null;
 }
 
 // ── B_fd⁻¹ ∘ B_os ──────────────────────────────────────────────────

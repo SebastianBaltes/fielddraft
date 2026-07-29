@@ -50,6 +50,7 @@ import {
   measureCollinearSketchFrame,
   measureConcentricSketchOrigin,
   measureOnshapeSketchFrame,
+  placeSketchFromThreeD,
   sketches3dByFeature,
   transformSketchFeature,
   type OnshapeSketch3d,
@@ -1414,6 +1415,19 @@ function alignSketchFrame(
     measureConcentricSketchOrigin(feat, three, fd) ??
     measureCollinearSketchFrame(feat, three, fd, collinear);
   if (!os) {
+    // #452, letzte Stufe: ohne messbaren Frame kann die Geometrie trotzdem
+    // exakt platziert werden, wenn Onshapes 3D-Antwort sie Entity für Entity
+    // meldet. Keine Abbildung, kein Residuum — projizieren.
+    const placed = placeSketchFromThreeD(feat, three, fd);
+    if (placed) {
+      result.warnings.push(
+        `${name}: kein Frame messbar — ${placed.lines} Linie(n) direkt aus Onshapes ` +
+          `3D-Antwort in die aufgelöste Ebene projiziert (exakt); die Händigkeit für ` +
+          `Onshapes Flanken-Angabe folgt der Regel „beide Systeme bauen rechtshändig ` +
+          `auf dieselbe Flächennormale"`,
+      );
+      return { feature: placed.feature, det: 1 };
+    }
     result.warnings.push(
       !three
         ? `${name}: fehlt in Onshapes 3D-Sketch-Antwort — Frame ungeprüft, ` +
