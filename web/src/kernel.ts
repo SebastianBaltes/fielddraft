@@ -168,6 +168,13 @@ export interface BRepFace {
    *  placement in, like {@link centroidLocal}/{@link normalLocal}. */
   surfaceParams?: SurfaceParams | null;
   centroidLocal: [number, number, number];
+  /** Where a SKETCH on this face has its origin, body-local — the kernel's own
+   *  `face_plane_origin_local` (#442). NOT the same point as
+   *  {@link centroidLocal} on a face without symmetry: that one is the mean of
+   *  the outer loop's edge samples, this one the fingerprint centroid projected
+   *  onto the exact carrier plane, and only this one is what the kernel builds
+   *  the sketch frame on. Absent until the wasm exporting it is regenerated. */
+  planeOriginLocal?: [number, number, number];
   normalLocal: [number, number, number];
 }
 

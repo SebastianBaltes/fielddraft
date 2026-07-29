@@ -231,10 +231,8 @@ impl FeatureKind for ExtrudeFeature {
         let face_queries: Vec<String> = profile_qs
             .iter()
             .filter(|q| {
-                matches!(
-                    crate::queries::parse_query(q),
-                    Ok(crate::queries::QueryExpr::Face(_))
-                )
+                crate::queries::parse_query(q)
+                    .is_ok_and(|e| crate::queries::selects_brep_faces(&e))
             })
             .cloned()
             .collect();

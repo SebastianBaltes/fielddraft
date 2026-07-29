@@ -32,11 +32,13 @@
  */
 
 import {
+  decodeFaceRef,
   decodeOnshapeQueryString,
   tokenizeBton,
   extractOpRefs,
   parseBton,
   type BtonValue,
+  type OnshapeFaceRef,
 } from "./onshapeQuery";
 
 /** One imprint edge of a region's boundary. */
@@ -48,6 +50,9 @@ export interface RegionBoundaryEdge {
    *  trim the curve; ANY other count means the whole curve is the edge (0) or
    *  the trim is not decidable (1), and the caller must not trim. */
   ends: string[][];
+  /** Onshape's `±1`: on WHICH FLANK of this edge the region lies. `null` when
+   *  the query states none. */
+  side?: number | null;
 }
 
 export interface DecodedRegionQuery {
@@ -60,6 +65,11 @@ export interface DecodedRegionQuery {
   /** True when the query names a FACE — the shape a region selection has.
    *  A whole-sketch `qCreatedBy`/`qSketchRegion` carries no BTON at all. */
   isRegionQuery: boolean;
+  /** The face a NON-imprint profile query names — a wall or a cap of an
+   *  earlier feature, i.e. an extrude that grows out of a SOLID rather than a
+   *  sketch (#442). `null` for an imprint region (which has `edges` instead)
+   *  and for anything that is no face query at all. */
+  faceRef: OnshapeFaceRef | { reason: string } | null;
 }
 
 type Obj = { [k: string]: BtonValue };
@@ -72,13 +82,26 @@ const isObj = (v: BtonValue | undefined): v is Obj =>
  *  `ORIGINAL_DEPENDENCY` blocks, which name provenance rather than
  *  neighbours — those say nothing about a boundary. */
 function topologyEntities(v: Obj): Obj[] {
+  return topologyPairs(v).map(([e]) => e);
+}
+
+/** The TOPOLOGY entries WITH the SIDE Onshape states for each — `[entity, ±1]`.
+ *  The side says on which flank of that edge the face lies, and it is the only
+ *  thing in the query that distinguishes a region from the hole it is fenced
+ *  around (#442). */
+function topologyPairs(v: Obj): [Obj, number | null][] {
   const data = v.disambiguationData;
   if (!Array.isArray(data)) return [];
   const topo = data.find((d) => isObj(d) && d.disambiguationType === "TOPOLOGY");
   if (!isObj(topo) || !Array.isArray(topo.entities)) return [];
-  return topo.entities
-    .map((pair) => (Array.isArray(pair) ? pair[0] : pair))
-    .filter(isObj);
+  const out: [Obj, number | null][] = [];
+  for (const pair of topo.entities) {
+    const e = Array.isArray(pair) ? pair[0] : pair;
+    if (!isObj(e)) continue;
+    const s = Array.isArray(pair) ? pair[1] : undefined;
+    out.push([e, typeof s === "number" ? s : null]);
+  }
+  return out;
 }
 
 /** The sketch curve a query derives from, or null when it derives from
@@ -111,14 +134,14 @@ function vertexCurves(v: Obj): string[] {
  *  query would throw away a selection Onshape made. */
 function regionBoundary(doc: Obj): RegionBoundaryEdge[] {
   const out: RegionBoundaryEdge[] = [];
-  for (const edge of topologyEntities(doc)) {
+  for (const [edge, side] of topologyPairs(doc)) {
     const entityId = sketchEntityOf(edge);
     if (!entityId) continue;
     const ends = topologyEntities(edge)
       .filter((v) => v.entityType === "VERTEX")
       .map(vertexCurves)
       .filter((ids) => ids.length > 0);
-    out.push({ entityId, ends });
+    out.push({ entityId, ends, side });
   }
   return out;
 }
@@ -152,9 +175,11 @@ export async function decodeRegionQuery(
   const wire = extractOpRefs(tokens).find((o) => o.op === "wireOp");
   const isRegionQuery = isObj(doc) && doc.entityType === "FACE";
   // Only an IMPRINT face is a sketch region. A `SWEPT_FACE` / `CAP_FACE` names
-  // a face of a SOLID; it is still a face-shaped profile selection, so it stays
-  // a region query and resolves to nothing — which the caller reports.
-  const edges = isObj(doc) && doc.queryType === "IMPRINT" ? regionBoundary(doc) : [];
+  // a face of a SOLID — a profile too, but one that reads as a FACE and not as
+  // a boundary of sketch curves (#442).
+  const imprint = isObj(doc) && doc.queryType === "IMPRINT";
+  const edges = isObj(doc) && imprint ? regionBoundary(doc) : [];
+  const faceRef = isRegionQuery && !imprint ? decodeFaceRef(doc) : null;
 
-  return { sketchFeatureId: wire?.featureId ?? null, edges, isRegionQuery };
+  return { sketchFeatureId: wire?.featureId ?? null, edges, isRegionQuery, faceRef };
 }

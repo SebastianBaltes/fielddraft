@@ -165,14 +165,18 @@ impl<'a> Context<'a> {
     /// [`crate::brep::face_profile`]).
     ///
     /// Errors are returned as a message the caller wraps in a [`FeatureError`]:
-    /// a non-`qFace` query, an unresolvable handle, a non-planar (curved) face,
-    /// or a face not coplanar with the first.
+    /// a query that names no faces, an unresolvable handle, a non-planar
+    /// (curved) face, or a face not coplanar with the first.
+    ///
+    /// Any FACE-SELECTING form is accepted, not just `qFace(hash)`
+    /// ([`crate::queries::selects_brep_faces`]): the Onshape import names a
+    /// swept wall `qWall(op, entity)`, which survives a regeneration that
+    /// invalidates a hash (#442).
     pub fn resolve_extrude_faces(
         &mut self,
         queries: &[String],
     ) -> Result<(::fielddraft_protocol::Sketch2d, crate::sketch::SketchFrame), String> {
         use crate::brep::FaceId;
-        use crate::queries::QueryExpr;
 
         let woven = self.brep_cache.ensure(&self.features);
 
@@ -181,17 +185,17 @@ impl<'a> Context<'a> {
         for q in queries {
             let expr = crate::queries::parse_query(q)
                 .map_err(|e| format!("invalid face query `{q}`: {e:?}"))?;
-            let QueryExpr::Face(eref) = expr else {
+            if !crate::queries::selects_brep_faces(&expr) {
                 return Err(format!(
-                    "extrude faces must be `qFace(<id_hash>)` selections; got `{q}`"
+                    "extrude faces must be face selections (`qFace`, `qWall`, \
+                     `qCreatedBy(op, ROLE)`); got `{q}`"
                 ));
-            };
-            let Some((bi, fid)) = locate_face(woven, &eref) else {
-                return Err(format!(
-                    "face {} not found in the current model",
-                    eref.id_hash
-                ));
-            };
+            }
+            let found = locate_face_query(woven, &expr);
+            if found.is_empty() {
+                return Err(format!("face query `{q}` matched no face in the current model"));
+            }
+            for (bi, fid) in found {
             let (brep, placement) = &woven[bi];
             // Extrude is a PLANAR operation by design (see the decision log in
             // GEOMETRY-KERNEL-CONCEPT.md §10): a curved face has no canonical
@@ -213,6 +217,7 @@ impl<'a> Context<'a> {
                 );
             }
             hits.push((bi, fid, crate::sketch::face_plane_frame(brep, fid, placement)));
+            }
         }
         if hits.is_empty() {
             return Err("no faces selected to extrude".to_string());
@@ -277,14 +282,13 @@ impl<'a> Context<'a> {
         &mut self,
         queries: &[String],
     ) -> Result<(Vec<::fielddraft_protocol::LoftSection>, crate::sketch::SketchFrame), String> {
-        use crate::queries::QueryExpr;
-
         // 1. Resolve each query → (sketch, frame). A face routes through the
         //    face-extrude path; anything else through the sketch-region path.
         let mut resolved: Vec<(::fielddraft_protocol::Sketch2d, crate::sketch::SketchFrame)> =
             Vec::new();
         for q in queries {
-            let is_face = matches!(crate::queries::parse_query(q), Ok(QueryExpr::Face(_)));
+            let is_face = crate::queries::parse_query(q)
+                .is_ok_and(|e| crate::queries::selects_brep_faces(&e));
             if is_face {
                 let (sketch, frame) = self.resolve_extrude_faces(std::slice::from_ref(q))?;
                 resolved.push((sketch, frame));
@@ -417,18 +421,19 @@ impl<'a> Context<'a> {
     /// happens to overlap the prism (ticket px2o). Empty if no face resolves, so
     /// the caller keeps the legacy AABB docking.
     pub fn face_owner_target_ids(&mut self, queries: &[String]) -> Vec<FeatureId> {
-        use crate::queries::QueryExpr;
-
         // Locate the woven body (partition order) that carries any picked face.
+        // Reads every face-selecting form, not just `qFace` — an Onshape import
+        // docks its wall extrudes through `qWall(op, entity)` (#442), and
+        // without the owner the Add would fuse by AABB overlap instead.
         let mut owner_bi: Option<usize> = None;
         {
             let woven = self.brep_cache.ensure(&self.features);
             for q in queries {
-                let Ok(QueryExpr::Face(eref)) = crate::queries::parse_query(q) else {
+                let Ok(expr) = crate::queries::parse_query(q) else {
                     continue;
                 };
-                if let Some((bi, _)) = locate_face(woven, &eref) {
-                    owner_bi = Some(bi);
+                if let Some((bi, _)) = locate_face_query(woven, &expr).first() {
+                    owner_bi = Some(*bi);
                     break;
                 }
             }
@@ -939,7 +944,13 @@ impl<'a> Context<'a> {
     ) -> Option<MateAnchorFrame> {
         use crate::queries::QueryExpr;
         match expr {
-            QueryExpr::Edge(_) | QueryExpr::EdgeBetween(_, _) => {
+            // Every EDGE-yielding form, not just the two native ones: an
+            // Onshape mate connector routinely anchors on „the edge where these
+            // two faces meet", which is `qCommonEdge(a, b)` (#442). Falling
+            // through to the face ladder made that connector — and with it the
+            // sketch drawn on it and everything drawn from that sketch —
+            // silently unplaceable.
+            QueryExpr::Edge(_) | QueryExpr::EdgeBetween(_, _) | QueryExpr::CommonEdge(_, _) => {
                 use crate::brep::EdgeId;
                 let woven = self.brep_cache.ensure(&self.features);
                 let located = match expr {
@@ -949,6 +960,7 @@ impl<'a> Context<'a> {
                     },
                     _ => None,
                 };
+                let by_hash = resolved_edge_hashes(woven, expr);
                 for (bi, (brep, placement)) in woven.iter().enumerate() {
                     for i in 0..brep.edges.len() {
                         let eid = EdgeId(i as u32);
@@ -962,7 +974,9 @@ impl<'a> Context<'a> {
                                 matches!((fa, fb), (Some(fa), Some(fb))
                                     if (s0 == fa && s1 == fb) || (s0 == fb && s1 == fa))
                             }
-                            _ => false,
+                            _ => by_hash.contains(
+                                &crate::brep::naming::TopoRef::from_edge(brep, eid).id_hash,
+                            ),
                         };
                         if !hit {
                             continue;
@@ -1217,6 +1231,37 @@ fn locate_face(
         (bi, EntityHandle::Face(fid)) => Some((bi, fid)),
         _ => None,
     }
+}
+
+/// Every face a FACE-SELECTING query ([`crate::queries::selects_brep_faces`])
+/// matches, as `(brep index, FaceId)` pairs in body order.
+///
+/// `qFace(hash)` keeps the healing-aware single-element path; every richer form
+/// (`qWall(op, entity)`, `qCreatedBy(op, CAP_TOP)`, their combinators) goes
+/// through the shared element resolver — the same split
+/// [`Context::resolve_face_frame`] makes, so a form that works as a sketch PLANE
+/// works as a profile too. Several matches are legitimate: one Onshape cap can
+/// be several of our coplanar faces (#443), and the caller unions them.
+fn locate_face_query(
+    woven: &[(crate::brep::BRep, fielddraft_protocol::Transform)],
+    expr: &crate::queries::QueryExpr,
+) -> Vec<(usize, crate::brep::FaceId)> {
+    use crate::brep::naming::EntityKind;
+    if let crate::queries::QueryExpr::Face(eref) = expr {
+        return locate_face(woven, eref).into_iter().collect();
+    }
+    let mut out = Vec::new();
+    for (bi, (brep, _)) in woven.iter().enumerate() {
+        for r in crate::queries::resolve_query_topo(std::slice::from_ref(brep), expr)
+            .iter()
+            .filter(|r| r.kind == EntityKind::Face)
+        {
+            if let Some(fid) = face_by_hash(brep, r.id_hash) {
+                out.push((bi, fid));
+            }
+        }
+    }
+    out
 }
 
 /// Locate a `qEdge` element reference across the woven bodies.

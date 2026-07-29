@@ -12,6 +12,13 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.44.0
+- feat(onshape) #442: Ein Extrude, das eine Wand oder Deckfläche eines früheren Features ausformt, wird jetzt auch so importiert. Bisher fiel der Import ersatzweise auf die ganze Skizze zurück und baute daraus einen Block, der halbe Nachbarflächen verschluckte.
+- fix(onshape) #442: Eine Region-Auswahl überlebt jetzt einzelne Kurven, die Onshape zwar nennt, die die Skizze aber nicht mehr enthält. Fehlt die Hälfte des Randes, bleibt es bei der Absage.
+- fix(onshape) #442: Eine Skizze auf einer Körperfläche sitzt jetzt genau dort, wo der Kernel sie hinlegt. Web und Kernel hatten zwei verschiedene Flächen-Mittelpunkte, was den Import um bis zu 7,5 mm verschob.
+- fix(onshape) #442: Ein Mate-Connector, der auf der Kante zwischen zwei Flächen sitzt, wird jetzt gefunden. Vorher fiel die Skizze darauf und alles daran Hängende ersatzlos aus.
+- fix(onshape) #442: Zwei konzentrische Kreise auf einer Körperfläche landen jetzt an Onshapes Stelle, obwohl ihre Drehung gar nicht messbar ist. Sie ist bei einer Kreisschar auch gegenstandslos.
+
 ## 0.43.3
 - fix(onshape) #444: Gespiegelte Bögen einer Onshape-Skizze landen jetzt dort, wo sie hingehören. Onshape speichert einen Bogen nicht als Winkel IN der Skizze, sondern als Winkel in seinem eigenen kleinen Koordinatensystem — und eine Spiegelung dreht dieses System um. FieldDraft las die Winkel bisher, als wären es Skizzenwinkel: die gespiegelten Kopien eines Bogens erschienen dadurch an ihrem eigenen Spiegelbild, oft mehrere Millimeter daneben. Sichtbar wurde das erst danach: die Linien, die tangential an so einen Bogen anschließen, trafen ihn nicht mehr, die Umrisse fielen auf, und die Flächen, die sie einschließen sollten, gab es nicht. Im großen Testdokument betraf das drei von vier gleichen Schlüsselloch-Aussparungen einer Platte — die Skizze hatte 14 statt 15 Bereiche, zwei davon 0,03 mm² schmale Splitter, und die Extrusion überzog die ganze Platte statt nur ihren Rahmen. Jetzt trifft Onshapes Auswahl von 14 Bereichen genau 14 unserer Flächen, das Aufdicken „Thicken 7“ findet seine beiden Wände wieder und importiert, und die Zahl der Meldungen fällt von 179 auf 177.
 

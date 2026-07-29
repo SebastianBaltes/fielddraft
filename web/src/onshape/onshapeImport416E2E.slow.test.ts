@@ -38,6 +38,12 @@ beforeAll(async () => {
 const ticket416 = (): { features: any[] } =>
   JSON.parse(readFileSync(join(__dirname, "fixtures", "onshape-416-features.json"), "utf8"));
 
+/** Onshape's own 3D answer for the document's sketches — the only exact source
+ *  for its sketch FRAME on a body face (#415). Without it a face-bound sketch is
+ *  taken literally and lands wherever our own basis puts it. */
+const sketches3d = (): unknown =>
+  JSON.parse(readFileSync(join(__dirname, "fixtures", "onshape-416-sketches3d.json"), "utf8"));
+
 /**
  * Onshape's own answer for this document, in mm (the API reports metres).
  * ONE solid part, `JHD` / „Part 1“.
@@ -184,26 +190,27 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
 
   beforeAll(async () => {
     kernel = wrap(new WasmKernel());
-    result = await importOnshapeFeatures(ticket416(), kernel);
+    result = await importOnshapeFeatures(ticket416(), kernel, {
+      sketches3d: sketches3d() as any,
+    });
   }, 180_000);
 
-  it("places the sketches that sit on implicit mate connectors (#409)", () => {
+  it("places EVERY sketch that sits on an implicit mate connector (#409/#442)", () => {
     // Three of the document's five sketches (2, 4, 6) sit on IMPLICIT MATE
     // CONNECTORS — sub-features of the sketches themselves, which is why the
     // feature-type census of the gap matrix never saw them, and why all three
     // used to fall together with everything drawn on them.
     //
-    // Two now land: Sketch 2 on a raw construction line of Sketch 1, Sketch 4 on
-    // the cap of Extrude 4. Both needed kernel work (`resolve_plane_frame` for
-    // the plane, `resolve_mate_anchor` for the sketch-line anchor).
+    // All three land now. Sketch 2 hangs on a raw construction line of Sketch 1,
+    // Sketch 4 on the cap of Extrude 4, and Sketch 6 — the last one — on the
+    // EDGE where a cap meets a wall, which the kernel names
+    // `qCommonEdge(a, b)`. `resolve_mate_anchor` had a match arm for `qEdge` and
+    // `qEdgeBetween` and fell through to the FACE ladder for everything else, so
+    // that connector resolved to nothing and took Sketch 6, `Extrude 9` and
+    // `Fillet 3` with it (#442).
     const errors = result.errors.join(" | ");
     const planted = result.errors.filter((e) => e.includes("Sketch liegt auf dem Mate-Connector"));
-    expect(planted.length, errors).toBe(1);
-    // The one left is Sketch 6, and NOT because of its plane: its connector
-    // anchors on a cap EDGE whose `qWall` binds nothing — the tangentially
-    // merged mantle face, the same gap that blocks the fillets below.
-    expect(planted[0]).toContain("Deckfläche von FUwE53MM0gG2CH2_0");
-    expect(errors).toContain("löst auf 0 Elemente auf");
+    expect(planted, errors).toEqual([]);
   });
 
   /**
@@ -226,33 +233,61 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
   });
 
   /**
-   * The #416 end state, pinned as a FAILING test on purpose.
+   * ONE part, and the two axes the document is now exact on.
    *
-   * The document does not reach its ground truth, and the reason is NOT the
-   * revolve translation (proven on the real kernel below) but the mate-connector
-   * plane gap above: Sketch 2, Sketch 4 and Sketch 6 cannot be placed, so
-   * everything drawn on them — including this ticket's revolve — is skipped.
+   * The document used to import as FOUR bodies spanning 102 × 67 × 105 mm
+   * against Onshape's 73 × 34 × 108 (#442). Three translations were wrong and
+   * each was measured before it was touched:
    *
-   * The two KERNEL gaps this test used to blame are CLOSED as of #409:
-   * `resolve_plane_frame` lowers a mate connector's CSYS to a plane frame, and
-   * `resolve_mate_anchor` reads `qSketchLine`. Sketch 2 and Sketch 4 land.
+   *  - `Extrude 5` extrudes a WALL of `Extrude 2` (an Onshape `SWEPT_FACE`
+   *    query), not a sketch region. Read as an unresolvable region it fell back
+   *    to the WHOLE of Sketch 1, 32 mm deep — a block that also swallowed
+   *    `Extrude 1`'s top cap, which is why `qCreatedBy(3, CAP_TOP)` bound
+   *    nothing for the mate connector and three fillets.
+   *  - three of `Extrude 1`'s four region queries name two curves the sketch no
+   *    longer has, and the whole query was refused over them.
+   *  - `Sketch 3` (two concentric circles on a trapezoidal cap) landed 60 mm
+   *    off, so `Extrude 4` and the revolve on it became bodies of their own and
+   *    `Fillet 4` never found the edge between them.
    *
-   * What still keeps the document short of its ground truth is a different gap
-   * altogether, and one this suite also pins above: `qWall(op, ord)` binds no
-   * face where Onshape has one, because FieldDraft splits faces only at creases
-   * — a rounded rectangle has ONE mantle face where Onshape has eight. Sketch
-   * 6's connector, both chamfers and five of the fillets hang on exactly that.
-   *
-   * `it.fails` keeps that honest in both directions: today the suite is green
-   * WITH the gap documented, and the day `qWall` resolves tangential mantles
-   * this test starts failing and forces someone to promote it to a plain `it`.
+   * The Z extent is still short: it reaches −65 mm where Onshape reaches
+   * −73.08, and that whole difference is `Extrude 9`. Its sketch sits on a mate
+   * connector anchored on a cap EDGE whose tangent FieldDraft reads at 45.7° to
+   * Onshape's plane normal — an anchor-frame question, measured and written up
+   * in the gap matrix, not a translation one.
    */
-  it.fails("matches the ground-truth part count and AABB (open: qWall on merged mantles)", () => {
+  it("builds ONE part, where it used to build four", () => {
     expect(kernel.raw.bodyCount()).toBe(GROUND_TRUTH.parts);
+    // The two bounds no feature of the document overshoots: the far end of
+    // `Extrude 3` and the top of Sketch 1. They were right before too — what
+    // they pin is that nothing NEW runs past them.
+    const bb = kernel.sceneAabb!() as { min: number[]; max: number[] };
+    expect(bb.min[0], "x min").toBeCloseTo(GROUND_TRUTH.x[0], 0);
+    expect(bb.max[2], "z max").toBeCloseTo(GROUND_TRUTH.z[1], 0);
+  });
+
+  /**
+   * The full extent, pinned as a FAILING test on purpose. ONE feature is left
+   * over: `Extrude 9`. Its sketch sits on a mate connector anchored on
+   * `qCommonEdge(qCreatedBy(3, CAP_TOP), qWall(3, 13))`, and `qWall(3, 13)`
+   * binds the wrong face — `Extrude 1` extrudes three sketch regions whose
+   * union has a CUT ARC on its boundary, the arrangement polygonises that arc,
+   * and `wall_sub_table` cannot attribute the pieces, so all 59 walls fall back
+   * to POSITIONAL subs where entity 13 happens to be a facet of a circle. The
+   * connector therefore stands 45.7° off (which the import reports), and the
+   * wedge that should reach −73.08 mm lands elsewhere: measured
+   * −70 … 11.17 × −33.17 … 6.5 × −73.80 … 35 against Onshape's
+   * −70.05 … 3.07 × −26.77 … 7.13 × −73.08 … 35.
+   *
+   * `it.fails` keeps that honest in both directions — the day the arrangement
+   * names the walls of a polygonised arc this starts failing and forces someone
+   * to fold it into the test above.
+   */
+  it.fails("matches the ground-truth AABB (open: positional wall subs)", () => {
     const bb = kernel.sceneAabb!() as { min: number[]; max: number[] };
     for (const [c, [lo, hi]] of [GROUND_TRUTH.x, GROUND_TRUTH.y, GROUND_TRUTH.z].entries()) {
-      expect(bb.min[c], `axis ${c}`).toBeCloseTo(lo, 1);
-      expect(bb.max[c], `axis ${c}`).toBeCloseTo(hi, 1);
+      expect(bb.min[c], `axis ${c} min`).toBeCloseTo(lo, 0);
+      expect(bb.max[c], `axis ${c} max`).toBeCloseTo(hi, 0);
     }
   });
 });

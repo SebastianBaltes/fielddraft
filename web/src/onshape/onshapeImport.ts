@@ -45,6 +45,7 @@ import {
 import {
   describeXform,
   inPlaneXform,
+  measureConcentricSketchOrigin,
   measureOnshapeSketchFrame,
   sketches3dByFeature,
   transformSketchFeature,
@@ -282,6 +283,11 @@ interface SketchRecord {
    *  included), with their 2D endpoints — the only shape a revolve axis (#416)
    *  or a pattern direction (#409/#419) may name. */
   lineSegments: Map<string, SketchSegment>;
+  /** HANDEDNESS of our 2D basis against Onshape's, MEASURED (`SketchXform.det`):
+   *  `+1` same, `−1` mirrored, `null` when it could not be measured. It is the
+   *  sign that makes Onshape's per-edge `±1` flank readable in OUR basis (#442);
+   *  without it the flank says nothing and must not be used. */
+  frameDet: number | null;
 }
 
 /** A straight sketch entity's two endpoints in sketch-space mm, in Onshape's
@@ -853,6 +859,14 @@ function mateConnectorParams(
  * it and the warning names the doubt. Guessing wide is how a profile silently
  * swallows its neighbour (#412).
  *
+ * A profile need not be a sketch region at all: Onshape extrudes a WALL or a CAP
+ * of an earlier feature just as readily, and says so with a `SWEPT_FACE` /
+ * `CAP_FACE` query instead of an `IMPRINT` one (#442). Those translate through
+ * the same face vocabulary the sketch planes and fillet edges use
+ * ({@link faceQueryOf}) and are handed to the kernel's FACE-extrude path.
+ * Treating them as unresolvable regions is what made the #416 document extrude
+ * its whole first sketch 32 mm deep where Onshape grows a small tab.
+ *
  * Falls back to the whole sketch (`qCreatedBy(sketch)`) — WITH a warning where
  * a selection was actually made — when the kernel exposes no region API (a test
  * double), when no query is a region descriptor at all, or when not a single
@@ -864,18 +878,64 @@ async function resolveProfiles(
   kernel: ImportKernel,
   name: string,
   result: OnshapeImportResult,
-): Promise<string> {
-  const whole = `qCreatedBy(${rec.fdId})`;
+  sketches: Map<string, SketchRecord>,
+  sweeps: Map<string, SweepRecord>,
+): Promise<{ query: string; planeQuery: string }> {
+  const whole = { query: `qCreatedBy(${rec.fdId})`, planeQuery: rec.planeQuery };
+
+  // Only a FACE query carries a specific selection; a plain whole-sketch
+  // reference is not compressed BTON at all and decodes to null.
+  const decoded = await Promise.all(profileQss.map((qs) => decodeRegionQuery(qs)));
+
+  // A face of an existing SOLID — decided before the sketch-region path,
+  // because it has no sketch reading at all.
+  const faceQueries: string[] = [];
+  for (const d of decoded) {
+    if (!d?.faceRef) continue;
+    if ("reason" in d.faceRef) {
+      result.errors.push(`${name}: Flächen-Profil nicht übersetzbar (${d.faceRef.reason})`);
+      continue;
+    }
+    const built = faceQueryOf(d.faceRef, name, result.idMap, sketches, sweeps);
+    if (!built.query) {
+      if (built.error) result.errors.push(built.error);
+      continue;
+    }
+    // A PROFILE must name exactly one face. Onshape folds coplanar caps into
+    // ONE face and we do not (#443), so `qCreatedBy(op, CAP_TOP)` can bind four
+    // — and unioning them extrudes an area Onshape never selected. Where the
+    // name is ambiguous the face path is refused outright rather than narrowed
+    // by a guess; the sketch-region reading below still applies.
+    const bound = kernel.resolveQuery(built.query).filter((r) => r.kind === "face").length;
+    if (bound !== 1) {
+      result.errors.push(
+        `${name}: Flächen-Profil "${built.query}" bindet ${bound} Flächen statt einer — ` +
+          `nicht als Profil übernommen`,
+      );
+      continue;
+    }
+    if (!faceQueries.includes(built.query)) faceQueries.push(built.query);
+  }
+  if (faceQueries.length > 0) {
+    const sketchRegions = decoded.filter((d) => d?.edges.length).length;
+    if (sketchRegions > 0) {
+      result.warnings.push(
+        `${name}: Profil mischt ${faceQueries.length} Körperfläche(n) mit ${sketchRegions} ` +
+          `Sketch-Region(en) — FieldDrafts Extrude nimmt entweder das eine oder das andere; ` +
+          `die Flächen wurden übernommen`,
+      );
+    }
+    // The extrude's own plane is the picked FACE, not the sketch the face's
+    // curves came from — an UP_TO_* depth is measured from there.
+    return { query: faceQueries.join(", "), planeQuery: faceQueries[0] };
+  }
+
   if (
     typeof kernel.regionQueryAtPoint !== "function" ||
     typeof kernel.listSketchRegions !== "function"
   ) {
     return whole;
   }
-
-  // Only a FACE query carries a specific selection; a plain whole-sketch
-  // reference is not compressed BTON at all and decodes to null.
-  const decoded = await Promise.all(profileQss.map((qs) => decodeRegionQuery(qs)));
   const regionQueries = decoded.filter(
     (d): d is NonNullable<typeof d> => !!d && d.isRegionQuery,
   );
@@ -903,7 +963,7 @@ async function resolveProfiles(
   const metrics = (i: number) => faceMetrics.get(i) ?? null;
 
   const resolutions = regionQueries.map((d) =>
-    resolveRegionFaces(d.edges, rec.entityGeom, faceAt, metrics),
+    resolveRegionFaces(d.edges, rec.entityGeom, faceAt, metrics, rec.frameDet),
   );
   const seeds = resolutions.map((r) => r.seed).filter((s): s is number => s !== null);
   const seedSet = new Set(seeds);
@@ -941,12 +1001,12 @@ async function resolveProfiles(
   const collapsed = seeds.length - seedSet.size;
   const conflicted = resolutions.filter((r) => r.conflict).length;
   const reasons: string[] = [];
-  if (unresolved > 0) {
-    const curves = resolutions.filter((r) => r.unknownCurve).length;
-    reasons.push(
-      `${unresolved} ohne auflösbare Fläche` +
-        (curves > 0 ? ` (davon ${curves} mit Sketch-Kurven, die dieser Sketch nicht enthält)` : ""),
-    );
+  if (unresolved > 0) reasons.push(`${unresolved} ohne auflösbare Fläche`);
+  // A dead curve id is Onshape's own bookkeeping, not a decode failure — the
+  // remaining edges still rank the region (#442). Worth a line, not a refusal.
+  const curves = resolutions.filter((r) => r.unknownCurve).length;
+  if (curves > 0) {
+    reasons.push(`${curves} nennen Sketch-Kurven, die dieser Sketch nicht enthält`);
   }
   if (collapsed > 0) reasons.push(`${collapsed} fielen auf dieselbe atomare Face wie eine andere`);
   if (conflicted > 0) {
@@ -970,9 +1030,13 @@ async function resolveProfiles(
   if (faceMetrics.size === 1 && indices.size === 1) return whole;
 
   const sorted = [...indices].sort((a, b) => a - b);
-  return sorted.length === 1
-    ? `qRegion(${rec.fdId}, ${sorted[0]})`
-    : `qRegions(${rec.fdId}, [${sorted.join(", ")}])`;
+  return {
+    query:
+      sorted.length === 1
+        ? `qRegion(${rec.fdId}, ${sorted[0]})`
+        : `qRegions(${rec.fdId}, [${sorted.join(", ")}])`,
+    planeQuery: rec.planeQuery,
+  };
 }
 
 /** Onshape's `operationType` → the FieldDraft boolean op. Shared by every
@@ -1186,19 +1250,23 @@ function alignSketchFrame(
   kernel: ImportKernel,
   three: OnshapeSketch3d | undefined,
   result: OnshapeImportResult,
-): AnyMsg {
+): { feature: AnyMsg; det: number | null } {
   // Ein Kernel-Double ohne Geometrie-Leser kann keinen Frame liefern; das ist
   // kein Befund, sondern eine Testumgebung.
-  if (typeof kernel.bodyCount !== "function") return feat;
+  if (typeof kernel.bodyCount !== "function") return { feature: feat, det: null };
   const fd = frameOf(kernel, planeQuery);
   if (!fd) {
     result.warnings.push(
       `${name}: FieldDrafts Frame für die Ebene "${planeQuery}" ist nicht ` +
         `auflösbar — Onshapes 2D-Koordinaten wörtlich übernommen`,
     );
-    return feat;
+    return { feature: feat, det: null };
   }
-  const os = measureOnshapeSketchFrame(feat, three);
+  // Reicht die Korrespondenz nicht für Drehung UND Verschiebung, kann sie
+  // trotzdem für die Verschiebung allein reichen — wenn die Drehung an diesem
+  // Sketch nichts bewegt (#442).
+  const os =
+    measureOnshapeSketchFrame(feat, three) ?? measureConcentricSketchOrigin(feat, three, fd);
   if (!os) {
     result.warnings.push(
       three
@@ -1208,19 +1276,25 @@ function alignSketchFrame(
         : `${name}: fehlt in Onshapes 3D-Sketch-Antwort — Frame ungeprüft, ` +
           `2D-Koordinaten wörtlich übernommen`,
     );
-    return feat;
+    return { feature: feat, det: null };
   }
 
   const x = inPlaneXform(os, fd);
   // Steht die Normale schief, ist die In-Plane-Abbildung gegenstandslos: die
-  // beiden Ebenen teilen keine Richtung, in der man drehen könnte.
+  // beiden Ebenen teilen keine Richtung, in der man drehen könnte — die Query
+  // hat eine Fläche in einer ANDEREN Lage erwischt. Der Sketch wird trotzdem
+  // gebaut (die #419-Fixture allein hat acht solcher Ebenen, und sie tragen dort
+  // fünf Körper), aber der Winkel steht jetzt in der Meldung: das ist die Zahl,
+  // an der die Ursache hängt. #442 hat den #416-Fall vermessen — `Sketch 6`
+  // sitzt auf einem Mate-Connector, dessen Anker `qWall(3, 13)` auf eine
+  // positionell benannte Wand fällt, also auf die falsche Kante.
   if (Math.abs(Math.abs(x.normalDot) - 1) > 1e-6) {
+    const deg = (Math.acos(Math.min(1, Math.abs(x.normalDot))) * 180) / Math.PI;
     result.errors.push(
-      `${name}: Onshapes Sketch-Ebene steht schief zur aufgelösten FieldDraft-Ebene ` +
-        `"${planeQuery}" (Normalen-Skalarprodukt ${x.normalDot.toFixed(6)}) — ` +
-        `Koordinaten NICHT umgerechnet`,
+      `${name}: Onshapes Sketch-Ebene steht ${deg.toFixed(1)}° schief zur aufgelösten ` +
+        `FieldDraft-Ebene "${planeQuery}" — Koordinaten NICHT umgerechnet`,
     );
-    return feat;
+    return { feature: feat, det: null };
   }
   // Parallel, aber daneben: die Query hat eine andere Fläche erwischt — ein
   // Fehler, der genannt gehört. Die Basis stimmt trotzdem, also wird IN der
@@ -1232,7 +1306,7 @@ function alignSketchFrame(
         `Ebene umgerechnet, der Versatz bleibt`,
     );
   }
-  if (x.identity) return feat;
+  if (x.identity) return { feature: feat, det: x.det };
 
   const t = transformSketchFeature(feat, x);
   if (t.droppedAxisConstraints > 0) {
@@ -1249,7 +1323,7 @@ function alignSketchFrame(
         `(${describeXform(x)})`,
     );
   }
-  return t.feature;
+  return { feature: t.feature, det: x.det };
 }
 
 /** The feature walk itself — see {@link importOnshapeFeatures}, which wraps this
@@ -1336,7 +1410,7 @@ async function importFeatures(
       // die Stelle, die sie holen sollte, nicht jeder einzelne Sketch.
       const aligned =
         frames3d.size === 0
-          ? feat
+          ? { feature: feat, det: null }
           : alignSketchFrame(
               feat,
               name,
@@ -1345,7 +1419,7 @@ async function importFeatures(
               frames3d.get(feat.featureId),
               result,
             );
-      const translation = translateOnshapeSketch(aligned);
+      const translation = translateOnshapeSketch(aligned.feature);
       for (const [k, v] of Object.entries(translation.diagnostics.unhandled)) {
         result.warnings.push(`${name}: ${v}× nicht übersetzt: ${k}`);
       }
@@ -1354,8 +1428,9 @@ async function importFeatures(
         fdId,
         entityIds: translation.entityIds,
         planeQuery,
-        entityGeom: sketchEntityVertices(aligned),
-        lineSegments: sketchLineSegments(aligned),
+        entityGeom: sketchEntityVertices(aligned.feature),
+        lineSegments: sketchLineSegments(aligned.feature),
+        frameDet: aligned.det,
       });
       result.idMap[feat.featureId] = fdId;
       result.created.push(fdId);
@@ -1382,7 +1457,15 @@ async function importFeatures(
       // Which sketch REGIONS did Onshape select? One profile query per chosen
       // region — resolve each to a FieldDraft `qRegion`; fall back visibly to
       // the whole sketch when the selection can't be honoured (#412).
-      const profiles = await resolveProfiles(profileQss, rec, kernel, name, result);
+      const profiles = await resolveProfiles(
+        profileQss,
+        rec,
+        kernel,
+        name,
+        result,
+        sketches,
+        sweeps,
+      );
       // End condition: BLIND / THROUGH_ALL / UP_TO_* (see `endCondition`).
       const upToQs = queryStringsOf(params.get("endBoundEntityFace"))[0];
       let upToQuery: string | undefined;
@@ -1391,7 +1474,7 @@ async function importFeatures(
         const built = buildPlaneQuery(upToRef, name, result.idMap, sketches, sweeps);
         if (built.query) upToQuery = built.query;
       }
-      const end = endCondition(params, kernel, rec.planeQuery, name, upToQuery, env);
+      const end = endCondition(params, kernel, profiles.planeQuery, name, upToQuery, env);
       result.warnings.push(...end.warnings);
       if (end.error) {
         result.errors.push(end.error);
@@ -1404,7 +1487,7 @@ async function importFeatures(
         "extrude",
         JSON.stringify({
           display_name: name,
-          profiles,
+          profiles: profiles.query,
           depth: { value: depthMm, unit: "mm" },
           operation,
           ...(end.symmetric ? { symmetric: true } : {}),
@@ -1565,7 +1648,7 @@ async function importFeatures(
     }
 
     if (feat.featureType === "revolve") {
-      await importRevolve(feat, params, name, kernel, result, sketches, env);
+      await importRevolve(feat, params, name, kernel, result, sketches, sweeps, env);
       continue;
     }
 
@@ -1911,6 +1994,7 @@ async function importRevolve(
   kernel: ImportKernel,
   result: OnshapeImportResult,
   sketches: Map<string, SketchRecord>,
+  sweeps: Map<string, SweepRecord>,
   env: ExprEnv,
 ): Promise<void> {
   const bodyType = String(params.get("bodyType")?.value ?? "SOLID");
@@ -1953,7 +2037,15 @@ async function importRevolve(
     result.errors.push(`${name}: Profil-Sketch nicht auflösbar — übersprungen`);
     return;
   }
-  const profiles = await resolveProfiles(profileQss, rec, kernel, name, result);
+  const profiles = await resolveProfiles(
+    profileQss,
+    rec,
+    kernel,
+    name,
+    result,
+    sketches,
+    sweeps,
+  );
 
   // Axis: a straight sketch line, construction included.
   const axisQs = queryStringsOf(params.get("axis"))[0];
@@ -1989,7 +2081,7 @@ async function importRevolve(
     "revolve",
     JSON.stringify({
       display_name: name,
-      profiles,
+      profiles: profiles.query,
       axis: `qSketchLine(${axisRec.fdId}, ${axisOrd})`,
       operation,
       ...(targets ? { targets } : {}),

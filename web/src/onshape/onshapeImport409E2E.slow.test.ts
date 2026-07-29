@@ -66,17 +66,26 @@ const GROUND_TRUTH = {
  *     folded into the plates' body, so their walls really were interior
  *     faces — of a body they should never have joined. With `keep_tools`
  *     honoured they are a body again and all three sketches resolve.
- *  B. The resolved plane is PARALLEL to Onshape's but offset (Sketch 6, 7, 11,
- *     12). Not a decoder defect — measured in #427, the decoder names exactly
- *     the entity Onshape names. The offset is inherited: Sketch 2's stored 2D
- *     geometry in the `features` payload disagrees with Onshape's own 3D answer
- *     by 50 mm for two of its four rectangles (external references are only
- *     re-solved at REGENERATION, so the payload carries the authoring seed),
- *     which puts every wall of Extrude 2 — and thus Sketch 11 and everything
- *     behind it — 50 mm off. FieldDraft now rotates the 2D coordinates into its
- *     own basis anyway and reports the residual offset, so these sketches sit
- *     in the right ORIENTATION at roughly the right place instead of 1072.5 mm
- *     away and turned 90°.
+ *  B. The resolved plane is PARALLEL to Onshape's but offset (Sketch 11, 12 —
+ *     Sketch 6 and 7 LEFT this list in #442, see below). Not a decoder defect —
+ *     measured in #427, the decoder names exactly the entity Onshape names. The
+ *     offset is inherited: Sketch 2's stored 2D geometry in the `features`
+ *     payload disagrees with Onshape's own 3D answer by 50 mm for two of its
+ *     four rectangles (external references are only re-solved at REGENERATION,
+ *     so the payload carries the authoring seed), which puts every wall of
+ *     Extrude 2 — and thus Sketch 11 and everything behind it — 50 mm off.
+ *     FieldDraft now rotates the 2D coordinates into its own basis anyway and
+ *     reports the residual offset, so these sketches sit in the right
+ *     ORIENTATION at roughly the right place instead of 1072.5 mm away and
+ *     turned 90°.
+ *     Sketch 6 and 7 were never in that class at all, and #442 measured why:
+ *     the offset the importer compared against was its OWN. `B_fd` came from
+ *     the web's `resolvePlaneFrame`, whose face origin is the mean of the outer
+ *     loop's edge samples, while the kernel builds the sketch frame on the
+ *     fingerprint centroid projected onto the carrier plane — two different
+ *     points on any face without symmetry. The kernel now reports its own
+ *     anchor (`planeOriginLocal`) and the web uses it, and these two sketches
+ *     place without a residual.
  *  C. End conditions UP_TO_NEXT / UP_TO_SURFACE (Extrude 8, 12).
  *  D. Hole positions that are not plain sketch points (both `Bohrung`s).
  *  E. CLOSED — twice, and the second time is the interesting one. A cap-edge
@@ -125,8 +134,6 @@ const KNOWN_GAPS = [
   "Sketch 11",
   "Sketch 12",
   "Sketch 14",
-  "Sketch 6",
-  "Sketch 7",
 ];
 
 function wrap(k: WasmKernel): ImportKernel & { raw: WasmKernel } {

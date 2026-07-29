@@ -179,7 +179,13 @@ export function resolvePlaneFrame(
       ? faces.find((f) => f.idHash === byHash[1])
       : faces.find((f) => f.featureId === Number(byFeature![1]));
     if (!face) continue;
-    const origin = localToWorld(face.centroidLocal, placement);
+    // The kernel's OWN sketch anchor where it reports one (#442). `centroidLocal`
+    // is a different point on an asymmetric face — the mean of the outer loop's
+    // edge samples rather than the projected fingerprint centroid — and a frame
+    // built on it is not the frame the kernel places the sketch on. That gap was
+    // 7.53 mm on the #416 document's trapezoidal carrier, and the Onshape
+    // importer's frame correction (#415) is measured against exactly this origin.
+    const origin = localToWorld(face.planeOriginLocal ?? face.centroidLocal, placement);
     const normal = normalize(rotateByPlacement(face.normalLocal, placement));
     const { xAxis, yAxis } = planeBasisFromNormal(normal);
     return { origin, xAxis, yAxis, normal };

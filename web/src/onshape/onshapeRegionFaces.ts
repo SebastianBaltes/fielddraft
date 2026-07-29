@@ -57,7 +57,8 @@ export interface RegionResolution {
   seed: number | null;
   /** Every face the region covers, seed included. Sorted, deduplicated. */
   faces: number[];
-  /** The boundary named a sketch curve this sketch does not carry. */
+  /** The boundary named a sketch curve this sketch does not carry — the
+   *  remaining edges still ranked the region (see {@link resolveRegionFaces}). */
   unknownCurve: boolean;
   /** Merge evidence and separation evidence disagreed — `faces` is the seed
    *  alone, deliberately narrow. */
@@ -205,7 +206,16 @@ interface WalkableEdge {
    *  the merge argument is "ONE Onshape face lies along THIS edge", and an
    *  untrimmed stand-in runs past the region into the next one. */
   exact: boolean;
+  /** Onshape's declared flank: `+1` LEFT of the curve's own direction, `−1`
+   *  RIGHT of it, `null` when the query states none. */
+  side: number | null;
 }
+
+/** Our reading of Onshape's `±1` (measured on the #416 document, `Extrude 2`'s
+ *  first region: five of five adjacencies agree, and its mirror region agrees
+ *  the other way round). `+1` is the LEFT of the curve's own direction, which
+ *  is the side the probe offset `+n = (−dy, dx)` lands on. */
+const SIDE_LEFT = 1;
 
 function walkableEdge(
   edge: RegionBoundaryEdge,
@@ -213,21 +223,22 @@ function walkableEdge(
 ): WalkableEdge | null {
   const base = geom.get(edge.entityId);
   if (!base || base.length < 2) return null;
+  const side = edge.side ?? null;
   // No trim named: the whole curve IS the imprint edge, exactly.
-  if (edge.ends.length !== 2) return { poly: base, exact: edge.ends.length === 0 };
+  if (edge.ends.length !== 2) return { poly: base, exact: edge.ends.length === 0, side };
   // A closed curve trimmed at two vertices leaves TWO arcs and nothing says
   // which one — walk the whole rim and refuse to merge on it.
   const closed = Math.hypot(base[0][0] - base[base.length - 1][0], base[0][1] - base[base.length - 1][1]) < VERTEX_TOL_MM;
-  if (closed) return { poly: base, exact: false };
+  if (closed) return { poly: base, exact: false, side };
   const a = endPoint(base, edge.entityId, edge.ends[0], geom);
   const b = endPoint(base, edge.entityId, edge.ends[1], geom);
-  if (!a || !b) return { poly: base, exact: false };
+  if (!a || !b) return { poly: base, exact: false, side };
   const sa = arcLengthAt(base, a);
   const sb = arcLengthAt(base, b);
   const from = Math.min(sa, sb);
   const to = Math.max(sa, sb);
-  if (to - from < VERTEX_TOL_MM) return { poly: base, exact: false };
-  return { poly: slicePolyline(base, from, to), exact: true };
+  if (to - from < VERTEX_TOL_MM) return { poly: base, exact: false, side };
+  return { poly: slicePolyline(base, from, to), exact: true, side };
 }
 
 const pairKey = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -235,33 +246,65 @@ const pairKey = (a: number, b: number) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 /**
  * Resolve ONE decoded region query to the atomic faces it covers.
  *
- * Strictness the #412 ticket paid for and #440 keeps: a boundary edge naming a
- * sketch curve this document does NOT carry makes the whole query unresolvable.
- * Substituting a same-prefix sibling (`R.left` for a missing `R.bottom`) is a
- * guess, and in the #412 document it guessed a 604×1500 block Onshape never
- * extruded — silent wrong geometry. An honest empty result lets the caller warn
- * and drop the region instead.
+ * Strictness the #412 ticket paid for and #440 keeps: nothing here SUBSTITUTES.
+ * Reading a same-prefix sibling (`R.left` for a missing `R.bottom`) as the
+ * missing curve is a guess, and in the #412 document it guessed a 604×1500 block
+ * Onshape never extruded — silent wrong geometry.
+ *
+ * A MINORITY of curves this sketch does not carry is therefore DROPPED, exactly
+ * as `regionBoundary` drops an edge that derives from no sketch curve at all:
+ * one fewer edge lowers how much of a candidate face the boundary accounts for,
+ * which is precisely the effect a missing fence should have on the ranking. It
+ * never adds a face, so it cannot widen a profile.
+ *
+ * That the list may name curves that no longer exist is not a decoding defect
+ * but Onshape's model (#442, measured on the #416 document): a stored query
+ * carries the boundary as it stood when the user picked, Onshape re-evaluates it
+ * best-effort, and the list is a DISAMBIGUATION aid, not a complete rim (the
+ * #444 lesson). Refusing the whole query over one dead id cost three of
+ * `Extrude 1`'s four regions there, and with them the walls every later `qWall`
+ * of that document hangs on.
+ *
+ * Half or more missing is a different situation and stays a refusal. A boundary
+ * is a CYCLE; losing a minority of it leaves the cycle recognisable, losing half
+ * leaves no reason to think the remainder still fences the same face. #412's
+ * `Extrude 1` is that case exactly — two of its four edges are the top and the
+ * bottom of the very rectangle that defines the region, and what remains are two
+ * parallel verticals that bound nothing at all. Ranked anyway, they elect the
+ * sheet AROUND the plates.
  */
 export function resolveRegionFaces(
   edges: RegionBoundaryEdge[],
   geom: Map<string, Polyline>,
   faceAt: (u: number, v: number) => number | null,
   metrics: (index: number) => FaceMetrics | null,
+  /** MEASURED handedness of our 2D basis against Onshape's (`SketchXform.det`):
+   *  `+1` same, `−1` mirrored. `null` — unmeasured — switches the flank veto
+   *  below OFF; a guessed handedness reads every flank backwards. */
+  frameDet: number | null = null,
 ): RegionResolution {
   if (edges.length === 0) return EMPTY;
 
+  const unknown = edges.filter((e) => !geom.has(e.entityId)).length;
+  const unknownCurve = unknown > 0;
+  if (unknown * 2 >= edges.length) return { ...EMPTY, unknownCurve };
+
   const walkable: WalkableEdge[] = [];
   for (const edge of edges) {
-    if (!geom.has(edge.entityId)) return { ...EMPTY, unknownCurve: true };
+    if (!geom.has(edge.entityId)) continue;
     const w = walkableEdge(edge, geom);
     if (w) walkable.push(w);
   }
-  if (walkable.length === 0) return EMPTY;
+  if (walkable.length === 0) return { ...EMPTY, unknownCurve };
 
   /** face index → length of boundary edge running along its own boundary. */
   const covered = new Map<number, number>();
   /** face index → which boundary edges touch it. */
   const touched = new Map<number, Set<number>>();
+  /** face index → the boundary edges that touch it ON THE FLANK Onshape named.
+   *  An edge that names no flank counts for whoever touches it — no evidence
+   *  is not counter-evidence. */
+  const onDeclaredSide = new Map<number, Set<number>>();
   /** "these two faces lie on the same side of one imprint edge". */
   const mergeHints: [number, number][] = [];
   /** "an imprint edge runs BETWEEN these two faces" — they are not one region. */
@@ -304,12 +347,20 @@ export function resolveRegionFaces(
         prevRight = null;
         continue;
       }
-      for (const f of [a, b]) {
+      for (const [f, flank] of [
+        [a, SIDE_LEFT],
+        [b, -SIDE_LEFT],
+      ] as const) {
         if (f === null) continue;
         covered.set(f, (covered.get(f) ?? 0) + weight);
         let who = touched.get(f);
         if (!who) touched.set(f, (who = new Set()));
         who.add(index);
+        if (edge.side === null || edge.side * (frameDet ?? 1) === flank) {
+          let ok = onDeclaredSide.get(f);
+          if (!ok) onDeclaredSide.set(f, (ok = new Set()));
+          ok.add(index);
+        }
       }
       if (a !== null && b !== null) separated.add(pairKey(a, b));
       if (edge.exact) {
@@ -321,12 +372,32 @@ export function resolveRegionFaces(
     }
   });
 
+  // Onshape states, per boundary edge, on WHICH FLANK of it the region lies —
+  // and that is the only thing in the query that tells a region from the hole it
+  // is fenced around (#442). The bore's rim is listed among `Extrude 1`'s
+  // boundary in the #416 document, and the little face INSIDE the bore has its
+  // whole perimeter accounted for by that one edge: a perfect 1.0 against the
+  // plate's 0.18, whose perimeter counts every other bore too. Coverage alone
+  // therefore elects the bore, and the extrude fills a Ø 4.14 mm hole.
+  //
+  // A VETO, not a score, and only where the HANDEDNESS is measured. `+1` reads
+  // as the LEFT of the curve's own direction — verified on #416's `Extrude 2`,
+  // five of five adjacencies — but only in a basis oriented like Onshape's. On a
+  // MIRRORED one every flank reads backwards, and #419's `Sketch 4` is exactly
+  // that: applied there with a guessed sign it moved two of the fourteen regions
+  // #444 had just put right. So the sign comes from the frame measurement or the
+  // veto stays off.
+  const anyAgrees =
+    frameDet !== null &&
+    [...covered.keys()].some((f) => (onDeclaredSide.get(f)?.size ?? 0) > 0);
+
   let seed: number | null = null;
   let bestScore = 0;
   let bestArea = Infinity;
   for (const [face, len] of covered) {
     const m = metrics(face);
     if (!m || !(m.perimeter > 0)) continue;
+    if (anyAgrees && (onDeclaredSide.get(face)?.size ?? 0) === 0) continue;
     const share = (touched.get(face)?.size ?? 0) / walkable.length;
     const score = (len / m.perimeter) * share;
     if (score > bestScore + 1e-9 || (score > bestScore - 1e-9 && m.area < bestArea)) {
@@ -335,7 +406,7 @@ export function resolveRegionFaces(
       bestArea = m.area;
     }
   }
-  if (seed === null) return EMPTY;
+  if (seed === null) return { ...EMPTY, unknownCurve };
 
   // Grow the seed along the merge evidence.
   const group = new Set<number>([seed]);
@@ -353,14 +424,14 @@ export function resolveRegionFaces(
   for (const x of group) {
     for (const y of group) {
       if (x < y && separated.has(pairKey(x, y))) {
-        return { seed, faces: [seed], unknownCurve: false, conflict: true };
+        return { seed, faces: [seed], unknownCurve, conflict: true };
       }
     }
   }
   return {
     seed,
     faces: [...group].sort((p, q) => p - q),
-    unknownCurve: false,
+    unknownCurve,
     conflict: false,
   };
 }

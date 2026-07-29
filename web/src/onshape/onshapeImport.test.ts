@@ -1567,7 +1567,7 @@ describe("importOnshapeFeatures — Onshapes Sketch-Frame (#415)", () => {
       // keine gemeinsame Richtung, in der man drehen könnte.
       sketches3d: threeFor("FS1", [0, 0, 0], [1, 0, 0], [0, 0, 1]) as any,
     });
-    expect(result.errors.join(" | ")).toContain("steht schief");
+    expect(result.errors.join(" | ")).toContain("° schief");
     expect(lineOf(kernel).params).toEqual({ start: [0, 0], end: [10, 0] });
   });
 

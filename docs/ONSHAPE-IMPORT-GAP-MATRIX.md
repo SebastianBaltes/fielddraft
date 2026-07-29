@@ -1849,3 +1849,188 @@ statt einer vollen Platte, und `Thicken 7` baut ueberhaupt.
    einen Fall, in dem unsere Anordnung nachweislich zu grob ist — gemessen an
    Flaechen, nicht an der Disambiguierungsliste einer Query.
 2. **#416** unveraendert (siehe oben), **#442** nicht beruehrt.
+
+## Update 2026-07-29 (4) — #416: vier Koerper werden einer, und keine der drei Ticket-Ursachen war eine Namensfrage (#442, v0.44.0)
+
+#442 nannte drei Reste des #416-Dokuments: eine fehlende Deckflaeche, eine
+Region-Zuordnung und ein Koerper-Docking. Die Direktive war, VOR der Benennung
+anzufangen — bei der Szenen-AABB, die schon 102 x 67 x 105 mm gross war, wo
+Onshape 73 x 34 x 108 hat. Das war richtig: **alle drei Punkte haengen an
+Uebersetzungsfehlern der frueheren Features, und alle drei sind zu.**
+
+### Die Kaskade, Feature fuer Feature gemessen
+
+Die Sonde importiert das Dokument neunzehnmal, jedes Mal ein Feature laenger,
+und misst Koerperzahl und AABB. Das trennt Ursache von Folge in einem Durchgang:
+
+| nach Feature | vorher (v0.43.3) | nachher (v0.44.0) |
+|---|---|---|
+| #5 `Extrude 3` | 2 Koerper, 73 x 33,2 x 100 | **1 Koerper**, 73 x 33,2 x 100 |
+| #8 `Extrude 5` | 2 Koerper, **102 x 37,7 x 104,5** | 1 Koerper, 73 x 33,2 x 100 |
+| #14 `Extrude 4` | 3 Koerper, 102 x **64,2** x 104,5 | 1 Koerper, 73 x 33,2 x 100 |
+| #16 `Revolve 1` | 4 Koerper, 102 x **67,4** x 104,5 | 1 Koerper, 73 x 33,2 x 100 |
+| #19 Ende | **4 Koerper**, 102 x 67,4 x 104,5 | **1 Koerper**, 73 x 33,2 x 100 |
+
+Onshapes eigene Antwort: **ein** Teil, 73,12 x 33,90 x 108,08 mm. Importierende
+Features: 14 von 19 → **18 von 19**.
+
+### 1. Die fehlende Deckflaeche war ein Profil, das gar keine Region ist
+
+`Extrude 5`s Profil-Query ist kein `IMPRINT`, sondern
+
+    entityType FACE, queryType SWEPT_FACE, operationId FjQX2yN4ORMPFe0_0.opExtrude
+    ORIGINAL_DEPENDENCY -> SKETCH_ENTITY QUXJzfqIzVOc
+
+also: **die Wand, die `Extrude 2` aus der Skizzenkurve `QUXJzfqIzVOc` gefegt
+hat.** Der Importer las sie als Region, fand keinen Rand und fiel auf
+`qCreatedBy(<sketch>)` zurueck — die GANZE Skizze 1, 32 mm tief. Dieser Block
+ueberdeckte den Bereich z ∈ [0; 32] vollstaendig und verschluckte damit die
+Deckflaeche von `Extrude 1` bei z = 3. Genau deshalb band
+`qCreatedBy(3, CAP_TOP)` nichts: die Flaeche existierte nicht, weil ein falsch
+uebersetztes Profil sie aufgezehrt hatte.
+
+Uebersetzt wird sie jetzt ueber dasselbe Flaechen-Vokabular wie Skizzenebenen und
+Fasenkanten (`faceQueryOf`) und landet als `qWall(2, 62)` im Extrude. Der Kernel
+nimmt sie an, seit `selects_brep_faces` neben `qFace` auch `qWall` und
+`qCreatedBy(op, ROLE)` als Flaechen-Auswahl zaehlt — der Face-Extrude-Pfad
+verlangte bisher einen Hash, den ein Import gar nicht haben kann.
+
+**Ein Profil muss eindeutig sein**: bindet die Flaechen-Query mehr als eine
+Flaeche, wird sie NICHT als Profil genommen. Onshape faltet koplanare Kappen zu
+einer Flaeche und wir nicht (#443), also kann `qCreatedBy(op, CAP_TOP)` vier
+binden — und deren Vereinigung waere eine Flaeche, die niemand gewaehlt hat.
+
+### 2. Die Region-Zuordnung: Onshape nennt Kurven, die es nicht mehr gibt
+
+Drei der vier Region-Queries von `Extrude 1` nennen `6y7lmkTVYOiC` und
+`Gr9p6KZZx6Iq`. Diese Ids stehen **nirgends** im Dokument — weder in den
+Sketch-Entities noch in Onshapes eigener 3D-Antwort. Eine gespeicherte Query
+traegt den Rand, wie er beim Picken stand; Onshape wertet sie nachsichtig aus.
+Die ganze Query daran scheitern zu lassen kostete drei von vier Regionen.
+
+Eine MINDERHEIT unbekannter Kurven wird jetzt weggelassen, genau wie ein Rand,
+der aus gar keiner Skizzenkurve stammt. Die Haelfte oder mehr bleibt eine
+Absage — und das ist keine Geschmacksfrage, sondern an #412 gemessen: dessen
+`Extrude 1` verliert zwei von vier Kanten, und zwar Ober- und Unterseite des
+Rechtecks, das die Region ueberhaupt definiert. Was bleibt, sind zwei parallele
+Senkrechte, die nichts einschliessen; gerankt wuerden sie das Blech UM die
+Platten waehlen.
+
+Damit binden `qWall(3, 13)` und `qWall(3, 19)` — die zwei Wandkurven des
+Tickets — wieder, und `Fillet 2` uebersetzt sechs statt drei Kanten.
+
+**Onshapes Flanken-Angabe, und warum sie nur halb benutzt wird.** Die
+TOPOLOGY-Eintraege sind Paare `[entity, ±1]`, und die `±1` sagt, auf WELCHER
+Seite der Kante die Region liegt. Ohne sie waehlt das Ranking eine Bohrung:
+Onshape listet deren Rand mit, und die kleine Flaeche IM Loch hat ihren ganzen
+Umfang durch diese eine Kante gedeckt (1,0) — gegen 0,18 der Platte, deren
+Umfang jede weitere Bohrung mitzaehlt. Gemessen am #416-Dokument ist `+1` die
+LINKE Seite der Kurvenrichtung (fuenf von fuenf Nachbarschaften bei
+`Extrude 2`s erster Region). Das gilt aber nur in einer Basis, die wie Onshapes
+orientiert ist: `Sketch 4` von #419 ist GESPIEGELT, und dort verschob dieselbe
+Regel zwei der vierzehn Regionen, die #444 gerade zurechtgerueckt hatte. Die
+Flanke wird deshalb nur als VETO benutzt und nur, wo die Haendigkeit gemessen
+ist (`SketchXform.det` aus dem #415-Frame-Abgleich). Ohne Messung bleibt sie aus.
+
+### 3. Das Docking war eine Skizze, die 60 mm daneben lag
+
+`Fillet 4` verlangt die Kante zwischen `Extrude 4` und dem Hauptkoerper. Die gab
+es nicht, weil `Extrude 4` ein eigener Koerper war — und der war es, weil
+`Sketch 3` (zwei konzentrische Kreise auf der Deckflaeche von `Extrude 3`) 60 mm
+neben Onshapes Stelle sass. Zwei Ursachen, beide messbar:
+
+**a) Der Frame-Abgleich lief gar nicht.** `measureOnshapeSketchFrame` braucht
+drei nicht-kollineare Korrespondenzen; zwei konzentrische Kreise liefern EINEN
+Punkt. Bei einer Kreisschar um den eigenen Mittelpunkt ist die Drehung aber
+nicht bloss unbekannt, sie ist **gegenstandslos** — bestimmt und messbar bleibt
+genau das, was die Geometrie bewegt: die Lage. `measureConcentricSketchOrigin`
+uebernimmt FieldDrafts eigene In-Plane-Achsen und setzt nur den Ursprung.
+Streng auf Vollkreise und Punkte auf demselben Mittelpunkt begrenzt; schon ein
+Bogen macht den Sketch drehempfindlich.
+
+**b) Web und Kernel hatten zwei verschiedene Flaechen-Mittelpunkte.** `B_fd`
+kam aus `resolvePlaneFrame`, dessen Ursprung das Mittel der Randkurven-Samples
+ist (`face_centroid_local`); der Kernel baut den Sketch-Frame auf dem
+Fingerprint-Schwerpunkt, projiziert auf die exakte Traegerebene
+(`face_plane_frame`). Auf einem Trapez sind das zwei verschiedene Punkte —
+**7,53 mm** auseinander auf `Extrude 3`s Deckflaeche. Der Abgleich rechnete also
+gegen einen Frame, den der Kernel nie benutzt. `bodyBrepFaces` meldet jetzt
+`planeOriginLocal` (dieselbe Funktion, `face_plane_origin_local`), und der Web
+nimmt sie.
+
+Danach sitzt `Extrude 4` auf 0,6 µm genau an Onshapes Stelle, verschmilzt mit
+dem Hauptkoerper, und `Fillet 4` findet seine Kante.
+
+**Nebenbefund, mit Zahlen:** derselbe Fehler steckte in #409s Klasse B. `Sketch 6`
+und `Sketch 7` galten dort als „Ebene parallel, aber versetzt" — der Versatz war
+unserer. Beide verlassen `KNOWN_GAPS` (16 → 14 Namen).
+
+### 4. Ein Mate-Connector auf einer Kante zwischen zwei Flaechen
+
+`resolve_mate_anchor` hatte Zweige fuer `qEdge` und `qEdgeBetween` und fiel fuer
+alles andere auf die FLAECHEN-Leiter zurueck. Onshape verankert Connectoren aber
+regelmaessig an „der Kante, wo diese zwei Flaechen zusammenkommen", und das ist
+`qCommonEdge(a, b)`. In #416 nahm das `Sketch 6`, `Extrude 9` und `Fillet 3`
+mit. Jede kantenliefernde Form geht jetzt durch denselben Element-Resolver, den
+`resolve_fillet_edges` schon benutzt.
+
+### Zahlen, gemessen
+
+| | v0.43.3 | v0.44.0 |
+|---|---|---|
+| #416 Koerper | 4 | **1** (Onshape: 1) |
+| #416 AABB | 102 x 67,4 x 104,5 | **73 x 33,2 x 100** (Onshape: 73,1 x 33,9 x 108,1) |
+| #416 importierte Features | 14/19 | **18/19** |
+| #416 Fehlermeldungen | 16 | **7** |
+| #416 Import-Dauer | 0,9 s | 6,0 s |
+| #409 `KNOWN_GAPS` | 16 | **14** |
+| #419 Koerper | 15 | 14 (s. u.) |
+| #419 `KNOWN_GAPS` | 96 | 98 (s. u.) |
+
+Die #416-Dauer waechst, weil vorher vier Features gar nicht gebaut wurden und
+`Extrude 1` eine Region statt dreier extrudierte. #419 bleibt bei 47,5 s.
+
+**Die drei #419-Pin-Bewegungen, einzeln:**
+
+1. **15 → 14 Koerper.** `Extrude 22` und `Extrude 25` waehlen eine KAPPE eines
+   frueheren Extrudes (`CAP_FACE`) — genau die Form aus Punkt 1. Sie fielen
+   bisher auf die ganze Skizze zurueck und bauen jetzt den Absatz, den Onshape
+   dort hat: kleinerer Koerper an anderer Stelle, und die Partition faltet einen
+   in den anderen.
+2. **`qWall(31, 26)` bindet 2 statt 1.** Folge derselben Korrektur: der neue
+   Absatz auf der Kappe von `Extrude 25` SCHNEIDET diese Wand in zwei Stuecke.
+   Beide sind richtig und beide benannt; Onshape meldet eine Flaeche, weil es
+   koplanare Flaechen verschmilzt und wir nicht. `Thicken 7` fragt jetzt drei
+   der vier Waende an statt vier — die vierte braucht den
+   `MERGE → qUnion`-Uebersetzer aus `docs/DERIVED-NAMING-PLAN.md` §4/E3.
+3. **`KNOWN_GAPS` +2 (`Sketch 6`, `Sketch 13`).** Beide melden jetzt
+   „aufgeloeste Ebene liegt −74,48 mm neben Onshapes Sketch-Ebene". Das ist kein
+   neuer Defekt, sondern ein bisher unsichtbarer: ihr Frame war vorher gar nicht
+   messbar (zu wenige Stuetzpunkte), erst die Kreisschar-Messung aus 3a beziffert
+   ihn.
+
+### Offen — und wo es weitergeht
+
+1. **Ein GESCHNITTENER BOGEN auf dem Profilrand kostet die Wandnamen.** `Extrude 1`
+   extrudiert drei Regionen; deren Vereinigung hat den Kreis `pprv8CpVtjqr`
+   angeschnitten auf dem Rand. `sketch_arrangement` polygonisiert einen
+   geschnittenen Bogen (59 Ebenen statt einer Zylinderflaeche), `wall_sub_table`
+   kann die Stuecke keiner Kurve zuordnen und faellt auf POSITIONELLE Subs
+   zurueck (0 … 58). Das ist doppelt teuer: die Geometrie ist ein 50-Eck, und
+   `qWall(3, 13)` bindet nicht mehr die Kurve 13, sondern die 13. Wand — hier
+   eine Facette eben dieses Kreises. Daran haengt der letzte #416-Rest: der
+   Mate-Connector von `Sketch 6` steht damit 45,7° schief, und `Extrude 9` baut
+   den Keil, der bis z = −73,17 reichen soll, woanders. Gemessen:
+   `qRegions(1, [3, 6])` (ohne Bogen) behaelt Entity-Subs 10/16/26/44/50/53,
+   `qRegions(1, [0, 3, 6])` (mit) faellt auf 0 … 58.
+2. **Die Flanken-Angabe braucht die Haendigkeit** aus dem #415-Abgleich. Wo die
+   fehlt (schiefe Ebene, zu wenige Stuetzpunkte), bleibt das Veto aus und das
+   Ranking ist das von #440. Ein `SketchXform.det`, das auch fuer nicht
+   messbare Frames aus der Flaechen-Parametrisierung folgt, wuerde das schliessen.
+3. **Acht Skizzen in #419 stehen 90° schief** zu Onshapes eigener Ebene
+   (`Sketch 4, 5, 10, 14, 15, 28, 29, 31`, jeweils auf `qWall`/`qCreatedBy(…,
+   CAP_TOP)`). Sie werden trotzdem gebaut — sie tragen dort fuenf Koerper. Der
+   Winkel steht jetzt in der Meldung; das ist die Zahl, an der die Ursache haengt.
+4. #416s letzte Fehlermeldungen sind Klasse F/„abgeleitete Geometrie":
+   `Chamfer 2` (SPLIT-Kantenstueck), `Fillet 2` (MERGE-Kante) und `Fillet 3`
+   (Kanten, die es ohne Punkt 1 nicht gibt).

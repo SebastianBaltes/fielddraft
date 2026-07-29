@@ -261,6 +261,96 @@ export function measureOnshapeSketchFrame(
   };
 }
 
+/**
+ * Der Sonderfall, in dem EIN Stützpunkt reicht: ein Sketch, der nur aus
+ * KONZENTRISCHEN VOLLKREISEN (und Punkten auf deren Mittelpunkt) besteht (#442).
+ *
+ * [`measureOnshapeSketchFrame`] braucht drei nicht-kollineare Korrespondenzen,
+ * weil es Drehung UND Verschiebung schätzt. Zwei konzentrische Kreise liefern
+ * nur einen einzigen Punkt — und trotzdem ist hier nichts unbestimmt, was
+ * zählte: eine Kreisschar um ihren eigenen Mittelpunkt ist DREHINVARIANT. Die
+ * Drehung ist nicht bloß unbekannt, sie ist gegenstandslos; bestimmt und
+ * messbar bleibt genau das, was die Geometrie bewegt — die LAGE.
+ *
+ * Also: FieldDrafts eigene In-Plane-Achsen übernehmen (die In-Plane-Abbildung
+ * wird damit eine reine Verschiebung) und den Ursprung so setzen, dass der
+ * gemessene Mittelpunkt dort landet, wo Onshape ihn hat.
+ *
+ * Streng auf diesen Fall begrenzt: schon ein Bogen, eine Ellipse oder eine
+ * Linie macht den Sketch drehempfindlich, und dann wäre eine übernommene
+ * Drehung geraten. Solche Sketches gehen unverändert den bisherigen Weg
+ * (wörtlich, mit Meldung).
+ *
+ * Was das im #416-Dokument kostete: `Sketch 3` sind zwei konzentrische Kreise
+ * auf der Deckfläche von `Extrude 3`; wörtlich übernommen landete `Extrude 4`
+ * 60 mm neben seinem Platz, als EIGENER Körper — und `Fillet 4`, das eine Kante
+ * zwischen ihm und dem Hauptkörper verrundet, fand sie nie.
+ */
+export function measureConcentricSketchOrigin(
+  feat: AnyMsg,
+  three: OnshapeSketch3d | undefined,
+  fd: PlaneFrame,
+): MeasuredSketchFrame | null {
+  if (!three) return null;
+
+  // 1. Jede Entity muss ein VOLLKREIS oder ein Punkt sein — und alle auf
+  //    demselben Mittelpunkt. Gemessen am 2D-Payload, nicht an der 3D-Antwort:
+  //    was diese nicht meldet, dürfte sonst unbemerkt drehempfindlich sein.
+  let centre: Vec2 | null = null;
+  for (const raw of (feat.geometry ?? feat.entities ?? []) as AnyMsg[]) {
+    const e = msg(raw);
+    if (!e.entityId) continue;
+    const g = msg(e.geometry);
+    const bt = typeof g?.btType === "string" ? g.btType : "";
+    let p: Vec2 | null = null;
+    if (typeof e.x === "number" && typeof e.y === "number") {
+      p = [e.x, e.y];
+    } else if (
+      bt.startsWith("BTCurveGeometryCircle") &&
+      // Ein `…CurveSegment` mit Kreisgeometrie ist ein BOGEN — drehempfindlich.
+      typeof e.startParam !== "number" &&
+      typeof e.endParam !== "number" &&
+      typeof g.xCenter === "number" &&
+      typeof g.yCenter === "number"
+    ) {
+      p = [g.xCenter, g.yCenter];
+    } else {
+      return null;
+    }
+    if (!centre) centre = p;
+    else if (Math.hypot(p[0] - centre[0], p[1] - centre[1]) * M_TO_MM > FIT_TOL_MM) return null;
+  }
+  if (!centre) return null;
+
+  // 2. Onshapes Weltpunkt für diesen Mittelpunkt — alle Meldungen müssen
+  //    denselben nennen, sonst ist die 3D-Antwort nicht die dieses Sketches.
+  let world: Vec3 | null = null;
+  for (const raw of three.geomEntities ?? []) {
+    const e = msg(raw) as OnshapeSketch3dEntity;
+    const p = e.point ?? e.center;
+    if (!p || p.length !== 3) continue;
+    const w: Vec3 = [p[0] * M_TO_MM, p[1] * M_TO_MM, p[2] * M_TO_MM];
+    if (!world) world = w;
+    else if (Math.hypot(w[0] - world[0], w[1] - world[1], w[2] - world[2]) > FIT_TOL_MM) {
+      return null;
+    }
+  }
+  if (!world) return null;
+
+  const [u, v] = [centre[0], centre[1]];
+  const origin: Vec3 = [0, 1, 2].map(
+    (c) => world![c] - (u * M_TO_MM * fd.xAxis[c] + v * M_TO_MM * fd.yAxis[c]),
+  ) as Vec3;
+  return {
+    origin,
+    xAxis: fd.xAxis as Vec3,
+    yAxis: fd.yAxis as Vec3,
+    normal: fd.normal as Vec3,
+    residualMm: 0,
+    samples: 1,
+  };
+}
+
 // ── B_fd⁻¹ ∘ B_os ──────────────────────────────────────────────────
 
 /** Negative Null einebnen — sie vergleicht sich nicht wie 0 und hat in

@@ -186,25 +186,31 @@ fn normalize3(v: [f32; 3]) -> [f32; 3] {
 /// `placement` lifts the body-local woven face into world space (the
 /// weave is body-local, [`crate::body::Body::placement`] applied at
 /// consumption).
-pub fn face_plane_frame(
-    brep: &crate::brep::BRep,
-    id: crate::brep::FaceId,
-    placement: &fielddraft_protocol::Transform,
-) -> SketchFrame {
+/// The body-LOCAL anchor a sketch frame on face `id` sits on — the single
+/// source of truth for „where a face-bound sketch's origin is".
+///
+/// The fingerprint centroid, projected onto the face's exact analytic plane.
+/// The projection matters (ticket o2j9): the centroid is sample-derived and
+/// sits up to ~µm off the carrier, and a face-extrude anchored here has to land
+/// flush so the coincidence registry takes its exact path instead of chasing
+/// drift.
+///
+/// Public and separate from [`face_plane_frame`] because the WEB side needs the
+/// very same point (#442). `bodyBrepFaces` used to report a different one — the
+/// unweighted mean of the outer loop's edge samples — and the Onshape importer
+/// computed its sketch-frame correction against that: 7.53 mm off on the #416
+/// document's `Sketch 3`, whose carrier is a trapezoid where the two centroids
+/// genuinely differ. Two answers to „where is the face's centre" is one too
+/// many when one of them decides where a body lands.
+pub fn face_plane_origin_local(brep: &crate::brep::BRep, id: crate::brep::FaceId) -> [f32; 3] {
     use crate::brep::naming::Fingerprint;
 
-    // Centroid (body-local) → world via the placement.
     let fp = Fingerprint::of_face(brep, id);
     let mut c_local = [
         fp.centroid[0] as f32,
         fp.centroid[1] as f32,
         fp.centroid[2] as f32,
     ];
-    // The fingerprint centroid is sample-derived and sits up to ~µm off the
-    // carrier. For an analytic planar face, project it onto the EXACT plane
-    // (ticket o2j9): a face-extrude anchored here lands flush on the carrier
-    // to f32 precision, so stacked extrudes are exactly coincident and the
-    // coincidence registry takes its exact path instead of chasing drift.
     if let crate::brep::SurfaceGeometry::Analytic {
         surface: fielddraft_protocol::HalfSpace::Plane { normal, offset },
         transform,
@@ -223,6 +229,16 @@ pub fn face_plane_frame(
             c_local[2] - err * n[2],
         ];
     }
+    c_local
+}
+
+pub fn face_plane_frame(
+    brep: &crate::brep::BRep,
+    id: crate::brep::FaceId,
+    placement: &fielddraft_protocol::Transform,
+) -> SketchFrame {
+    // Centroid (body-local) → world via the placement.
+    let c_local = face_plane_origin_local(brep, id);
     let origin = {
         let p = crate::quat_rotate(
             placement.rotation,

@@ -419,6 +419,33 @@ impl fmt::Display for QueryParseError {
 
 impl std::error::Error for QueryParseError {}
 
+/// Does this query name B-Rep FACES of a solid — as opposed to sketch regions?
+///
+/// The distinction matters wherever a *profile* is picked: an extrude, a revolve
+/// or a loft accepts BOTH a sketch region and a planar face of an existing body,
+/// and the two resolve through completely different paths. `qFace(hash)` is the
+/// unambiguous form the picker mints, but it is not the only one — the Onshape
+/// import names a swept wall `qWall(op, entity)` and a cap
+/// `qCreatedBy(op, CAP_TOP)`, because those survive a regeneration where a hash
+/// does not (#442: the #416 document extrudes a wall of an earlier extrude, and
+/// refusing that form made the importer fall back to the WHOLE sketch — a
+/// 32 mm-deep block where Onshape has a tab).
+///
+/// Deliberately CONSERVATIVE: the bare `qCreatedBy(id)` / `qFaceOf(id)` forms
+/// are NOT face selections here, because `qCreatedBy(<sketch>)` is exactly how a
+/// whole-sketch profile is written. Only forms that no sketch query can wear are
+/// admitted, plus the combinators over them.
+pub fn selects_brep_faces(expr: &QueryExpr) -> bool {
+    match expr {
+        QueryExpr::Face(_) | QueryExpr::Wall(..) | QueryExpr::CreatedByRole(..) => true,
+        QueryExpr::AdjacentTo(a, _) | QueryExpr::Instance(_, a) => selects_brep_faces(a),
+        QueryExpr::Union(a, b) | QueryExpr::Intersection(a, b) => {
+            selects_brep_faces(a) && selects_brep_faces(b)
+        }
+        _ => false,
+    }
+}
+
 /// Parse a canonical query string into a [`QueryExpr`].
 ///
 /// Accepts `qCreatedBy(<id>)`, `qFaceOf(<id>)`, and

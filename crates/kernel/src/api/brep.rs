@@ -325,6 +325,12 @@ impl Kernel {
                 "surfaceParams": surface_params(&face.surface),
                 "centroidLocal": centroid,
                 "normalLocal": normal,
+                // Where a SKETCH on this face has its origin — the kernel's own
+                // anchor, not a second opinion about the centre (#442). Only
+                // this point makes the web's plane frame the same frame the
+                // kernel builds; `centroidLocal` is a display/pick anchor and
+                // differs on a non-symmetric face.
+                "planeOriginLocal": crate::sketch::face_plane_origin_local(brep, FaceId(k as u32)),
             }));
         }
         serde_json::Value::Array(faces).to_string()
