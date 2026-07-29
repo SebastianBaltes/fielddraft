@@ -56,7 +56,24 @@ interface OnshapeCircleGeom {
   clockwise?: boolean;
 }
 
-type OnshapeCurveGeom = OnshapeVec2Line | OnshapeCircleGeom | { btType: string };
+interface OnshapeEllipseGeom {
+  btType: string; // "BTCurveGeometryEllipse-1189"
+  xCenter: number;
+  yCenter: number;
+  /** Semi-MAJOR radius, along the ellipse's own x axis (`xDir`/`yDir`). */
+  radius: number;
+  /** Semi-MINOR radius, perpendicular to it. */
+  minorRadius: number;
+  xDir?: number;
+  yDir?: number;
+  clockwise?: boolean;
+}
+
+type OnshapeCurveGeom =
+  | OnshapeVec2Line
+  | OnshapeCircleGeom
+  | OnshapeEllipseGeom
+  | { btType: string };
 
 interface OnshapeSketchEntity {
   btType: string; // "BTMSketchCurveSegment-155" | "BTMSketchCurve-4" | "BTMSketchPoint-158"
@@ -125,6 +142,9 @@ function isLineGeom(g: OnshapeCurveGeom | undefined): g is OnshapeVec2Line {
 }
 function isCircleGeom(g: OnshapeCurveGeom | undefined): g is OnshapeCircleGeom {
   return !!g && g.btType.startsWith("BTCurveGeometryCircle");
+}
+function isEllipseGeom(g: OnshapeCurveGeom | undefined): g is OnshapeEllipseGeom {
+  return !!g && g.btType.startsWith("BTCurveGeometryEllipse");
 }
 
 /**
@@ -326,6 +346,49 @@ export function translateOnshapeSketch(
         idMap.set(`${e.entityId}.end`, nextId + 2);
       }
       nextId += 4; // centre, start, end, arc
+      continue;
+    }
+
+    if (isEllipseGeom(e.geometry)) {
+      const g = e.geometry;
+      // FieldDraft has no elliptical ARC: `sketch_ellipse` is the whole,
+      // closed curve. A bounded segment is reported rather than silently
+      // closed into a full ellipse, which would invent area nobody drew.
+      if (isSegment) {
+        bump(`${g.btType}(arc)`);
+        continue;
+      }
+      // Onshape's `radius` is the semi-MAJOR axis and lies along the ellipse's
+      // own x axis (`xDir`/`yDir`); `minorRadius` is perpendicular to it. That
+      // is exactly FieldDraft's `(radius_x, radius_y, rotation)` frame, so the
+      // mapping is a rename plus one `atan2` — no swap, no half-turn.
+      //
+      // `clockwise` says which way the PARAMETER runs and cannot change the
+      // shape of a closed curve, so it is not read here. It does matter to the
+      // region FLANK, which is measured off the flattened rim in
+      // `sketchEntityVertices` (#446) — that reader honours it.
+      subCalls.push({
+        type: "sketch_ellipse",
+        params: withConstruction(
+          {
+            center: [mm(g.xCenter), mm(g.yCenter)],
+            radius_x: mm(g.radius),
+            radius_y: mm(g.minorRadius),
+            rotation: Math.atan2(g.yDir ?? 0, g.xDir ?? 1),
+          },
+          e,
+        ),
+      });
+      // The kernel allocates centre, FOCUS, ellipse — PlaneGCS parameterises an
+      // ellipse by centre + one focus + semi-minor radius, and that focus is a
+      // real entity in the shared id space. Onshape names no focus, so only the
+      // centre and the curve itself get an id here.
+      if (e.centerId) idMap.set(e.centerId, nextId);
+      if (e.entityId) {
+        idMap.set(e.entityId, nextId + 2);
+        idMap.set(`${e.entityId}.center`, nextId);
+      }
+      nextId += 3; // centre, focus, ellipse
       continue;
     }
 

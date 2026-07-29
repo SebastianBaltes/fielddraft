@@ -1775,3 +1775,62 @@ describe("Bogen-Lesart im Gleichschritt (#444)", () => {
     expect(poly[poly.length - 1][0]).toBeCloseTo(-7.389, 3);
   });
 });
+
+describe("Ellipsen-Lesart im Gleichschritt (#451)", () => {
+  /** Die Ellipse aus #419 `Sketch 2` — die EINZIGE Nicht-Konstruktionskurve
+   *  dieser Skizze und damit das ganze Profil von `Extrude 2`. Ohne sie trug
+   *  die Skizze gar keine geschlossene Region, und der Kernel lehnte das
+   *  Extrude nach einem sauberen Import ab. */
+  const ellipse = {
+    entities: [
+      {
+        btType: "BTMSketchCurve-4",
+        entityId: "E",
+        geometry: {
+          btType: "BTCurveGeometryEllipse-1189",
+          xCenter: 0,
+          yCenter: 0.00905,
+          radius: 0.013488534511452998,
+          minorRadius: 0.010345910647498489,
+          xDir: -0.9991690882206794,
+          yDir: 0.040757001168587,
+          clockwise: false,
+        },
+      },
+    ],
+  };
+
+  it("legt den Rand auf dieselbe Ellipse, die der Kernel daraus baut", () => {
+    const poly = sketchEntityVertices(ellipse).get("E")!;
+    const p = translateOnshapeSketch(ellipse as any).subCalls[0].params as Record<string, number>;
+    const c = p.center as unknown as [number, number];
+    const cos = Math.cos(p.rotation);
+    const sin = Math.sin(p.rotation);
+    const at = (t: number): [number, number] => [
+      c[0] + p.radius_x * Math.cos(t) * cos - p.radius_y * Math.sin(t) * sin,
+      c[1] + p.radius_x * Math.cos(t) * sin + p.radius_y * Math.sin(t) * cos,
+    ];
+    expect(poly).toHaveLength(49);
+    for (const i of [0, 12, 24, 36, 48]) {
+      const q = at((Math.PI * 2 * i) / 48);
+      expect(poly[i][0], `vertex ${i}`).toBeCloseTo(q[0], 6);
+      expect(poly[i][1], `vertex ${i}`).toBeCloseTo(q[1], 6);
+    }
+  });
+
+  it("läuft in der Händigkeit der Ellipse, nicht stur gegen den Uhrzeigersinn", () => {
+    // Dieselbe Lehre wie bei den gespiegelten Kreisen (#446): die RICHTUNG des
+    // Randes ist es, wogegen „die Region liegt links dieser Kante" gemessen
+    // wird. Eine gespiegelte Kopie läuft andersherum und hat ihr Inneres auf
+    // der anderen Flanke.
+    const cw = structuredClone(ellipse);
+    cw.entities[0].geometry.clockwise = true;
+    const ccwPoly = sketchEntityVertices(ellipse).get("E")!;
+    const cwPoly = sketchEntityVertices(cw).get("E")!;
+    // t = 0 liegt auf der Hauptachse und bleibt; ab da laufen sie gegeneinander.
+    expect(cwPoly[0][0]).toBeCloseTo(ccwPoly[0][0], 9);
+    expect(cwPoly[0][1]).toBeCloseTo(ccwPoly[0][1], 9);
+    expect(cwPoly[1][0]).toBeCloseTo(ccwPoly[ccwPoly.length - 2][0], 9);
+    expect(cwPoly[1][1]).toBeCloseTo(ccwPoly[ccwPoly.length - 2][1], 9);
+  });
+});

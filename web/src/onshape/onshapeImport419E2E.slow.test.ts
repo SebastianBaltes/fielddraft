@@ -255,18 +255,89 @@ describe("#419 multi-part assembly", () => {
    * clean — which is how #416's two rejected chamfers stayed invisible for
    * three tickets.
    *
-   * TWO features on this document, and neither appears in `KNOWN_GAPS`:
-   * `Extrude 2` and `Extrude 15` are written, accepted, and then refused by
-   * the kernel because the sketch they name carries no closed region. Both
-   * were found by introducing this pin, both are labelled from `result.idMap`
-   * directly (not inferred), and neither is diagnosed yet — see
-   * docs/ONSHAPE-IMPORT-GAP-MATRIX.md, Update (10), and ticket #451.
+   * TWO names stood here when the pin was introduced, `Extrude 2` and
+   * `Extrude 15`, and #451 measured them apart: they read the SAME message and
+   * have NOTHING else in common.
+   *
+   *  - `Extrude 2` names `Sketch 2`, whose only non-construction curve is an
+   *    ELLIPSE. The translator read lines and circles and dropped it, so what
+   *    reached the kernel was five construction lines and a point — no closed
+   *    region anywhere. The kernel has had `sketch_ellipse` all along; the gap
+   *    was one missing branch in `onshapeSketch.ts`. It imports now (see the
+   *    case below).
+   *  - `Extrude 15` names `Sketch 12`, and that sketch really does carry a
+   *    single LINE. Its Onshape region is fenced by that line plus the
+   *    `CAP_EDGE` / `SWEPT_EDGE` / `MERGE` edges of the SOLID the sketch sits
+   *    on: Onshape closes a region against the underlying FACE's own boundary,
+   *    FieldDraft builds regions from sketch curves alone. No translation
+   *    closes that; it needs the sketch's carrier face in the arrangement, and
+   *    it has its own ticket (#452).
+   *
+   * The name that stays is therefore a MODEL gap, not a translation one — and
+   * a name reappearing here is a regression, as before.
    */
-  it("loses exactly two features at REGENERATION, both to empty profiles (#449)", async () => {
+  it("loses exactly one feature at REGENERATION, to a face-fenced region (#451)", async () => {
     const { kernel, result } = await importFixture();
     const census = regenCensus(kernel.raw, result, fixture("onshape-419-features.json"));
-    expect(census.map((c) => c.name)).toEqual(["Extrude 2", "Extrude 15"]);
+    expect(census.map((c) => c.name)).toEqual(["Extrude 15"]);
     for (const c of census) expect(c.error).toContain("no closed regions to extrude");
+  }, 900_000);
+
+  it("extrudes `Sketch 2`'s ELLIPSE, the whole profile it has (#451)", async () => {
+    const { kernel } = await importFixture();
+    const calls = JSON.parse(kernel.raw.toJson()).feature_calls as any[];
+    const named = (n: string) => calls.find((c) => c.params?.display_name === n)!;
+
+    // Onshape selects the whole sketch (`qSketchRegion(id, filterInnerLoops)`),
+    // so the profile is not region-restricted and the ONE region has to come
+    // from the sketch itself. Semi-axes 13.4885 / 10.3459 mm about (0; 9.05),
+    // tilted 2.34° — Onshape's own numbers, in metres, ×1000.
+    expect(named("Extrude 2").params.profiles).toBe("qCreatedBy(3)");
+    const regions = JSON.parse(kernel.listSketchRegions(3, 128)) as {
+      index: number;
+      area: number;
+      aabb: { min: number[]; max: number[] };
+    }[];
+    expect(regions).toHaveLength(1);
+    // π·a·b = 438.42 mm². The closed quad-Bézier path the kernel builds an
+    // ellipse from (10 µm tolerance) comes out 0.04 % over, which is the
+    // approximation and not a different ellipse.
+    expect(regions[0].area, "ellipse area").toBeCloseTo(438.4, 0);
+    // Half-extents of a rotated ellipse: √(a²cos²φ + b²sin²φ) = 13.481 and
+    // √(a²sin²φ + b²cos²φ) = 10.352. Reading `radius` as the MINOR axis, or
+    // dropping the tilt, moves both.
+    expect(regions[0].aabb.min[0], "ellipse aabb").toBeCloseTo(-13.481, 1);
+    expect(regions[0].aabb.max[0], "ellipse aabb").toBeCloseTo(13.481, 1);
+    expect(regions[0].aabb.min[1], "ellipse aabb").toBeCloseTo(9.05 - 10.352, 1);
+    expect(regions[0].aabb.max[1], "ellipse aabb").toBeCloseTo(9.05 + 10.352, 1);
+
+    // And it BITES. Onshape's own depth is `0.01 mm` SYMMETRIC — a ±5 µm
+    // scribe, not a pocket — so the body's AABB cannot move and the SDF (whose
+    // build tolerance is 10 µm) does not carry the slit at all: `bodySdfEval`
+    // reads bit-identical with the feature suppressed. The B-Rep is where a cut
+    // this thin is visible, and it is, on the 25.4 × 25.4 × 18.1 mm block:
+    // 6 faces / 12 edges / 8 vertices → 7 / 14 / 12. Four of those faces come
+    // out with an unconnected outer loop, which is the kernel's honest answer
+    // to a cut thinner than its own tolerance — the import is faithful, the
+    // artefact is downstream of it.
+    const before = kernel.raw.bodyBrepCounts(0);
+    kernel.raw.setFeatureSuppressed(named("Extrude 2").id, true);
+    const after = kernel.raw.bodyBrepCounts(0);
+    kernel.raw.setFeatureSuppressed(named("Extrude 2").id, false);
+    expect(JSON.parse(after), "uncut block").toMatchObject({
+      faces: 6,
+      edges: 12,
+      vertices: 8,
+      openFaces: 0,
+      solids: 1,
+    });
+    expect(JSON.parse(before), "scribed block").toMatchObject({
+      faces: 7,
+      edges: 14,
+      vertices: 12,
+      openFaces: 4,
+      solids: 1,
+    });
   }, 900_000);
 
   it("builds the spine it can, every translator represented", async () => {

@@ -391,6 +391,35 @@ export function sketchEntityVertices(feat: AnyMsg): Map<string, [number, number]
         pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
       }
       out.set(id, pts);
+    } else if (
+      bt.startsWith("BTCurveGeometryEllipse") &&
+      !String(e.btType ?? "").startsWith("BTMSketchCurveSegment")
+    ) {
+      // Same reading as the circle above, one axis longer. Onshape's `radius`
+      // is the semi-MAJOR axis along the ellipse's own `xDir`; `minorRadius`
+      // is perpendicular. The rim is walked in the ellipse's OWN handedness
+      // (`clockwise`), because that direction is what „the region lies left of
+      // this edge" is measured against (#446) — a mirrored copy runs the other
+      // way and has its inside on the other flank.
+      const cx = g.xCenter * M_TO_MM;
+      const cy = g.yCenter * M_TO_MM;
+      const a = g.radius * M_TO_MM;
+      const b = g.minorRadius * M_TO_MM;
+      const ux = typeof g.xDir === "number" ? g.xDir : 1;
+      const uy = typeof g.yDir === "number" ? g.yDir : 0;
+      const hand = g.clockwise ? -1 : 1;
+      // The minor axis, oriented so the pair (major, minor) turns the way the
+      // parametrisation does.
+      const vx = -uy * hand;
+      const vy = ux * hand;
+      const pts: [number, number][] = [];
+      for (let i = 0; i <= ARC_FLATTEN_SEGMENTS; i++) {
+        const t = (Math.PI * 2 * i) / ARC_FLATTEN_SEGMENTS;
+        const ca = a * Math.cos(t);
+        const sb = b * Math.sin(t);
+        pts.push([cx + ca * ux + sb * vx, cy + ca * uy + sb * vy]);
+      }
+      out.set(id, pts);
     }
   }
   return out;

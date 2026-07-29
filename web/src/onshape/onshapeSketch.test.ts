@@ -52,6 +52,76 @@ describe("translateOnshapeSketch — geometry", () => {
     ]);
   });
 
+  /**
+   * #451: an ellipse is the ONLY non-construction curve of `Sketch 2` in the
+   * #419 document, and until this was translated that sketch carried no closed
+   * region at all — so `Extrude 2` passed the import clean and was then refused
+   * by the kernel („sketch has no closed regions to extrude"). The numbers here
+   * are that very ellipse, in metres, as Onshape states it.
+   */
+  it("translates a full ellipse, semi-major along its own x axis (#451)", () => {
+    const sketch: OnshapeSketchFeature = {
+      geometry: [
+        {
+          btType: "BTMSketchCurve-4",
+          entityId: "E",
+          centerId: "E.center",
+          geometry: {
+            btType: "BTCurveGeometryEllipse-1189",
+            xCenter: 0,
+            yCenter: 0.00905,
+            radius: 0.013488534511452998,
+            minorRadius: 0.010345910647498489,
+            xDir: -0.9991690882206794,
+            yDir: 0.040757001168587,
+            clockwise: false,
+          },
+        } as never,
+      ],
+    };
+    const { subCalls, entityIds, diagnostics } = translateOnshapeSketch(sketch);
+    expect(subCalls).toHaveLength(1);
+    expect(subCalls[0].type).toBe("sketch_ellipse");
+    const p = subCalls[0].params as Record<string, number>;
+    expect(p.center).toEqual([0, 9.05]);
+    // Onshape's `radius` IS the semi-major axis; no swap, no half-turn.
+    expect(p.radius_x).toBeCloseTo(13.488534511, 6);
+    expect(p.radius_y).toBeCloseTo(10.345910647, 6);
+    expect(p.rotation).toBeCloseTo(Math.atan2(0.040757001168587, -0.9991690882206794), 9);
+    expect(diagnostics.unhandled).toEqual({});
+    // Centre, focus, ellipse — the kernel's own order. Onshape names the
+    // centre both as `centerId` and as `<entityId>.center`; a COINCIDENT on
+    // the latter is what went unresolved before.
+    expect(entityIds["E.center"]).toBe(1);
+    expect(entityIds.E).toBe(3);
+  });
+
+  /** FieldDraft has no elliptical ARC. Closing one into a full ellipse would
+   *  invent area nobody drew, so a bounded segment stays unhandled — which is
+   *  what `Sketch 3` of the #419 document carries three of. */
+  it("refuses an elliptical ARC rather than closing it (#451)", () => {
+    const sketch: OnshapeSketchFeature = {
+      geometry: [
+        {
+          btType: "BTMSketchCurveSegment-155",
+          entityId: "EA",
+          startParam: 0,
+          endParam: 1,
+          geometry: {
+            btType: "BTCurveGeometryEllipse-1189",
+            xCenter: 0,
+            yCenter: 0,
+            radius: 0.003,
+            minorRadius: 0.001,
+          },
+        } as never,
+      ],
+    };
+    const { subCalls, diagnostics } = translateOnshapeSketch(sketch);
+    expect(subCalls).toEqual([]);
+    expect(diagnostics.unhandled).toEqual({ "BTCurveGeometryEllipse-1189(arc)": 1 });
+  });
+
   it("derives an arc's angles from its start/end point coordinates", () => {
     const sketch: OnshapeSketchFeature = {
       geometry: [
@@ -282,6 +352,41 @@ describe("translateOnshapeSketch — FieldDraft id allocation matches the kernel
     // The circle entity is the last one allocated.
     const circle = state.entities.find((e) => e.kind === "circle");
     expect(circle?.id).toBe(6);
+  });
+
+  /** An ellipse takes THREE ids, not two: PlaneGCS needs a focus point, and
+   *  the kernel allocates it between the centre and the curve. Getting that
+   *  stride wrong shifts every id after it and silently misdirects the
+   *  constraints Onshape states on later entities (#451). */
+  it("gives an ellipse the kernel's three ids — centre, focus, ellipse (#451)", () => {
+    const sketch: OnshapeSketchFeature = {
+      geometry: [
+        {
+          btType: "BTMSketchCurve-4",
+          entityId: "E",
+          geometry: {
+            btType: "BTCurveGeometryEllipse-1189",
+            xCenter: 0,
+            yCenter: 0,
+            radius: 0.02,
+            minorRadius: 0.01,
+          },
+        } as never,
+        {
+          btType: "BTMSketchCurve-4",
+          entityId: "C",
+          geometry: { btType: "BTCurveGeometryCircle-115", xCenter: 0.05, yCenter: 0, radius: 0.01 },
+        },
+      ],
+    };
+    const { subCalls, entityIds } = translateOnshapeSketch(sketch);
+    const state = buildDraftSketchState(subCalls);
+    // ellipse centre=1, focus=2, ellipse=3; circle centre=4, circle=5 → next=6.
+    expect(state.next_entity_id).toBe(6);
+    expect(entityIds.E).toBe(3);
+    expect(entityIds.C).toBe(5);
+    expect(state.entities.find((e) => e.kind === "ellipse")?.id).toBe(3);
+    expect(state.entities.find((e) => e.kind === "circle")?.id).toBe(5);
   });
 });
 

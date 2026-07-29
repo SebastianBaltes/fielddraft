@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.47.3
+- fix(onshape) #451: Eine Ellipse in einer Onshape-Skizze wird jetzt übersetzt. Bisher fiel sie stillschweigend weg — eine Skizze, deren einzige Kurve eine Ellipse ist, kam damit ohne jede geschlossene Region beim Kernel an, und jedes Feature darauf brach erst bei der Regenerierung ab („kein geschlossenes Profil“). Elliptische BÖGEN bleiben offen und werden weiterhin gemeldet statt zu einer ganzen Ellipse geschlossen.
+
 ## 0.47.2
 - fix(kernel) #449: Eine Fase, die breiter ist als die Wand, auf der sie sitzt, wird nicht mehr als „konkave Innenkante“ abgelehnt. Sie geht weiterhin nicht — aber die Meldung sagt jetzt, woran es liegt: der Fräser-Mittelpunkt läge hinter beiden Flächen. Im #416-Dokument betraf das eine 5-mm-Fase auf einer 3-mm-Platte, deren Kante eine ganz gewöhnliche Außenkante ist.
 
