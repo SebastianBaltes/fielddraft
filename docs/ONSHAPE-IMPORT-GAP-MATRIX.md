@@ -3654,3 +3654,78 @@ Antwort auf die eigentliche Frage — fraest es? — musste erst gestellt werden
 Haette diese Runde beim Zensus aufgehoert, waere das Ticket geschlossen worden
 und das Loch waere nie entstanden. Das ist woertlich der Befund von Update (12),
 nur eine Ebene hoeher: dort tat ein Fillet nichts, hier ein Extrude.
+
+## Update 2026-07-29 (18) — der Mechanismus schneidet, dieses Dokument nicht (#452, #455)
+
+Update (17) berichtete einen Widerspruch: das REMOVE erreicht den Koerper
+(B-Rep 18 ↔ 24 Flaechen), nimmt aber kein Volumen. Diese Runde hat beide
+Haelften nachgemessen. Die eine war ein MESSFEHLER, die andere steht — und der
+Messfehler hat ein eigenes Ticket bekommen.
+
+### 1. Der Zaun-Verdacht faellt (zwoelfte Widerlegung)
+
+Der naechstliegende Verdacht war, dass das Regionsprofil ohne die Zaunkurven
+rekonstruiert wird und der Prisma-Querschnitt deshalb leer ist. Er faellt an
+Zahlen, die schon vorlagen: als NEUER Koerper hat dasselbe Feature die
+Ausdehnung y 42,53 … 74,63 (= 32,10 mm) und z −16,83 … 23,55 (= 40,38 mm), und
+das sind auf den Hundertstel die u- und v-Ausdehnung der gewaehlten Region
+(1,5 … 33,6 und −18,13 … 22,25). Der Querschnitt ist also exakt die Region.
+
+Und der Mechanismus als solcher schneidet. Minimal nachgestellt — Block,
+Skizze auf seiner Deckflaeche, EINE Linie quer darueber, `qRegion(3, 0)` als
+REMOVE mit `targets` — werden von 7 581 festen Gitterpunkten **2 314 zu Luft**.
+Eine vom Traeger eingezaeunte Region schneidet, wenn man sie schneiden laesst.
+
+### 2. Die SDF-Haelfte des Widerspruchs war ein Artefakt (#455)
+
+`setFeatureSuppressed` webt den B-Rep neu und laesst den kompilierten SDF-Strom
+stehen:
+
+| | mit Feature | suppressed |
+|---|---:|---:|
+| `bodyBrepCounts(16)` Flaechen / Kanten | 18 / 51 | 24 / 67 |
+| SDF-Werte mit Aenderung > 1e-6 | — | **0 von 10 925** |
+
+Ueber alle 18 Koerper, nicht nur den betroffenen. Dass der Compile
+grundsaetzlich laeuft, zeigt der andere Mutations-Pfad: dasselbe Feature per
+`replaceFeatureCallParams` von `remove` auf `new` gedreht bewegt den SDF sofort
+(1 698 von 8 299 Punkten). Nur der Suppress-Pfad tut es nicht. Das ist **#455**,
+und es entwertet jede Messung, die Geometrie ueber einen Suppress-Toggle
+vergleicht — auch die vier „gekippten" Randpunkte aus Update (17), die ein
+Teil-Refresh waren und kein Schnitt.
+
+### 3. Und trotzdem: `Extrude 15` nimmt nichts weg
+
+Suppress-frei gemessen — ZWEITER Import, in dem das Feature mit `removeFeature`
+ganz entfernt ist, so dass beide Zustaende einen frischen SDF haben:
+
+| Prisma | Punkte | fest ohne Feature | weggenommen | hinzugekommen |
+|---|---:|---:|---:|---:|
+| gewaehlte Region (u 4 … 31, v −16 … 20, 1 … 34 mm tief) | 10 925 | 6 601 | **0** | 0 |
+| andere Region (u −1,2 … 1,2) | 11 152 | 11 152 | **0** | — |
+
+`operation: "new"` taugt als Basis NICHT: dann bleibt das Prisma als eigener
+Koerper stehen, und Punkte darin kippen allein deshalb — genau die 1 698 von
+oben, die wie ein Schnitt aussehen und keiner sind. Der Pin der #419-Suite
+benutzt seit dieser Runde die `removeFeature`-Basis und schreibt beide Fallen
+aus.
+
+### 4. Was damit noch offen ist
+
+Der Mechanismus schneidet (§1), der Schneider steht richtig (Update (17) §3),
+der Scope loest ohne Warnung auf, die Koerperzahl bleibt 18 mit und ohne — und
+trotzdem bewegt sich kein Punkt. Was diesen Fall vom minimalen unterscheidet,
+ist noch nicht vermessen; der naechstliegende Unterschied ist, dass `targets`
+hier `qCreatedBy(44)` ist und 44 ein BOOLEAN (`Boolean 3`) statt eines Extrudes,
+also moeglicherweise kein Koerper-Wurzel-Id, das
+`expand_to_owner_body_members` in der Partition wiederfindet. Das ist eine
+Vermutung und steht hier als solche.
+
+### 5. Methodik-Lehre
+
+**Ein Widerspruch zwischen zwei Messungen ist zuerst ein Verdacht gegen die
+Messungen.** „B-Rep bewegt sich, SDF nicht" wurde zwei Runden lang als Befund
+ueber die Geometrie berichtet; es war zur Haelfte ein Befund ueber das
+Messwerkzeug. Erst der dritte, unabhaengige Pfad — ein zweiter Import ohne das
+Feature — hat beide Haelften trennen koennen. Wo zwei Verfahren sich
+widersprechen, braucht es ein drittes, das von keinem der beiden abhaengt.
