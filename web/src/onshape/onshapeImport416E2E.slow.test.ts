@@ -402,7 +402,7 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
    * this fails and forces the line to be edited, exactly as an `it.fails`
    * would have — without asserting that the import is wrong in the meantime.
    */
-  it("overshoots `z min` by 0.1675 mm — the one bound that is really off", () => {
+  it("overshoots `z min` by 0.1675 mm — the one bound that is really off (#450)", () => {
     const bb = kernel.sceneAabb!() as { min: number[]; max: number[] };
     expect(GROUND_TRUTH.z[0] - bb.min[2], `scene ${JSON.stringify(bb)}`).toBeCloseTo(0.1675, 3);
   });

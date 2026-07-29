@@ -2719,7 +2719,7 @@ keinen. Er ist **pro Grenze** verschieden gross, also nicht wegtolerierbar.
   Dokument-ID ist nicht reproduzierbar. Die Dokument-IDs gehoeren in JEDEN
   Suiten-Kopf.
 
-### 3. Was WIRKLICH offen bleibt: z min, 0,1675 mm zu weit
+### 3. Was WIRKLICH offen bleibt: z min, 0,1675 mm zu weit (#450)
 
 Die einzige echte Abweichung von #416, und sie zeigt in die andere Richtung:
 wir reichen mit z min auf −73,1688, Onshape auf −73,0013 — wir sind
@@ -2771,7 +2771,7 @@ Neu: `regenCensus()` in `importKernelDouble.ts`, beschriftet ueber
 | #416 | 29 | **2** — `Chamfer 1`, beide Aufrufe |
 | #419 | 66 | **2** — `Extrude 2`, `Extrude 15` |
 
-**Neuer Befund (#419):** `Extrude 2` und `Extrude 15` werden geschrieben,
+**Neuer Befund (#419), abgelegt als #451:** `Extrude 2` und `Extrude 15` werden geschrieben,
 angenommen und dann vom Kernel abgelehnt: „sketch has no closed regions to
 extrude". Beide stehen NICHT in `KNOWN_GAPS` dieser Suite, beide sind ueber
 `result.idMap` direkt beschriftet (nicht abgeleitet). Nicht diagnostiziert.

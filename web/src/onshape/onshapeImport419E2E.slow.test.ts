@@ -260,7 +260,7 @@ describe("#419 multi-part assembly", () => {
    * the kernel because the sketch they name carries no closed region. Both
    * were found by introducing this pin, both are labelled from `result.idMap`
    * directly (not inferred), and neither is diagnosed yet — see
-   * docs/ONSHAPE-IMPORT-GAP-MATRIX.md, Update (10).
+   * docs/ONSHAPE-IMPORT-GAP-MATRIX.md, Update (10), and ticket #451.
    */
   it("loses exactly two features at REGENERATION, both to empty profiles (#449)", async () => {
     const { kernel, result } = await importFixture();
