@@ -1853,32 +1853,66 @@ impl CsgNode {
         node
     }
 
-    /// #383/#406: build the exact Box−Cylinder cutter for one straight, convex,
-    /// orthogonal fillet edge, ready to subtract from `self`. Returns `None`
-    /// when the edge fails a gate (degenerate, non-orthogonal dihedral, or
-    /// concave — all deferred to later fillet phases, see
-    /// `docs/FILLET-CUTTER-PLAN.md`). Uses only [`Primitive::Box`] /
-    /// [`Primitive::Cylinder`] + [`CsgNode::Difference`], so it flows through
-    /// every SDF evaluator without a new opcode.
+    /// #383/#406/#450: build the exact Box−Cylinder cutter for one straight,
+    /// convex fillet edge, ready to subtract from `self`. Returns `None` when
+    /// the edge fails a gate (degenerate dihedral, concave, or a radius bigger
+    /// than the material — see `docs/FILLET-CUTTER-PLAN.md`). Uses only
+    /// [`Primitive::Box`] / [`Primitive::Cylinder`] + [`CsgNode::Difference`],
+    /// so it flows through every SDF evaluator without a new opcode.
+    ///
+    /// The box is authored in the BISECTOR frame `(m, s, w)`, and that is what
+    /// makes one formula cover every dihedral (#450 — P1 was right angles
+    /// only). What has to be removed is the CAP: the region between the corner
+    /// and the rolling ball, bounded by the two tangency points `T_a`, `T_b`
+    /// and the arc between them. In `(m, s)` the two tangency points are
+    /// symmetric about the bisector at
+    ///
+    ///   `m = −r·sin²φ / cos φ`   (the chord),  `s = ±r·sin φ`,
+    ///
+    /// with `φ` the HALF dihedral. A box spanning `m ∈ [chord, +r]`,
+    /// `|s| ≤ r·sin φ` therefore contains the cap exactly:
+    ///
+    /// - its `m = chord` face lies INSIDE the ball wherever there is material
+    ///   (the chord of a circle is), so it cannot cut a step;
+    /// - its `|s|` faces are not binding at all — material with `|s| > r·sin φ`
+    ///   lies past the tangency points, i.e. on the far side of the chord;
+    /// - `|w| ≤ len/2` keeps the ends sharp, as before (#383).
+    ///
+    /// At a right angle (`φ = 45°`) this is the OTHER half of P1's `r × r`
+    /// corner box — P1 cut the square, this cuts the triangle, and the
+    /// difference between them is the circular segment, which lies inside the
+    /// ball and is subtracted right back. Identical solid, one formula.
     fn build_edge_cutter(&self, f: &EdgeFillet) -> Option<CsgNode> {
         use fielddraft_protocol::{Primitive, Transform};
         let c = f.cutter.as_ref()?;
         let r = c.radius;
         let fr =
             edge_cutter_frame(self, c.edge_start, c.edge_end, c.normal_a, c.normal_b, r).ok()?;
-        let (mid, u, v, w, len, cen) = (fr.mid, fr.u, fr.v, fr.w, fr.len, fr.inner);
+        let (mid, w, len, cen) = (fr.mid, fr.w, fr.len, fr.inner);
 
         let box_id = f.fillet_id.child(CUTTER_LOCAL_BOX);
         let cyl_id = f.fillet_id.child(CUTTER_LOCAL_ROUND);
 
-        // Corner box: r×r cross-section on the edge, full edge length along w.
+        // Corner box in the bisector frame: from the tangency chord out past
+        // the corner by `r`, and only as wide as the tangency points.
+        let chord = -r * fr.sin_half * fr.sin_half / fr.cos_half;
+        let m_half = 0.5 * (r - chord);
+        let m_off = 0.5 * (r + chord);
         let box_node = CsgNode::Transform(
-            Transform { translate: mid, rotation: quat_from_cols3(u, v, w), scale: [1.0; 3] },
+            Transform {
+                translate: [
+                    mid[0] + m_off * fr.m[0],
+                    mid[1] + m_off * fr.m[1],
+                    mid[2] + m_off * fr.m[2],
+                ],
+                rotation: quat_from_cols3(fr.m, fr.s, w),
+                scale: [1.0; 3],
+            },
             Box::new(CsgNode::Leaf {
                 id: box_id,
                 primitive: Primitive::Box {
                     center: [0.0; 3],
-                    half_extents: [r, r, len * 0.5],
+                    half_extents: [m_half, r * fr.sin_half, len * 0.5],
                 },
             }),
         );
@@ -1888,7 +1922,7 @@ impl CsgNode {
         let cyl_node = CsgNode::Transform(
             Transform {
                 translate: cen,
-                rotation: quat_from_cols3(u, w, cross3(u, w)),
+                rotation: quat_from_cols3(fr.na, w, cross3(fr.na, w)),
                 scale: [1.0; 3],
             },
             Box::new(CsgNode::Leaf {
@@ -1930,15 +1964,15 @@ impl CsgNode {
     ///
     /// With EQUAL_OFFSETS the bevel plane cuts `d` back from the edge on BOTH
     /// adjacent faces, i.e. it passes through `mid − d·n_b` and `mid − d·n_a`
-    /// and its outward normal is the face bisector `m = normalize(n_a + n_b)`
-    /// (a 45° cut at an orthogonal dihedral). In the local frame `(u, v)` of the
-    /// two face normals the material near the edge is `{u ≤ 0, v ≤ 0}` and the
-    /// wedge to remove is `{u + v ≥ −d}` — so ONE oriented box in the frame
-    /// `(m, s, w)` suffices:
+    /// and its outward normal is the face bisector `m = normalize(n_a + n_b)`.
+    /// Both offset points are the SAME distance from the edge along the
+    /// bisector, so ONE oriented box in the frame `(m, s, w)` suffices:
     ///
-    /// - along `m`: from the bevel plane (`−d/√2`) outward by a margin `d`,
-    /// - along `s = w × m`: `±d`, provably non-binding on material
-    ///   (`u, v ∈ [−d, 0]` on the wedge ⟹ `|u − v| ≤ d < d·√2`),
+    /// - along `m`: from the bevel plane (`−d·sin φ`, with `φ` the half
+    ///   dihedral — `d/√2` at a right angle) outward by a margin `d`,
+    /// - along `s = w × m`: `±d`, provably non-binding on material (the two
+    ///   offset points sit at `|s| = d·cos φ ≤ d`, and material past them lies
+    ///   on the far side of the bevel plane),
     /// - along `w`: exactly the edge length, so the ends stay sharp (#383).
     ///
     /// No intersection with a corner box is needed, and no new opcode: a single
@@ -1950,14 +1984,9 @@ impl CsgNode {
         let fr =
             edge_cutter_frame(self, c.edge_start, c.edge_end, c.normal_a, c.normal_b, d).ok()?;
         // Outward bisector of the two faces = the bevel plane's normal.
-        let m = normalize3([
-            fr.na[0] + fr.nb[0],
-            fr.na[1] + fr.nb[1],
-            fr.na[2] + fr.nb[2],
-        ])?;
-        let s = cross3(fr.w, m); // unit, ⟂ m and w; (m, s, w) is right-handed
+        let (m, s) = (fr.m, fr.s);
         // Plane offset from the edge along m, and the outward margin past it.
-        let inset = d / 2.0f32.sqrt();
+        let inset = d * fr.sin_half;
         let margin = d;
         let m_half = 0.5 * (inset + margin);
         let m_off = 0.5 * (margin - inset);
@@ -4324,12 +4353,13 @@ fn normalize3(v: [f32; 3]) -> Option<[f32; 3]> {
 /// chamfer has no such fallback and reports the reason to the user instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EdgeCutterReject {
-    /// Zero-length edge, a normal that is not perpendicular to it, or a face
-    /// whose outward side could not be determined against the field.
+    /// Zero-length edge, a normal that is not perpendicular to it, a face
+    /// whose outward side could not be determined against the field — or a
+    /// dihedral so close to FLAT or to a knife edge (`|n_a·n_b| >
+    /// [`MAX_DIHEDRAL_COS`]`) that the cutter's cross-section degenerates:
+    /// the tangency chord runs off to infinity as the two faces fold together,
+    /// and the convexity probes lose their direction as they flatten out.
     Degenerate,
-    /// The dihedral is not a right angle — P1 covers cube-style edges only
-    /// (P2 in `docs/FILLET-CUTTER-PLAN.md` generalises to skew prisms).
-    NonOrthogonal,
     /// The edge is concave: material would have to be ADDED, not removed.
     ///
     /// Decided by the two MIXED-quadrant probes alone, which read the shape of
@@ -4347,24 +4377,45 @@ pub enum EdgeCutterReject {
     LargerThanMaterial,
 }
 
-/// The local frame an analytic edge cutter is built in (#383/#406/#414).
+/// The local frame an analytic edge cutter is built in (#383/#406/#414/#450).
 ///
-/// `(u, v, w)` is right-handed and orthonormal with `w` along the edge and
-/// `u` the in-plane projection of `n_a`; `inner` is the rolling-ball centre at
-/// `reach` inside both faces, which doubles as the convexity probe point.
+/// `(m, s, w)` is right-handed and orthonormal with `w` along the edge and `m`
+/// the OUTWARD BISECTOR of the two faces. The bisector — not either face
+/// normal — is the frame both cutters are authored in, because both cut
+/// symmetrically about it: the fillet's tangency chord and the chamfer's bevel
+/// plane are equally far from the corner on each face, so their extents are
+/// plain trigonometry in `(m, s)` at ANY dihedral (#450). `inner` is the
+/// rolling-ball centre at `reach` inside both faces, which doubles as the
+/// convexity probe point.
 pub struct EdgeCutterFrame {
     pub mid: [f32; 3],
-    pub u: [f32; 3],
-    pub v: [f32; 3],
+    /// Outward bisector `normalize(n_a + n_b)`.
+    pub m: [f32; 3],
+    /// `w × m` — the in-plane axis across the corner.
+    pub s: [f32; 3],
     pub w: [f32; 3],
     pub len: f32,
-    /// Face normals re-oriented OUTWARD against the live field.
+    /// Face normals re-oriented OUTWARD against the live field and projected
+    /// into the plane ⟂ `w` (a planar face through a straight edge has its
+    /// normal there already; projecting makes it exact).
     pub na: [f32; 3],
     pub nb: [f32; 3],
     pub cdot: f32,
+    /// `cos φ` and `sin φ` for the HALF dihedral `φ` (`cos 2φ = cdot`), i.e.
+    /// the angle between `m` and either face normal. Every cutter extent is
+    /// one of these times `reach`.
+    pub cos_half: f32,
+    pub sin_half: f32,
     /// `mid − reach/(1+cdot)·(n_a + n_b)` — deep inside the material.
     pub inner: [f32; 3],
 }
+
+/// How far the dihedral may fold before the analytic cutter gives up: a
+/// `|n_a·n_b|` past this is either a nearly FLAT pair of faces (no corner to
+/// cut) or a knife edge whose cutter would be `1/cos φ` times the radius long
+/// and would reach into geometry that has nothing to do with the edge.
+/// `0.98` is a dihedral outside 11.5°…168.5°.
+pub const MAX_DIHEDRAL_COS: f32 = 0.98;
 
 /// Classify a straight edge's dihedral against the live field of `node` and
 /// return the frame an analytic cutter is built in.
@@ -4406,20 +4457,28 @@ pub fn edge_cutter_frame(
     // the field grows from ~0 at the edge to positive outside.
     let na = orient_outward(node, mid, normal_a, reach).ok_or(R::Degenerate)?;
     let nb = orient_outward(node, mid, normal_b, reach).ok_or(R::Degenerate)?;
-
-    // P1 gate: orthogonal dihedral only (cube-style right-angle edges).
-    let cdot = dot3(na, nb);
-    if cdot.abs() > 2e-2 {
-        return Err(R::NonOrthogonal);
-    }
     // Both face normals must be perpendicular to the edge (planar straight
-    // edge). Project the in-plane axis u ⟂ w and rebuild a clean right-handed
-    // orthonormal frame (u, v, w).
-    let u = normalize3(sub3(na, scale3(w, dot3(na, w)))).ok_or(R::Degenerate)?;
-    let v = cross3(w, u); // unit (u ⟂ w), right-handed
+    // edge). Project them into the plane ⟂ w so the whole cutter lives in ONE
+    // cross-section, whatever noise the weaver's normals carry.
+    let na = normalize3(sub3(na, scale3(w, dot3(na, w)))).ok_or(R::Degenerate)?;
+    let nb = normalize3(sub3(nb, scale3(w, dot3(nb, w)))).ok_or(R::Degenerate)?;
 
-    // Rolling-ball centre: distance `reach` inside from both faces. cdot≈0 here
-    // so 1/(1+cdot) ≈ 1; keep the general form for robustness.
+    let cdot = dot3(na, nb);
+    if cdot.abs() > MAX_DIHEDRAL_COS {
+        return Err(R::Degenerate);
+    }
+    // Outward bisector and the axis across the corner; (m, s, w) right-handed
+    // because m × (w × m) = w for unit m ⟂ w.
+    let m = normalize3([na[0] + nb[0], na[1] + nb[1], na[2] + nb[2]]).ok_or(R::Degenerate)?;
+    let s = cross3(w, m);
+    // Half the dihedral: cos 2φ = n_a·n_b, so cos φ = √((1+cdot)/2). φ is the
+    // angle between the bisector and either face normal, and every extent an
+    // analytic cutter needs is `reach` times one of these two.
+    let cos_half = ((1.0 + cdot) * 0.5).sqrt();
+    let sin_half = ((1.0 - cdot) * 0.5).sqrt();
+
+    // Rolling-ball centre: distance `reach` inside from both faces — which is
+    // `reach/cos φ` along the bisector, the general form for any dihedral.
     let k = reach / (1.0 + cdot);
     let inner = [
         mid[0] - k * (na[0] + nb[0]),
@@ -4459,7 +4518,7 @@ pub fn edge_cutter_frame(
     if node.sdf(inner, EvalMode::Visual) > -0.5 * reach {
         return Err(R::LargerThanMaterial);
     }
-    Ok(EdgeCutterFrame { mid, u, v, w, len, na, nb, cdot, inner })
+    Ok(EdgeCutterFrame { mid, m, s, w, len, na, nb, cdot, cos_half, sin_half, inner })
 }
 
 fn orient_outward(node: &CsgNode, mid: [f32; 3], n: [f32; 3], r: f32) -> Option<[f32; 3]> {

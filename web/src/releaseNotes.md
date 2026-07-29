@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.47.4
+- fix(kernel) #450: Ein Kanten-Fillet rundet jetzt auch dort, wo die beiden Flächen NICHT im rechten Winkel zusammenstoßen — bisher tat es an einer solchen Kante schweigend nichts: keine Fehlermeldung, keine Änderung an der Geometrie. Dasselbe gilt für die Fase. Gemessen am #416-Dokument, wo Onshape die 82,75-Grad-Keilspitze eines Extrudes mit 1,36 mm rundet und wir sie scharf stehen ließen.
+
 ## 0.47.3
 - fix(onshape) #451: Eine Ellipse in einer Onshape-Skizze wird jetzt übersetzt. Bisher fiel sie stillschweigend weg — eine Skizze, deren einzige Kurve eine Ellipse ist, kam damit ohne jede geschlossene Region beim Kernel an, und jedes Feature darauf brach erst bei der Regenerierung ab („kein geschlossenes Profil“). Elliptische BÖGEN bleiben offen und werden weiterhin gemeldet statt zu einer ganzen Ellipse geschlossen.
 

@@ -257,11 +257,6 @@ impl FeatureKind for ChamferEdgeFeature {
 fn chamfer_reject_message(why: crate::csg::EdgeCutterReject, distance: f32) -> String {
     use crate::csg::EdgeCutterReject as R;
     match why {
-        R::NonOrthogonal =>
-            "Chamfer kann diese Kante noch nicht schneiden: der Flächenwinkel ist kein \
-             rechter Winkel. P1 deckt nur orthogonale Kanten ab (P2 in \
-             docs/FILLET-CUTTER-PLAN.md verallgemeinert auf schiefe Prismen)."
-                .to_string(),
         R::Concave =>
             "Chamfer kann diese Kante noch nicht schneiden: sie ist KONKAV (eine Innenkante). \
              Dort müsste Material hinzugefügt statt weggeschnitten werden — P3 in \
@@ -276,8 +271,9 @@ fn chamfer_reject_message(why: crate::csg::EdgeCutterReject, distance: f32) -> S
         ),
         R::Degenerate => format!(
             "Chamfer kann diese Kante nicht schneiden: die Kantengeometrie ist entartet \
-             (Nulllänge, oder eine Flächennormale steht nicht senkrecht auf der Kante). \
-             Fase: {distance} mm."
+             (Nulllänge, eine Flächennormale steht nicht senkrecht auf der Kante, oder \
+             die beiden Flächen stehen fast flach bzw. fast auf Messerschneide \
+             zueinander). Fase: {distance} mm."
         ),
     }
 }

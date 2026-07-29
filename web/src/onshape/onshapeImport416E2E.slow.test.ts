@@ -364,9 +364,9 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
   });
 
   /**
-   * The ONE bound that is genuinely off, pinned to the tenth of a micrometre
-   * in BOTH directions — this used to be an `it.fails` over `y max`, and the
-   * 0.63 mm it chased never existed (#449).
+   * The ONE bound that is genuinely off, pinned in BOTH directions — this used
+   * to be an `it.fails` over `y max`, and the 0.63 mm it chased never existed
+   * (#449).
    *
    * The obituary of that pin, because three tickets ran on it. #447/#448 had
    * narrowed the document to a single missing bound, `y max` 6.500 against
@@ -382,30 +382,82 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
    * bisection that kept reporting the top face AS the plane y = 6.5 had been
    * right about the solid all along.
    *
-   * What IS left is `z min`: we reach −73.1688, Onshape −73.0013, so we
-   * OVERSHOOT by 0.1675 mm. Three things make that a real finding rather than
-   * a second loose-box story:
+   * What IS left is `z min`, and #450 measured it end to end. Two facts, and
+   * the second is why this test does not use `sceneAabb` at all:
    *
-   *  - it points the other way. A loose bound reads too FAR out, and Onshape's
-   *    loose `z min` is −73.0819 — still short of ours. No slack explains it.
+   *  - `Extrude 9`'s wedge tip is EXACT. The sharp corner sits at
+   *    −73.16882881, and Onshape says the same number twice over: its own 3D
+   *    answer for that sketch vertex (`onshape-416-sketches3d.json`) and the
+   *    intersection of the two face PLANES it reports for the extrude. The end
+   *    condition cannot even reach `z`: the sketch normal is ±y, the caps come
+   *    out at y = −12.6 / −7.6, and halving the depth moves nothing in z.
+   *    Onshape does not SHOW that corner because `Fillet 3` (r = 1.3648 mm)
+   *    rounds it; its own tight `z min` −73.0013 belongs to that blend face.
    *  - `sceneAabb` is documented loose (`CsgNode::aabb`, „good enough to bound
-   *    the mesher grid"), so it is not evidence on its own. The SDF is: a
-   *    0.25 mm (x, y) sweep at z = −73.1 finds solid over x ∈ [2.5, 3.0],
-   *    y ∈ [−12.5, −7.75], and bisecting that column downward puts the surface
-   *    at −73.168. Material really is there.
-   *  - that patch is the TIP of `Extrude 9`'s 8.17 mm wedge, the feature this
-   *    suite already knows drives `z min` (suppressing it moves the bound back
-   *    to −65). A wedge tip 0.17 mm long on a 108 mm part is a sub-degree
-   *    difference in how the wedge is aimed or ended — not a missing feature.
-   *
-   * Pinned as a plain `it` on the measured number: the day someone closes it,
-   * this fails and forces the line to be edited, exactly as an `it.fails`
-   * would have — without asserting that the import is wrong in the meantime.
+   *    the mesher grid"), and for a blend it is loose STRUCTURALLY: a hard
+   *    fillet is a `Difference`, and `Difference` returns the LEFT operand's
+   *    box unchanged. So the scene box still reads the sharp −73.1688 and
+   *    always will, however well the cutter works. Only the field can answer
+   *    this bound, which is what the test below asks.
    */
-  it("overshoots `z min` by 0.1675 mm — the one bound that is really off (#450)", () => {
+  it("rounds `Extrude 9`'s wedge tip — the last 0.017 mm is the blend PROFILE (#450)", () => {
+    const sdf = (x: number, y: number, z: number) => kernel.raw.bodySdfEval(0, x, y, z);
+    const solid = (x: number, y: number, z: number) => sdf(x, y, z) < 0;
+
+    // WHERE the part is deepest, asked of the whole footprint rather than
+    // assumed: every 0.5 mm column that carries material below −72.95 must
+    // belong to the wedge. Everything else in this document stops at −65 —
+    // measured, by suppressing `Extrude 9`.
+    const deep: number[][] = [];
+    for (let x = GROUND_TRUTH.x[0]; x <= GROUND_TRUTH.x[1]; x += 0.5) {
+      for (let y = GROUND_TRUTH.y[0]; y <= GROUND_TRUTH.y[1]; y += 0.5) {
+        if (solid(x, y, -72.95)) deep.push([x, y]);
+      }
+    }
+    expect(deep.length, "the wedge does not reach its own depth at all").toBeGreaterThan(0);
+    for (const [x, y] of deep) {
+      expect(x, `column ${x}/${y} is deep but not on the wedge`).toBeGreaterThan(1.0);
+      expect(y).toBeGreaterThan(-12.6);
+      expect(y).toBeLessThan(-7.6);
+    }
+
+    // HOW deep, by bisection. `y` stays off the wedge's two cap planes: the
+    // cutter ends exactly on them, and the resolved edge is 0.00014 mm shorter
+    // than the real one, so a membrane some 70 nm thick survives at y = ±cap —
+    // four orders under the kernel's own build tolerance, and gone in any mesh.
+    let bottom = 0;
+    for (let x = 1.0; x <= 3.0; x += 0.05) {
+      for (let y = -12.5; y <= -7.7; y += 0.2) {
+        let lo = -73.3;
+        let hi = -71.0;
+        if (!solid(x, y, hi) || solid(x, y, lo)) continue;
+        for (let i = 0; i < 45; i++) {
+          const mid = (lo + hi) / 2;
+          if (solid(x, y, mid)) hi = mid;
+          else lo = mid;
+        }
+        bottom = Math.min(bottom, hi);
+      }
+    }
+
+    // A ROLLING BALL of Onshape's radius, tangent to the outer wall x = 3 and
+    // to the wedge's underside, bottoms out at −72.98418 — arithmetic, not a
+    // fit. That is what the kernel now cuts (#450: the cutter used to take
+    // right angles only, and this dihedral is 82.75°, so the fillet was a
+    // silent no-op and the sharp −73.1688 stood).
+    expect(bottom, "the tip must be rounded to the rolling ball").toBeCloseTo(-72.9842, 2);
+
+    // And what is LEFT is the cross-section, not the placement: Onshape's
+    // fillet is `crossSection: CURVATURE`, a curvature-continuous blend that
+    // hugs the corner closer than a circular arc and therefore reaches
+    // 0.0171 mm deeper. The importer already says it approximates that
+    // („CURVATURE-Querschnitt → kreisförmig übernommen"); #453 is the ticket.
+    expect(bottom - GROUND_TRUTH.z[0], "residual vs Onshape's tight z min").toBeCloseTo(0.0171, 2);
+
+    // The scene box is NOT this number and must not be mistaken for it.
     const bb = kernel.sceneAabb!() as { min: number[]; max: number[] };
-    expect(GROUND_TRUTH.z[0] - bb.min[2], `scene ${JSON.stringify(bb)}`).toBeCloseTo(0.1675, 3);
-  });
+    expect(bb.min[2], "sceneAabb stays the structural, uncut bound").toBeCloseTo(-73.1688, 2);
+  }, 180_000);
 });
 
 /**

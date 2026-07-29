@@ -47,15 +47,27 @@ Quelle: <https://cad.onshape.com/help/Content/fillet.htm>
 ## 3. Das Cutter-Konzept (gerade konvexe Kante)
 
 Für eine gerade, konvexe Kante zwischen zwei PLANAREN Flächen A und B (äußere
-Normalen `n_a`, `n_b`; Kante = Schnittgerade, Richtung `t = e1 − e0`):
+Normalen `n_a`, `n_b`; Kante = Schnittgerade, Richtung `t = e1 − e0`). Alles
+lebt im **Winkelhalbierenden-Rahmen** `(m, s, w)` mit `m = normalize(n_a+n_b)`,
+`w = t/|t|`, `s = w × m`, und in der HALBEN Dieder `φ` (`cos 2φ = n_a·n_b`) —
+darin ist jede Strecke, die der Cutter braucht, `r` mal `sin φ` oder `cos φ`,
+für JEDEN Winkel (#450):
 
 1. **Tangentialzylinder** — Achse parallel `t`, Radius `r`, tangential an beide
    Flächen. Sein Zentrum liegt bei `C = mid − r/(1+c)·(n_a + n_b)` mit
-   `c = n_a·n_b` (für orthogonale Würfelkanten `c=0`: `C = mid − r·(n_a+n_b)`).
-2. **Eck-Prisma** — der Materialkeil, der bis auf den Zylinder weg soll:
-   die r-dicke Ecke längs der Kante. Bei ORTHOGONALER Dieder-Kante (Würfel)
-   ist das exakt eine ORIENTIERTE BOX (Frame `u=n_a`, `v=n_b`, `w=t`), zentriert
-   auf der Kante, Half-Extents `(r, r, L/2)`.
+   `c = n_a·n_b`, also `r/cos φ` von der Kante entlang `m` nach innen
+   (für orthogonale Würfelkanten `c=0`: `C = mid − r·(n_a+n_b)`).
+2. **Eck-Box** — die Kappe, die bis auf den Zylinder weg soll: das Gebiet
+   zwischen der Kante und den beiden BERÜHRPUNKTEN `T_a`, `T_b`. Die liegen
+   symmetrisch zur Winkelhalbierenden bei `m = −r·sin²φ / cos φ` und
+   `s = ±r·sin φ`, also genügt eine orientierte Box im Rahmen `(m, s, w)` mit
+   `m ∈ [−r·sin²φ/cos φ, +r]`, `|s| ≤ r·sin φ`, `|w| ≤ L/2`. Ihre innere
+   `m`-Fläche ist die SEHNE des Rundungsbogens und liegt damit überall dort im
+   Ball, wo Material ist — sie kann keine Stufe schneiden; ihre `s`-Flächen
+   sind gar nicht bindend, weil Material jenseits der Berührpunkte auf der
+   anderen Seite der Sehne liegt. An der rechtwinkligen Kante ist das die
+   andere Hälfte der alten `r × r`-Eck-Box; der Unterschied zwischen beiden ist
+   das Kreissegment, und das wird vom Zylinder ohnehin wieder abgezogen.
 3. **Cutter** = `Difference(Eck-Box, Tangentialzylinder)` — die scharfe Ecke
    MINUS der Rundung. Längs auf die Kante begrenzt (Box-Half-Extent `L/2`), der
    Zylinder ragt geringfügig über (Half-Height `L/2 + r`) und wird von der Box
@@ -68,7 +80,7 @@ Normalen `n_a`, `n_b`; Kante = Schnittgerade, Richtung `t = e1 − e0`):
 flowchart TD
   Body["Body (harter Baum)"] --> Diff["Difference"]
   Cutter["Cutter"] --> Diff
-  Box["Eck-Box (r×r×L, Frame u,v,w)"] --> Cut["Difference"]
+  Box["Eck-Box (Sehne…Kante × r·sin φ × L, Frame m,s,w)"] --> Cut["Difference"]
   Cyl["Tangentialzylinder (Achse t, Radius r)"] --> Cut
   Cut --> Cutter
   Diff --> Result["gefilleteter Body"]
@@ -93,7 +105,10 @@ Ein Fillet wird zum Cutter, wenn:
 
 - beide angrenzenden Flächen PLANAR sind (`HalfSpace::Plane`),
 - die Kante GERADE ist (Polyline kollinear / 2 Punkte),
-- die Dieder-Kante ORTHOGONAL ist (`|n_a·n_b| < ε`) — P1-Grenze, s. u.,
+- die Dieder-Kante nicht ENTARTET ist (`|n_a·n_b| ≤ 0.98`, also zwischen 11,5°
+  und 168,5°): jenseits davon stehen die Flächen fast flach oder auf
+  Messerschneide, die Sehne läuft mit `1/cos φ` davon und die Konvexitäts-Sonden
+  verlieren ihre Richtung,
 - die Kante KONVEX ist: der Rolling-Ball-Mittelpunkt `C` liegt tief im
   Material (`body.sdf(C) < −0.5·r`).
 
@@ -101,19 +116,26 @@ Die Normalen-Vorzeichen werden zur Anwendungszeit am Feld korrigiert (jede
 Normale so gedreht, dass sie nach AUSSEN zeigt: `f(mid+εn) > f(mid−εn)`), damit
 der Test unabhängig von der Weber-Konvention robust ist. Erfüllt eine Kante die
 Bedingungen NICHT, fällt sie auf den bestehenden `smin`-MaskedBlend-Pfad zurück
-(konkave Rinnen, gekrümmte Kanten) bzw. bleibt (bei einer nicht-orthogonalen
-Selbst-Kante ohne Junction) vorerst wirkungslos — beides ist P2.
+(konkave Rinnen, gekrümmte Kanten) — und der ist für eine SELBST-Kante
+wirkungslos, weil er eine Boolean-Fuge zwischen zwei verschiedenen Features
+braucht. Genau daran hing #450: die 82,75°-Keilspitze von `Extrude 9` im
+#416-Dokument fiel durchs alte Orthogonalitäts-Gate, hatte als Kante zwischen
+zwei Wänden DESSELBEN Extrudes keine Fuge, und der Fillet tat schweigend nichts.
 
 ## 5. Phasenplan
 
-- **P1 (dieser Stand):** gerade, konvexe, ORTHOGONALE Kanten zwischen planaren
+- **P1 (v0.26.0):** gerade, konvexe, ORTHOGONALE Kanten zwischen planaren
   Flächen → harter Box−Zylinder-Cutter, boolesch subtrahiert. Fixt #406
   (Würfelkante) und #383 (scharfe Ecken). Bestehender UI-Flow (Kante picken →
   Radius) erzeugt jetzt den Cutter. Nicht-eignende Kanten: smin-Fallback.
-- **P2 — nicht-orthogonale gerade Kanten:** das Eck-Prisma ist dann ein schiefes
-  Parallelepiped (drei Slab-Boxen mit Normalen `n_a, n_b, t`) statt einer
-  orthonormalen Box; Cutter-Mechanik identisch. Betrifft z. B.
-  Hex-Prismen-Kanten (120°).
+- **P2 — nicht-orthogonale gerade Kanten (v0.47.4, #450): ERLEDIGT.** Und zwar
+  OHNE das ursprünglich skizzierte schiefe Parallelepiped aus drei Slab-Boxen:
+  in der Winkelhalbierenden statt in den Flächennormalen gerechnet, bleibt es
+  bei EINER orientierten Box (§3) — dieselbe Zahl von Blättern, dieselben
+  Sub-Ids, also auch KEIN `NAMING_SCHEMA_VERSION`-Bump. Der Chamfer erbt es mit
+  einer Zeile Trigonometrie (`inset = d·sin φ` statt `d/√2`, §6). Gedeckt von
+  `f450_non_orthogonal_convex_edge_gets_a_hard_fillet_cutter` /
+  `…_chamfer_cutter` (82,75°, die Keilspitze aus #416).
 - **P3 — konkave Kanten:** additiver Füllkörper (`Union` statt `Difference`) —
   Zylinder als Material HINZUFÜGEN, begrenzt aufs Eck-Prisma.
 - **P4 — Ecken-/Vertex-Blends:** wo mehrere gefillete Kanten sich treffen,
@@ -126,8 +148,8 @@ Selbst-Kante ohne Junction) vorerst wirkungslos — beides ist P2.
 ## 6. Chamfer — derselbe Cutter, anderes Profil (#414)
 
 Der Kanten-**Chamfer** ist der strukturell einfachere Bruder des Fillets und
-läuft seit #414 über exakt dieselbe Mechanik: gerade, konvexe, orthogonale
-Kante → analytischer Cutter → boolesche Subtraktion am Body. Unterschied ist
+läuft seit #414 über exakt dieselbe Mechanik: gerade, konvexe Kante →
+analytischer Cutter → boolesche Subtraktion am Body. Unterschied ist
 allein das **Querschnittsprofil**:
 
 | | Fillet | Chamfer |
@@ -139,14 +161,14 @@ allein das **Querschnittsprofil**:
 
 Bei EQUAL_OFFSETS schneidet die Fasenebene beidseits `d` von der Kante zurück,
 geht also durch `mid − d·n_b` und `mid − d·n_a`; ihre Außennormale ist die
-Winkelhalbierende `m = normalize(n_a + n_b)` (an orthogonalen Kanten der
-45°-Schnitt). Im lokalen Rahmen `(u, v)` der beiden Flächennormalen ist das
-Material `{u ≤ 0, v ≤ 0}` und der wegzuschneidende Keil `{u + v ≥ −d}`. Dafür
-genügt **eine einzige orientierte Box** im Rahmen `(m, s = w × m, w)`: entlang
-`m` von der Fasenebene (`−d/√2`) mit Rand `d` nach außen, entlang `s` `±d`
-(beweisbar nicht bindend, denn auf dem Keil gilt `u, v ∈ [−d, 0]` ⟹
-`|u − v| ≤ d < d·√2`), entlang `w` exakt die Kantenlänge — die Enden bleiben
-scharf (#383). Keine Verschneidung mit einer Eck-Box, kein neuer Opcode.
+Winkelhalbierende `m = normalize(n_a + n_b)`. Beide Rücksprungpunkte liegen
+gleich weit von der Kante entfernt auf `m`, also genügt **eine einzige
+orientierte Box** im Rahmen `(m, s = w × m, w)`: entlang `m` von der Fasenebene
+(`−d·sin φ` mit der halben Dieder `φ`; an der rechtwinkligen Kante `d/√2`) mit
+Rand `d` nach außen, entlang `s` `±d` (beweisbar nicht bindend, denn die beiden
+Rücksprungpunkte liegen bei `|s| = d·cos φ ≤ d`, und Material jenseits davon
+liegt hinter der Fasenebene), entlang `w` exakt die Kantenlänge — die Enden
+bleiben scharf (#383). Keine Verschneidung mit einer Eck-Box, kein neuer Opcode.
 
 **Kein `smin`-Fallback.** Eine Kante, die das Gate nicht besteht, dürfte NICHT
 still verrundet werden — das wäre genau die Geometrie, die der Nutzer nicht

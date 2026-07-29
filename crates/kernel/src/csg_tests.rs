@@ -3125,3 +3125,209 @@ fn f449_edge_cutter_gate_separates_concave_from_oversized() {
         );
     }
 }
+
+// ─── #450: a hard cutter for a dihedral that is NOT a right angle ─────────
+
+/// The #416 wedge tip, reduced to its dihedral.
+///
+/// `Extrude 9` of that document ends in a wedge whose tip edge runs between the
+/// part's outer wall (normal `(1, 0, 0)`) and the wedge's long underside
+/// (normal `(−0.126219, 0, −0.992002)`) — a CONVEX edge with an interior angle
+/// of 82.75°, and Onshape rounds it with a 1.3648 mm fillet. Until #450 that
+/// fillet was a silent no-op: `edge_cutter_frame`'s P1 gate took right angles
+/// only (`|n_a·n_b| ≤ 2e-2`), and the `smin` fallback needs a Boolean junction
+/// between two DIFFERENT features, which a wedge's own tip does not have (the
+/// #406 mechanism). The tip stayed sharp and the part's `z min` reached
+/// 0.1675 mm past Onshape's.
+///
+/// Everything asserted here is the rolling-ball definition, in the wedge's own
+/// bisector frame, and holds for any dihedral:
+///
+///  - the corner is gone, and gone by exactly `|C| − r` (the ball's clearance);
+///  - both TANGENCY points still lie on the surface — the blend meets each face
+///    smoothly instead of stepping;
+///  - material PAST the tangency points is untouched, which is what a cutter
+///    that is too wide would eat.
+#[test]
+fn f450_non_orthogonal_convex_edge_gets_a_hard_fillet_cutter() {
+    let na = [1.0f32, 0.0, 0.0];
+    let nb = [-0.126218598895937f32, 0.0, -0.9920024522614582];
+    let r = 1.3647571568806202f32;
+
+    // The wedge: {x ≤ 0} ∩ {n_b·p ≤ 0}, 5 mm deep along y — the two half-spaces
+    // as boxes, so the edge at the origin belongs to no Boolean junction that
+    // the mask fallback could rewrite.
+    let cos_t = nb[0];
+    let rot_y = [0.0f32, ((1.0 - cos_t) * 0.5).sqrt(), 0.0, ((1.0 + cos_t) * 0.5).sqrt()];
+    let wedge = CsgNode::Intersection(
+        Box::new(CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box { center: [-20.0, 0.0, 0.0], half_extents: [20.0, 2.5, 40.0] },
+        }),
+        Box::new(CsgNode::Transform(
+            Transform {
+                translate: [-30.0 * nb[0], 0.0, -30.0 * nb[2]],
+                rotation: rot_y,
+                scale: [1.0; 3],
+            },
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Box { center: [0.0; 3], half_extents: [30.0, 2.5, 40.0] },
+            }),
+        )),
+    );
+    let sdf = |n: &CsgNode, p: [f32; 3]| n.sdf(p, EvalMode::Visual);
+
+    // The dihedral is the one the gate used to refuse outright.
+    let cdot = na[0] * nb[0] + na[2] * nb[2];
+    assert!((cdot + 0.126218598895937).abs() < 1e-6, "cdot {cdot}");
+    let frame = edge_cutter_frame(&wedge, [0.0, -2.5, 0.0], [0.0, 2.5, 0.0], na, nb, r)
+        .expect("an 82.75° convex edge must take a cutter (#450)");
+    assert!((frame.cdot - cdot).abs() < 1e-5);
+
+    // Sharp before: the corner sits ON the surface.
+    assert!(sdf(&wedge, [0.0, 0.0, 0.0]).abs() < 1e-3, "corner must start sharp");
+
+    let fillet = EdgeFillet {
+        fillet_id: FeatureId::from_u32(9),
+        // Deliberately the SAME feature on both sides: that is the wedge's own
+        // tip, and it is what makes the mask fallback provably powerless here.
+        feature_a: FeatureId::from_u32(1),
+        feature_b: FeatureId::from_u32(1),
+        branch_a: 0,
+        branch_b: 0,
+        mask_polyline: vec![[0.0, -2.5, 0.0], [0.0, 2.5, 0.0]],
+        mask_radius: 3.0 * r,
+        blend_radius: r,
+        blend_mode: BlendMode::Fillet,
+        cutter: Some(FilletCutter {
+            normal_a: na,
+            normal_b: nb,
+            edge_start: [0.0, -2.5, 0.0],
+            edge_end: [0.0, 2.5, 0.0],
+            radius: r,
+        }),
+    };
+    let rounded = wedge.clone().apply_edge_fillets(&[fillet]);
+
+    // 1. The corner is cut back to the ball: |C| − r along the bisector.
+    let c = frame.inner;
+    let c_len = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+    let at_corner = sdf(&rounded, [0.0, 0.0, 0.0]);
+    assert!(
+        (at_corner - (c_len - r)).abs() < 0.01,
+        "corner clearance {at_corner} vs expected {}",
+        c_len - r,
+    );
+
+    // 2/3. Both tangency points still lie on the surface, and so does material
+    //      a further 2 mm along each face — the cutter stops at the tangency.
+    //      `t_a` runs along face A away from the corner: −n_b, projected.
+    let along = |n: [f32; 3], other: [f32; 3]| {
+        let d = [
+            -(other[0] - cdot * n[0]),
+            -(other[1] - cdot * n[1]),
+            -(other[2] - cdot * n[2]),
+        ];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        [d[0] / l, d[1] / l, d[2] / l]
+    };
+    for (n, other, label) in [(na, nb, "face A"), (nb, na, "face B")] {
+        let t = [c[0] + r * n[0], c[1] + r * n[1], c[2] + r * n[2]];
+        assert!(sdf(&rounded, t).abs() < 0.01, "{label}: tangency point off the surface");
+        let dir = along(n, other);
+        for extra in [0.5f32, 2.0, 6.0] {
+            let p = [
+                t[0] + extra * dir[0],
+                t[1] + extra * dir[1],
+                t[2] + extra * dir[2],
+            ];
+            assert!(
+                sdf(&rounded, p).abs() < 0.01,
+                "{label}: the face is eaten {extra} mm past the tangency point",
+            );
+            let inside = [p[0] - 0.5 * n[0], p[1] - 0.5 * n[1], p[2] - 0.5 * n[2]];
+            assert!(sdf(&rounded, inside) < -0.4, "{label}: material missing behind the face");
+        }
+    }
+
+    // 4. And the fillet really is a ROUNDING, not a bevel: every point at
+    //    distance r from the ball centre, between the two tangency directions,
+    //    is on the surface.
+    for f in [0.1f32, 0.3, 0.5, 0.7, 0.9] {
+        let d = [
+            na[0] + f * (nb[0] - na[0]),
+            na[1] + f * (nb[1] - na[1]),
+            na[2] + f * (nb[2] - na[2]),
+        ];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let p = [c[0] + r * d[0] / l, c[1] + r * d[1] / l, c[2] + r * d[2] / l];
+        assert!(sdf(&rounded, p).abs() < 0.01, "arc point at f={f} is not on the surface");
+    }
+}
+
+/// The chamfer's bevel is the same generalisation, one line of trigonometry
+/// apart: EQUAL_OFFSETS cuts `d` back along BOTH faces, so the bevel plane sits
+/// `d·sin φ` from the edge along the bisector (`d/√2` at a right angle — the
+/// only case P1 could do). Same wedge, same edge.
+#[test]
+fn f450_non_orthogonal_convex_edge_gets_a_hard_chamfer_cutter() {
+    let na = [1.0f32, 0.0, 0.0];
+    let nb = [-0.126218598895937f32, 0.0, -0.9920024522614582];
+    let d = 1.5f32;
+    let cos_t = nb[0];
+    let rot_y = [0.0f32, ((1.0 - cos_t) * 0.5).sqrt(), 0.0, ((1.0 + cos_t) * 0.5).sqrt()];
+    let wedge = CsgNode::Intersection(
+        Box::new(CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box { center: [-20.0, 0.0, 0.0], half_extents: [20.0, 2.5, 40.0] },
+        }),
+        Box::new(CsgNode::Transform(
+            Transform {
+                translate: [-30.0 * nb[0], 0.0, -30.0 * nb[2]],
+                rotation: rot_y,
+                scale: [1.0; 3],
+            },
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Box { center: [0.0; 3], half_extents: [30.0, 2.5, 40.0] },
+            }),
+        )),
+    );
+    let cut = wedge.apply_edge_chamfers(&[EdgeChamfer {
+        chamfer_id: FeatureId::from_u32(9),
+        normal_a: na,
+        normal_b: nb,
+        edge_start: [0.0, -2.5, 0.0],
+        edge_end: [0.0, 2.5, 0.0],
+        distance: d,
+    }]);
+    let sdf = |p: [f32; 3]| cut.sdf(p, EvalMode::Visual);
+    let cdot = na[0] * nb[0] + na[2] * nb[2];
+    let sin_half = ((1.0 - cdot) * 0.5).sqrt();
+
+    // The corner is cut back to the bevel plane, `d·sin φ` along the bisector.
+    let at_corner = sdf([0.0, 0.0, 0.0]);
+    assert!(
+        (at_corner - d * sin_half).abs() < 0.01,
+        "corner clearance {at_corner} vs expected {}",
+        d * sin_half,
+    );
+    // Both offset points — `d` along each face from the edge — sit exactly on
+    // the new bevel's rim, so the bevel is EQUAL-offset at this dihedral too.
+    for (n, other, label) in [(na, nb, "face A"), (nb, na, "face B")] {
+        let dir = {
+            let v = [
+                -(other[0] - cdot * n[0]),
+                -(other[1] - cdot * n[1]),
+                -(other[2] - cdot * n[2]),
+            ];
+            let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            [v[0] / l, v[1] / l, v[2] / l]
+        };
+        let p = [d * dir[0], d * dir[1], d * dir[2]];
+        assert!(sdf(p).abs() < 0.01, "{label}: offset point is not on the chamfered surface");
+        let further = [p[0] + 2.0 * dir[0], p[1] + 2.0 * dir[1], p[2] + 2.0 * dir[2]];
+        assert!(sdf(further).abs() < 0.01, "{label}: the face is eaten past the offset point");
+    }
+}
