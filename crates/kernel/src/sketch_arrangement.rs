@@ -61,12 +61,21 @@ const MIN_AREA: f64 = 1e-4;
 
 // ── entity → exact boundary segments ─────────────────────────────────
 
-/// One flattened straight micro-piece with its source-segment provenance.
+/// One flattened straight micro-piece with its source-segment provenance and
+/// the PARAMETER RANGE it covers on that source (`0 … 1` over the whole
+/// source, in the source's own direction).
+///
+/// The range is what lets [`face_profile`] hand back an exact CUT arc instead
+/// of the chords it was flattened into: a run of consecutive micro-pieces of
+/// one source spans `[t0 … t1]`, and [`sub_segment`] restricts the analytic
+/// curve to exactly that span (#445).
 #[derive(Clone)]
 struct Piece {
     a: [f64; 2],
     b: [f64; 2],
     src: usize,
+    t0: f64,
+    t1: f64,
 }
 
 /// Collect every non-construction entity's exact boundary segments, each
@@ -404,14 +413,28 @@ struct Edge {
     u: usize,
     v: usize,
     src: usize,
+    /// Parameter range on [`Self::src`], oriented `u → v`.
+    t0: f64,
+    t1: f64,
+}
+
+impl Edge {
+    /// The source and its parameter range as traversed by half-edge `h`
+    /// (`h & 1 == 1` walks `v → u`, which reverses the range).
+    fn walk(edges: &[Edge], h: usize) -> (usize, f64, f64) {
+        let e = &edges[h >> 1];
+        if h & 1 == 1 {
+            (e.src, e.t1, e.t0)
+        } else {
+            (e.src, e.t0, e.t1)
+        }
+    }
 }
 
 /// A bounded (positive-area) face of the arrangement.
 struct RawFace {
     /// Ordered outer-boundary vertex ids (welded pool ids).
     verts: Vec<usize>,
-    /// Per boundary step, the source-segment id of the edge traversed.
-    edge_srcs: Vec<usize>,
     /// Per boundary step, the HALF-EDGE traversed (`edge = h >> 1`,
     /// direction `h & 1`). Cancelling a half-edge against its twin is what
     /// turns a set of atomic faces into the boundary of their union
@@ -421,37 +444,27 @@ struct RawFace {
 }
 
 /// Build the arrangement and return its bounded faces + the vertex pool.
-/// Per-source bookkeeping the exact-profile reconstruction needs.
-struct SourceUse {
-    /// Was this source cut by an intersection / T-junction?
-    split: bool,
-    /// How many graph edges (post-weld, post-dedup) carry this source — the
-    /// number of boundary steps a face must use to have consumed it WHOLE.
-    edges: usize,
-}
-
-fn build_faces(
-    sources: &[SketchSegment],
-) -> (Vec<RawFace>, Vec<[f64; 2]>, Vec<SourceUse>, Vec<Edge>) {
-    // 1. Flatten every source into straight pieces tagged with the source id.
+fn build_faces(sources: &[SketchSegment]) -> (Vec<RawFace>, Vec<[f64; 2]>, Vec<Edge>) {
+    // 1. Flatten every source into straight pieces tagged with the source id
+    //    AND the parameter span each piece covers on it.
     let mut pieces: Vec<Piece> = Vec::new();
-    let mut src_micro_count = vec![0usize; sources.len()];
     for (si, seg) in sources.iter().enumerate() {
         let poly = flatten(seg);
-        src_micro_count[si] = poly.len().saturating_sub(1);
-        for w in poly.windows(2) {
+        let n = poly.len().saturating_sub(1);
+        for (k, w) in poly.windows(2).enumerate() {
             if dist2f(w[0], w[1]) > WELD_TOL * WELD_TOL {
                 pieces.push(Piece {
                     a: w[0],
                     b: w[1],
                     src: si,
+                    t0: k as f64 / n as f64,
+                    t1: (k + 1) as f64 / n as f64,
                 });
             }
         }
     }
 
     // 2. Planarize: split every piece at intersections + interior T-junctions.
-    let mut src_was_split = vec![false; sources.len()];
     let mut sub_pieces: Vec<Piece> = Vec::new();
     for i in 0..pieces.len() {
         let pi = &pieces[i];
@@ -473,9 +486,10 @@ fn build_faces(
             sub_pieces.push(pi.clone());
             continue;
         }
-        src_was_split[pi.src] = true;
         cuts.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let d = [pi.b[0] - pi.a[0], pi.b[1] - pi.a[1]];
+        // Local piece parameter → global source parameter.
+        let src_t = |t: f64| pi.t0 + t * (pi.t1 - pi.t0);
         let mut prev = pi.a;
         let mut prev_t = 0.0;
         for &t in &cuts {
@@ -488,6 +502,8 @@ fn build_faces(
                     a: prev,
                     b: cp,
                     src: pi.src,
+                    t0: src_t(prev_t),
+                    t1: src_t(t),
                 });
                 prev = cp;
                 prev_t = t;
@@ -498,6 +514,8 @@ fn build_faces(
                 a: prev,
                 b: pi.b,
                 src: pi.src,
+                t0: src_t(prev_t),
+                t1: pi.t1,
             });
         }
     }
@@ -516,11 +534,13 @@ fn build_faces(
         if !seen.insert(key) {
             continue;
         }
-        edges.push(Edge { u, v, src: sp.src });
-    }
-    let mut src_edge_count = vec![0usize; sources.len()];
-    for e in &edges {
-        src_edge_count[e.src] += 1;
+        edges.push(Edge {
+            u,
+            v,
+            src: sp.src,
+            t0: sp.t0,
+            t1: sp.t1,
+        });
     }
     let verts = pool.positions.clone();
 
@@ -562,14 +582,12 @@ fn build_faces(
             continue;
         }
         let mut face_verts: Vec<usize> = Vec::new();
-        let mut face_srcs: Vec<usize> = Vec::new();
         let mut face_halfs: Vec<usize> = Vec::new();
         let mut h = start;
         let mut ok = false;
         for _ in 0..=edges.len() * 2 {
             visited[h] = true;
             face_verts.push(tail(h));
-            face_srcs.push(edges[h >> 1].src);
             face_halfs.push(h);
             // next(h): clockwise-most turn after twin(h) at head(h).
             let twin = h ^ 1;
@@ -597,19 +615,12 @@ fn build_faces(
         if area > MIN_AREA {
             faces.push(RawFace {
                 verts: face_verts,
-                edge_srcs: face_srcs,
                 half_edges: face_halfs,
                 area,
             });
         }
     }
-    let uses = (0..sources.len())
-        .map(|i| SourceUse {
-            split: src_was_split[i],
-            edges: src_edge_count[i],
-        })
-        .collect();
-    (faces, verts, uses, edges)
+    (faces, verts, edges)
 }
 
 /// Boundary loops of the UNION of several atomic faces (#424).
@@ -682,14 +693,12 @@ fn union_loops(
             continue;
         }
         let mut loop_verts: Vec<usize> = Vec::new();
-        let mut loop_srcs: Vec<usize> = Vec::new();
         let mut loop_halfs: Vec<usize> = Vec::new();
         let mut h = start;
         let mut closed = false;
         for _ in 0..=keep.len() {
             visited.insert(h);
             loop_verts.push(tail(h));
-            loop_srcs.push(edges[h >> 1].src);
             loop_halfs.push(h);
             let Some(list) = outgoing.get(&head(h)) else { break };
             let Some(idx) = list.iter().position(|&x| x == (h ^ 1)) else { break };
@@ -720,7 +729,6 @@ fn union_loops(
         if area > MIN_AREA {
             out.push(RawFace {
                 verts: loop_verts,
-                edge_srcs: loop_srcs,
                 half_edges: loop_halfs,
                 area,
             });
@@ -737,7 +745,6 @@ fn union_loops(
 struct Arrangement {
     sources: Vec<SketchSegment>,
     src_ids: Vec<Option<u32>>,
-    src_use: Vec<SourceUse>,
     faces: Vec<RawFace>,
     edges: Vec<Edge>,
     verts: Vec<[f64; 2]>,
@@ -755,7 +762,7 @@ impl Arrangement {
         if sources.is_empty() {
             return None;
         }
-        let (faces, verts, src_use, edges) = build_faces(&sources);
+        let (faces, verts, edges) = build_faces(&sources);
         if faces.is_empty() {
             return None;
         }
@@ -786,11 +793,11 @@ impl Arrangement {
         let children: Vec<Vec<usize>> = (0..n)
             .map(|j| (0..n).filter(|&i| parent[i] == Some(j)).collect())
             .collect();
-        Some(Self { sources, src_ids, src_use, faces, edges, verts, polys, children })
+        Some(Self { sources, src_ids, faces, edges, verts, polys, children })
     }
 
     fn profile_of(&self, face: &RawFace) -> (Sketch2d, crate::sketch::TracedPrim) {
-        face_profile(face, &self.sources, &self.src_ids, &self.verts, &self.src_use)
+        face_profile(face, &self.sources, &self.src_ids, &self.verts, &self.edges)
     }
 
     /// Sort key of one boundary loop: ascending `aabb.min.y`, then
@@ -989,10 +996,24 @@ fn has_unarrangeable(sub_calls: &[FeatureCall]) -> bool {
         .any(|c| matches!(c.type_name.as_str(), "sketch_mirror" | "sketch_offset"))
 }
 
-/// Reconstruct one face's outer boundary as an exact closed `Path` (or an
-/// equivalent `Union` of sub-paths). Line-sourced edges stay exact; a curved
-/// source used fully & un-cut is emitted as its exact `SketchSegment`; a curved
-/// source that was cut is emitted as its constituent straight micro-lines.
+/// Reconstruct one face's outer boundary as an exact closed `Path`.
+///
+/// The boundary walk is grouped into RUNS: maximal stretches of consecutive
+/// steps that come from the same source and whose parameter spans are
+/// contiguous. A straight source's run is emitted step by step (a line is
+/// already exact, and splitting it keeps the per-step provenance one-to-one);
+/// a CURVED source's run is emitted as ONE exact analytic segment restricted
+/// to the run's parameter span ([`sub_segment`]).
+///
+/// That restriction is the whole of #445. Before it, a curved source counted as
+/// exact only when it was used WHOLE and UNCUT; a circle that a profile's own
+/// boundary cuts — the ordinary shape of a multi-region extrude — decayed into
+/// its ~50 flattening chords. That cost the geometry (50 planes where Onshape
+/// has one cylinder) and, because each chord became its own G1 wall carrying
+/// the same sketch entity, it cost the NAMES: 50 occurrences of one curve blow
+/// past [`crate::csg::BranchId::OCCURRENCE_MAX`], `wall_sub_table` refuses the
+/// table, and every wall of the sweep falls back to a positional sub. A cut arc
+/// is still one arc, so it is still one wall with one name.
 ///
 /// Returns the path together with its [`crate::sketch::TracedPrim`] — one
 /// stable sketch-entity id per emitted SEGMENT, in the same order, so the
@@ -1002,43 +1023,98 @@ fn face_profile(
     sources: &[SketchSegment],
     src_ids: &[Option<u32>],
     verts: &[[f64; 2]],
-    src_use: &[SourceUse],
+    edges: &[Edge],
 ) -> (Sketch2d, crate::sketch::TracedPrim) {
-    // Count how many boundary steps each source contributes.
-    let mut counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-    for &s in &face.edge_srcs {
-        *counts.entry(s).or_insert(0) += 1;
-    }
+    let n = face.verts.len();
+    // Per boundary step: source id and parameter span, in TRAVERSAL direction.
+    let steps: Vec<(usize, f64, f64)> = (0..n)
+        .map(|k| Edge::walk(edges, face.half_edges[k]))
+        .collect();
+    // A run continues into step `k` when it stays on the same source and picks
+    // its parameter up exactly where the previous step left off. Both cut
+    // points and flattening joints reproduce the parameter bit-for-bit, so the
+    // test needs no tolerance beyond float noise.
+    //
+    // On a CLOSED source the parameter is cyclic, so `1` and `0` are the same
+    // point and a run may cross that seam. It routinely does: a circle is
+    // parametrised from angle 0, which is an ordinary interior point of any
+    // stretch the boundary happens to use — without the wrap a plain semicircle
+    // would come back as two arcs meeting at a seam nothing in the geometry
+    // asked for (exactly the fragile interior seam `merge_cocircular_runs`
+    // exists to repair).
+    let closed_src = |s: usize| match sources[s] {
+        SketchSegment::Arc { sweep_angle, .. } => {
+            (sweep_angle.abs() as f64) >= TAU - 1e-6
+        }
+        _ => false,
+    };
+    let continues = |k: usize| {
+        let prev = steps[(k + n - 1) % n];
+        let cur = steps[k];
+        if prev.0 != cur.0 {
+            return false;
+        }
+        if (prev.2 - cur.1).abs() <= PARAM_EPS {
+            return true;
+        }
+        closed_src(cur.0) && (prev.2 - cur.1).abs() >= 1.0 - PARAM_EPS
+    };
+    // Start the walk at a run BREAK so a run is never split across the seam.
+    // No break at all means the whole loop is one run (a lone circle).
+    let start = (0..n).find(|&k| !continues(k));
     let mut segments: Vec<SketchSegment> = Vec::new();
     let mut seg_src: Vec<Option<u32>> = Vec::new();
-    let mut emitted_full: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    let n = face.verts.len();
-    for step in 0..n {
-        let src = face.edge_srcs[step];
-        let a = verts[face.verts[step]];
-        let b = verts[face.verts[(step + 1) % n]];
-        let curved = !matches!(sources[src], SketchSegment::Line { .. });
-        // A curved source that was never cut AND whose every surviving graph
-        // edge lies on this face's boundary was consumed WHOLE — re-emit it as
-        // the exact analytic segment, once (a picked disc stays a true circle;
-        // order and direction are irrelevant to a closed Path's even-odd SDF).
-        if curved
-            && !src_use[src].split
-            && src_use[src].edges > 0
-            && src_use[src].edges == *counts.get(&src).unwrap_or(&0)
-        {
-            if emitted_full.insert(src) {
-                segments.push(sources[src]);
+    let mut emit_run = |src: usize, first_step: usize, last_step: usize| {
+        if matches!(sources[src], SketchSegment::Line { .. }) {
+            // Straight: keep one segment per boundary step, with the welded
+            // vertices verbatim. Merging collinear steps would drop the
+            // one-to-one provenance the trace is built on.
+            for k in first_step..=last_step {
+                let step = k % n;
+                let a = verts[face.verts[step]];
+                let b = verts[face.verts[(step + 1) % n]];
+                segments.push(SketchSegment::Line {
+                    start: [a[0] as f32, a[1] as f32],
+                    end: [b[0] as f32, b[1] as f32],
+                });
                 seg_src.push(src_ids[src]);
             }
-            continue;
+        } else {
+            // The run's span is ACCUMULATED, not read off its last step: each
+            // step contributes its own signed parameter length, so a run that
+            // crossed the seam of a closed source comes out as `0.6 → 1.3`
+            // rather than folding back to `0.6 → 0.3`.
+            let ta = steps[first_step % n].1;
+            let tb = (first_step..=last_step)
+                .map(|k| {
+                    let s = steps[k % n];
+                    s.2 - s.1
+                })
+                .sum::<f64>()
+                + ta;
+            segments.push(sub_segment(&sources[src], ta, tb));
+            seg_src.push(src_ids[src]);
         }
-        segments.push(SketchSegment::Line {
-            start: [a[0] as f32, a[1] as f32],
-            end: [b[0] as f32, b[1] as f32],
-        });
-        seg_src.push(src_ids[src]);
+    };
+    match start {
+        None => emit_run(steps[0].0, 0, n - 1),
+        Some(start) => {
+            let mut k = 0usize;
+            while k < n {
+                let first = start + k;
+                let mut last = first;
+                while last + 1 < start + n && continues((last + 1) % n) {
+                    last += 1;
+                }
+                emit_run(steps[first % n].0, first, last);
+                k += last - first + 1;
+            }
+        }
     }
+    // Cut points live on the flattening CHORDS, so a reconstructed arc starts
+    // a sagitta away from the neighbour that cut it. Close those junctions
+    // analytically (#445) — see [`stitch_junctions`].
+    stitch_junctions(&mut segments);
     if segments.is_empty() {
         return (
             Sketch2d::Empty,
@@ -1058,6 +1134,285 @@ fn face_profile(
         sources: Some(crate::sketch::TraceSources::PerSegment(seg_src)),
     };
     (Sketch2d::Prim(prim), trace)
+}
+
+/// How close two parameter values must be to count as the same point on a
+/// source curve. Both flattening joints and cut parameters are produced by the
+/// same arithmetic on both sides of a junction, so the only slack needed is
+/// float noise.
+const PARAM_EPS: f64 = 1e-9;
+
+/// Restrict an analytic source segment to the parameter span `[ta … tb]`,
+/// where `0 … 1` runs along the source's own direction (#445).
+///
+/// `tb < ta` is legal and yields the REVERSED piece — the boundary walk is
+/// always counter-clockwise, and a curve the walk meets against its own
+/// direction has to come back that way, or the emitted path would zig-zag and
+/// invent G1 breaks where the geometry is smooth.
+fn sub_segment(seg: &SketchSegment, ta: f64, tb: f64) -> SketchSegment {
+    // Whole and forward — hand the source back untouched, so the (very
+    // common) uncut case stays bit-for-bit what it always was.
+    if (ta).abs() <= PARAM_EPS && (tb - 1.0).abs() <= PARAM_EPS {
+        return *seg;
+    }
+    match seg {
+        SketchSegment::Line { start, end } => {
+            let at = |t: f64| {
+                [
+                    (start[0] as f64 + t * (end[0] - start[0]) as f64) as f32,
+                    (start[1] as f64 + t * (end[1] - start[1]) as f64) as f32,
+                ]
+            };
+            SketchSegment::Line {
+                start: at(ta),
+                end: at(tb),
+            }
+        }
+        SketchSegment::Arc {
+            center,
+            radius,
+            start_angle,
+            sweep_angle,
+        } => {
+            let s = *start_angle as f64;
+            let w = *sweep_angle as f64;
+            SketchSegment::Arc {
+                center: *center,
+                radius: *radius,
+                start_angle: (s + w * ta) as f32,
+                sweep_angle: (w * (tb - ta)) as f32,
+            }
+        }
+        // Quadratic Bézier restriction via the blossom: the sub-curve on
+        // [a … b] has control points f(a,a), f(a,b), f(b,b) with
+        // f(u,v) = (1−u)(1−v)·p0 + [(1−u)v + u(1−v)]·p1 + uv·p2. Symmetric in
+        // its arguments, so it reverses for free when b < a.
+        SketchSegment::QuadBezier { p0, p1, p2 } => {
+            let blossom = |u: f64, v: f64| {
+                let (w0, w1, w2) = (
+                    (1.0 - u) * (1.0 - v),
+                    (1.0 - u) * v + u * (1.0 - v),
+                    u * v,
+                );
+                [
+                    (w0 * p0[0] as f64 + w1 * p1[0] as f64 + w2 * p2[0] as f64) as f32,
+                    (w0 * p0[1] as f64 + w1 * p1[1] as f64 + w2 * p2[1] as f64) as f32,
+                ]
+            };
+            SketchSegment::QuadBezier {
+                p0: blossom(ta, ta),
+                p1: blossom(ta, tb),
+                p2: blossom(tb, tb),
+            }
+        }
+    }
+}
+
+/// Close the junctions of a reconstructed loop ANALYTICALLY (#445).
+///
+/// The arrangement cuts curves on their flattening CHORDS, so a cut point sits
+/// up to one sagitta inside the true curve (≈ 5 µm on an r = 4.5 mm circle at
+/// 64 chords per turn). Reconstructing the exact arc therefore leaves a gap of
+/// that size against the neighbour that cut it — and a gap on a CLOSED path is
+/// not cosmetic: `path_is_inside` counts even-odd crossings per segment, so a
+/// horizontal band as tall as the gap can be counted twice or not at all
+/// (the failure mode #392 was about).
+///
+/// The remedy is the project's standing rule for coincidence — solve it, do
+/// not sample it. Line∩line, line∩circle and circle∩circle all have closed
+/// forms; the root nearest the flattened estimate is the meeting point, and
+/// BOTH neighbours are moved onto it. A junction that already agrees (every
+/// junction of an all-straight or uncut profile) is left untouched, so this
+/// changes nothing that was not broken.
+fn stitch_junctions(segments: &mut [SketchSegment]) {
+    let n = segments.len();
+    if n < 2 {
+        return;
+    }
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let a = f2(segments[i].end_point());
+        let b = f2(segments[j].start_point());
+        if dist2f(a, b) <= PARAM_EPS * PARAM_EPS {
+            continue;
+        }
+        let hint = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+        let Some(meet) = analytic_meet(&segments[i], &segments[j], hint) else {
+            continue;
+        };
+        set_end_point(&mut segments[i], meet);
+        set_start_point(&mut segments[j], meet);
+    }
+}
+
+/// Where two adjoining boundary segments TRULY meet, from their analytic
+/// supports (infinite line / full circle) and the flattened estimate `hint`.
+/// `None` = no closed form applies (a Bézier is involved, the supports are
+/// parallel or the circles miss each other) — the junction then keeps its
+/// flattened point.
+fn analytic_meet(
+    a: &SketchSegment,
+    b: &SketchSegment,
+    hint: [f64; 2],
+) -> Option<[f64; 2]> {
+    use SketchSegment::*;
+    match (a, b) {
+        (Line { start, end }, Line { start: s2, end: e2 }) => {
+            line_line(f2(*start), f2(*end), f2(*s2), f2(*e2))
+        }
+        (Line { start, end }, Arc { center, radius, .. })
+        | (Arc { center, radius, .. }, Line { start, end }) => line_circle(
+            f2(*start),
+            f2(*end),
+            f2(*center),
+            *radius as f64,
+            hint,
+        ),
+        (
+            Arc { center, radius, .. },
+            Arc {
+                center: c2,
+                radius: r2,
+                ..
+            },
+        ) => circle_circle(f2(*center), *radius as f64, f2(*c2), *r2 as f64, hint),
+        // A Bézier's own endpoint IS exact — snap the straight neighbour to it
+        // rather than inventing a meeting point.
+        (QuadBezier { .. }, _) => Some(f2(a.end_point())),
+        (_, QuadBezier { .. }) => Some(f2(b.start_point())),
+    }
+}
+
+/// Intersection of the two INFINITE lines through `(p→q)` and `(r→s)`.
+fn line_line(p: [f64; 2], q: [f64; 2], r: [f64; 2], s: [f64; 2]) -> Option<[f64; 2]> {
+    let d1 = [q[0] - p[0], q[1] - p[1]];
+    let d2 = [s[0] - r[0], s[1] - r[1]];
+    let denom = d1[0] * d2[1] - d1[1] * d2[0];
+    let scale = (d1[0].hypot(d1[1])) * (d2[0].hypot(d2[1]));
+    if scale < 1e-12 || denom.abs() < 1e-9 * scale {
+        return None;
+    }
+    let t = ((r[0] - p[0]) * d2[1] - (r[1] - p[1]) * d2[0]) / denom;
+    Some([p[0] + t * d1[0], p[1] + t * d1[1]])
+}
+
+/// The root of the INFINITE line `(p→q)` on the circle `(c, r)` nearest `hint`.
+fn line_circle(
+    p: [f64; 2],
+    q: [f64; 2],
+    c: [f64; 2],
+    r: f64,
+    hint: [f64; 2],
+) -> Option<[f64; 2]> {
+    let d = [q[0] - p[0], q[1] - p[1]];
+    let len2 = d[0] * d[0] + d[1] * d[1];
+    if len2 < 1e-18 {
+        return None;
+    }
+    // Foot of the perpendicular from the centre, then ± the half-chord.
+    let t_foot = ((c[0] - p[0]) * d[0] + (c[1] - p[1]) * d[1]) / len2;
+    let foot = [p[0] + t_foot * d[0], p[1] + t_foot * d[1]];
+    let h2 = r * r - dist2f(foot, c);
+    if h2 <= 0.0 {
+        // Tangent (or a miss within float noise): the foot is the best answer.
+        return Some(foot);
+    }
+    let dt = (h2 / len2).sqrt();
+    let cands = [
+        [p[0] + (t_foot - dt) * d[0], p[1] + (t_foot - dt) * d[1]],
+        [p[0] + (t_foot + dt) * d[0], p[1] + (t_foot + dt) * d[1]],
+    ];
+    Some(nearest(&cands, hint))
+}
+
+/// The intersection of two circles nearest `hint`; `None` when they are
+/// concentric / cocircular or do not reach each other.
+fn circle_circle(
+    c1: [f64; 2],
+    r1: f64,
+    c2: [f64; 2],
+    r2: f64,
+    hint: [f64; 2],
+) -> Option<[f64; 2]> {
+    let d = (c2[0] - c1[0]).hypot(c2[1] - c1[1]);
+    if d < 1e-12 {
+        return None; // concentric — cocircular runs share their endpoint anyway
+    }
+    let a = (d * d + r1 * r1 - r2 * r2) / (2.0 * d);
+    let h2 = r1 * r1 - a * a;
+    if h2 <= 0.0 {
+        return None;
+    }
+    let h = h2.sqrt();
+    let ux = (c2[0] - c1[0]) / d;
+    let uy = (c2[1] - c1[1]) / d;
+    let m = [c1[0] + a * ux, c1[1] + a * uy];
+    let cands = [
+        [m[0] - h * uy, m[1] + h * ux],
+        [m[0] + h * uy, m[1] - h * ux],
+    ];
+    Some(nearest(&cands, hint))
+}
+
+fn nearest(cands: &[[f64; 2]], hint: [f64; 2]) -> [f64; 2] {
+    *cands
+        .iter()
+        .min_by(|a, b| {
+            dist2f(**a, hint)
+                .partial_cmp(&dist2f(**b, hint))
+                .unwrap()
+        })
+        .unwrap()
+}
+
+/// Move a segment's START onto `p`. An arc turns by the (tiny) angle between
+/// its old start and `p`, keeping its sweep DIRECTION and its other end fixed.
+fn set_start_point(seg: &mut SketchSegment, p: [f64; 2]) {
+    match seg {
+        SketchSegment::Line { start, .. } => *start = [p[0] as f32, p[1] as f32],
+        SketchSegment::QuadBezier { .. } => {}
+        SketchSegment::Arc {
+            center,
+            start_angle,
+            sweep_angle,
+            ..
+        } => {
+            let want = (p[1] - center[1] as f64).atan2(p[0] - center[0] as f64);
+            let delta = wrap_pi(want - *start_angle as f64);
+            *start_angle = (*start_angle as f64 + delta) as f32;
+            *sweep_angle = (*sweep_angle as f64 - delta) as f32;
+        }
+    }
+}
+
+/// Move a segment's END onto `p`; the mirror of [`set_start_point`].
+fn set_end_point(seg: &mut SketchSegment, p: [f64; 2]) {
+    match seg {
+        SketchSegment::Line { end, .. } => *end = [p[0] as f32, p[1] as f32],
+        SketchSegment::QuadBezier { .. } => {}
+        SketchSegment::Arc {
+            center,
+            start_angle,
+            sweep_angle,
+            ..
+        } => {
+            let want = (p[1] - center[1] as f64).atan2(p[0] - center[0] as f64);
+            let end = *start_angle as f64 + *sweep_angle as f64;
+            *sweep_angle = (*sweep_angle as f64 + wrap_pi(want - end)) as f32;
+        }
+    }
+}
+
+/// Fold an angle difference into `(−π … π]` — a junction only ever moves by a
+/// sagitta, so the wrapped value is the intended one.
+fn wrap_pi(a: f64) -> f64 {
+    let mut a = a % TAU;
+    if a > std::f64::consts::PI {
+        a -= TAU;
+    } else if a <= -std::f64::consts::PI {
+        a += TAU;
+    }
+    a
 }
 
 /// Rotate a CLOSED boundary loop so it starts at a G1 BREAK (#424).

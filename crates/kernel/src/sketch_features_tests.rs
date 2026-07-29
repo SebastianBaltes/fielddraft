@@ -3525,3 +3525,176 @@ fn region_extrude_walls_resolve_by_sketch_entity() {
     }
 }
 
+
+
+/// #445 — a circle that the profile's OWN boundary cuts stays a circle.
+///
+/// `Extrude 1` of the #416 document extrudes three regions of one sketch whose
+/// union runs along a cut circle. The arrangement used to hand a curved source
+/// back exactly only when it was consumed WHOLE and UNCUT; a cut arc decayed
+/// into its ~50 flattening chords. That cost the geometry (50 planes where
+/// Onshape has one cylinder) and, worse, the NAMES: every chord became its own
+/// G1 wall carrying the SAME sketch entity, 50 occurrences of one curve blow
+/// past `BranchId::OCCURRENCE_MAX`, and `wall_sub_table` refused the whole
+/// table — every wall of the sweep, circle or not, fell back to a positional
+/// sub, and `qWall(op, entity)` bound the wrong face or none.
+#[test]
+fn arrange_union_keeps_a_cut_arc_exact() {
+    // A 20x20 square whose right edge cuts a circle of r = 4.5 in half.
+    let calls: Vec<FeatureCall> = serde_json::from_value(json!([
+        {"type":"sketch_line","id":"1","params":{"start":[0.0,0.0],"end":[20.0,0.0]}},
+        {"type":"sketch_line","id":"2","params":{"start":[20.0,0.0],"end":[20.0,20.0]}},
+        {"type":"sketch_line","id":"3","params":{"start":[20.0,20.0],"end":[0.0,20.0]}},
+        {"type":"sketch_line","id":"4","params":{"start":[0.0,20.0],"end":[0.0,0.0]}},
+        {"type":"sketch_circle","id":"5","params":{"center":[20.0,10.0],"radius":4.5}}
+    ]))
+    .unwrap();
+    let mut sketches = HashMap::new();
+    sketches.insert(
+        id(1),
+        SketchData {
+            state: SketchState::with_origin(),
+            sub_calls: calls.clone(),
+            frame: SketchFrame::IDENTITY,
+        },
+    );
+    // Square-minus-half-disc, the half-disc inside, the half-disc outside.
+    let faces = crate::sketch_arrangement::arrange(&calls);
+    assert_eq!(faces.len(), 3, "square split by the circle, plus the bulge");
+    let all: Vec<String> = (0..faces.len()).map(|i| i.to_string()).collect();
+    let (profile, _, traced) =
+        resolve_profile_query(&format!("qRegions(1, [{}])", all.join(", ")), &sketches).unwrap();
+
+    let Sketch2d::Prim(Sketch2dPrimitive::Path { segments, closed }) = &profile else {
+        panic!("a union of atomic faces is one closed Path: {profile:?}");
+    };
+    assert!(closed);
+    // SIX walls, not fifty-odd: bottom, right-below-the-circle, the bulge,
+    // right-above-it, top, left.
+    assert_eq!(segments.len(), 6, "{segments:?}");
+    let arcs: Vec<&SketchSegment> = segments
+        .iter()
+        .filter(|s| matches!(s, SketchSegment::Arc { .. }))
+        .collect();
+    assert_eq!(arcs.len(), 1, "the cut circle is ONE arc: {segments:?}");
+    let SketchSegment::Arc { center, radius, sweep_angle, .. } = arcs[0] else {
+        unreachable!()
+    };
+    assert_eq!(*center, [20.0, 10.0], "the source circle's centre, verbatim");
+    assert_eq!(*radius, 4.5, "and its radius");
+    assert!(
+        (sweep_angle.abs() - std::f32::consts::PI).abs() < 1e-3,
+        "half a turn is on the union's boundary, got {sweep_angle}"
+    );
+
+    // The arc's ENDS are the true line/circle intersections (20, 5.5) and
+    // (20, 14.5) — not the flattening chord's cut points, which sit a sagitta
+    // (~5 µm here) inside the circle. `stitch_junctions` solves that meeting
+    // point instead of sampling it.
+    let mut ends = [arcs[0].start_point(), arcs[0].end_point()];
+    ends.sort_by(|a, b| a[1].partial_cmp(&b[1]).unwrap());
+    for (got, want) in ends.iter().zip([[20.0f32, 5.5], [20.0, 14.5]]) {
+        assert!(
+            (got[0] - want[0]).abs() < 1e-4 && (got[1] - want[1]).abs() < 1e-4,
+            "arc end {got:?} should be the exact intersection {want:?}"
+        );
+    }
+    // …and the loop CLOSES: every junction agrees, so the even-odd crossing
+    // test cannot count a band twice (#392's failure mode).
+    for i in 0..segments.len() {
+        let a = segments[i].end_point();
+        let b = segments[(i + 1) % segments.len()].start_point();
+        assert!(
+            (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4,
+            "junction {i} is open: {a:?} vs {b:?}"
+        );
+    }
+
+    // The profile is still the right SET.
+    assert!(profile.sdf([10.0, 10.0]) < 0.0, "the square is material");
+    assert!(profile.sdf([23.0, 10.0]) < 0.0, "so is the bulge");
+    assert!(profile.sdf([26.0, 10.0]) > 0.0, "and nothing beyond it");
+
+    // And the names survive: six walls, all named by their sketch entity. The
+    // right line fences the outline TWICE (below and above the bulge), which is
+    // exactly what the occurrence ordinal is for.
+    let table = wall_sub_table(&profile, &traced).expect("a cut arc is nameable");
+    let sub = |n: &u32| n & BranchId::SUB_MASK_U32;
+    let mut subs: Vec<u32> = table.iter().map(sub).collect();
+    subs.sort_unstable();
+    // Entities: 3, 6, 9, 12 = the four lines, 14 = the circle.
+    assert_eq!(subs, vec![3, 6, 6, 9, 12, 14], "{table:?}");
+    let mut names = table.clone();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), table.len(), "every wall has its own name: {table:?}");
+}
+
+/// The same mechanism on an ARC entity rather than a full circle, and on a
+/// source the boundary uses in SEVERAL stretches: a chord across a half-disc
+/// leaves the cap with one arc piece and the slab below it with two.
+#[test]
+fn arrange_keeps_a_cut_arc_of_an_arc_entity() {
+    // A half-disc drawn as line + arc, cut across by a chord line at y = 2.
+    let calls: Vec<FeatureCall> = serde_json::from_value(json!([
+        {"type":"sketch_line","id":"1","params":{"start":[-5.0,0.0],"end":[5.0,0.0]}},
+        {"type":"sketch_arc","id":"2","params":{
+            "center":[0.0,0.0],"radius":5.0,"start_angle":0.0,"sweep_angle":3.141592653589793}},
+        {"type":"sketch_line","id":"3","params":{"start":[-5.0,2.0],"end":[5.0,2.0]}}
+    ]))
+    .unwrap();
+    let faces = crate::sketch_arrangement::arrange(&calls);
+    assert_eq!(faces.len(), 2, "the chord splits the half-disc");
+    let arcs_of = |f: &crate::sketch_arrangement::AtomicFace| -> Vec<SketchSegment> {
+        let Sketch2d::Prim(Sketch2dPrimitive::Path { segments, .. }) = &f.profile else {
+            panic!("atomic faces are closed Paths");
+        };
+        // Every junction closes — a reconstructed arc meets its neighbours on
+        // the analytic solution, not on the flattening chord.
+        for i in 0..segments.len() {
+            let p = segments[i].end_point();
+            let q = segments[(i + 1) % segments.len()].start_point();
+            assert!(
+                (p[0] - q[0]).abs() < 1e-4 && (p[1] - q[1]).abs() < 1e-4,
+                "junction {i} is open: {p:?} vs {q:?}"
+            );
+        }
+        segments
+            .iter()
+            .filter(|s| matches!(s, SketchSegment::Arc { .. }))
+            .copied()
+            .collect()
+    };
+    let upper = faces.iter().find(|f| f.interior[1] > 2.0).expect("cap above the chord");
+    let lower = faces.iter().find(|f| f.interior[1] < 2.0).expect("slab below it");
+    // ONE arc on the cap, TWO on the slab — the source curve reaches that
+    // boundary in two separate stretches, and each is its own exact piece.
+    let cap = arcs_of(upper);
+    let slab = arcs_of(lower);
+    assert_eq!(cap.len(), 1, "{cap:?}");
+    assert_eq!(slab.len(), 2, "{slab:?}");
+    let mut sweep = 0.0f32;
+    for a in cap.iter().chain(slab.iter()) {
+        let SketchSegment::Arc { center, radius, sweep_angle, .. } = a else { unreachable!() };
+        assert_eq!((*center, *radius), ([0.0, 0.0], 5.0), "still the source circle");
+        sweep += sweep_angle.abs();
+    }
+    // The three pieces ARE the source arc, split — nothing lost, nothing
+    // double-counted.
+    assert!(
+        (sweep - std::f32::consts::PI).abs() < 1e-3,
+        "the pieces add up to the source sweep: {sweep}"
+    );
+    // The chord's true feet are x = ±sqrt(25 − 4); the slab's arc ends land on
+    // them exactly, not a sagitta inside.
+    let foot = (21.0f32).sqrt();
+    let mut xs: Vec<f32> = slab
+        .iter()
+        .flat_map(|a| [a.start_point(), a.end_point()])
+        .filter(|p| (p[1] - 2.0).abs() < 0.5)
+        .map(|p| p[0])
+        .collect();
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(xs.len(), 2, "one chord foot per stretch: {slab:?}");
+    assert!((xs[0] + foot).abs() < 1e-4 && (xs[1] - foot).abs() < 1e-4, "{xs:?}");
+}

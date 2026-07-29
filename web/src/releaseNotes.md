@@ -12,6 +12,11 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.45.0
+- feat(kernel) #445: Ein Kreis oder Bogen, den der Rand eines mehrregionalen Profils ANSCHNEIDET, bleibt jetzt ein exakter Bogen. Bisher zerfiel er in rund fünfzig Sehnen — aus einer Zylinderfläche wurden fünfzig Ebenen.
+- fix(kernel) #445: Damit behalten die Wände eines solchen Extrudes ihre Namen. Vorher fielen ALLE Wände des Features auf eine Nummerierung nach Reihenfolge zurück, und eine Kanten-Auswahl darauf traf eine beliebige andere Wand.
+- perf(kernel) #445: Der Import des #419-Dokuments wird dadurch dreimal schneller (16,6 s auf 5,4 s im Kernel-Replay): echte Zylinderflächen sind für die Flächenverwebung weniger Arbeit als fünfzig Facetten.
+
 ## 0.44.0
 - feat(onshape) #442: Ein Extrude, das eine Wand oder Deckfläche eines früheren Features ausformt, wird jetzt auch so importiert. Bisher fiel der Import ersatzweise auf die ganze Skizze zurück und baute daraus einen Block, der halbe Nachbarflächen verschluckte.
 - fix(onshape) #442: Eine Region-Auswahl überlebt jetzt einzelne Kurven, die Onshape zwar nennt, die die Skizze aber nicht mehr enthält. Fehlt die Hälfte des Randes, bleibt es bei der Absage.

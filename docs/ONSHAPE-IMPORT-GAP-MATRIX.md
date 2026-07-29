@@ -2034,3 +2034,94 @@ Die #416-Dauer waechst, weil vorher vier Features gar nicht gebaut wurden und
 4. #416s letzte Fehlermeldungen sind Klasse F/„abgeleitete Geometrie":
    `Chamfer 2` (SPLIT-Kantenstueck), `Fillet 2` (MERGE-Kante) und `Fillet 3`
    (Kanten, die es ohne Punkt 1 nicht gibt).
+
+---
+
+## Update 2026-07-29 (5) — ein geschnittener Bogen bleibt ein Bogen (#445, v0.45.0)
+
+Punkt 1 der offenen Liste aus Update (4), gemessen und geschlossen.
+
+### 1. Die Sonde zuerst: was der Fallback wirklich war
+
+Die Ticket-These sagte `WallSubRefusal::Unattributable`. Eine synthetische Sonde
+— Quadrat 20 x 20, dessen rechte Kante einen Kreis r = 4,5 anschneidet, alle
+drei Atomflaechen als `qRegions` gewaehlt — sagt etwas anderes:
+
+    Profil-Pfad:  Path mit 39 Segmenten, davon 0 gekruemmt
+    Wandtabelle:  REFUSED TooManyOccurrences(14)
+
+Die Facetten sind also sehr wohl zuordenbar; sie tragen alle die Entity-Id des
+Kreises. Nur sind es zu viele: jede Sehne bricht die G1-Gruppierung
+(2 pi / 64 = 5,6° pro Gelenk gegen die Schwelle 2,56°), also wird jede Sehne eine
+eigene Wand, und 35 Vorkommen derselben Kurve sprengen
+`BranchId::OCCURRENCE_MAX` (31). Der Effekt ist derselbe — positionelle Subs —,
+die Ursache ist es nicht. Fuer die Reparatur ist das der Unterschied zwischen
+„Zuordnung nachruesten" und „gar nicht erst polygonisieren".
+
+### 2. Die Reparatur: Parameterspannen statt Ganz-oder-gar-nicht
+
+`sketch_arrangement` fuehrt jetzt an jedem geflatteten Mikro-Stueck die
+Parameterspanne mit, die es auf seiner Quelle belegt (`Piece.t0/t1`,
+`Edge.t0/t1`, orientiert `u → v`). Der Randlauf einer Flaeche wird in LAEUFE
+zerlegt — maximale Folgen aufeinanderfolgender Schritte derselben Quelle mit
+zusammenhaengender Parameterspanne —, und ein gekruemmter Lauf kommt als EIN
+exaktes analytisches Segment zurueck (`sub_segment`: Bogen ueber
+`start + sweep*t`, quadratische Bezier ueber die Blossom-Form). Der alte Test
+„ganz und ungeschnitten" faellt weg; er ist der Sonderfall `t = 0 … 1`, und der
+gibt die Quelle weiterhin unveraendert zurueck.
+
+Zwei Feinheiten, die keine Kosmetik sind:
+
+- **Der Parameter einer GESCHLOSSENEN Quelle ist zyklisch.** Ein Kreis ist ab
+  Winkel 0 parametrisiert, und dieser Punkt liegt mitten in jedem Randstueck,
+  das der Rand zufaellig benutzt. Ohne die Naht-Ueberbrueckung kaeme ein
+  simpler Halbkreis als ZWEI Boegen zurueck, die sich an einer Naht treffen, die
+  in der Geometrie niemand verlangt hat — genau die fragile Innennaht, gegen die
+  `merge_cocircular_runs` existiert. Die Spanne wird deshalb AKKUMULIERT
+  (`0,6 → 1,3`), nicht am letzten Schritt abgelesen.
+- **Der Schnittpunkt liegt auf der SEHNE, nicht auf der Kurve.** Ein
+  rekonstruierter Bogen beginnt darum bis zu einer Pfeilhoehe neben dem Nachbarn,
+  der ihn geschnitten hat (~5 µm bei r = 4,5 mm und 64 Sehnen pro Umlauf). Auf
+  einem geschlossenen Pfad ist das nicht kosmetisch: `path_is_inside` zaehlt
+  Even-Odd pro Segment, ein Band so hoch wie die Luecke kann doppelt oder gar
+  nicht gezaehlt werden (die Fehlerklasse aus #392). `stitch_junctions` loest den
+  Treffpunkt darum ANALYTISCH — Gerade/Gerade, Gerade/Kreis, Kreis/Kreis haben
+  alle geschlossene Formen — und zieht beide Nachbarn darauf. Eine Verbindung,
+  die schon stimmt (jede Verbindung eines geraden oder ungeschnittenen Profils),
+  wird nicht angefasst.
+
+### 3. Zahlen, gemessen
+
+`Extrude 1` des #416-Dokuments, dieselbe Skizze, derselbe Import:
+
+| | v0.44.0 | v0.45.0 |
+|---|---|---|
+| Wand-Subs von `Extrude 1` | positionell 0 … 58 (59 Waende) | Entity 2, 7, 10, 13, 16, 19 (x2), 21, 23, 50, 53 |
+| `qWall(3, 13)` bindet | die 13. Wand in Kontur-Reihenfolge (eine Kreisfacette) | die Wand der Skizzenkurve 13 (die untere Lange bei v = −65) |
+| #416 AABB | −70 … 11,17 x **−33,17** … 6,5 x **−73,80** … 35 | −70 … 11,17 x **−26,70** … 6,5 x **−65** … 35 |
+| Onshape | −70,05 … 3,07 x −26,77 … 7,13 x −73,08 … 35 | |
+
+Die Y-Achse ist damit exakt und wandert aus dem `it.fails`-Pin in den
+bestehenden Test. Der #419-Replay (`onshape_419_full_import_stays_bounded`,
+49 Kernel-Aufrufe) faellt von **16 579 ms auf 5 441 ms** — echte Zylinderflaechen
+entlasten das Weaving, wie vermutet. Koerper 10 desselben Dokuments geht von
+(23 Ecken, 30 Kanten, 17 Flaechen) mit 8 offenen Flaechen auf (20, 27, 13) mit
+**4** offenen: die vier, die verschwinden, sind die Reste des Facettenfaechers
+(Subs 120 Vorkommen 0/1 und 89 Vorkommen 13/14). Jeder andere Koerper ist
+Flaeche fuer Flaeche unveraendert.
+
+### 4. Was uebrig bleibt — und warum es NICHT diese Frage ist
+
+Der #416-AABB-Pin bleibt rot, aber aus einem anderen Grund, und der ist jetzt
+beziffert. Die EBENE des Mate-Connectors von `Sketch 6` stimmt: Onshapes eigene
+3D-Antwort legt den Sketch in die Ebene y = −10,10, und genau dort landet er
+auch (die beiden Kappen von `Extrude 9` sitzen bei y = −7,60 / −12,60,
+symmetrisch dazu). Falsch ist die DREHUNG IN der Ebene: Onshape bildet u auf
+Welt −x und v auf Welt −z ab, `resolve_mate_anchor` bildet u auf +z und v auf +x
+ab — 90° verdreht. Die Ursache ist die Wahl der Sekundaerachse eines
+KANTEN-Ankers: sie kommt aus `face_normal_for_branch(edge.signature.0)`, und
+`signature` ist nach Branch-Wort kanonisiert, also gewinnt hier die WAND
+(Sub 13) gegen die Kappe (Sub 0x7FF). Der 8,17 mm lange Keil waechst deshalb in
++x aus der Kappe (x max 11,17 statt 3,07) statt in −z nach unten (z min −65 statt
+−73,08). Eigenes Ticket; die richtige Regel braucht Onshapes CSYS-Konvention,
+nicht ein Vorzeichen auf Verdacht.

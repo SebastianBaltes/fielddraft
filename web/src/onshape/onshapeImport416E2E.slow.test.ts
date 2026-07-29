@@ -250,40 +250,56 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
    *    off, so `Extrude 4` and the revolve on it became bodies of their own and
    *    `Fillet 4` never found the edge between them.
    *
-   * The Z extent is still short: it reaches −65 mm where Onshape reaches
-   * −73.08, and that whole difference is `Extrude 9`. Its sketch sits on a mate
-   * connector anchored on a cap EDGE whose tangent FieldDraft reads at 45.7° to
-   * Onshape's plane normal — an anchor-frame question, measured and written up
-   * in the gap matrix, not a translation one.
+   * `Extrude 1`'s walls carry their SKETCH ENTITIES since #445: the union of
+   * its three regions runs along two cut circles, the arrangement kept those
+   * exact instead of polygonising them, and the sweep's 59 positional subs
+   * became eleven entity-named walls (2, 7, 10, 13, 16, 19×2, 21, 23, 50, 53).
+   * `qWall(3, 13)` therefore binds the wall of sketch curve 13 — the profile's
+   * lower long line at v = −65 — where it used to bind the 13th wall in contour
+   * order, a facet of the r = 4.5 mm circle. That is what makes the Y axis
+   * exact below.
    */
   it("builds ONE part, where it used to build four", () => {
     expect(kernel.raw.bodyCount()).toBe(GROUND_TRUTH.parts);
-    // The two bounds no feature of the document overshoots: the far end of
-    // `Extrude 3` and the top of Sketch 1. They were right before too — what
-    // they pin is that nothing NEW runs past them.
+    // The three bounds no feature of the document overshoots: the far end of
+    // `Extrude 3`, the top of Sketch 1, and — since #445 — the bottom of its
+    // profile rectangle. `y min` was −33.17 while `Extrude 9` hung off a
+    // mis-named wall; it is −26.70 against Onshape's −26.77 now.
     const bb = kernel.sceneAabb!() as { min: number[]; max: number[] };
     expect(bb.min[0], "x min").toBeCloseTo(GROUND_TRUTH.x[0], 0);
+    expect(bb.min[1], "y min").toBeCloseTo(GROUND_TRUTH.y[0], 0);
     expect(bb.max[2], "z max").toBeCloseTo(GROUND_TRUTH.z[1], 0);
   });
 
   /**
    * The full extent, pinned as a FAILING test on purpose. ONE feature is left
    * over: `Extrude 9`. Its sketch sits on a mate connector anchored on
-   * `qCommonEdge(qCreatedBy(3, CAP_TOP), qWall(3, 13))`, and `qWall(3, 13)`
-   * binds the wrong face — `Extrude 1` extrudes three sketch regions whose
-   * union has a CUT ARC on its boundary, the arrangement polygonises that arc,
-   * and `wall_sub_table` cannot attribute the pieces, so all 59 walls fall back
-   * to POSITIONAL subs where entity 13 happens to be a facet of a circle. The
-   * connector therefore stands 45.7° off (which the import reports), and the
-   * wedge that should reach −73.08 mm lands elsewhere: measured
-   * −70 … 11.17 × −33.17 … 6.5 × −73.80 … 35 against Onshape's
-   * −70.05 … 3.07 × −26.77 … 7.13 × −73.08 … 35.
+   * `qCommonEdge(qCreatedBy(3, CAP_TOP), qWall(3, 13))`.
    *
-   * `it.fails` keeps that honest in both directions — the day the arrangement
-   * names the walls of a polygonised arc this starts failing and forces someone
-   * to fold it into the test above.
+   * Up to #445 the OPEN QUESTION here was that query: `Extrude 1`'s walls fell
+   * back to POSITIONAL subs, so `qWall(3, 13)` bound a facet of a circle and
+   * the connector stood on the wrong edge entirely. That is fixed and measured
+   * — the wall is the right one now, and `y min` moved from −33.17 to −26.70
+   * (Onshape: −26.77), which is why the test above pins it.
+   *
+   * What is left is the connector's IN-PLANE ROTATION, and it is a different
+   * defect. The connector's PLANE is right: Onshape's own 3D answer puts
+   * `Sketch 6` in the plane y = −10.10, and that is exactly where ours lands
+   * (`Extrude 9`'s two caps sit at y = −7.60 / −12.60, symmetric about it). But
+   * Onshape maps the sketch's u to world −x and its v to world −z, while
+   * `resolve_mate_anchor` maps u to +z and v to +x — the frame is turned 90°
+   * inside its own plane, because an edge anchor takes its secondary axis from
+   * whichever adjacent face has the smaller branch word (here the WALL) instead
+   * of from the cap. So the 8.17 mm wedge grows out of the cap in +x
+   * (x max 11.17 against Onshape's 3.07) instead of down in −z (z min −65
+   * against −73.08). Measured −70 … 11.17 × −26.70 … 6.5 × −65 … 35 against
+   * Onshape's −70.05 … 3.07 × −26.77 … 7.13 × −73.08 … 35.
+   *
+   * `it.fails` keeps that honest in both directions — the day the edge anchor
+   * picks its secondary axis the way Onshape does, this starts failing and
+   * forces someone to fold it into the test above.
    */
-  it.fails("matches the ground-truth AABB (open: positional wall subs)", () => {
+  it.fails("matches the ground-truth AABB (open: mate-connector in-plane axis)", () => {
     const bb = kernel.sceneAabb!() as { min: number[]; max: number[] };
     for (const [c, [lo, hi]] of [GROUND_TRUTH.x, GROUND_TRUTH.y, GROUND_TRUTH.z].entries()) {
       expect(bb.min[c], `axis ${c} min`).toBeCloseTo(lo, 0);

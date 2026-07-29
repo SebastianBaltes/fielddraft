@@ -304,10 +304,21 @@ fn onshape_419_full_import_stays_bounded() {
     // is NOT in the tree: it costs the web import its `Thicken 6`, whose
     // `qWall(23, 130)` resolves against exactly such a zero-area face.
     // Full stand and numbers: `docs/research/439-interior-carrier-cull.md`.
+    //
+    // #445 then took body 10 from 8 open faces to 4 WITHOUT culling anything:
+    // the four that went are the ones a POLYGONISED ARC had invented. Exact
+    // cut arcs (`sketch_arrangement::sub_segment`) make `Extrude 32`'s mantle
+    // ONE cylindrical wall instead of a fan of chord facets, and the four faces
+    // that disappear are precisely the fan's leftovers — branch subs 120
+    // (occurrences 0 and 1) and 89 (occurrences 13 and 14), i.e. the 14th and
+    // 15th wall ONE sketch curve was fencing. Body 10's census goes
+    // (23, 30, 17) → (20, 27, 13); every other body is unchanged face for face,
+    // body 9 included. The same exactness is what takes this replay from
+    // 16 579 ms to 5 441 ms.
     assert_eq!(
         open_faces(&mut kernel),
-        vec![0, 0, 0, 0, 0, 0, 2, 0, 0, 1, 8, 0],
-        "faces without a traversable boundary (#436/#437); was [.., 6, ..] on body 10",
+        vec![0, 0, 0, 0, 0, 0, 2, 0, 0, 1, 4, 0],
+        "faces without a traversable boundary (#436/#437/#445); was [.., 8, ..] on body 10",
     );
 }
 
@@ -1244,3 +1255,4 @@ fn carrier_coverage(bounded: &crate::bvh::BoundedCsg, id: u64) {
     }
     println!("  coverage branch {id}: on-boundary samples {on}, of which contributor {owned} (eps {eps:.5})");
 }
+
