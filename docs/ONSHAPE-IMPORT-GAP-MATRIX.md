@@ -3258,3 +3258,125 @@ bis zuletzt dieselbe.
 Dass die #451-Lehre („eine gemeinsame Fehlermeldung ist kein gemeinsamer
 Befund") hier eine Stufe tiefer noch einmal gilt, ist kein Zufall: eine
 Fehlermeldung nennt den Ort des Abbruchs, nie die Ursache.
+
+## Update 2026-07-29 (14) — der Frame aus zwei Punkten, und die dritte Schicht darunter (#452)
+
+Update (13) hat zwei messende Wege aus der Frame-Luecke benannt und Weg 2 (die
+verworfenen Koerperkanten der Region-Query) als die generische Fassung. Diese
+Runde ist beiden nicht gefolgt, und zwar aus einem gemessenen Grund: beide
+loesen die HAENDIGKEIT, und die Haendigkeit ist nicht, woran `Extrude 15`
+haengt. Unter der Frame-Luecke liegt eine dritte, und sie liegt vor beiden.
+
+### 1. Gebaut: der Frame aus zwei kollinearen Stuetzpunkten
+
+`measureOnshapeSketchFrame` braucht drei nicht-kollineare 2D↔3D-Paare, weil es
+Drehung und Verschiebung FREI schaetzt. Nimmt man die Ebene dazu — und die
+Traegerflaeche liefert sie —, bleiben von sechs Freiheitsgraden drei, und eine
+Richtung plus ein Punkt bestimmen alle drei:
+
+    θ = atan2(e_y, e_x) − atan2(d_y, d_x)
+
+mit `d` Onshapes 2D-Richtung und `e` derselben Richtung in Weltkoordinaten, auf
+FieldDrafts In-Plane-Achsen projiziert. Nicht bestimmt ist die HAENDIGKEIT: die
+Spiegelung an eben dieser Geraden bildet beide Punkte auf sich ab, jede
+Gegenprobe an ihnen ist gegen sie blind. Angenommen wird `det = +1`, und das
+ist keine Raterei, sondern die Regel, die dieselbe Datei seit #446 an ihren
+Daten misst: ueber die fuenf Dokumente mit 3D-Antwort tragen 29 Sketches einen
+aufloesbaren Frame, 26 davon mit `det = +1`, und die drei Ausreisser sind
+FLAECHEN-Fehlaufloesungen, die sich selbst melden. Der Import schreibt die
+Annahme in die Meldung.
+
+Gemessen: der Pfad greift auf `Sketch 4` des #416-Dokuments (fuenf kollineare
+Stuetzpunkte). Alle 48 Slow-Tests inklusive der sechs scharfen #416-Grenzen
+bleiben unveraendert.
+
+### 2. Warum er `Sketch 12` trotzdem ablehnt — Onshape gegen Onshape
+
+Die Gegenprobe (jeder gemeldete 3D-Punkt muss aus seinem 2D-Punkt rekonstruiert
+werden) schlaegt an, und das ist der Befund dieser Runde:
+
+| | 2D-Payload (`startParam`/`endParam`) | Onshapes 3D-Antwort |
+|---|---:|---:|
+| Laenge der Linie | 51,1962 mm | 51,5867 mm |
+| Anfangspunkt, v bzw. z | 23,050 | 23,550 |
+| Endpunkt, v bzw. z | −16,832859459 | −16,832859459 |
+
+Die u-Beziehung stimmt fuer BEIDE Punkte exakt (`u + y = 6,1 mm`, auf 1e-17).
+Nur der ANFANGSPUNKT liegt in Onshapes 3D-Antwort um exakt 0,5 mm weiter, und
+damit ist die Linie dort 0,3905 mm laenger als ihr eigener Payload sagt.
+Zwischen zwei Punktepaaren mit verschiedenem Abstand gibt es keine starre
+Abbildung — der Rest der Anpassung ist 0,3057 mm, und die Funktion lehnt ab
+statt zu verschieben.
+
+Das ist kein Einzelfall, sondern eine FAMILIE. Ueber alle fuenf Dokumente
+gemessen (2D-Abstand gegen 3D-Abstand, je Punktepaar):
+
+| Dokument | Sketches nicht starr | Betrag |
+|---|---:|---|
+| #419 | 8 | 0,39 / 1,00 / 1,08 / 1,24 / 1,70 / 2,21 / 21,0 / 21,0 mm |
+| #409 | 3 | je 50,0 mm |
+| #416, #415, #414 | 0 | — |
+
+Alle uebrigen sind exakt starr (0 bis 2e-12 mm). Die Fixture-Paare sind also in
+sich stimmig; die Abweichung gehoert diesen Sketches. `measureOnshapeSketchFrame`
+lehnt sie laengst ab, nur nannte die Meldung bisher „zu wenige oder kollineare
+Stuetzpunkte" — eine ganz andere Ursache. Sie nennt jetzt den Betrag.
+
+### 3. Die dritte Schicht: die Ebene selbst liegt 17 mm daneben
+
+Und selbst mit perfektem In-Plane-Frame faende `Extrude 15` nicht statt, wo
+Onshape fraest. Zum Zeitpunkt des Imports gemessen, gegen den Frame, den
+`qWall(44, 35)` aufloest:
+
+    outOfPlane = 16,983 mm
+
+Die aufgeloeste FieldDraft-Ebene ist nicht Onshapes Sketch-Ebene, sondern eine
+parallele 17 mm daneben — die Fehlerklasse, die `alignSketchFrame` sonst als
+„die aufgeloeste FieldDraft-Ebene liegt X mm neben Onshapes Sketch-Ebene"
+meldet und die hier stumm blieb, weil es ohne messbaren Frame gar nicht bis zu
+dieser Pruefung kam. Ein Extrude auf dieser Ebene schneidet 17 mm neben dem
+Ziel, gleich welche Haelfte der Region gewaehlt wird.
+
+Damit fallen beide Wege aus §5 von Update (13) als NAECHSTER Schritt aus: sie
+entscheiden, WELCHE Haelfte gemeint ist. Die Haelfte ist nicht das Problem.
+
+### 4. Was dennoch bewiesen ist: der Zaun sitzt richtig
+
+Projiziert man Onshapes eigene 3D-Endpunkte in den aufgeloesten Traeger-Frame,
+landet die Linie bei
+
+    u = 1,5000   →   u = 33,6000
+
+und das sind, auf die vierte Stelle, die beiden senkrechten Zaunkurven des
+koplanaren Flickens aus Update (13): seine NAHT bei 1,5 und seine rechte Kante
+bei 33,6. Die Linie spannt den Traeger also genau von der einen zur anderen —
+das ist die Region, die Onshapes Query mit `CAP_EDGE` und `MERGE` beschreibt,
+und der Zaun aus (13) schliesst sie. Nur die Ebene, auf der das geschieht, ist
+17 mm verschoben.
+
+### 5. Woran es jetzt haengt
+
+In dieser Reihenfolge, weil jede Schicht die naechste voraussetzt:
+
+1. **Die Ebene.** `qWall(44, 35)` muss die Flaeche treffen, auf der Onshape die
+   Skizze hat. 16,983 mm ist kein Rundungsfehler, sondern eine andere Flaeche.
+   Solange sie falsch ist, ist alles darueber gegenstandslos.
+2. **Die Lage in der Ebene.** Mit richtiger Flaeche ist zu entscheiden, ob
+   Onshapes 3D-Antwort oder sein 2D-Payload die Linie beschreibt — sie
+   widersprechen sich um 0,5 mm. Die 3D-Antwort ist die Ground Truth dieses
+   Repos und traegt zusaetzlich die Endpunkte, die den Traeger wirklich
+   erreichen; der Payload ist es, was der Sketch-Uebersetzer heute liest.
+3. **Die Haelfte.** Erst hier greifen die beiden Wege aus (13) §5.
+
+### 6. Methodik-Lehre
+
+**Eine Luecke, die man geschlossen hat, kann die naechste erst sichtbar
+machen.** Der Zaun (13) war noetig, um zu sehen, dass die Linie neben ihrer
+Flaeche liegt; der Zwei-Punkte-Frame war noetig, um zu sehen, dass Onshapes
+zwei Antworten sich widersprechen; und erst dessen Ablehnung fuehrte zu der
+Messung, die die Ebene um 17 mm daneben zeigt. Drei Runden, drei Ursachen, eine
+Fehlermeldung — die von Anfang an dieselbe war.
+
+Das ist kein Argument gegen das schrittweise Vorgehen, sondern eines fuer die
+Reihenfolge: gemessen wurde jedes Mal ZUERST, und jede Schicht steht seither
+mit einer Zahl da statt mit einer Vermutung.
