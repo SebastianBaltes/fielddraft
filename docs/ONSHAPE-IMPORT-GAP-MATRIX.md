@@ -2819,3 +2819,127 @@ Der bisherige Merksatz war „Ground Truth kommt von Onshape, nie von uns"
 der bequemere Endpunkt beantwortet die falsche.** Fuer Ausdehnungen gilt ab
 jetzt `evBox3d(tight: true)` oder die Tessellierung, und ein Pin, dessen
 Begruendung nicht nachgemessen wird, verrottet auch dann, wenn er rot bleibt.
+
+## Update 2026-07-29 (11) — zwei gleiche Meldungen, zwei verschiedene Luecken (#451, v0.47.3)
+
+Update (10) §5 legte zwei Namen ab, die den Import sauber passieren und danach
+vom Kernel abgelehnt werden — `Extrude 2` und `Extrude 15` des
+#419-Dokuments, beide mit **derselben** Meldung („sketch has no closed regions
+to extrude") und beide undiagnostiziert. Das Ticket nannte drei Hypothesen:
+(a) das Profil-Query loest auf eine leere Region auf, (b) die Skizze traegt
+keine geschlossene Region, (c) `resolveRegionFaces` greift daneben.
+
+Gemessen ist es **zweimal (b)** — und die zwei (b) haben nichts miteinander zu
+tun. Dass eine gemeinsame Meldung eine gemeinsame Ursache nahelegt, war die
+achte widerlegte Eingangsthese dieser Serie.
+
+### 1. Die Sonde: was jede der beiden Skizzen wirklich enthaelt
+
+Nach dem Import `listSketchRegions` auf der jeweiligen Traeger-Skizze, dazu die
+Onshape-Query dekodiert und die Uebersetzungs-Diagnostik gelesen:
+
+| | `Extrude 2` | `Extrude 15` |
+|---|---|---|
+| Onshape-Query | `qSketchRegion(id, filterInnerLoops)` — ganze Skizze | `qCompressed(...)`, dekodiert vollstaendig |
+| Traeger-Skizze | `Sketch 2` (`F2ySW2Y4xxbAo0M_1`) | `Sketch 12` (`FHk6N0R8R7Mprgx_13`) |
+| Regionen bei uns | 0 | 0 |
+| Nicht uebersetzt | `BTCurveGeometryEllipse-1189` ×1 | nichts |
+
+`Sketch 2` traegt fuenf **Konstruktions**linien, einen Punkt — und genau eine
+Nicht-Konstruktionskurve: eine **Ellipse**. `translateOnshapeSketch` las Linien
+und Kreise; die Ellipse fiel in den `unhandled`-Zaehler. Beim Kernel kam damit
+nichts an, was eine Flaeche umschliesst. (a) und (c) scheiden aus: die Query
+waehlt gar keine einzelne Region, sie nennt die ganze Skizze.
+
+`Sketch 12` traegt tatsaechlich **eine einzige Linie**, und das ist kein
+Uebersetzungsverlust — Onshape hat dort nur diese eine Kurve. Der dekodierte
+Regionenrand nennt sie mit `side: 1`, und alles Weitere im selben
+TOPOLOGY-Block sind Kanten des **Koerpers**, auf dem die Skizze steht:
+`CAP_EDGE`, zwei `SWEPT_EDGE`, ein `MERGE`.
+
+### 2. Reparatur (nur fuer die belegte Ursache): die Ellipse
+
+Der Kernel hat `sketch_ellipse` seit DL-49 (geschlossener Quad-Bezier-Pfad,
+10 µm Toleranz). Es fehlte **ein Zweig im Web-Importer**, an zwei Stellen im
+Gleichschritt:
+
+- `onshapeSketch.ts` — `BTCurveGeometryEllipse` → `sketch_ellipse`. Onshapes
+  `radius` IST die grosse Halbachse und liegt auf `xDir`/`yDir`, `minorRadius`
+  steht senkrecht darauf; das ist genau FieldDrafts
+  `(radius_x, radius_y, rotation)`-Frame, also eine Umbenennung plus ein
+  `atan2`. Die Id-Vergabe ist **drei** Entities (Mitte, **Fokus**, Ellipse) —
+  PlaneGCS parametrisiert eine Ellipse ueber einen Fokus, und der Kernel legt
+  ihn zwischen Mitte und Kurve an. Zwei statt drei haetten jede spaetere Id
+  verschoben.
+- `onshapeImport.ts::sketchEntityVertices` — der geflachte Rand, gegen den die
+  Region-Aufloesung „links dieser Kante" misst. Er laeuft in der **eigenen
+  Haendigkeit** der Ellipse (`clockwise`), dieselbe Lehre wie bei den
+  gespiegelten Vollkreisen (#446).
+
+Elliptische **Boegen** bleiben bewusst offen: FieldDraft hat keinen, und eine
+gebogene Ellipse zur ganzen zu schliessen erfaende Flaeche, die niemand
+gezeichnet hat. Sie werden als `BTCurveGeometryEllipse-1189(arc)` gemeldet.
+
+### 3. Was `Extrude 2` wirklich ist — und warum die SDF es nicht zeigt
+
+`Sketch 2` hat jetzt **eine** Region: 438,6 mm² (π·a·b = 438,42 mm², der
+Bezier-Pfad liegt 0,04 % darueber), AABB ±13,481 × [−1,302; 19,402] mm — die
+Ellipse mit a = 13,4885, b = 10,3459 mm um (0; 9,05), um 2,34° gekippt.
+
+Onshapes eigene Tiefe fuer dieses Extrude ist `0.01 mm`, **symmetrisch**: ein
+±5-µm-Ritz, keine Tasche. Entsprechend:
+
+- die AABB des geschnittenen Koerpers bewegt sich **nicht**;
+- `bodySdfEval` liest **bitgleich** mit und ohne das Feature — die SDF traegt
+  einen Schnitt unterhalb ihrer eigenen Bautoleranz (10 µm) nicht;
+- die B-Rep traegt ihn: der 25,4 × 25,4 × 18,1-mm-Block geht von
+  6 Flaechen / 12 Kanten / 8 Ecken auf 7 / 14 / 12.
+
+Vier dieser sieben Flaechen kommen mit **unverbundenem** Aussenring heraus
+(`openFaces` 0 → 4). Das ist die ehrliche Antwort des Kernels auf einen
+Schnitt, der duenner ist als seine Toleranz — der Import ist treu, das Artefakt
+liegt dahinter. Gepinnt ist es exakt, damit eine spaetere Verbesserung als
+Pin-Bewegung sichtbar wird.
+
+**Kein `NAMING_SCHEMA_VERSION`-Bump:** der Kernel wurde nicht angefasst, die
+Aenderung ist rein im Web-Importer.
+
+### 4. Was bleibt: eine Region, die Onshape gegen die TRAEGERFLAECHE schliesst
+
+Onshape schliesst eine Sketch-Region gegen den Rand der **Flaeche**, auf der
+die Skizze liegt: ein Strich quer ueber eine Planflaeche teilt sie in zwei
+waehlbare Regionen. FieldDrafts Regionenfindung kennt nur die Sketch-Kurven
+selbst — eine einzelne Linie umschliesst nichts.
+
+Das ist ein **Modell**-Unterschied, keine fehlende Uebersetzung: kein
+Kurventyp fehlt, keine Query bleibt unlesbar. Zu schliessen nur, indem die
+Traegerflaeche mit ins Arrangement geht, was auch die Wand-Buchhaltung
+(`qWall(...)`) beruehrt. Abgelegt als **#452**, auf diesem Dokument haengt
+genau ein Feature daran.
+
+### 5. Zahlen, gemessen
+
+| | vorher (v0.47.2) | nachher (v0.47.3) |
+|---|---:|---:|
+| Regen-Fehler #419 | **2** (`Extrude 2`, `Extrude 15`) | **1** (`Extrude 15`) |
+| Import-Fehler #419 | 169 Meldungen / 88 Features | 169 / 88 |
+| Koerperzahl #419 | 18 | 18 |
+| Szenen-AABB #419 | x max 71,481 | 71,481 |
+| `Revolve 1` Profil | `qRegions(6, [6, 8, 9])` | unveraendert |
+| `Extrude 4` Profil | `qRegions(6, [7, 9, 12])` | unveraendert |
+| `Sketch 3` Regionen | 15 | 15 |
+
+`Sketch 3` traegt drei Ellipsen und bewegt sich **trotzdem nicht** — es sind
+elliptische BOEGEN (`BTMSketchCurveSegment`), die weiterhin offen bleiben. Die
+scharf gepinnten Flaechen von `Revolve 1` (47,57 / 62,65 mm²) und die
+Regionen-Indizes stehen deshalb bitgleich. Das war nicht geplant, sondern
+gemessen; ein Volltreffer auf die eine Skizze, die es brauchte.
+
+### 6. Methodik-Lehre
+
+**Eine gemeinsame Fehlermeldung ist kein gemeinsamer Befund.** Beide Features
+lasen wortgleich „sketch has no closed regions to extrude"; die eine Ursache
+war ein fehlender Zweig von zwanzig Zeilen, die andere ein Modell-Unterschied
+mit eigenem Ticket. Der Zensus, der sie zusammen ablegte (Update (10) §5), war
+richtig — er gruppiert nach Symptom, und genau deshalb muss die Diagnose
+danach jeden Namen einzeln aufmachen.
