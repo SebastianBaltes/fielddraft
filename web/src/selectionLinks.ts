@@ -17,15 +17,18 @@ import type { PickedElement } from "./elementQuery";
 
 /**
  * Mirrors the `BranchId` field layout in crates/kernel/src/csg.rs:
- * `feature (20) | instance (12) | occurrence (5) | sub (12)`, 49
+ * `feature (20) | instance (12) | occurrence (5) | sub (14)`, 51
  * significant bits. The kernel caps the layout well under 53 bits precisely so
- * a packed branch stays an EXACT JavaScript integer (2^49 ≪ 2^53) and can
+ * a packed branch stays an EXACT JavaScript integer (2^51 ≪ 2^53) and can
  * cross the wasm boundary as a plain JSON number.
  *
  * Never decode a branch with `>>` / `&`: JavaScript bit operators truncate to
  * 32 bits and would silently return garbage for any feature id ≥ 256.
+ *
+ * LOCKSTEP: `SUB_BITS` last moved with #445 (12 → 14, room for the
+ * positional-wall flag). A stale mirror here decodes every feature id wrong.
  */
-export const SUB_BITS = 12;
+export const SUB_BITS = 14;
 export const OCCURRENCE_BITS = 5;
 export const OCCURRENCE_SHIFT = SUB_BITS;
 export const INSTANCE_BITS = 12;

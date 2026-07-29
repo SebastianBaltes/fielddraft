@@ -2996,8 +2996,11 @@ mod tests {
         let expect: std::collections::HashSet<(u64, u64)> = [1u32, 3]
             .iter()
             .map(|g| {
-                let a = BranchId::from_feature_sub(&FeatureId::from_u32(10), *g).as_u64();
-                let b = BranchId::from_feature_sub(&FeatureId::from_u32(11), *g).as_u64();
+                // Hand-built sweeps carry no wall-sub table, so their walls
+                // are POSITIONAL and marked as such (#445).
+                let name = BranchId::POSITIONAL_WALL_FLAG | *g;
+                let a = BranchId::from_feature_sub(&FeatureId::from_u32(10), name).as_u64();
+                let b = BranchId::from_feature_sub(&FeatureId::from_u32(11), name).as_u64();
                 (a.min(b), a.max(b))
             })
             .collect();

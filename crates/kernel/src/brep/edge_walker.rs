@@ -558,9 +558,11 @@ pub(crate) fn extrude_rim_corner(
     // Searching for the bare `sub()` finds none of the repeats, `walls` comes
     // back short, and every rim corner around them silently degrades from the
     // exact sketch endpoint to the octree-quantised one.
+    // Without a table the sub IS the position — carrying
+    // `POSITIONAL_WALL_FLAG` since #445, which has to come off again here.
     let to_positional = |name: u32| match wall_subs {
         Some(t) => t.iter().position(|&x| x == name).map(|p| p as u32),
-        None => Some(name & BranchId::SUB_MASK_U32),
+        None => Some(name & BranchId::SUB_MASK_U32 & !BranchId::POSITIONAL_WALL_FLAG),
     };
     let walls: Vec<u32> = branches
         .iter()

@@ -1831,7 +1831,12 @@ fn straight_path_extrude_lifts_all_walls_as_planes() {
     // outward normals for the CCW square: −y, +x, +y, −x; offset 1.
     let expect = [[0.0, -1.0], [1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]];
     for (g, want) in expect.iter().enumerate() {
-        let b = BranchId::from_feature_sub(&FeatureId::from_u32(1), g as u32);
+        // No wall-sub table on a hand-built profile: the walls carry
+        // POSITIONAL subs, marked out of the nameable range (#445).
+        let b = BranchId::from_feature_sub(
+            &FeatureId::from_u32(1),
+            BranchId::POSITIONAL_WALL_FLAG | g as u32,
+        );
         let (hs, _) = map.get(&b.as_u64()).expect("line wall lifted");
         let HalfSpace::Plane { normal, offset } = hs else {
             panic!("line wall must lift to a plane, got {hs:?}");
@@ -2737,8 +2742,10 @@ fn sector_extrude_registers_arc_cylinder_and_both_flank_planes() {
     let map = branch_halfspace_map(&body);
     assert_eq!(map.len(), 5, "2 caps + 3 walls, got {:?}", map.len());
 
+    // Positional wall subs — a bare `Sector` has no wall-sub table (#445).
     let sub = |n: u32| {
-        map.get(&crate::csg::BranchId::from_feature_sub(&FeatureId::from_u32(7), n).as_u64())
+        let name = crate::csg::BranchId::POSITIONAL_WALL_FLAG | n;
+        map.get(&crate::csg::BranchId::from_feature_sub(&FeatureId::from_u32(7), name).as_u64())
             .unwrap_or_else(|| panic!("wall sub {n} missing from the half-space map"))
     };
     // Group 0 — the arc → an infinite cylinder of the sector radius.
@@ -2790,8 +2797,9 @@ fn sector_flank_normals_point_out_of_the_wedge() {
         let mid = 0.4 + sweep * 0.5;
         let inside = [1.0 + 3.0 * mid.cos(), 2.0 + 3.0 * mid.sin()];
         for n in [1u32, 2] {
+            let name = crate::csg::BranchId::POSITIONAL_WALL_FLAG | n;
             let (hs, _) = map
-                .get(&crate::csg::BranchId::from_feature_sub(&FeatureId::from_u32(3), n).as_u64())
+                .get(&crate::csg::BranchId::from_feature_sub(&FeatureId::from_u32(3), name).as_u64())
                 .expect("flank present");
             let HalfSpace::Plane { normal, offset } = hs else { panic!("flank is a plane") };
             let d = normal[0] * inside[0] + normal[1] * inside[1] - offset;

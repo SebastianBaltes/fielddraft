@@ -28,15 +28,24 @@ use crate::{quat_rotate, sdf_primitive, world_to_local};
 /// primitive's six faces (or a sketch's many segments) each get a
 /// distinct, Copy, hashable identity.
 ///
-/// Layout (#429/E1, boundary loop #424) — 49 significant bits, low to high:
+/// Layout (#429/E1, boundary loop #424, positional flag #445) — 51 significant
+/// bits, low to high:
 ///
 /// | bits | field | meaning |
 /// | --- | --- | --- |
-/// | 0..11 | `sub` | per-feature sub-face (sketch entity ordinal, cap, inner-wall flag) |
-/// | 12..16 | `occurrence` | which wall of this sweep the sketch entity in `sub` produced |
-/// | 17..28 | `instance` | pattern instance ordinal; 0 = the original |
-/// | 29..48 | `feature` | flat feature id (root ancestor) |
-/// | 49..63 | — | reserved, always 0 |
+/// | 0..13 | `sub` | per-feature sub-face (sketch entity ordinal, positional flag, cap, inner-wall flag) |
+/// | 14..18 | `occurrence` | which wall of this sweep the sketch entity in `sub` produced |
+/// | 19..30 | `instance` | pattern instance ordinal; 0 = the original |
+/// | 31..50 | `feature` | flat feature id (root ancestor) |
+/// | 51..63 | — | reserved, always 0 |
+///
+/// The sub field has its own ordering rule, and it is load-bearing too: every
+/// WALL sub sorts BELOW the reserved cap ids. The weave's signature
+/// canonicalisation and face-loop ordering read that order, and putting the
+/// positional wall band ABOVE the caps (the first shape #445 took) shattered a
+/// swept extrude's rim into 104 fragments — measured in
+/// `swept_extrude_rim_consolidates_to_clean_loops`. The reserved band therefore
+/// lives at the TOP of the widened field and everything nameable stays under it.
 ///
 /// **Field ORDER is load-bearing, not cosmetic.** Branch words are sorted in
 /// several places that then act on the order — the coincidence classes of
@@ -51,10 +60,10 @@ use crate::{quat_rotate, sdf_primitive, world_to_local};
 /// (`onshape_419_revolve_remove_stays_bounded` gained two coplanar duplicate
 /// faces). Cheap ids are not worth a reshuffled weave.
 ///
-/// **Why 49 bits and not 64:** the packed id crosses the wasm boundary as
+/// **Why 51 bits and not 64:** the packed id crosses the wasm boundary as
 /// a plain JSON number (`branchId` in `bodyBrepFaces`, `a`/`b` in
 /// `bodyBrepEdges`). JavaScript integers are exact only below 2^53, so the
-/// layout deliberately stays inside that range — 2^49−1 ≈ 5.6e14, a factor 16
+/// layout deliberately stays inside that range — 2^51−1 ≈ 2.3e15, a factor 4
 /// of headroom. Anything that widens a field further has to move the wire to
 /// strings first.
 ///
@@ -65,10 +74,14 @@ pub struct BranchId(pub u64);
 
 impl BranchId {
     pub const SENTINEL: u64 = u64::MAX;
-    /// Bits reserved for the per-feature sub-index. 12 bits → 4096
-    /// sub-ids per feature (enough for sketch segments).
-    pub const SUB_BITS: u32 = 12;
-    const SUB_MASK: u64 = 0xFFF;
+    /// Bits reserved for the per-feature sub-index. 14 bits → 16384 sub-ids
+    /// per feature, laid out as
+    /// [`INNER_WALL_FLAG`](Self::INNER_WALL_FLAG) (bit 13) over an outer sub of
+    /// 13 bits: 4096 sketch-entity ordinals, then the
+    /// [`POSITIONAL_WALL_FLAG`](Self::POSITIONAL_WALL_FLAG) band (#445), then
+    /// the reserved cap / blend / cutter ids at the very top.
+    pub const SUB_BITS: u32 = 14;
+    const SUB_MASK: u64 = 0x3FFF;
     /// The sub field's mask, as a `u32`, for callers that carry a packed wall
     /// name (loop ordinal above the sub) and need the sub alone.
     pub const SUB_MASK_U32: u32 = Self::SUB_MASK as u32;
@@ -97,24 +110,52 @@ impl BranchId {
     /// Total significant width of a packed branch word.
     pub const LAYOUT_BITS: u32 = Self::FEATURE_SHIFT + Self::FEATURE_BITS;
 
-    /// Bit 11 of the 12-bit sub field, reserved as the inner-wall flag (DL-75).
+    /// Bit 13 of the 14-bit sub field, reserved as the inner-wall flag (DL-75).
     /// A shelled body's inner wall is the outer face offset inward by the wall
     /// thickness — the *same* feature and analytic surface family, so it keeps
     /// the outer face's `feature_id()` (selection still resolves to the owning
     /// feature) but needs a *distinct* branch id so the weave classifies it as
     /// its own face. Setting this bit is that distinct id. All outer sub-ids
     /// (sketch boundary groups + the two extrude caps) live strictly below it
-    /// (`< 0x800`), so the flag never collides; `feature_id()` (the top 20
+    /// (`< 0x2000`), so the flag never collides; `feature_id()` (the top 20
     /// bits) is untouched.
-    pub const INNER_WALL_FLAG: u32 = 0x800;
+    pub const INNER_WALL_FLAG: u32 = 0x2000;
+
+    /// Bit 12 of the sub field, reserved for a wall whose sub is a POSITIONAL
+    /// boundary-group index rather than a sketch-entity ordinal (#445).
+    ///
+    /// [`crate::sketch::wall_sub_table`] refuses a profile it cannot attribute
+    /// (an SVG `sketch_path`, a mirror copy, a replay failure) and the sweep
+    /// then numbers its walls 0, 1, 2, … in contour order. Those numbers used
+    /// to be indistinguishable from entity ordinals, and `qWall(op, entity)`
+    /// compares `sub == entity` — so `qWall(3, 13)` bound „the 13th wall in
+    /// contour order" and called it the wall of curve 13. In #419 that never
+    /// showed because the entity ordinals there are three-digit and simply
+    /// missed; in #416 they are small and COLLIDED. A silently wrong face is
+    /// worse than none.
+    ///
+    /// Marking it HERE rather than in the query is what makes the guarantee
+    /// structural: `wall_sub_table` refuses an entity ordinal that reaches
+    /// this flag, so a flagged sub can never equal one, and every present and
+    /// future reader that matches an entity against a sub misses it without
+    /// having to know the rule. The flag is set in the one funnel
+    /// [`from_feature_sub`](Self::from_feature_sub) reaches through
+    /// [`map_wall_sub`], so no wall can acquire it — or miss it — on its own.
+    ///
+    /// A positional wall still gets its OWN branch (the group index rides
+    /// below the flag), so faces stay apart and `qCreatedBy(op, WALL)` — which
+    /// asks for the role, not for a name — keeps binding all of them. The band
+    /// sits BELOW the reserved cap ids, where every other wall sub sits: the
+    /// weave sorts branch words and acts on the order (see the type doc).
+    pub const POSITIONAL_WALL_FLAG: u32 = 0x1000;
 
     /// Reserved extrude-cap sub-ids (DL-50). The top/bottom caps of an
     /// extrude are not sketch boundary groups, so they get distinct sub-ids at
     /// the top of the *outer* sub range (just below [`INNER_WALL_FLAG`]). Wall
     /// groups are always small (`< edge_count ≪ 0x7FE`), so there is no
     /// collision.
-    pub const EXTRUDE_CAP_TOP_SUB: u32 = 0x7FF;
-    pub const EXTRUDE_CAP_BOTTOM_SUB: u32 = 0x7FE;
+    pub const EXTRUDE_CAP_TOP_SUB: u32 = 0x1FFF;
+    pub const EXTRUDE_CAP_BOTTOM_SUB: u32 = 0x1FFE;
 
     /// The rounding/bevel surface of a hard edge cutter — Onshape's
     /// `BLEND_FACE` (DERIVED-NAMING-PLAN E2). A fillet's tangent cylinder and a
@@ -122,7 +163,7 @@ impl BranchId {
     /// else the cutter carries is scaffolding ([`CUTTER_AUX_ROUND`] …). The
     /// sub-id is what [`crate::queries::face_role`] reads, so the role comes
     /// from the provenance, never from the surface class.
-    pub const BLEND_SUB: u32 = 0x7FD;
+    pub const BLEND_SUB: u32 = 0x1FFD;
 
     /// Scaffolding bands of a hard edge cutter, one per sub-solid. Both
     /// sub-solids of a fillet cutter are `FeatureId::child`ren of the SAME
@@ -130,9 +171,9 @@ impl BranchId {
     /// bands the tangent cylinder's mantle (sub 0) would overwrite the corner
     /// box's +X plane (sub 0). Measured 2026-07-28 and pinned in
     /// `schritt2_hard_cutter_fillet_face_exists_but_has_no_blend_role`.
-    pub const CUTTER_AUX_ROUND: u32 = 0x7E0;
-    pub const CUTTER_AUX_BOX: u32 = 0x7E8;
-    pub const CUTTER_AUX_BEVEL: u32 = 0x7F0;
+    pub const CUTTER_AUX_ROUND: u32 = 0x1FE0;
+    pub const CUTTER_AUX_BOX: u32 = 0x1FE8;
+    pub const CUTTER_AUX_BEVEL: u32 = 0x1FF0;
 
     /// Branch id for a whole feature (sub-index 0).
     pub fn from_feature(id: &FeatureId) -> Self {
@@ -3656,17 +3697,23 @@ pub(crate) fn extrude_retained_combine(
 /// real edge instead of a singleton. `z`/`half_height` are in the
 /// canonical (centred) local extrude frame, so the cap split is
 /// placement-independent.
-/// Map a positional wall boundary group to the branch sub-id that names
-/// the swept wall face. With a `wall_subs` table (stable sketch-entity
-/// ordinals, see [`Primitive::Extrude`]) the group indexes the table; an
-/// out-of-range group keeps its positional id (defensive — the table is
-/// built for exactly the profile's group count). Without a table the
-/// positional id IS the sub (legacy numbering).
+/// Map a positional wall boundary group to the **wall name** of the swept
+/// wall face. With a `wall_subs` table (stable sketch-entity ordinals, see
+/// [`Primitive::Extrude`]) the group indexes the table.
+///
+/// Without a table — and for a group the table does not reach, which is
+/// defensive, the table is built for exactly the profile's group count — the
+/// positional index becomes the sub, MARKED with
+/// [`BranchId::POSITIONAL_WALL_FLAG`] (#445). The mark is the whole point:
+/// a positional id is not a name, and `qWall(op, entity)` must not be able to
+/// mistake one for the other. Every reader that goes through
+/// [`BranchId::from_feature_sub`] gets it for free.
 #[inline]
 pub(crate) fn map_wall_sub(wall_subs: Option<&[u32]>, g: u32) -> u32 {
+    let positional = || g | BranchId::POSITIONAL_WALL_FLAG;
     match wall_subs {
-        Some(t) => t.get(g as usize).copied().unwrap_or(g),
-        None => g,
+        Some(t) => t.get(g as usize).copied().unwrap_or_else(positional),
+        None => positional(),
     }
 }
 

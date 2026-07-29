@@ -6560,7 +6560,7 @@ fn extrude_side_face_resolves_clean_profile_at_user_scale() {
             "extrude",
             id(5),
             json!({
-                "profiles": "qFace(12410059982027593815)",
+                "profiles": "qFace(17589202953945210743)",
                 "depth": { "value": 52.91257140451136, "unit": "mm" },
                 "depth_back": { "value": 0.0, "unit": "mm" },
                 "symmetric": false,
@@ -6577,7 +6577,7 @@ fn extrude_side_face_resolves_clean_profile_at_user_scale() {
         for i in 0..brep.face_count() {
             let fid = crate::brep::FaceId(i as u32);
             if crate::brep::naming::TopoRef::from_face(&brep, fid).id_hash
-                != 16653472664457945653
+                != 11474329692540328725
             {
                 continue;
             }
@@ -6597,7 +6597,7 @@ fn extrude_side_face_resolves_clean_profile_at_user_scale() {
         }
     }
     let (region, frame) = ctx
-        .resolve_extrude_faces(&["qFace(16653472664457945653)".to_string()])
+        .resolve_extrude_faces(&["qFace(11474329692540328725)".to_string()])
         .expect("ticket face must resolve");
     assert!(
         frame.normal[0] > 0.99,
@@ -6617,7 +6617,7 @@ fn extrude_side_face_resolves_clean_profile_at_user_scale() {
         "extrude",
         id(8),
         json!({
-            "profiles": "qFace(16653472664457945653)",
+            "profiles": "qFace(11474329692540328725)",
             "depth": { "value": 25.0, "unit": "mm" },
             "depth_back": { "value": 0.0, "unit": "mm" },
             "symmetric": false,

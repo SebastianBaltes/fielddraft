@@ -204,6 +204,14 @@ pub enum QueryExpr {
     /// inward-offset face of the hollow, which is a different face of the
     /// same sweep. Onshape names it `OFFSET_FACE`, and an extrude that runs
     /// "up to the inner wall" needs exactly this.
+    ///
+    /// Binds NOTHING on a sweep whose profile has no wall-sub table (#445).
+    /// That is a property of the encoding, not a case handled here: an
+    /// unattributable profile numbers its walls positionally and
+    /// [`crate::csg::BranchId::POSITIONAL_WALL_FLAG`] lifts those numbers out
+    /// of the entity range, so `sub == entity` cannot hold for one. Before the
+    /// flag, `qWall(3, 13)` on such a sweep returned the 13th wall in contour
+    /// order — a wrong face rather than no face, which is the worse answer.
     Wall(FeatureId, u32, bool),
     /// `qInstance(i, <sub-query>)` — the same geometry as `<sub-query>`, but
     /// on the *i*-th copy a pattern made of it. `i = 0` is the original.
@@ -1636,6 +1644,53 @@ mod tests {
             parse_query("qWall(3, 7, OUTER)"),
             Err(QueryParseError::InvalidRole(_))
         ));
+    }
+
+    /// #445 — a POSITIONAL wall table must not be findable by `qWall`.
+    ///
+    /// A sweep whose profile `wall_sub_table` cannot attribute numbers its
+    /// walls 0, 1, 2, … in contour order. Those numbers used to be
+    /// indistinguishable from sketch-entity ordinals, so `qWall(op, 13)`
+    /// happily returned „the 13th wall" and called it curve 13's. On #419 that
+    /// never showed (the entity ordinals there are three-digit and simply
+    /// missed); on #416 they are small and COLLIDED, and a mate connector
+    /// anchored on the resulting edge stood on the wrong face.
+    ///
+    /// `POSITIONAL_WALL_FLAG` lifts them out of the entity range, so the miss
+    /// is structural — no case in the resolver, and every other reader that
+    /// compares an entity against a sub inherits it.
+    #[test]
+    fn resolve_wall_never_binds_a_positional_sub() {
+        let f7 = FeatureId::from_u32(7);
+        let mut brep = BRep::new();
+        // Three positional walls of an unattributable profile …
+        for g in 0..3u32 {
+            brep.add_face(plane_face(BranchId::from_feature_sub(
+                &f7,
+                BranchId::POSITIONAL_WALL_FLAG | g,
+            )));
+        }
+        crate::brep::naming::stamp_single(&mut brep);
+        let breps = std::slice::from_ref(&brep);
+        // … name NOTHING, whichever ordinal is asked for.
+        for entity in 0..4u32 {
+            assert!(
+                resolve_query_topo(breps, &QueryExpr::Wall(id(7), entity, false)).is_empty(),
+                "qWall(7, {entity}) bound a positional wall"
+            );
+        }
+        // The faces are there and they ARE walls — `qCreatedBy(op, WALL)` asks
+        // for the role, not for a name, and must keep finding all three.
+        let all = resolve_query_topo(
+            breps,
+            &QueryExpr::CreatedByRole(id(7), FaceRole::Wall),
+        );
+        assert_eq!(all.len(), 3, "the walls exist, they are only unnameable");
+        // And each is its own face: the group index still separates them.
+        let mut hashes: Vec<u64> = all.iter().map(|r| r.id_hash).collect();
+        hashes.sort_unstable();
+        hashes.dedup();
+        assert_eq!(hashes.len(), 3);
     }
 
     #[test]

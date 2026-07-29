@@ -589,9 +589,12 @@ mod tests {
             "bottom-cap sub 0x{:X} missing: {subs:?}",
             BranchId::EXTRUDE_CAP_BOTTOM_SUB
         );
-        // Wall groups are subs 0..4.
+        // Wall groups are the POSITIONAL subs 0..4 — the profile is a bare
+        // `Rectangle` with no wall-sub table, so each carries
+        // `POSITIONAL_WALL_FLAG` and is unreachable by `qWall` (#445).
         for g in 0..4u32 {
-            assert!(subs.contains(&g), "wall group {g} missing: {subs:?}");
+            let want = BranchId::POSITIONAL_WALL_FLAG | g;
+            assert!(subs.contains(&want), "wall group {g} missing: {subs:?}");
         }
         assert_all_aabbs_sane(&branches);
     }

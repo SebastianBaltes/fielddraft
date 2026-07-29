@@ -12,6 +12,10 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.46.0
+- feat(kernel) #445: Wenn ein Extrude seine Wände nicht benennen kann, sind sie jetzt auch nicht mehr auffindbar. Vorher lieferte eine Wand-Auswahl auf so einem Feature stillschweigend die falsche Fläche — die x-te in Reihenfolge statt der gemeinten Kurve.
+- fix(kernel) #445: Damit kann ein Mate-Connector oder ein Fillet, der auf einer solchen Wand hängt, nicht mehr unbemerkt an der falschen Kante landen. Er meldet lieber, dass er nichts findet.
+
 ## 0.45.0
 - feat(kernel) #445: Ein Kreis oder Bogen, den der Rand eines mehrregionalen Profils ANSCHNEIDET, bleibt jetzt ein exakter Bogen. Bisher zerfiel er in rund fünfzig Sehnen — aus einer Zylinderfläche wurden fünfzig Ebenen.
 - fix(kernel) #445: Damit behalten die Wände eines solchen Extrudes ihre Namen. Vorher fielen ALLE Wände des Features auf eine Nummerierung nach Reihenfolge zurück, und eine Kanten-Auswahl darauf traf eine beliebige andere Wand.

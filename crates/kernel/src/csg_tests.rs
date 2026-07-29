@@ -637,6 +637,15 @@ fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> DecodedFeature {
 /// Tiny convenience used in the contributor-equality assertions:
 /// build a `Vec<BranchId>` from `(feature, sub)` pairs. Sorted so
 /// callers can compare against an order-independent expectation.
+/// The sub a wall gets when its profile has NO wall-sub table: the positional
+/// boundary-group index under [`BranchId::POSITIONAL_WALL_FLAG`] (#445). Every
+/// hand-built `CsgNode::Extrude { wall_subs: None, .. }` in these tests mints
+/// them, and the flag is what keeps `qWall(op, entity)` from mistaking one for
+/// a sketch-entity ordinal.
+fn positional_wall(group: u32) -> u32 {
+    BranchId::POSITIONAL_WALL_FLAG | group
+}
+
 fn branches(raw: &[(u32, u32)]) -> Vec<BranchId> {
     let mut v: Vec<BranchId> = raw
         .iter()
@@ -1082,7 +1091,9 @@ fn extrude_returns_single_contributor() {
     };
     let (d, c) = extrude.evaluate([5.0, 0.0, 0.0], 0.5, EvalMode::Visual);
     assert!(d.abs() < 1e-4);
-    assert_eq!(c.as_slice(), branches(&[(42, 0)]).as_slice());
+    // No wall-sub table → the wall's sub is POSITIONAL and carries the flag
+    // that keeps `qWall` off it (#445).
+    assert_eq!(c.as_slice(), branches(&[(42, positional_wall(0))]).as_slice());
     assert_eq!(c.element(), ProxyElement::Face);
 }
 
@@ -1110,13 +1121,13 @@ fn extrude_of_path_square_carries_per_segment_sub_ids() {
     // wall group (the DL-65 contributor band only ties at a corner/rim, so
     // a clearly-nearest wall stays a single contributor). +x wall → group 1.
     let (_, c) = extrude.evaluate([4.0, 0.0, 0.0], 0.05, EvalMode::Visual);
-    assert_eq!(c.as_slice(), branches(&[(fid, 1)]).as_slice());
+    assert_eq!(c.as_slice(), branches(&[(fid, positional_wall(1))]).as_slice());
     // Bottom (−y) wall → group 0.
     let (_, c) = extrude.evaluate([0.0, -4.0, 0.0], 0.05, EvalMode::Visual);
-    assert_eq!(c.as_slice(), branches(&[(fid, 0)]).as_slice());
+    assert_eq!(c.as_slice(), branches(&[(fid, positional_wall(0))]).as_slice());
     // Top (+y) wall → group 2 — distinct sub-id.
     let (_, c) = extrude.evaluate([0.0, 4.0, 0.0], 0.05, EvalMode::Visual);
-    assert_eq!(c.as_slice(), branches(&[(fid, 2)]).as_slice());
+    assert_eq!(c.as_slice(), branches(&[(fid, positional_wall(2))]).as_slice());
 }
 
 #[test]
@@ -1146,10 +1157,11 @@ fn extrude_corner_reports_both_walls_and_rim_reports_wall_and_cap() {
     let s: std::collections::HashSet<u64> =
         c.as_slice().iter().map(|b| b.as_u64()).collect();
     assert!(
-        s.contains(&BranchId::from_feature_sub(&FeatureId::from_u32(fid), 1).as_u64())
-            && s.contains(
-                &BranchId::from_feature_sub(&FeatureId::from_u32(fid), 2).as_u64()
-            ),
+        s.contains(
+            &BranchId::from_feature_sub(&FeatureId::from_u32(fid), positional_wall(1)).as_u64()
+        ) && s.contains(
+            &BranchId::from_feature_sub(&FeatureId::from_u32(fid), positional_wall(2)).as_u64()
+        ),
         "corner must report both adjoining walls, got {s:?}"
     );
     assert_eq!(c.element(), ProxyElement::Edge);
@@ -1160,14 +1172,15 @@ fn extrude_corner_reports_both_walls_and_rim_reports_wall_and_cap() {
     let s: std::collections::HashSet<u64> =
         c.as_slice().iter().map(|b| b.as_u64()).collect();
     assert!(
-        s.contains(&BranchId::from_feature_sub(&FeatureId::from_u32(fid), 1).as_u64())
-            && s.contains(
-                &BranchId::from_feature_sub(
-                    &FeatureId::from_u32(fid),
-                    BranchId::EXTRUDE_CAP_TOP_SUB
-                )
-                .as_u64()
-            ),
+        s.contains(
+            &BranchId::from_feature_sub(&FeatureId::from_u32(fid), positional_wall(1)).as_u64()
+        ) && s.contains(
+            &BranchId::from_feature_sub(
+                &FeatureId::from_u32(fid),
+                BranchId::EXTRUDE_CAP_TOP_SUB
+            )
+            .as_u64()
+        ),
         "rim must report the wall group and the top cap, got {s:?}"
     );
     assert_eq!(c.element(), ProxyElement::Edge);

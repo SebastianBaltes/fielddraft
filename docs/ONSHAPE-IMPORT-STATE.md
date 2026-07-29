@@ -63,7 +63,7 @@ Repräsentanten konkret: Line/Arc/Circle/Spline/Ellipse = Curve-Entity-ID
 (min über G1-Gruppe); Slot = erste Punkt-Entity des Calls (voll G1 = 1 Wand);
 Polygon/RegularPolygon = Vertex-Punkt-ID `first+k` je Kante k. Fallback
 (ganze Tabelle None): sketch_path (SVG, nur Punkt-Entities), sketch_mirror
-(Alias), Replay-Fehler, Überlauf ≥ 0x7FE.
+(Alias), Replay-Fehler, Überlauf ≥ `POSITIONAL_WALL_FLAG` (0x1000).
 
 Tests: 6 Unit (lower) + 3 E2E (features_tests): Wall-Subs = Line-Entity-IDs
 im gewobenen B-Rep, qCreatedBy(op, ROLE) auf echtem Sweep, Heal-Test über
@@ -92,7 +92,10 @@ brep/naming.rs dokumentiert.
   dagegen gelegt; lokale Tabellen konkateniert = globale Tabelle.
 - **Fallback = None (positionell, Status quo)** wenn irgendein Prim keine
   IDs liefert: sketch_path (SVG-Import, nur Punkt-Entities), sketch_mirror
-  (Alias-Kollision der Kopie), ID-Überlauf ≥ 0x7FE. Kein stilles Falschbinden.
+  (Alias-Kollision der Kopie), ID-Überlauf ≥ `POSITIONAL_WALL_FLAG` (0x1000).
+  Kein stilles Falschbinden — seit #445 auch strukturell nicht mehr möglich:
+  eine positionelle Tabelle trägt das Flag und liegt damit ausserhalb des
+  Entity-Bereichs, den `qWall(op, entity)` vergleicht.
 - **Nachbar-Arithmetik:** surface_registry.rs (RevolvedProfile
   extend_start/end via g±1) bleibt positionell und mappt erst beim Insert.
 

@@ -3831,7 +3831,7 @@ fn ticket_9zlq_face_extrude_prism_weaves_straight_edges() {
             {"type":"box","id":1,"params":{"half_extents":[50,50,50],"op":"new","translate":[0,0,0]}},
             {"type":"boolean","id":10,"params":{"keep_tools":false,"operation":"Union","targets":"","tools":"qCreatedBy(2),qCreatedBy(1)"}},
             {"type":"translate","id":11,"params":{"target_id":1,"translate":[-23.49043846130371,1.4090451002120972,5.554038047790527]}},
-            {"type":"extrude","id":15,"params":{"depth":{"unit":"mm","value":20},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(12410059982027593815)","symmetric":false,"operation":"add"}}
+            {"type":"extrude","id":15,"params":{"depth":{"unit":"mm","value":20},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(17589202953945210743)","symmetric":false,"operation":"add"}}
         ],
         "next_feature_id": 17
     }"#;
@@ -3910,8 +3910,8 @@ fn ticket_px2o_extrude_of_face_extrude_docks_into_parent_with_straight_edges() {
     let mut k = Kernel::new();
     let json = r#"{"schema_version":1,"name":"Part","feature_calls":[
         {"type":"box","id":1,"params":{"half_extents":[50,50,50],"op":"new","translate":[0,0,0]}},
-        {"type":"extrude","id":5,"params":{"depth":{"unit":"mm","value":52.91257140451136},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(12410059982027593815)","symmetric":false,"operation":"add"}},
-        {"type":"extrude","id":17,"params":{"depth":{"unit":"mm","value":98.74537260854363},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(7017754562111381975)","symmetric":false,"operation":"add"}}
+        {"type":"extrude","id":5,"params":{"depth":{"unit":"mm","value":52.91257140451136},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(17589202953945210743)","symmetric":false,"operation":"add"}},
+        {"type":"extrude","id":17,"params":{"depth":{"unit":"mm","value":98.74537260854363},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(6297328330575665381)","symmetric":false,"operation":"add"}}
     ],"next_feature_id":18}"#;
     k.load_json(json).unwrap();
     // Both face-extrudes are explicit Add and grow the box: ONE body
@@ -3987,8 +3987,8 @@ fn ticket_o2j9_two_face_extrude_weaves_manifold() {
     let mut k = Kernel::new();
     let json = r#"{"schema_version":1,"name":"Part","feature_calls":[
         {"type":"box","id":1,"params":{"half_extents":[50,50,50],"op":"new","translate":[0,0,0]}},
-        {"type":"extrude","id":5,"params":{"depth":{"unit":"mm","value":52.91257140451136},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(12410059982027593815)","symmetric":false,"operation":"add"}},
-        {"type":"extrude","id":17,"params":{"depth":{"unit":"mm","value":98.74537260854363},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(7017754562111381975)","symmetric":false,"operation":"add"}}
+        {"type":"extrude","id":5,"params":{"depth":{"unit":"mm","value":52.91257140451136},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(17589202953945210743)","symmetric":false,"operation":"add"}},
+        {"type":"extrude","id":17,"params":{"depth":{"unit":"mm","value":98.74537260854363},"depth_back":{"unit":"mm","value":0},"profiles":"qFace(6297328330575665381)","symmetric":false,"operation":"add"}}
     ],"next_feature_id":18}"#;
     k.load_json(json).unwrap();
     assert_eq!(k.body_count(), 1);
@@ -4874,3 +4874,4 @@ fn an_unrelated_body_does_not_shift_pattern_hashes() {
         "an unrelated body must not renumber the pattern's faces"
     );
 }
+

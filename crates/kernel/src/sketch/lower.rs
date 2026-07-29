@@ -1052,7 +1052,9 @@ pub(crate) fn slot_path_segments(
 /// Returns `None` — positional fallback, never a half-translated table —
 /// when any surviving prim lacks stable sources (sketch_path, mirror,
 /// replay failure), a prim can't be matched, an id would collide with
-/// the reserved sub range (caps at `0x7FE`/`0x7FF`, inner-wall flag), or one
+/// the reserved sub range (everything from
+/// [`crate::csg::BranchId::POSITIONAL_WALL_FLAG`] up: the positional wall
+/// band, the cutter aux ids, the blend sub, the two extrude caps), or one
 /// curve fences more walls than the occurrence field holds.
 pub fn wall_sub_table(tree: &Sketch2d, traced: &[TracedPrim]) -> Option<Vec<u32>> {
     wall_sub_table_diag(tree, traced).ok()
@@ -1085,9 +1087,12 @@ pub fn wall_sub_table_diag(
     let mut cursor = 0usize;
     collect_wall_subs(tree, traced, &mut cursor, &mut out)
         .ok_or(WallSubRefusal::Unattributable)?;
+    // Everything at or above the positional band is reserved: the band itself
+    // (#445), then the cutter aux ids, the blend sub and the two extrude caps.
+    // An entity ordinal that reaches into it would name someone else's face.
     if let Some(&bad) = out
         .iter()
-        .find(|&&s| s >= crate::csg::BranchId::EXTRUDE_CAP_BOTTOM_SUB)
+        .find(|&&s| s >= crate::csg::BranchId::POSITIONAL_WALL_FLAG)
     {
         return Err(WallSubRefusal::ReservedSub(bad));
     }

@@ -2125,3 +2125,80 @@ KANTEN-Ankers: sie kommt aus `face_normal_for_branch(edge.signature.0)`, und
 +x aus der Kappe (x max 11,17 statt 3,07) statt in −z nach unten (z min −65 statt
 −73,08). Eigenes Ticket; die richtige Regel braucht Onshapes CSYS-Konvention,
 nicht ein Vorzeichen auf Verdacht.
+
+---
+
+## Update 2026-07-29 (6) — eine positionelle Wandtabelle ist nicht mehr auffindbar (#445, v0.46.0)
+
+Der zweite, unabhaengige Befund derselben Messung: `qWall(op, entity)` vergleicht
+`branch.sub == entity`, und ein POSITIONELLER Sub 13 sah aus wie die Entity-Id 13.
+In #419 fiel das nie auf (die Entity-Ordinale dort sind dreistellig und trafen
+schlicht nichts), in #416 sind sie klein und kollidierten — `qWall(3, 13)` gab die
+13. Wand in Kontur-Reihenfolge zurueck und nannte sie die Wand der Kurve 13. Eine
+still falsche Flaeche ist schlimmer als keine.
+
+### 1. Die Markierung sitzt im Trichter, nicht in der Query
+
+`BranchId::POSITIONAL_WALL_FLAG` (Bit 12 des Sub-Feldes) markiert eine Wand, deren
+Sub eine Positionsnummer statt eines Skizzen-Entity-Ordinals ist. Gesetzt wird es
+in `csg::map_wall_sub` — dem EINEN Trichter, durch den jede Wand-Branch entsteht
+(`BranchId::from_feature_sub`). `wall_sub_table` verweigert jedes Entity-Ordinal,
+das das Flag erreicht, also kann ein markierter Sub nie einem Entity gleichen.
+
+Das ist bewusst NICHT ein Sonderfall in `qWall`: die Query bleibt Zeile fuer Zeile
+dieselbe, und jeder heutige und kuenftige Leser, der ein Entity gegen einen Sub
+haelt, erbt die Garantie, ohne die Regel zu kennen. Eine positionelle Wand behaelt
+ihre EIGENE Branch (die Gruppennummer liegt unter dem Flag), also bleiben die
+Flaechen getrennt und `qCreatedBy(op, WALL)` — das nach der Rolle fragt, nicht
+nach einem Namen — findet sie weiterhin alle.
+
+### 2. Was das am Layout kostete — und was der erste Versuch lehrte
+
+Das Sub-Feld war voll (12 Bit: Bit 11 = `INNER_WALL_FLAG`, darunter die
+Entity-Ordinale mit den reservierten Kappen-IDs an der Spitze). Der erste Versuch
+setzte das Flag auf Bit 12 eines auf 13 Bit verbreiterten Feldes — und ZERSCHLUG
+die Verwebung: die Randnaht eines Bezier-Extrudes fiel von 12 auf 114 Kanten,
+Koerper-Flaeche `0x1003` von 4 Randkanten auf 1 plus 105 Innenschleifen. Gemessen,
+nicht vermutet: dieselbe Verbreiterung OHNE Flag ist folgenlos.
+
+Die Ursache ist eine ungeschriebene Ordnungsregel, die jetzt geschrieben ist:
+**jede Wand sortiert UNTER den reservierten Kappen-IDs.** Die Verwebung sortiert
+Branch-Woerter und handelt nach der Reihenfolge (Signatur-Kanonisierung,
+Flaechenschleifen-Ordnung); ein Wand-Band OBERHALB der Kappen dreht das um. Das
+reservierte Band ist deshalb an die Spitze des verbreiterten Feldes gewandert:
+
+    sub (14 Bit)  = INNER_WALL_FLAG (0x2000)
+                  | 0x1FFE/0x1FFF  Extrude-Kappen
+                  | 0x1FFD         BLEND_SUB
+                  | 0x1FE0/0x1FE8/0x1FF0  Cutter-Aux
+                  | 0x1000 …       POSITIONAL_WALL_FLAG-Band
+                  | 0 … 0x0FFF     Skizzen-Entity-Ordinale
+
+Der Entity-Bereich waechst dabei von 2046 auf 4096 Ordinale. Das ganze Wort ist
+`feature (20) | instance (12) | occurrence (5) | sub (14)` = 51 Bit, weiterhin
+eine exakte JavaScript-Zahl (2^51 gegen 2^53, Faktor 4 Luft). Der Web-Spiegel
+(`web/src/selectionLinks.ts`) ist mitgezogen — ein veralteter dekodiert jede
+Feature-Id falsch.
+
+### 3. Schema-Bump und was healt
+
+`NAMING_SCHEMA_VERSION` 5 → **6**. Die Verbreiterung verschiebt `occurrence`,
+`instance` und `feature` um ein Bit, also aendert sich JEDES `id_hash` in JEDEM
+Dokument — wie bei den Bumps 3 und 5. Die BEDEUTUNG aendert sich nur fuer
+unzuordenbare Profile; alle anderen aendern nur ihr Wort und healen ueber die
+Fingerprint-Rebindung (`healElementRefs`). Gemessen an den Test-Dokumenten: die
+sechs Onshape-Slow-Suiten (38 Tests) bleiben gruen, `just test` ebenso; die
+einzigen Anpassungen waren fest verdrahtete `qFace(<hash>)`-Literale in zwei
+Kernel-Tests (Box-Flaechen und eine Wand des Flaechen-Extrudes) und die Tests,
+die positionelle Wand-Subs erwarten.
+
+### 4. Zahlen, gemessen
+
+| | v0.45.0 | v0.46.0 |
+|---|---|---|
+| `qWall(op, 13)` auf einer positionellen Tabelle | bindet die 13. Wand | bindet NICHTS |
+| `qCreatedBy(op, WALL)` auf derselben | alle Waende | alle Waende (unveraendert) |
+| Sub-Feld | 12 Bit, 2046 Entity-Ordinale | 14 Bit, 4096 Entity-Ordinale |
+| Branch-Wort | 49 Bit | 51 Bit (JS-exakt bis 53) |
+| `NAMING_SCHEMA_VERSION` | 5 | 6 |
+| #416 AABB, #419 Koerper/Flaechen | — | unveraendert gegenueber v0.45.0 |

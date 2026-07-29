@@ -71,7 +71,18 @@ use crate::brep::{BRep, EdgeGeometry, EdgeId, FaceId, SurfaceGeometry, VertexId}
 ///   `sub` — inside the feature's own namespace, so branch words still sort
 ///   feature-major — which shifts `instance` and `feature` up by five bits and
 ///   therefore changes every `id_hash` in every document, as bump 3 did.
-pub const NAMING_SCHEMA_VERSION: u32 = 5;
+/// - **6** — positional-wall flag (#445): a sweep whose profile
+///   [`crate::sketch::wall_sub_table`] cannot attribute numbers its walls
+///   0, 1, 2, … in contour order, and those numbers were indistinguishable
+///   from sketch-entity ordinals — `qWall(op, 13)` bound the 13th wall and
+///   called it curve 13's (measured on #416, where the entity ordinals are
+///   small enough to collide). [`BranchId::POSITIONAL_WALL_FLAG`] marks them
+///   out of the nameable range, which cost the sub field one more bit
+///   (12 → 13) and therefore shifted `occurrence`, `instance` and `feature`
+///   up by one — every `id_hash` in every document changed, as bumps 3 and 5
+///   did. Only unattributable profiles change MEANING; the rest change only
+///   their word.
+pub const NAMING_SCHEMA_VERSION: u32 = 6;
 use crate::csg::BranchId;
 
 // ─── deterministic hash ───────────────────────────────────────────────────

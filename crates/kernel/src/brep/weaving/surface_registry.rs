@@ -233,7 +233,16 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
                                 // foreign) — no chain neighbours.
                                 None => (None, None),
                             },
-                            None => (g.checked_sub(1), Some(g + 1)),
+                            // Without a table the sub IS the position, under
+                            // `POSITIONAL_WALL_FLAG` (#445) — step on the
+                            // index and put the mark back, or the neighbour
+                            // would be looked up in the nameable band.
+                            None => {
+                                let pos = g & !BranchId::POSITIONAL_WALL_FLAG;
+                                let mark =
+                                    |p: u32| p | (g & BranchId::POSITIONAL_WALL_FLAG);
+                                (pos.checked_sub(1).map(mark), Some(mark(pos + 1)))
+                            }
                         };
                         *extend_start = prev.is_none_or(|n| !neighbour_open(n));
                         *extend_end = next.is_none_or(|n| !neighbour_open(n));

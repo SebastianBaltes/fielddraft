@@ -145,10 +145,17 @@ Zwischen-Transform-Knoten aus dem heißen Auswertungspfad und ermöglicht räuml
 ### 3.2 BranchId — deterministische Flächennamen
 
 Jede atomare Teilfläche eines Primitivs bekommt eine `BranchId` (`csg.rs`), gepackt als
-`feature_id << 12 | sub` (`SUB_BITS = 12`). Eine Box expandiert so in 6 Ebenen-Halbräume
-(sub 0…5), ein Zylinder in Mantel + zwei Deckel usw. Reservierte sub-Indizes:
-`EXTRUDE_CAP_TOP_SUB`/`…_BOTTOM_SUB` für die Extrude-Deckel und das `INNER_WALL_FLAG`
-(0x800) für die Innenwand einer Schale (DL-75).
+`feature (20) | instance (12) | occurrence (5) | sub (14)` — 51 signifikante Bits, damit
+das Wort als exakte JavaScript-Zahl über die WASM-Grenze passt. Eine Box expandiert in
+6 Ebenen-Halbräume (sub 0…5), ein Zylinder in Mantel + zwei Deckel usw.
+
+Das `sub`-Feld hat eine eigene, tragende Ordnung: JEDE Wand liegt UNTER den reservierten
+Kappen-IDs (die Verwebung sortiert Branch-Wörter und handelt nach der Reihenfolge). Von
+unten nach oben: Skizzen-Entity-Ordinale (< 0x1000), dann das `POSITIONAL_WALL_FLAG`-Band
+(0x1000, #445 — eine Wand, deren Sub eine Positionsnummer statt eines Namens ist, damit
+`qWall` sie nicht finden KANN), dann die reservierten IDs (Cutter-Aux 0x1FE0/0x1FE8/0x1FF0,
+`BLEND_SUB` 0x1FFD, `EXTRUDE_CAP_BOTTOM/TOP_SUB` 0x1FFE/0x1FFF), darüber das
+`INNER_WALL_FLAG` (0x2000) für die Innenwand einer Schale (DL-75).
 
 Die BranchId ist *deterministisch aus Feature-ID + Rolle* — die Grundlage des
 persistenten Namings (Abschnitt 6).
