@@ -3039,3 +3039,65 @@ Materialabnahme. Und sie fehlt lautlos: die Query loest auf, das Feature
 regeneriert fehlerfrei, der Zensus ist sauber — nur die Geometrie bewegt sich
 nicht. Ein Feature, das nichts tut und nichts sagt, ist von einem Feature, das
 funktioniert, nur an der Geometrie zu unterscheiden.
+
+### 6. Behoben: EINE Box, in der Winkelhalbierenden aufgespannt (v0.47.4)
+
+Der Plan (`docs/FILLET-CUTTER-PLAN.md` §5) hatte fuer P2 ein schiefes
+Parallelepiped aus drei Slab-Boxen vorgesehen. Das braucht es nicht. Rechnet man
+im Rahmen der WINKELHALBIERENDEN `m = normalize(n_a + n_b)` statt in den beiden
+Flaechennormalen, so liegen die zwei Beruehrpunkte der Rollkugel symmetrisch bei
+
+    m = −r·sin²φ / cos φ,   s = ±r·sin φ        (φ = halbe Dieder, cos 2φ = n_a·n_b)
+
+und EINE orientierte Box von dieser Sehne bis ueber die Kante hinaus enthaelt die
+wegzuschneidende Kappe exakt: ihre innere Flaeche IST die Sehne des Bogens, liegt
+also ueberall dort im Ball, wo Material ist, und kann keine Stufe schneiden; ihre
+seitlichen Flaechen sind gar nicht bindend, weil Material jenseits der
+Beruehrpunkte hinter der Sehne liegt.
+
+An der rechtwinkligen Kante ist das die ANDERE HAELFTE der alten `r × r`-Eck-Box
+— der Unterschied zwischen beiden ist das Kreissegment, und das zieht der
+Zylinder ohnehin wieder ab. Gleiche Geometrie, gleiche Zahl von Blaettern,
+gleiche Sub-Ids: **kein `NAMING_SCHEMA_VERSION`-Bump**, und alle 1376 Kernel- und
+48 Slow-Tests liefen unveraendert durch.
+
+Die Fase erbt es mit einer Zeile Trigonometrie (`inset = d·sin φ` statt `d/√2`),
+weil ihre beiden Rueckspruenge ebenfalls gleich weit auf der Winkelhalbierenden
+liegen. Neu ist nur eine Entartungs-Schranke `|n_a·n_b| ≤ 0,98`: jenseits davon
+stehen die Flaechen fast flach oder auf Messerschneide, die Sehne laeuft mit
+`1/cos φ` davon.
+
+### 7. Zahlen, gemessen
+
+| | vorher (v0.47.3) | nachher (v0.47.4) | Onshape |
+|---|---:|---:|---:|
+| tiefster Punkt des Keils (SDF-Bisektion) | −73,16883 (scharf) | **−72,98413** | −73,00127 |
+| Rollkugel-Rechnung fuer r = 1,3647572 | — | −72,98418 | — |
+| Abstand zu Onshape | 0,1675 zu tief | **0,0171 zu flach** | — |
+| `sceneAabb` z min | −73,16883 | −73,16883 | — |
+| Koerperzahl / uebrige fuenf Grenzen | 1 / exakt | 1 / exakt | — |
+| Import-Fehler #416 | Chamfer 2, Fillet 2, Fillet 5 | unveraendert | — |
+| Regen-Fehler #416 | 2× Chamfer 1 | unveraendert | — |
+
+Der Rest von 0,0171 mm hat eine eigene, gemessene Ursache und ein eigenes
+Ticket: Onshapes Querschnitt ist `CURVATURE` (kruemmungsstetig), unserer ein
+Kreisbogen — **#453**.
+
+`sceneAabb` bewegt sich NICHT und wird es nie: `CsgNode::aabb` gibt bei
+`Difference` den linken Operanden zurueck, ein harter Cutter ist eine
+`Difference`, also ist die Szenen-Box fuer jede Rundung STRUKTURELL blind. Der
+z-min-Pin der #416-Suite misst deshalb seit diesem Ticket die SDF: erst ein
+0,5-mm-Zensus ueber die ganze Grundflaeche (wo ist ueberhaupt noch Material unter
+−72,95?), dann Bisektion in der gefundenen Saeule. Fuenf der sechs Grenzen duerfen
+weiter aus `sceneAabb` kommen, weil dort nichts geschnitten wird — aber das ist
+ein Befund, keine Eigenschaft der Box.
+
+### 8. Zweite Methodik-Lehre
+
+**Eine lose Box kann eine Verbesserung genauso verstecken wie eine falsche.**
+Update (10) hat gelernt, dass Onshapes lose Box keine Ground Truth ist; hier
+war UNSERE lose. Nach dem Fix lief die #416-Suite gruen durch, ohne dass sich
+eine einzige Zahl bewegt haette — der Pin fragte `sceneAabb`, und die kann eine
+Subtraktion nicht sehen. Ein Test, der ueber eine konservative Schranke misst,
+kann nur nach EINER Seite Auskunft geben, und in welche Richtung das ist, muss
+dastehen.
