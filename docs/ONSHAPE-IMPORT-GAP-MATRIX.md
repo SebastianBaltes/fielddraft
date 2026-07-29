@@ -2023,6 +2023,10 @@ Die #416-Dauer waechst, weil vorher vier Features gar nicht gebaut wurden und
    den Keil, der bis z = −73,17 reichen soll, woanders. Gemessen:
    `qRegions(1, [3, 6])` (ohne Bogen) behaelt Entity-Subs 10/16/26/44/50/53,
    `qRegions(1, [0, 3, 6])` (mit) faellt auf 0 … 58.
+   → **Der zweite Teil gilt nicht mehr** (Update 2026-07-29 (8), #448): die
+   Wandnamen sind seit #445 in Ordnung, und der Rest-Versatz des Keils war die
+   Test-Attrappe, nicht der Connector. `Extrude 9` reicht bis z = −73,169
+   (Onshape: −73,082). Der Bogen-Befund selbst bleibt stehen.
 2. **Die Flanken-Angabe braucht die Haendigkeit** aus dem #415-Abgleich. Wo die
    fehlt (schiefe Ebene, zu wenige Stuetzpunkte), bleibt das Veto aus und das
    Ranking ist das von #440. Ein `SketchXform.det`, das auch fuer nicht
@@ -2034,12 +2038,19 @@ Die #416-Dauer waechst, weil vorher vier Features gar nicht gebaut wurden und
    (`Sketch 4, 5, 10, 14, 15, 28, 29, 31`, jeweils auf `qWall`/`qCreatedBy(…,
    CAP_TOP)`). Sie werden trotzdem gebaut — sie tragen dort fuenf Koerper. Der
    Winkel steht jetzt in der Meldung; das ist die Zahl, an der die Ursache haengt.
-   → **Messartefakt**, aufgeklaert in #446 (Update (7) Punkt 5): sieben der acht
-   verschwinden, sobald die Test-Attrappe `resolvedMateConnectors` anbietet wie
-   die App. Ticket #448.
+   → **Messartefakt**, aufgeklaert in #446 (Update (7) Punkt 5), vermessen in
+   #448 (Update (8)): **alle acht** verschwinden, sobald die Test-Attrappe
+   `resolvedMateConnectors` anbietet wie die App — Update (7) hatte „sieben von
+   acht" geschaetzt. `Sketch 15` und `Sketch 31` werden dabei zu
+   Klasse-B-Meldungen (parallel, aber versetzt), sind also richtig benannt und
+   nicht behoben. Die einzige verbleibende schiefe Ebene ist `Sketch 9`, die
+   vorher gar nicht aufloeste → **#447**.
 4. #416s letzte Fehlermeldungen sind Klasse F/„abgeleitete Geometrie":
    `Chamfer 2` (SPLIT-Kantenstueck), `Fillet 2` (MERGE-Kante) und `Fillet 3`
    (Kanten, die es ohne Punkt 1 nicht gibt).
+   → **`Fillet 3` loest seit #448 auf** (Update (8)) — es hing an `Sketch 6`s
+   Connector-Ebene, die nur der Test-Attrappe fehlte. Es bleiben `Chamfer 2`,
+   `Fillet 2` und `Fillet 5`.
 
 ---
 
@@ -2351,3 +2362,143 @@ ein Messartefakt der Testumgebung, kein Defekt des Imports.
 
 Eigenes Ticket (**#448**): die Pins von sechs Dateien muessen dabei einzeln neu
 vermessen werden, und das ist der teure Teil.
+
+→ **Erledigt in #448** (Update 2026-07-29 (8)). Zwei Korrekturen an diesem
+Abschnitt: es sind ALLE acht (nicht sieben), und die eine verbleibende schiefe
+Ebene ist keine der acht, sondern `Sketch 9` — vorher unsichtbar, weil ihre
+Ebene ueberhaupt nicht aufloeste. Ausserdem bewegte die volle Oberflaeche mehr
+als #419: #416 gewinnt `Fillet 3` und zwei AABB-Achsen, #409 macht einen
+168,96-mm-Ebenenversatz sichtbar, der vorher nur eine Warnung war.
+
+---
+
+## Update 2026-07-29 (8) — die Suiten messen jetzt den Import, den die App fährt (#448)
+
+Kein Zeile Import-Code hat sich geändert. Geändert hat sich, **was die
+Testumgebung dem Übersetzer hinreicht** — und das hat vier Dokumente bewegt,
+eins davon dramatisch. Wer die Zahlen unten mit älteren Updates vergleicht,
+muss das mitlesen: die alten Zahlen waren nicht falsch gemessen, sie waren an
+einer Attrappe gemessen, die der Benutzer nie hat.
+
+### 1. Eine Attrappe, gegen das Interface des Importers getypt
+
+`wrap()` lag sechsmal handgebaut in `web/src/onshape/*E2E.slow.test.ts`, und in
+allen sechs Kopien fehlte `resolvedMateConnectors`. Neu ist
+`web/src/onshape/importKernelDouble.ts` mit **einer** Fabrik. Der Grund, warum
+das die Wurzel trifft und nicht nur den Symptomfall, sind zwei Typ-Schlösser:
+
+- Die Attrappe ist `Required<ImportKernel>` getypt. Fast alles an
+  `ImportKernel` ist optional, damit kleine Unit-Doubles klein bleiben dürfen —
+  hier ist nichts optional. Lernt der Importer eine neue Frage, bricht die
+  Kompilierung der Suiten, statt dass sie leise weniger messen.
+- `AppKernelCoversImporter` ist eine reine Typ-Zusicherung, dass die echte
+  `Kernel`-Klasse — das, was `onshapeProjectImport.ts` durchreicht — diese
+  volle Oberfläche abdeckt. Driften App und Importer auseinander, hört die
+  Datei auf zu kompilieren.
+
+### 2. Was sich je Dokument bewegt hat, einzeln
+
+`kabelbox`, `#412`, `#414`, `#415`: **bis aufs Bit unverändert** — Körperzahl,
+Fehlerliste, Warnungen, AABB. Diese vier Dokumente haben keine Skizze auf einem
+Mate-Connector.
+
+**#409** — Geometrie unverändert (16 Körper, 29 Features, identische AABB), aber
+**eine Warnung ist zu einem Fehler geworden**, und das ist ein echter, bisher
+unsichtbarer Befund. `Sketch 8` sitzt auf dem Connector `qCreatedBy(26)`. Der
+KERNEL hat die Skizze immer schon dorthin gelegt (deshalb bewegt sich nichts);
+nur die Web-Seite konnte die Ebene nicht auflösen und warnte bloß „Frame nicht
+auflösbar, 2D-Koordinaten wörtlich übernommen". Aufgelöst steht diese Ebene
+**168,96 mm neben** Onshapes eigener 3D-Antwort für `Sketch 8`. Das ist Klasse B
+(parallel, aber versetzt) und steht ab jetzt in `KNOWN_GAPS`. Dasselbe gilt
+abgeschwächt für `Sketch 1`, dessen 3D-Antwort zu wenige Stützpunkte hat — das
+bleibt eine Warnung.
+
+**#416** — `Fillet 3` löst auf, 4 → 3 Features mit Fehler. Und die AABB:
+
+| #416 | Attrappe der Suiten | volle Oberfläche | Onshape |
+|---|---|---|---|
+| x max | 11,17 | **3,000** | 3,074 |
+| z min | −65 | **−73,169** | −73,082 |
+| y max | 6,500 | 6,500 | 7,129 |
+
+`Extrude 9`s 8,17-mm-Keil wächst aus der Deckfläche von `Extrude 4`, und seine
+Skizze sitzt auf einem Connector. Ohne `resolvedMateConnectors` fiel
+`resolvePlaneFrame` auf die Fläche DARUNTER zurück und baute eine Basis aus
+deren Normale — ein in seiner eigenen Ebene um 90° gedrehter Frame. Der Keil
+zeigte deshalb nach +x statt nach −z. **Das war die Ursache, die das `it.fails`
+dieses Dokuments bisher als „Mate-Connector-Frame 90° in der Ebene verdreht"
+beschrieben hat.** Gemessen: das Unterdrücken von `Extrude 9` zieht `z min`
+zurück auf −65, die Zuordnung ist also keine Erzählung. Fünf der sechs Grenzen
+liegen jetzt unter 0,09 mm auf Onshape; offen bleibt allein `y max`, 0,63 mm zu
+kurz. Der Rest ist NICHT ein fehlender Körper: kein einzelnes Feature bewegt
+beim Unterdrücken `y max`, mehrere Körper teilen sich diese Ebene. Die offene
+Spur sind die drei übrigen Kanten-Namen (`Chamfer 2`, `Fillet 2`, `Fillet 5`) —
+eine Verrundung auf einer konkaven Kante ist das einzige, was Material ANFÜGT.
+Das Dokument hat außerdem zum ersten Mal eine Fehlerzensus-Pin bekommen; ohne
+sie wäre `Fillet 3` unbemerkt besser geworden.
+
+**#419** — das große Dokument.
+
+| #419, gleicher Code | Attrappe der Suiten | volle Oberfläche | Onshape |
+|---|---|---|---|
+| Körper | 14 | **18** | 17 Teile |
+| Meldungen | 180 | **170** | — |
+| Features mit Fehler | 99 | **89** | — |
+| Skizzen mit 90° schiefer Ebene | 8 | **1** | — |
+| Szenen-AABB x | [−157; 163] | **[−3015,4; 71,5]** | [−3015,4; 85,6] |
+| Szenen-AABB y | [−3015,4; 71,5] | **[−157; 163]** | [−157; 163] |
+
+Elf Namen sind aus `KNOWN_GAPS` verschwunden: `Sketch 4`, `5`, `6`, `10`, `13`,
+`14`, `28`, `29` legen sich auf ihre Connector-Ebenen, `Circular pattern 1` und
+`Linear pattern 1` finden ihre Achse (eine Skizzenlinie auf so einer Ebene) in
+Weltkoordinaten, und `Extrude 28`s UP_TO_SURFACE-Ziel löst auf. Einer ist
+dazugekommen: `Sketch 9`.
+
+Zwei Dinge daran sind wichtiger als die Zahlen:
+
+- **Der 90°-Dreh um Z war kein Import-Defekt.** Die Szenen-AABB lag auf den
+  vertauschten Achsen `ours(x, y, z) = Onshape(−y, x, z)`, und das war seit
+  #424 als gemessener Defekt gepinnt, mit der Basis-Regel Flächennormale-statt-
+  Parametrisierung (#415) als Verdächtigem. Die Mechanik stimmte, der Täter
+  nicht: die Wurzel-Skizzen des Dokuments sitzen auf Mate-Connectoren, und
+  genau der Rückfall auf die Fläche darunter hat den Frame gedreht. Fünf der
+  sechs Grenzen liegen jetzt unter 0,06 mm auf Onshapes eigenen Achsen; `x max`
+  fehlen 14 mm, weil 89 Features nicht importieren. Noch schärfer: der Körper
+  von `Extrude 16` trifft **alle sechs** `evBox3d`-Werte, die Onshape für ihn
+  meldet.
+- **`Sketch 9` ist die Vorvermessung für #447.** Es ist die einzige verbliebene
+  schiefe Ebene (`qCreatedBy(23)`, 90,0°) und war vorher nicht sichtbar, weil
+  diese Ebene überhaupt nicht auflöste. Wer #447 aufnimmt, fängt hier an — und
+  NICHT bei #416, dessen 90°-Symptom sich als Messartefakt herausgestellt hat
+  (siehe oben). Der Verdacht „Kanten-Anker zieht die Sekundärachse aus der
+  kanonisierten `edge.signature.0`" ist damit noch nicht widerlegt, aber auch
+  nicht mehr belegt: der Fall, an dem er belegt schien, ist weg.
+
+### 3. Korrekturen an früheren Updates
+
+- **Update (4) Punkt 3** („Acht Skizzen in #419 stehen 90° schief"): alle acht
+  genannten (`Sketch 4, 5, 10, 14, 15, 28, 29, 31`) verschwinden, nicht sieben
+  — Update (7) Punkt 5 hat „sieben von acht" geschätzt. `Sketch 15` und
+  `Sketch 31` werden dabei zu Klasse-B-Meldungen (parallel, aber 0,1 bzw.
+  16,98 mm versetzt), sind also nicht behoben, nur richtig benannt. Die eine
+  verbleibende schiefe Ebene ist `Sketch 9` und war vorher unsichtbar.
+- **Update (4) Punkt 1** (#416, geschnittener Bogen): der zweite Teil des
+  Absatzes — „der Mate-Connector von `Sketch 6` steht damit 45,7° schief, und
+  `Extrude 9` baut den Keil woanders" — gilt nicht mehr. Die Wandnamen sind
+  seit #445 in Ordnung, und die Restverschiebung des Keils war die Attrappe.
+  `Extrude 9` reicht bis z = −73,169.
+- **Update (4) Punkt 4** (#416s letzte Meldungen): `Fillet 3` gehört nicht mehr
+  dazu. Es bleiben `Chamfer 2` (SPLIT-Kantenstück) und `Fillet 2` (MERGE-Kante),
+  dazu `Fillet 5` (`qCommonEdge(qWall(19, 4), qWall(22, 4))` bindet nichts).
+- **Der `MERGE → qUnion`-Bedarf an `Thicken 7`** (#419) ist an dieser Stelle
+  nicht mehr erreichbar: `qWall(33, 26)` bindet wieder EINE Fläche, weil
+  `Extrude 25` — hinter `Sketch 13` — dort landet, wo Onshape es hat, statt
+  quer über diese Wand. Alle vier Wände werden benannt. Die Lücke aus
+  `docs/DERIVED-NAMING-PLAN.md` §4/E3 ist davon unberührt, sie wird hier bloß
+  nicht mehr getroffen.
+
+### 4. Laufzeit
+
+Ein #419-Import kostet mit der reicheren Attrappe 56,2 s statt 54,0 s (+4 %) —
+sie baut mehr Features. Die ganze Datei liegt bei 355 s (sechs Importe). Die
+fünf übrigen Suiten zusammen bleiben unter 14 s. Kein Perf-Stoppsignal.
