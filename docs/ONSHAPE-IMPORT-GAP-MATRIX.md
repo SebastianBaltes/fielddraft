@@ -2639,4 +2639,4 @@ Spur markiert:
   Ein unterdruecktes 5-mm-Chamfer laesst mehr Material stehen, erklaert die
   Luecke also auch nicht; es ist eine ungepinnte Fehlerklasse.
 
-Beides ist als eigenes Ticket abgelegt, nicht hier weiterverfolgt.
+Beides liegt als **#449** ab, nicht hier weiterverfolgt.

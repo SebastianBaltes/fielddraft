@@ -303,17 +303,29 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
    * synthesised from the face normal. Give this suite the surface the app
    * passes and the rotation is simply gone: `x max` 11.17 → 3.000 (Onshape
    * 3.07) and `z min` −65 → −73.169 (Onshape −73.08), both folded into the
-   * test above. Anyone reading this to work on #447 should start from that:
-   * the 90° in-plane skew reproduced HERE was the measurement, not the kernel.
+   * test above. #447 then measured this document's connector directly: origin
+   * and plane of `Sketch 6` land on Onshape's own 3D answer exactly, and what
+   * is left is a MIRROR (our x/y swapped) that `alignSketchFrame` divides out
+   * in full. The secondary-axis rule the ticket suspected is real but costs
+   * nothing here — do not turn a sign on it without a case that hurts.
    *
    * What is actually left is `y max`: 6.500 against Onshape's 7.1292, short by
    * 0.63 mm. It is NOT one missing solid — suppressing any single feature of
    * the import leaves `y max` at 6.500, so several bodies share that plane and
-   * nothing we build reaches over it. The three features that still fail are
-   * all edge names (`Chamfer 2`, `Fillet 2`, `Fillet 5`, see the census
-   * above), and a blend on a concave edge is the one thing that ADDS material;
-   * that is the open lead, unproven. The shortfall predates #448 — the poorer
+   * nothing we build reaches over it. The shortfall predates #448 — the poorer
    * double measured the same 6.500.
+   *
+   * The lead this comment used to carry — a missing blend on a CONCAVE edge is
+   * the one kind that ADDS material — is REFUTED (#447, now tracked as #449),
+   * on two independent grounds. By LOCATION: of the three failing edge names,
+   * `Fillet 5` sits at y ≈ −19 and `Chamfer 2` plus the two failing `Fillet 2`
+   * edges at y = −26.7, while the one `Fillet 2` edge that touches y = 6.5
+   * already imports. And IN PRINCIPLE: a concave blend cannot extend an AABB
+   * at all — its material lies in the wedge between two faces, so every
+   * extreme point of it lies ON one of them, hence already on the solid. The
+   * SDF confirms the top face IS the plane y = 6.5 (`bodySdfEval` reads
+   * exactly `y − 6.5` above it; the four mesh vertices at y = 7.10 are QEF
+   * artefacts with SDF ≈ +0.6, i.e. air).
    *
    * `it.fails` keeps that honest in both directions: the day the last 0.63 mm
    * arrives, this starts failing and forces someone to fold it into the test
