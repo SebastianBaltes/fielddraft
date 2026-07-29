@@ -1532,3 +1532,106 @@ Der EBENEN-Pfad (`extractPlaneRef`) liest weiterhin den flachen Token-Strom —
 absichtlich: eine Ebene braucht nur EINE Fläche eines verschmolzenen Paares,
 und `thicken` verlangt sogar genau eine. Die neue Flächen-Übersetzung ist über
 `decodeFaceRef` separat messbar, statt den Ebenen-Pfad umzustellen.
+
+---
+
+## Update 2026-07-29 — Klasse A, letzter Rest: eine Sketch-Kurve darf MEHRERE Waende erzeugen (#424, v0.43.1)
+
+### Was gemessen wurde
+
+Drei offene Punkte aus dem #424-Kommentar vom 2026-07-27, jeder mit einem
+Subs-und-Rollen-Dump aller BRep-Flaechen des betroffenen Features plus
+Einzelaufloesung jeder Teil-Query.
+
+**#419 Feature 31 (`Extrude 20`) — die Titel-Hypothese ein drittes Mal
+widerlegt.** Die Wand-Subs sahen nach Entity-Ids aus (16, 17, 19, 30, 31, 34 …)
+und waren doch **positionell**: das Feature hat 40 Randgruppen, und die Werte
+liegen alle unter 40. Ein neuer Diagnosepfad
+(`sketch::wall_sub_table_diag` → `WallSubRefusal`) nennt den Grund direkt:
+`DuplicateName(8312)` — Kontur 2, Sketch-Entity 120, **zweimal**. `Extrude 20`
+vereinigt elf Regionen zu einem Umriss, den eine lange Linie an zwei getrennten
+Abschnitten begrenzt. Dieselbe Ursache, andere Gestalt, bei #409s Feature 8
+(`Extrude 4`, `wall_subs: None`, Subs 0…7): zwei DISJUNKTE Leisten, beide von
+denselben zwei langen Linien eingefasst.
+
+**#419 Sketch 11 (`qCreatedBy(39, CAP_TOP)` bindet 4) — kein Namensdefekt.**
+`Extrude 25` extrudiert vier getrennte Kreise (`qRegions(38, [1, 2, 3, 4])`),
+also gibt es vier Deckflaechen, alle bei z = 12,1 mm. Onshapes eigene Query ist
+ein **`MERGE` zweier `CAP_FACE`s** desselben Extrudes — Onshape faltet
+koplanare Kappen zu einer Flaeche, FieldDraft nicht (kein impliziter Merge).
+Die vier Treffer sind also richtig; was fehlt, ist eine Ebenen-Aufloesung, die
+N **koplanare** Flaechen als EINE Ebene akzeptiert. Das ist Uebersetzer-/
+Importer-Arbeit und steht unter „Offen".
+
+### Der Fix: das Wand-Vorkommens-Ordinal
+
+Ein Wandname ist jetzt `occurrence << SUB_BITS | sketch_entity`
+(`BranchId::occurrence`, 5 Bit). Der Rang zaehlt die Waende, die DIESE Kurve
+erzeugt hat, in der kanonischen DFS-Ordnung des Profils. Vorher verwarf
+`wall_sub_table` bei jeder Wiederholung die **ganze** Tabelle — zu Recht, zwei
+Waende mit einem Sub waeren eine Branch —, und damit verloren auch die sechs
+Waende ihren Namen, deren Kurve eindeutig ist.
+
+Damit der Rang eine Eigenschaft der GEOMETRIE ist und nicht der Traversierung,
+ordnet `sketch_arrangement::assemble` die Konturen (und die Loecher) jetzt nach
+`loop_key` — aufsteigend `aabb.min.y`, `aabb.min.x`, Flaeche, dieselbe Regel wie
+`atomic_faces`. Innerhalb einer Kontur setzt `rotate_to_g1_break` seit v0.39.1
+am G1-Knick an.
+
+Verworfen wurde ein **Kontur**-Ordinal (der erste Entwurf): es trennt #419s
+Wiederholung innerhalb EINER Kontur gar nicht, und es ist der instabilere Name —
+eine eingefuegte Kontur nummeriert jede spaetere um. Details und die
+Layout-Begruendung stehen in `docs/DERIVED-NAMING-PLAN.md`, Schritt 6b.
+
+`NAMING_SCHEMA_VERSION` 4 → **5**: das neue Feld sitzt zwischen `instance` und
+`sub`, damit Branch-Woerter feature-major sortiert bleiben (die
+Koinzidenz-Klassen des Weavers entscheiden auf dieser Sortierung), und schiebt
+`instance`/`feature` um fuenf Bit hoch — also aendert sich jeder `id_hash`.
+
+### Zahlen, gemessen
+
+| | vorher (v0.43.0) | nachher (v0.43.1) |
+|---|---:|---:|
+| #409 Meldungen | 22 | **20** |
+| #409 Luecken-Namen | 19 | **17** |
+| #419 Meldungen / Namen / Koerper | 190 / 107 / 12 | 190 / 107 / 12 |
+| #419 `qWall` bindet 0 | 3 | **2** |
+
+In #409 verlassen `Mirror 2` und sein Mate-Connector die Luecken-Liste:
+`qWall(8, 45)` — die Linke des Rahmens, die nur EINE Leiste einfasst — bindet
+wieder, weil die Tabelle nicht mehr an den beiden langen Linien scheitert.
+
+In #419 bewegt sich die Namensliste nicht, die Ursachen darunter aber schon:
+`qWall(31, 32)` und `qWall(31, 26)` binden jetzt, und `Sketch 14` scheitert eine
+Stufe spaeter (Onshapes Ebene steht **schief** zur aufgeloesten Wand) statt an
+einer Wand ohne Namen.
+
+### Nebenbefund, mitrepariert: eine Naht-Fuellung, die nichts reparieren kann
+
+Der Fortschritt loeste in #419 einen **Stall** aus: `Thicken 7` bekam seine
+Flaechen und der Import stieg von 37 s auf **1151 s**. Gemessen liegt das
+weder am Namen noch am Thicken, sondern am Naht-Auffuellen des hybriden
+Seed-Weavers: die 0,12 mm dicke Schalen-Subtraktion hinterlaesst **183**
+unaufloesbare Branch-Paare, alle in einem 0,12 x 4,7 x 10,1 mm duennen Bereich,
+den der Fuell-Octree mit 0,32 mm Zellen ueberschreitet. 209 s Octree-Lauf, der
+per Konstruktion nichts findet — dreimal (Thicken, das Extrude danach, die
+Bohrung danach).
+
+`weave_branch_seeds_hybrid` verweigert die Fuellung jetzt, wenn der Naht-Bereich
+duenner ist als die Zelle, die ihn abtasten wuerde — dasselbe Argument, mit dem
+#426 die Ganzkoerper-Pflasterung abgeschafft hat, einen Schritt weiter gefuehrt.
+Die Nahtkanten sind da bereits verworfen, der Koerper behaelt also die ehrliche
+Teil-Topologie des Seed-Weavers; verweigert wird nur der Anschein einer
+Reparatur. #419 importiert wieder in **37 s**, `Thicken 7` in 2,0 s statt 374 s.
+
+### Offen
+
+1. **`qCreatedBy(op, CAP_TOP)` bindet N koplanare Kappen** (#419 Sketch 11). Der
+   Ebenen-Pfad des Importers verlangt genau eine Flaeche. Richtig waere: sind
+   alle Treffer koplanar, ist die EBENE eindeutig — das ist keine
+   Mehrdeutigkeit, sondern Onshapes `MERGE` in unserer Zerlegung.
+2. **`Thicken 7` bleibt in #419s Luecken-Liste** — zwei seiner fuenf Flaechen
+   (`qWall(31, 29)`, `qWall(31, 11)`) binden weiterhin nichts; die Entities
+   liegen nicht auf dem Rand des vereinigten Profils.
+3. **#416** ist aus Klasse A herausgemessen (Update 2026-07-27 (7)) und hat ein
+   eigenes Ticket.

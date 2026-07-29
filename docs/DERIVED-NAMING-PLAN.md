@@ -566,6 +566,77 @@ die Muster-Id; das aufzulösen braucht einen breiteren Draht als eine
 JS-Zahl. Das steht so in `FeatureId::branch_identity` und ist ausgesprochen,
 statt still falsch beantwortet zu werden.
 
+### Schritt 6b / E1' — das WALL-OCCURRENCE-Ordinal (v0.43.1, #424)
+
+Ein zweites Ordinal im Branch-Wort, aus demselben Grund wie E1 und mit
+derselben Mechanik — nur ist die Mehrdeutigkeit hier keine Kopie, sondern eine
+**Erzeugung**: eine Sketch-Kurve kann legitim MEHRERE Wände eines Sweeps
+erzeugen. Zwei gemessene Formen:
+
+- **Über Konturen hinweg.** Onshapes `Extrude 4` in #409 extrudiert die zwei
+  getrennten Leisten eines 920 × 500-Rahmens. Beide werden oben und unten von
+  DENSELBEN zwei langen Linien eingefasst.
+- **Innerhalb EINER Kontur.** `Extrude 20` in #419 vereinigt elf Regionen zu
+  einem Umriss, den eine lange Linie an zwei getrennten Abschnitten begrenzt.
+
+Vor #424 hieß beides: `wall_sub_table` sieht doppelte Ids und verwirft die
+**ganze** Tabelle (zwei Wände mit einem Sub kollabieren zu einer Branch, und
+eine halb übersetzte Tabelle ist schlimmer als keine). Damit verloren auch die
+sechs Wände ihren Namen, deren Kurve eindeutig ist — `qWall(8, 45)` band nichts
+mehr, obwohl Linie 45 nur EINE Leiste einfasst.
+
+**Warum ein Vorkommens- und kein Schleifen-Ordinal.** Der erste Entwurf zählte
+geschlossene Konturen. Die Messung an #419 hat ihn widerlegt: `Extrude 20`
+wiederholt seine Entity 120 innerhalb EINER Kontur, und ein Kontur-Ordinal
+trennt das nicht (`WallSubRefusal::DuplicateName(8312)` = Kontur 2, Entity 120).
+Das Vorkommens-Ordinal — der Rang der Wand unter denen, die ihre Kurve erzeugt
+hat — deckt beide Formen ab und ist zusätzlich der **stabilere** Name: eine
+eingefügte Kontur nummeriert jedes spätere Kontur-Ordinal um, während ein
+Vorkommens-Ordinal sich nur bewegt, wenn genau diese Kurve eine Wand gewinnt
+oder verliert.
+
+**Kanonisch, nicht zufällig.** Der Rang zählt in der DFS-Ordnung des
+Profilbaums. Damit die eine Eigenschaft der GEOMETRIE und nicht der
+Traversierung ist, ordnet `sketch_arrangement::assemble` die Konturen jetzt
+nach `loop_key` (aufsteigend `aabb.min.y`, `aabb.min.x`, Fläche — dieselbe
+Regel wie `atomic_faces`), und `rotate_to_g1_break` setzt jede Kontur an einem
+G1-Knick an. Vorher entschied der Startindex der DCEL-Traversierung bzw. die
+Rohflächen-Reihenfolge der Löcher.
+
+**Layout.** `BranchId` ist jetzt
+`feature (20) | instance (12) | occurrence (5) | sub (12)` — 49 signifikante
+Bits, weiterhin weit unter 2^53. Die Feldstelle ist gemessen und nicht
+kosmetisch: das Ordinal ÜBER die Feature-Id zu legen hätte den `id_hash` jedes
+Körpers ohne Wiederholung unverändert gelassen, verschränkt aber die Branches
+VERSCHIEDENER Features nach Ordinal — und die Koinzidenz-Klassen in
+`weaving::canonicalize` sortieren auf dem gepackten Wort und entscheiden
+greedy, welche von zwei koplanaren Wänden ihre Fläche behält. Gemessen:
+`onshape_419_revolve_remove_stays_bounded` bekam so zwei koplanare
+Doppelflächen (37 → 39). Innerhalb des Feature-Namensraums bleibt die Sortierung
+feature-major und der Pin steht. Preis: `instance` und `feature` rücken um fünf
+Bit hoch, also ändert sich JEDER `id_hash` — `NAMING_SCHEMA_VERSION` 4 → **5**.
+
+**Sichtbar ist das Ordinal nicht.** `qWall(op, entity)` sagt nichts darüber und
+bindet jedes Vorkommen; Onshapes eigene `SWEPT_FACE`-Query trägt die
+Unterscheidung ebenfalls nicht (gemessen am `CAP_EDGE` von #409s `Mirror 2`:
+`derivedFrom` nennt genau `NvOF9YLTsD3q.left`, sonst nichts). Das Ordinal
+existiert nur, damit zwei getrennte Wände nicht auf EINER Branch landen — genau
+die Rolle, die `INNER_WALL_FLAG` für die Innenwand einer Schale spielt.
+
+**Nebenbefund, mitrepariert.** `extrude_rim_corner` (DL-77) schlägt eine Wand
+über ihren Sub in `wall_subs` nach, um den exakten Skizzen-Eckpunkt statt des
+octree-quantisierten zu benutzen. Der Schlüssel ist jetzt der ganze Wandname
+(Vorkommen inklusive); mit dem nackten Sub findet die Suche keine Wiederholung,
+`walls` kommt zu kurz zurück und jede Ecke daneben verliert still ihre
+Genauigkeit.
+
+**Verworfen: die Tabelle Duplikate zulassen zu lassen.** Zwei Gruppen mit
+gleichem Sub wären eine Branch mit zwei getrennten Flächen. Für zwei Stücke
+DERSELBEN Linie wäre das noch ehrlich (gleiche Trägerfläche), für zwei
+G1-Ketten, die sich nur die kleinste Entity-Id teilen (`traced_group_ids` nimmt
+das Minimum), aber ein impliziter Merge zweier verschiedener Flächen — genau
+das, was das Projekt nicht tut.
+
 ---
 
 ## 6. Woran gemessen wird
