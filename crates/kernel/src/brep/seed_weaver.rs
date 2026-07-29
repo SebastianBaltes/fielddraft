@@ -180,6 +180,24 @@ pub fn weave_branch_seeds_hybrid(body: &BoundedCsg, min_cell: f32) -> Option<BRe
             let s = region.size();
             let largest = s[0].max(s[1]).max(s[2]);
             let cell = (largest / SEAM_REGION_CELL_DIVISOR).clamp(1e-3, min_cell.max(1e-3));
+            // …and the SAME argument once more, one step further (#424). If the
+            // seam region is thinner than the cell that would sample it, these
+            // cells cannot resolve the seam either — the fill is guaranteed to
+            // repair nothing and is pure cost. Measured on #419's `Thicken 7`:
+            // a 0.12 mm shell subtraction leaves 183 unresolvable pairs, ALL of
+            // them inside a 0.12 x 4.7 x 10.1 mm sliver that a 0.32 mm cell
+            // steps straight over — 209 s of octree walk, three times over
+            // (thicken, the extrude after it, the hole after that), taking the
+            // document's import from 36 s to 19 minutes.
+            //
+            // Refusing is not the same as hiding: `drop_pair_edges` has already
+            // removed those seams, so the body keeps the honest partial
+            // topology the seed weaver produced, exactly as
+            // `weave_branch_seeds_partial` does for a body it cannot seed at
+            // all. What is refused is the pretence of a repair.
+            if s[0].min(s[1]).min(s[2]) < cell {
+                return Some(finish_weave(brep, body));
+            }
             crate::brep::octree::Octree::build_region(body, cell, region)
         }
         None => crate::brep::octree::Octree::build(body, min_cell),
