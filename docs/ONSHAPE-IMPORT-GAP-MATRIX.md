@@ -2943,3 +2943,99 @@ war ein fehlender Zweig von zwanzig Zeilen, die andere ein Modell-Unterschied
 mit eigenem Ticket. Der Zensus, der sie zusammen ablegte (Update (10) §5), war
 richtig — er gruppiert nach Symptom, und genau deshalb muss die Diagnose
 danach jeden Namen einzeln aufmachen.
+
+## Update 2026-07-29 (12) — die 0,1675 mm sind eine RUNDUNG, die wir nicht schneiden (#450)
+
+Ticket #450 hatte eine Spur mitbekommen — „zuerst die Endbedingung von
+`Extrude 9`, dann den Keilwinkel" — und ausdruecklich dazugeschrieben, dass
+sie NICHT vermessen ist. Sie war auch falsch. `Extrude 9` ist exakt; die
+0,1675 mm sind der Unterschied zwischen einer scharfen Keilspitze und einer
+gerundeten.
+
+### 1. `Extrude 9` trifft auf 1,8e-6 mm — drei unabhaengige Quellen
+
+Die Keilspitze liegt bei **z = −73,16882881**. Das sagen drei Antworten, von
+denen keine von einer anderen abhaengt:
+
+| Quelle | Wert (mm) |
+|---|---:|
+| Onshapes Sketch-3D-Antwort (`onshape-416-sketches3d.json`, der Eckpunkt selbst) | −73,16882880644965 |
+| Onshapes eigene FLAECHEN-Ebenen (`evSurfaceDefinition` fuer `qCreatedBy(Extrude 9)`), geschnitten | −73,16882881 |
+| unsere SDF (`bodySdfEval`, Bisektion der Saeule x = 3, y = −10,1) | −73,1688271 |
+
+Der Sketch-Ursprung von `Sketch 6` sitzt bei (3; −10,1; −65) — runde Zahlen,
+weil der Mate-Connector auf der Mitte einer Kante liegt. Die Skizze traegt ein
+Viereck (0;0) → (−48,4946;0) → (−44,8889;2,4573) → (0;8,1688), und
+−65 − 8,168828806 = −73,168828806. Der Extrude selbst kann `z min` gar nicht
+bewegen: seine Normale ist ±y (die Kappen liegen bei y = −12,6 und y = −7,6,
+zusammen 5,0 mm = Onshapes `depth` bei `symmetric` — unsere Lesart „±depth/2"
+ist damit gegen das Dokument bestaetigt). Gemessen: **d(z min)/d(depth) = 0**,
+bitgleich bei halbierter Tiefe.
+
+### 2. Onshape kommt nur deshalb nicht so tief: die Spitze ist GERUNDET
+
+Onshapes tiefster VERTEX liegt bei −72,97326 — ueber seinem eigenen
+`z min` = −73,00127. Der Tiefpunkt gehoert also keiner Ecke, sondern
+**SPLINE-Flaechen**, und die stammen laut `qCreatedBy` von:
+
+- `Fillet 3` (`FWgfYj1eBr1J6Hd_1`), r = **1,3647572 mm**, `crossSection: CURVATURE`
+  — die mittlere Blend-Flaeche, `z min` −73,00127404;
+- `Fillet 2` (`FsxE0XiOVUgMBWN_2`), r = 1,2071068 mm — die zwei Eckstuecke an
+  den Enden, −73,00131 / −73,00128.
+
+Die Rechnung stimmt bis auf die Tangenten: die Spitzenkante ist die Kante
+zwischen der Aussenwand x = 3 und der langen Keilunterseite
+(Normale (−0,1262; 0; −0,9920)); der Rollkugel-Mittelpunkt fuer r = 1,3647572
+liegt bei z = −71,61942246, und exakt dort endet die Blend-Flaeche nach oben
+(gemessene maxCorner z = −71,61942246). Es ist also genau dieser Fillet.
+
+### 3. Wir schneiden ihn nicht — und zwar KEIN einziger Fillet dieses Dokuments
+
+Der Import ist an dieser Stelle nicht schuld: `Fillet 3` schreibt drei
+`fillet_edge`-Aufrufe, und der dritte,
+
+    {"blend_radius":1.3647571568806205,"edge":"qCommonEdge(qWall(12, 9), qWall(12, 12))"}
+
+loest auf **genau eine** Kante auf — 4,99986 mm lang, an (3; −10,1; −73,16883),
+also die Spitzenkante — und `listFeatures` meldet **keinen** Regenerationsfehler.
+Trotzdem ist das Feld unveraendert:
+
+- `setFeatureSuppressed(15, true)` → AABB und SDF **bitgleich**;
+- `blend_radius` auf 5 mm gedreht → **bitgleich**;
+- alle zwoelf `fillet_edge`-Aufrufe unterdrueckt → **bitgleich**.
+
+Die Ursache steht im Kernel, nicht im Web: `csg::edge_cutter_frame` hat ein
+P1-Gate `cdot.abs() > 2e-2 → NonOrthogonal` (`docs/FILLET-CUTTER-PLAN.md` §4/§5).
+An dieser Kante ist `cdot = n_a·n_b = −0,126219` (Innenwinkel 82,75°), also
+abgelehnt. Der Rueckfallpfad ist der alte `smin`-MaskedBlend — und der braucht
+eine Boolean-Fuge zwischen `feature_a` und `feature_b`. Beide Waende gehoeren
+hier demselben Feature (`qWall(12, 9)` und `qWall(12, 12)`), es gibt keine Fuge,
+und damit passiert nichts: das ist woertlich der #406-Mechanismus, nur an einer
+schiefen statt an einer Wuerfelkante.
+
+### 4. Was ein Cutter brauchte — und was danach uebrig bleibt
+
+Mit r = 1,3647572 an dieser Kante gerechnet (2D im xz-Schnitt, Ecke bei
+(3; −73,1688288)):
+
+| Querschnitt | tiefster Punkt (mm) | Abstand zu Onshape |
+|---|---:|---:|
+| scharf (heute) | −73,1688288 | 0,1675 zu tief |
+| Kreis (Rolling Ball, unser Cutter) | −72,98418 | 0,0171 zu flach |
+| Konik rho = 0,5 | −72,99508 | 0,0062 zu flach |
+| Onshape (`CURVATURE`) | −73,00127404 | — |
+
+Ein kreisfoermiger Cutter holt also **rund 90 %** der Abweichung und laesst
+0,0171 mm stehen, deren Ursache dann benannt ist: Onshapes Querschnitt ist
+kruemmungsstetig, unserer ein Kreisbogen. Der Importer sagt das bereits
+(`Fillet 3: CURVATURE-Querschnitt → kreisfoermig uebernommen`) — er sagt es nur
+bisher folgenlos, weil gar nichts geschnitten wurde.
+
+### 5. Methodik-Lehre
+
+**Eine zu WEIT reichende Grenze kann fehlendes Wegnehmen sein.** Alle bisherigen
+#416-Runden haben nach fehlendem MATERIAL gesucht; hier fehlt eine
+Materialabnahme. Und sie fehlt lautlos: die Query loest auf, das Feature
+regeneriert fehlerfrei, der Zensus ist sauber — nur die Geometrie bewegt sich
+nicht. Ein Feature, das nichts tut und nichts sagt, ist von einem Feature, das
+funktioniert, nur an der Geometrie zu unterscheiden.
