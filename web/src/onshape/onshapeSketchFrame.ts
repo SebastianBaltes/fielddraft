@@ -163,38 +163,47 @@ export function sketchPoints2d(feat: AnyMsg): Map<string, Vec2> {
   return out;
 }
 
-/**
- * Onshapes eigenen Sketch-Frame aus 2D↔3D-Korrespondenz bestimmen.
- *
- * Ausgleichsrechnung über alle Paare (drei Unbekannte je Weltachse: x, y,
- * Ursprung), danach die Gegenprobe: die Achsen müssen orthonormal sein und
- * jeder Punkt muss auf 1e-6 mm getroffen werden. Ist das Gleichungssystem
- * entartet (alle Punkte kollinear — #415 „Sketch 5", vier Ellipsen auf einer
- * Linie) oder passt die Rekonstruktion nicht, liefert die Funktion `null`
- * statt eines geratenen Frames.
- */
-export function measureOnshapeSketchFrame(
-  feat: AnyMsg,
-  three: OnshapeSketch3d | undefined,
-): MeasuredSketchFrame | null {
-  if (!three) return null;
+/** Eine 2D↔3D-Korrespondenz eines Sketches. */
+interface FramePair {
+  /** Id, unter der die `sketches`-Antwort den Punkt meldet — für die Meldung. */
+  id: string;
+  u: number;
+  v: number;
+  p: Vec3;
+}
+
+/** Was der robuste Fit verwerfen musste, damit der Rest exakt passt (#454). */
+export interface RobustFitReport {
+  /** Die verworfenen Stützpunkte, in der Reihenfolge des Verwerfens. */
+  dropped: { id: string; errMm: number }[];
+  /** Wieviele Paare der Sketch überhaupt gemeldet hat. */
+  total: number;
+}
+
+/** Jede benennbare 2D↔3D-Korrespondenz des Sketches. */
+function framePairs(feat: AnyMsg, three: OnshapeSketch3d): FramePair[] {
   const flat = sketchPoints2d(feat);
   const byId = new Map<string, OnshapeSketch3dEntity>();
   for (const raw of three.geomEntities ?? []) {
     const e = msg(raw) as OnshapeSketch3dEntity;
     if (typeof e.id === "string") byId.set(e.id, e);
   }
-
-  const pairs: { u: number; v: number; p: Vec3 }[] = [];
+  const pairs: FramePair[] = [];
   for (const [id, [u, v]] of flat) {
     const e = byId.get(id);
     const p = e?.point ?? e?.center;
     if (!p || p.length !== 3) continue;
-    pairs.push({ u, v, p: [p[0], p[1], p[2]] });
+    pairs.push({ id, u, v, p: [p[0], p[1], p[2]] });
   }
-  if (pairs.length < 3) return null;
+  return pairs;
+}
 
-  // Normalgleichungen über die Designmatrix [u, v, 1].
+/** Ausgleichsrechnung über die Designmatrix `[u, v, 1]` — drei Unbekannte je
+ *  Weltachse, keine Gegenproben. `null`, wenn das System entartet ist (alle
+ *  Punkte kollinear). */
+function solveFrameAxes(
+  pairs: FramePair[],
+): { origin: Vec3; xAxis: Vec3; yAxis: Vec3 } | null {
   let n00 = 0,
     n01 = 0,
     n02 = 0,
@@ -232,7 +241,35 @@ export function measureOnshapeSketchFrame(
     yAxis[c] = s[1];
     origin[c] = s[2];
   }
+  return { origin, xAxis, yAxis };
+}
 
+/** Grösster Rekonstruktionsfehler in mm, und der Stützpunkt, der ihn trägt. */
+function worstResidual(
+  pairs: FramePair[],
+  fit: { origin: Vec3; xAxis: Vec3; yAxis: Vec3 },
+): { pair: FramePair; errMm: number } {
+  let best = { pair: pairs[0], errMm: 0 };
+  for (const pair of pairs) {
+    let err = 0;
+    for (let c = 0; c < 3; c++) {
+      const world = fit.origin[c] + pair.u * fit.xAxis[c] + pair.v * fit.yAxis[c];
+      err = Math.max(err, Math.abs(world - pair.p[c]) * M_TO_MM);
+    }
+    if (err > best.errMm) best = { pair, errMm: err };
+  }
+  return best;
+}
+
+/** Die beiden Gegenproben, die aus einer Anpassung einen FRAME machen: die
+ *  Achsen müssen orthonormal sein (sonst hat statt einer Drehung eine
+ *  VERZERRUNG überlebt), und jeder erklärte Punkt muss getroffen werden.
+ *  `null`, wenn eine davon scheitert. */
+function checkedFrame(
+  pairs: FramePair[],
+  fit: { origin: Vec3; xAxis: Vec3; yAxis: Vec3 },
+): MeasuredSketchFrame | null {
+  const { origin, xAxis, yAxis } = fit;
   // Gegenprobe 1: orthonormale Achsen (sonst war die Anpassung unterbestimmt).
   if (
     Math.abs(norm3(xAxis) - 1) > 1e-6 ||
@@ -259,6 +296,102 @@ export function measureOnshapeSketchFrame(
     residualMm,
     samples: pairs.length,
   };
+}
+
+/**
+ * Wieviele Stützpunkte den Frame mindestens TRAGEN müssen, damit die
+ * verworfenen „Ausreisser" heissen dürfen (#454).
+ *
+ * Die Anpassung hat drei Unbekannte je Weltachse; drei nicht-kollineare Paare
+ * bestimmen sie gerade. {@link ROBUST_MIN_PAIRS} ist das Doppelte davon — unter
+ * einer zweifachen Überbestimmung ist „exakt getroffen" keine Aussage mehr,
+ * sondern Interpolation. {@link ROBUST_MIN_KEPT} verlangt zusätzlich eine echte
+ * MEHRHEIT: verwirft man die Hälfte oder mehr, ist nicht mehr entscheidbar,
+ * welche Teilmenge die Ausreisser sind — dann sind es zwei Datensätze und kein
+ * verrauschter.
+ *
+ * Gemessen an der Familie, für die diese Konstanten da sind: die zwei Sketches,
+ * die einen Frame hergeben, behalten 31 von 32 bzw. 14 von 19 Paaren (97 % und
+ * 74 %); die fünf, die keinen hergeben, müssten 50 %, 50 %, 50 %, 50 % und 70 %
+ * wegwerfen. Die Grenze trennt sie also nicht knapp, sondern mit Abstand — und
+ * sie ist ohnehin nicht die schärfste Klinge: die fünf scheitern ZUSÄTZLICH an
+ * der Orthonormalität (‖y‖ = 1,1000 / 1,1826 / 0,9874 …, also das 4 800- bis
+ * 180 000-fache der 1e-6-Schranke), während die zwei sie auf neun Stellen
+ * erfüllen. Keine der beiden Schranken ist auf die Fälle kalibriert; beide
+ * folgen aus dem, was eine Ausgleichsrechnung zu einer Messung macht.
+ */
+const ROBUST_MIN_PAIRS = 6;
+const ROBUST_MIN_KEPT = 0.5;
+
+/**
+ * Onshapes eigenen Sketch-Frame aus 2D↔3D-Korrespondenz bestimmen.
+ *
+ * Ausgleichsrechnung über alle Paare (drei Unbekannte je Weltachse: x, y,
+ * Ursprung), danach die Gegenprobe: die Achsen müssen orthonormal sein und
+ * jeder Punkt muss auf 1e-6 mm getroffen werden. Ist das Gleichungssystem
+ * entartet (alle Punkte kollinear — #415 „Sketch 5", vier Ellipsen auf einer
+ * Linie), liefert die Funktion `null` statt eines geratenen Frames; für den
+ * kollinearen Fall gibt es {@link measureCollinearSketchFrame}.
+ *
+ * ROBUST GEGEN AUSREISSER (#454): passt die Rekonstruktion nicht, wird nicht
+ * sofort aufgegeben. Ein EINZIGER abweichender Stützpunkt hat sonst die ganze
+ * Skizze gekostet — im #419-Dokument war das `Sketch 11`, wo 31 von 32 Punkten
+ * exakt sitzen und der 32. um 1,035 mm daneben liegt. Wörtlich übernommen
+ * landete die Skizze 16,983 mm neben ihrem Platz, und mit ihr alles, was auf
+ * ihr steht (`Extrude 5`, `Extrude 14`, `Sketch 12`, `Extrude 15` — die Kette
+ * von #452). Also: den grössten Ausreisser verwerfen, neu anpassen,
+ * wiederholen, bis der Rest exakt ist — begrenzt durch
+ * {@link ROBUST_MIN_PAIRS} / {@link ROBUST_MIN_KEPT}.
+ *
+ * Die Schwellen bleiben dabei UNVERÄNDERT scharf. Aufgeweicht wird nichts: der
+ * überlebende Rest muss dieselben 1e-6 treffen wie zuvor, und die Achsen müssen
+ * orthonormal sein. Genau daran scheitern die Sketches, deren zwei Antworten
+ * sich nicht durch Ausreisser, sondern durch eine SKALIERUNG unterscheiden
+ * (#409 `Sketch 2`: ‖y‖ = 1,1000, auf vier Stellen glatt) — eine überlebende
+ * Skalierung ist kein Frame, und sie wird weiter abgelehnt.
+ *
+ * Der exakte Pfad kommt zuerst und ist unberührt: wo er heute trägt, liefert er
+ * bitgleich dasselbe wie vorher, und der robuste Pfad wird gar nicht betreten.
+ */
+export function measureOnshapeSketchFrame(
+  feat: AnyMsg,
+  three: OnshapeSketch3d | undefined,
+  report?: RobustFitReport,
+): MeasuredSketchFrame | null {
+  if (!three) return null;
+  const pairs = framePairs(feat, three);
+  if (pairs.length < 3) return null;
+
+  const fit = solveFrameAxes(pairs);
+  // Entartet heisst kollinear, und Punkte wegzuwerfen macht das nur schlimmer.
+  if (!fit) return null;
+  const exact = checkedFrame(pairs, fit);
+  if (exact) return exact;
+
+  // Ab hier der robuste Pfad — nur erreichbar, wo der exakte scheitert.
+  const dropped: { id: string; errMm: number }[] = [];
+  let kept = pairs;
+  let current = fit;
+  while (
+    kept.length - 1 >= ROBUST_MIN_PAIRS &&
+    kept.length - 1 > ROBUST_MIN_KEPT * pairs.length
+  ) {
+    const worst = worstResidual(kept, current);
+    dropped.push({ id: worst.pair.id, errMm: worst.errMm });
+    kept = kept.filter((q) => q !== worst.pair);
+    const next = solveFrameAxes(kept);
+    if (!next) return null;
+    current = next;
+    const frame = checkedFrame(kept, current);
+    if (frame) {
+      if (report) {
+        report.dropped = dropped;
+        report.total = pairs.length;
+      }
+      return frame;
+    }
+  }
+  return null;
 }
 
 /**

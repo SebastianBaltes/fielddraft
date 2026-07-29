@@ -3486,3 +3486,86 @@ Was den Unterschied sichtbar gemacht hat, war eine einzige Frage in
 Weltkoordinaten — „welche unserer 171 ebenen Flaechen liegt in Onshapes
 Sketch-Ebene?" — mit der Antwort „keine". Ein Name laesst sich nur pruefen,
 wenn man weiss, wonach er zeigen SOLL.
+
+## Update 2026-07-29 (16) — ein Punkt von 32, und 16,983 mm (#454)
+
+Update (15) hat die Ursache benannt und ihr ein eigenes Ticket gegeben. Sie ist
+behoben, und die Zahlen sind so eindeutig, wie eine Ursachenkette es selten ist.
+
+### 1. Was geaendert wurde
+
+`measureOnshapeSketchFrame` verlangte, dass JEDER Stuetzpunkt auf 1e-6 mm
+rekonstruiert wird, und gab sonst auf. Neu: schlaegt die Rekonstruktion fehl,
+wird iterativ der groesste Ausreisser verworfen und neu angepasst, bis der Rest
+exakt ist. Der EXAKTE Pfad kommt zuerst und ist unberuehrt — wo er heute
+traegt, wird der robuste gar nicht betreten.
+
+Die Annahme-Kriterien sind Konstanten mit Begruendung, nicht auf die Faelle
+kalibriert:
+
+- **Orthonormalitaet der ueberlebenden Basis** (unveraendert 1e-6). Das ist die
+  scharfe Klinge: Klasse A erfuellt sie auf neun Stellen, Klasse B verfehlt sie
+  um das 4 800- bis 180 000-fache (‖y‖ = 1,1000 / 1,1826 / 0,9874).
+- **`ROBUST_MIN_PAIRS = 6`** — das Doppelte der drei Paare, die die Anpassung
+  gerade bestimmen. Unter zweifacher Ueberbestimmung ist „exakt getroffen"
+  Interpolation, keine Aussage.
+- **`ROBUST_MIN_KEPT = 0,5`** — eine echte MEHRHEIT muss den Frame tragen.
+  Verwirft man die Haelfte oder mehr, ist nicht entscheidbar, welche Teilmenge
+  die Ausreisser sind; dann sind es zwei Datensaetze und kein verrauschter.
+- **Residuum-Schwelle unveraendert `FIT_TOL_MM` = 1e-6 mm.** Aufgeweicht wird
+  nichts — die Ausreisser werden BENANNT, nicht toleriert.
+
+### 2. Elfte-Widerlegungs-Regel: der robuste Pfad greift nur, wo der exakte faellt
+
+Ueber alle fuenf Dokumente mit 3D-Antwort, jede Skizze einzeln geprueft: genau
+**zwei** nehmen den robusten Pfad, beide in #419.
+
+| Skizze | Paare | verworfen | Rest |
+|---|---:|---|---:|
+| `Sketch 11` | 32 | 1 — `Aj70QegOxzn8.0` (1,035 mm) | 5,6e-14 mm |
+| `Sketch 20` | 19 | 5 (0,72 … 0,92 mm) | 4,2e-14 mm |
+
+Jede Skizze, die vorher einen exakten Frame hatte, hat ihn unveraendert (der
+Code des exakten Pfades ist derselbe). Die fuenf Skizzen der Klasse B werden
+weiter abgelehnt.
+
+### 3. Die Wirkung, gegen Onshapes Ground Truth
+
+`Sketch 11` traegt `Extrude 5` und `Extrude 14`. Deren koplanare Waende sind die
+Traegerflaeche von `Sketch 12`:
+
+| | vorher | nachher | Onshape |
+|---|---:|---:|---:|
+| `qWall(44, 35)` Welt-x | +3,9723 | **−13,010841** | −13,0108446 |
+| `qWall(47, 35)` Welt-x | +3,9723 | **−13,010838** | −13,0108446 |
+
+Von 16,983 mm daneben auf **3 µm** — das ist der Erfolgsnachweis, und er ist
+gegen Onshapes eigene 3D-Antwort gemessen, nicht gegen uns selbst.
+
+### 4. Was sich in den Suiten bewegt hat — vollstaendig
+
+Genau EINE Zahl, und sie zeigt zur Ground Truth:
+
+| | vorher | nachher |
+|---|---:|---:|
+| Import-Meldungen #419 | 169 | **168** |
+| Features mit Meldung | 88 | **87** |
+| Koerperzahl | 18 | 18 |
+| `sceneAabb` | — | bitgleich |
+| Regen-Zensus | `Extrude 15` | `Extrude 15` |
+| Regionen-Pins `qRegions(6, …)`, `qRegions(32, …)` | — | bitgleich |
+| #409 / #414 / #415 / #416 / Kabelbox | — | alle bitgleich |
+
+Der eine Name, der die Liste verlaesst, ist `Sketch 31`, und seine eigene
+Meldung war die Begruendung: „die aufgeloeste FieldDraft-Ebene `qWall(44, 14)`
+liegt **−16,9832 mm** neben Onshapes Sketch-Ebene". Dieselbe Wand desselben
+`Extrude 5`, derselbe Betrag. Mit der Skizze an ihrem Platz ist die Meldung
+gegenstandslos. Kein Name kam hinzu.
+
+### 5. Methodik-Lehre
+
+**Eine Toleranz, die jeden Punkt einzeln pruefen laesst, prueft in Wahrheit den
+schlechtesten.** Die 1e-6 mm waren richtig und sind geblieben; falsch war, sie
+ueber ein UNGEFILTERTES Ensemble zu fuehren. 31 exakte Punkte sagen mehr als
+der 32. widerlegt — aber nur, wenn man ihn benennen darf, statt ihn entweder zu
+tolerieren oder an ihm zu scheitern.

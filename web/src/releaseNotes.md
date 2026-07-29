@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.49.1
+- fix(onshape) #454: Ein einzelner Stützpunkt, den Onshapes 3D-Antwort woanders meldet als sein eigener 2D-Payload, kostet eine Skizze nicht mehr ihre ganze Einpassung. Bisher fiel sie dann durch und wurde wörtlich übernommen — im #419-Dokument landete `Sketch 11` deswegen 16,983 mm neben seinem Platz, und alles, was darauf steht, mit ihm. Der Frame wird jetzt an die konsistente Mehrheit gelegt, und die verworfenen Punkte stehen mitsamt ihrer Abweichung in der Meldung. Die Schwellen bleiben scharf: passt der Rest nur, wenn eine Verzerrung überlebt, wird weiterhin abgelehnt.
+
 ## 0.49.0
 - feat(onshape) #452: Eine Onshape-Skizze, deren sämtliche Stützpunkte auf EINER Geraden liegen — eine einzelne Linie etwa —, wird jetzt in FieldDrafts Ebene eingepasst statt wörtlich übernommen. Bisher galt sie als „nicht bestimmbar“ und landete verdreht in ihrer Trägerfläche. Bestimmt sind dabei Lage und Drehung; die Händigkeit folgt der an 26 von 29 Skizzen gemessenen Regel, und der Import sagt das dazu.
 - feat(onshape) #452: Sagt der Import „Sketch-Frame nicht bestimmbar“, nennt er jetzt den Grund mit Zahl. Weichen Onshapes 3D-Antwort und sein eigener 2D-Payload voneinander ab — es gibt Skizzen, bei denen sie das um Millimeter tun —, dann steht der Betrag in der Meldung, statt dass „zu wenige oder kollineare Stützpunkte“ eine ganz andere Ursache nahelegt.

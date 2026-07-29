@@ -128,6 +128,17 @@ const GROUND_TRUTH = {
  * the other 97 names and the body count are bit-identical, which is the honest
  * reading of a fix that only repairs geometry three copies of one slot had.
  *
+ * `Sketch 31` left in #454, and its own error message named the reason: „die
+ * aufgelöste FieldDraft-Ebene `qWall(44, 14)` liegt −16,9832 mm neben Onshapes
+ * Sketch-Ebene". That wall belongs to `Extrude 5`, which stands on `Sketch 11`
+ * — and `Sketch 11` was taken LITERALLY because ONE of its 32 support points
+ * (`Aj70QegOxzn8.0`, 1,035 mm off) failed the exact frame fit. With the fit
+ * robust against outliers the sketch places, `Extrude 5` and `Extrude 14` move
+ * onto Onshape's own plane (their two coplanar walls now sit at x = −13,0108
+ * against Onshape's −13,0108445 — 3 µm), and the 16,9832 mm error is gone with
+ * them. 169 → 168 messages; no name was ADDED, and body count, scene box and
+ * every region pin are bit-identical.
+ *
  * The edge count moved 42+23 → 29+61 in #425 without a single message
  * disappearing, and that IS the finding: the 65 edge queries that used to fail
  * as „unknown form" / „origin unresolvable" now decode — 29 of them all the way
@@ -212,7 +223,6 @@ const KNOWN_GAPS = [
   "Sketch 26",
   "Sketch 27",
   "Sketch 30",
-  "Sketch 31",
   "Sketch 32",
   "Sketch 33",
   "Sketch 34",

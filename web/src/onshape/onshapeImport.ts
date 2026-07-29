@@ -44,6 +44,7 @@ import {
 } from "./onshapeExpr";
 import {
   type CollinearFitReport,
+  type RobustFitReport,
   describeXform,
   inPlaneXform,
   measureCollinearSketchFrame,
@@ -1403,8 +1404,13 @@ function alignSketchFrame(
   // Sketches gemessene Regel `det = +1` ist und nicht eine Messung an DIESEM
   // Sketch. Das wird gemeldet, nicht verschwiegen.
   const collinear: CollinearFitReport = { residualMm: NaN, samples: 0 };
+  // #454: verwirft die Ausgleichsrechnung Ausreisser, um den Rest exakt zu
+  // treffen, dann sind die verworfenen Punkte ein Befund über das DOKUMENT und
+  // gehören genannt — nicht die Toleranz aufgeweicht, sondern die Ausreisser
+  // benannt.
+  const robust: RobustFitReport = { dropped: [], total: 0 };
   const os =
-    measureOnshapeSketchFrame(feat, three) ??
+    measureOnshapeSketchFrame(feat, three, robust) ??
     measureConcentricSketchOrigin(feat, three, fd) ??
     measureCollinearSketchFrame(feat, three, fd, collinear);
   if (!os) {
@@ -1425,6 +1431,15 @@ function alignSketchFrame(
             `liegt der Sketch auf einer Körperfläche, kann er verdreht sein`,
     );
     return LITERAL;
+  }
+  if (robust.dropped.length > 0) {
+    const worst = robust.dropped.reduce((a, b) => (b.errMm > a.errMm ? b : a));
+    result.warnings.push(
+      `${name}: Sketch-Frame über ${robust.total - robust.dropped.length} von ` +
+        `${robust.total} Stützpunkten gemessen — ${robust.dropped.length} verworfen, ` +
+        `weil Onshapes 3D-Antwort sie nicht dort meldet, wo sein eigener 2D-Payload ` +
+        `sie hat (grösste Abweichung ${worst.errMm.toFixed(3)} mm bei "${worst.id}")`,
+    );
   }
   if (os.samples === collinear.samples && Number.isFinite(collinear.residualMm)) {
     result.warnings.push(

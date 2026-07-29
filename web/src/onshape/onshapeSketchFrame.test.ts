@@ -16,6 +16,7 @@ import {
   inPlaneXform,
   measureCollinearSketchFrame,
   measureOnshapeSketchFrame,
+  type RobustFitReport,
   sketches3dByFeature,
   sketchPoints2d,
   transformSketchFeature,
@@ -607,5 +608,109 @@ describe("Frame aus KOLLINEAREN Stützpunkten (#452)", () => {
     const feat = lineFeature([0, 0], [1, 0], 0.025);
     const three = threeFrom(feat, [0, 0, 0], [0, 0, 1], [0, 1, 0]);
     expect(measureCollinearSketchFrame(feat, three, fd)).toBeNull();
+  });
+});
+
+describe("ausreisser-robuster Frame-Fit (#454)", () => {
+  /** Ein Sketch aus N benannten PUNKTEN — `sketchPoints2d` liest `x`/`y`. */
+  const pointFeature = (pts: [number, number][]): any => ({
+    entities: pts.map((p, i) => ({ entityId: `P${i}`, x: p[0], y: p[1] })),
+  });
+
+  /** Onshapes 3D-Antwort, exakt aus dem Frame gerechnet (Meter). */
+  const threeFrom = (
+    pts: [number, number][],
+    origin: [number, number, number],
+    xAxis: [number, number, number],
+    yAxis: [number, number, number],
+  ): any => ({
+    geomEntities: pts.map(([u, v], i) => ({
+      id: `P${i}`,
+      entityType: "point",
+      point: [0, 1, 2].map((c) => origin[c] / 1000 + u * xAxis[c] + v * yAxis[c]),
+    })),
+  });
+
+  // Zehn Punkte in allgemeiner Lage — dreifach überbestimmt, und keine drei
+  // davon kollinear, damit das Verwerfen nie an der Entartung scheitert.
+  const PTS: [number, number][] = [
+    [0.01, 0.0], [0.03, 0.011], [-0.02, 0.017], [0.008, -0.024], [0.031, -0.009],
+    [-0.014, -0.006], [0.022, 0.028], [-0.027, 0.004], [0.005, 0.019], [0.017, -0.031],
+  ];
+  const OS_ORIGIN: [number, number, number] = [7, -3, 11];
+  const A = 0.4;
+  const OS_X: [number, number, number] = [Math.cos(A), Math.sin(A), 0];
+  const OS_Y: [number, number, number] = [-Math.sin(A), Math.cos(A), 0];
+
+  it("nimmt den exakten Pfad, wo er trägt — und verwirft dabei NICHTS", () => {
+    const report: RobustFitReport = { dropped: [], total: 0 };
+    const f = measureOnshapeSketchFrame(
+      pointFeature(PTS),
+      threeFrom(PTS, OS_ORIGIN, OS_X, OS_Y),
+      report,
+    )!;
+    expect(f).toBeTruthy();
+    expect(report.dropped, "der robuste Pfad wird gar nicht betreten").toEqual([]);
+    expect(f.samples).toBe(PTS.length);
+    for (let c = 0; c < 3; c++) {
+      expect(f.origin[c]).toBeCloseTo(OS_ORIGIN[c], 9);
+      expect(f.xAxis[c]).toBeCloseTo(OS_X[c], 9);
+    }
+  });
+
+  it("rettet den Frame, wenn EIN Stützpunkt daneben liegt — und nennt ihn", () => {
+    // Der #419-`Sketch 11`-Fall in klein: 9 von 10 Punkten exakt, einer 1 mm weg.
+    const three = threeFrom(PTS, OS_ORIGIN, OS_X, OS_Y);
+    three.geomEntities[4].point[2] += 0.001;
+    const report: RobustFitReport = { dropped: [], total: 0 };
+    const f = measureOnshapeSketchFrame(pointFeature(PTS), three, report)!;
+    expect(f, "ein Ausreisser darf die Skizze nicht kosten").toBeTruthy();
+    expect(report.total).toBe(10);
+    expect(report.dropped.map((d) => d.id)).toEqual(["P4"]);
+    expect(report.dropped[0].errMm).toBeGreaterThan(0.5);
+    expect(f.samples).toBe(9);
+    // Und es ist DERSELBE Frame wie ohne den Ausreisser — nicht ein
+    // ausgeglichener Kompromiss zwischen ihm und dem Rest.
+    expect(f.residualMm).toBeLessThan(1e-9);
+    for (let c = 0; c < 3; c++) {
+      expect(f.origin[c]).toBeCloseTo(OS_ORIGIN[c], 9);
+      expect(f.xAxis[c]).toBeCloseTo(OS_X[c], 9);
+      expect(f.yAxis[c]).toBeCloseTo(OS_Y[c], 9);
+    }
+  });
+
+  it("lehnt eine SKALIERUNG ab, so viele Punkte man auch verwürfe", () => {
+    // Onshapes Antwort mit gedehnter y-Achse: jeder einzelne Punkt liesse sich
+    // durch Verwerfen „erklären", aber was überlebt, ist keine Drehung. Genau
+    // der #409-`Sketch 2`-Fall (‖y‖ = 1,1000).
+    const three = threeFrom(PTS, OS_ORIGIN, OS_X, [
+      OS_Y[0] * 1.1,
+      OS_Y[1] * 1.1,
+      OS_Y[2] * 1.1,
+    ]);
+    const report: RobustFitReport = { dropped: [], total: 0 };
+    expect(measureOnshapeSketchFrame(pointFeature(PTS), three, report)).toBeNull();
+  });
+
+  it("verwirft nie so viel, dass die Mehrheit oder die Überbestimmung fällt", () => {
+    // Die HÄLFTE der Punkte daneben: dann ist nicht mehr entscheidbar, welche
+    // Teilmenge die Ausreisser sind — es sind zwei Datensätze, kein verrauschter.
+    const three = threeFrom(PTS, OS_ORIGIN, OS_X, OS_Y);
+    for (const i of [0, 1, 2, 3, 4]) three.geomEntities[i].point[2] += 0.002 * (i + 1);
+    expect(measureOnshapeSketchFrame(pointFeature(PTS), three)).toBeNull();
+
+    // Und bei sechs Paaren wird gar nicht erst verworfen: der Rest fiele unter
+    // die zweifache Überbestimmung, und „exakt getroffen" wäre dort
+    // Interpolation statt einer Aussage.
+    const few = PTS.slice(0, 6);
+    const three6 = threeFrom(few, OS_ORIGIN, OS_X, OS_Y);
+    three6.geomEntities[2].point[2] += 0.001;
+    expect(measureOnshapeSketchFrame(pointFeature(few), three6)).toBeNull();
+    // Bei sieben trägt der Rest die Grenze gerade noch — die Schranke ist
+    // scharf, nicht ungefähr.
+    const seven = PTS.slice(0, 7);
+    const three7 = threeFrom(seven, OS_ORIGIN, OS_X, OS_Y);
+    three7.geomEntities[2].point[2] += 0.001;
+    expect(measureOnshapeSketchFrame(pointFeature(seven), three7)).toBeTruthy();
   });
 });
