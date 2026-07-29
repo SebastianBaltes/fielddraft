@@ -30,7 +30,7 @@ import {
   readMateConnector,
   type OnshapeMateConnector,
 } from "./onshapeMateConnector";
-import { translateOnshapeSketch, type SketchSubCall } from "./onshapeSketch";
+import { arcWorldSpan, translateOnshapeSketch, type SketchSubCall } from "./onshapeSketch";
 import { decodeRegionQuery } from "./onshapeRegion";
 import { resolveRegionFaces, type FaceMetrics } from "./onshapeRegionFaces";
 import {
@@ -353,12 +353,18 @@ export function sketchEntityVertices(feat: AnyMsg): Map<string, [number, number]
       const r = g.radius * M_TO_MM;
       // `BTMSketchCurve` is the unbounded form (a full circle); a
       // `BTMSketchCurveSegment` carries its arc span in start/endParam as
-      // angles, running CCW — the same convention `translateOnshapeSketch` uses.
+      // angles OF ITS OWN FRAME — `arcWorldSpan` turns them into sketch angles,
+      // the same reading `translateOnshapeSketch` uses (#444).
       const unbounded = !String(e.btType ?? "").startsWith("BTMSketchCurveSegment");
-      const a0 = unbounded ? 0 : (e.startParam ?? 0);
-      let sweep = unbounded ? Math.PI * 2 : (e.endParam ?? 0) - a0;
-      while (sweep <= 0) sweep += Math.PI * 2;
-      const steps = Math.max(2, Math.ceil((ARC_FLATTEN_SEGMENTS * sweep) / (Math.PI * 2)));
+      const span = unbounded
+        ? { startAngle: 0, sweep: Math.PI * 2 }
+        : arcWorldSpan(g, e.startParam ?? 0, e.endParam ?? 0);
+      const a0 = span.startAngle;
+      const sweep = span.sweep;
+      const steps = Math.max(
+        2,
+        Math.ceil((ARC_FLATTEN_SEGMENTS * Math.abs(sweep)) / (Math.PI * 2)),
+      );
       const pts: [number, number][] = [];
       for (let i = 0; i <= steps; i++) {
         const a = a0 + (sweep * i) / steps;

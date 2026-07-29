@@ -48,8 +48,12 @@ interface OnshapeCircleGeom {
   xCenter: number;
   yCenter: number;
   radius: number;
-  // Orientation fields (xDirX/…, normal) exist but a planar sketch import
-  // reads only centre + radius; the 2D frame is the sketch plane itself.
+  /** The circle's OWN x axis in sketch coordinates (default +x). */
+  xDir?: number;
+  yDir?: number;
+  /** Handedness of that frame: `true` means the parameter angle turns
+   *  CLOCKWISE in the sketch plane. See {@link arcWorldSpan}. */
+  clockwise?: boolean;
 }
 
 type OnshapeCurveGeom = OnshapeVec2Line | OnshapeCircleGeom | { btType: string };
@@ -121,6 +125,43 @@ function isLineGeom(g: OnshapeCurveGeom | undefined): g is OnshapeVec2Line {
 }
 function isCircleGeom(g: OnshapeCurveGeom | undefined): g is OnshapeCircleGeom {
   return !!g && g.btType.startsWith("BTCurveGeometryCircle");
+}
+
+/**
+ * The SKETCH-space angular span of an Onshape circle segment (#444).
+ *
+ * `startParam` / `endParam` are angles in the CIRCLE'S OWN frame, not in the
+ * sketch: `xDir`/`yDir` carry that frame's x axis and `clockwise` its
+ * HANDEDNESS. Reading the parameters as sketch angles is right only for the
+ * default frame (+x, counter-clockwise) — and every arc that came out of a
+ * mirror carries a REFLECTED one, where the same parameters run the other way.
+ *
+ * What that cost, measured on #419 `Sketch 4`: the sketch draws four identical
+ * keyhole slots, one drawn and three mirrored copies. The three copies' arcs
+ * landed on the mirror image of their true position, so their tangent lines no
+ * longer met them — the closed slot outlines fell open, and the imprint
+ * arrangement lost the faces they bound (11 atomic faces where the symmetric
+ * sketch has 15, two of them 0.03 mm² slivers cut by an arc that crossed a line
+ * it should have ended on). `Extrude 20` then covered the whole plate instead
+ * of its frame, and the walls `Thicken 7` names on the inner rectangle never
+ * existed (`qWall(31, 29)` / `qWall(31, 11)` bound nothing).
+ *
+ * The parameters are INVARIANT under the sketch-frame alignment
+ * (`transformSketchFeature`) — that rigid map moves `xDir`/`yDir` and, when it
+ * reflects, flips `clockwise`. Local angles stay local.
+ */
+export function arcWorldSpan(
+  g: { xDir?: number; yDir?: number; clockwise?: boolean },
+  startParam: number,
+  endParam: number,
+): { startAngle: number; sweep: number } {
+  const phi = Math.atan2(g.yDir ?? 0, g.xDir ?? 1);
+  const hand = g.clockwise ? -1 : 1;
+  // Onshape stores the parameters ascending; a span that comes out ≤ 0 crossed
+  // the ±π seam and is the same normalisation the CCW-only reading did.
+  let span = endParam - startParam;
+  while (span <= 0) span += Math.PI * 2;
+  return { startAngle: phi + hand * startParam, sweep: hand * span };
 }
 
 // Scale to mm and round to 1e-9 mm (picometre) — kills the float noise a bare
@@ -240,8 +281,13 @@ export function translateOnshapeSketch(
         nextId += 2; // centre, circle
         continue;
       }
-      // Bounded → arc. Prefer angles from the referenced start/end POINT
-      // coordinates (robust); fall back to startParam/endParam as angles.
+      // Bounded → arc. The DIRECTION is the circle frame's handedness in both
+      // readings below: an arc is not „always CCW", it runs the way its own
+      // frame does (#444).
+      const hand = g.clockwise ? -1 : 1;
+      // Prefer angles from the referenced start/end POINT coordinates
+      // (robust); fall back to startParam/endParam, which are angles in that
+      // same frame.
       const sp = findPointCoords(entities, e.startPointId);
       const ep = findPointCoords(entities, e.endPointId);
       let startAngle: number;
@@ -251,11 +297,12 @@ export function translateOnshapeSketch(
         const a1 = Math.atan2(ep[1] - g.yCenter, ep[0] - g.xCenter);
         startAngle = a0;
         sweep = a1 - a0;
-        while (sweep <= 0) sweep += Math.PI * 2; // CCW span (Onshape arcs run CCW)
+        if (hand > 0) while (sweep <= 0) sweep += Math.PI * 2;
+        else while (sweep >= 0) sweep -= Math.PI * 2;
       } else {
-        startAngle = e.startParam ?? 0;
-        sweep = (e.endParam ?? 0) - startAngle;
-        notes.push(`arc ${e.entityId ?? "?"}: angles from startParam/endParam (unverified)`);
+        const span = arcWorldSpan(g, e.startParam ?? 0, e.endParam ?? 0);
+        startAngle = span.startAngle;
+        sweep = span.sweep;
       }
       subCalls.push({
         type: "sketch_arc",

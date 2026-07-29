@@ -136,6 +136,8 @@ Folge/Verhalten: Wo die Auswahl 1:1 auflösbar ist (getrennte, nicht verschachte
 
 **Offene Kernel-Arbeit für echte #412-Korrektheit:** Imprint-artige Regionen-Subdivision im Sketch-Regionenmodell (Faces an internen Sehnen/Kurven trennen, nicht nur SDF-Union-Flood-Fill). Größerer Kernel-Change, hier bewusst nicht mitgemacht.
 
+> **Nachtrag 2026-07-25 / 2026-07-29:** Der Flood-Fill ist seit dem Update darunter durch ein echtes planares Arrangement (`sketch_arrangement.rs`) ersetzt — dieser Absatz beschreibt den Zustand VOR #412s Nachschlag. Der letzte Fall, der noch einmal als fehlende Subdivision gelesen wurde (#443 → #444), war keiner: siehe Update 2026-07-29 (3).
+
 ### Update 2026-07-25 — Imprint-Arrangement gelandet, Resolver-Nachschlag offen
 
 Die Kernel-Subdivision ist da (v0.30.0, 68073b43): `sketch_arrangement.rs` baut ein echtes planares Arrangement über den rohen sub_calls (das Lowering verwirft offene Trennlinien, darum nicht über `Sketch2d`) und ist die einzige Wahrheit für alle Region-Query-Pfade; `sketch_regions.rs` ist nur noch Adapter. T-Junctions zerteilen, Dangling-Spitzen nicht; un-geschnittene Kurven werden als exakte Segmente re-emittiert. Der Web-Resolver sondiert beidseitig neben jeder von der Query benannten Kante (`regionFaceIndex`) statt einen Zentroid zu raten.
@@ -1757,3 +1759,93 @@ einziger Name kommt HINZU.
    `qWall(31, 11)` nichts.
 2. **#416** ist aus Klasse A herausgemessen (Update 2026-07-27 (7)) und hat ein
    eigenes Ticket.
+
+## Update 2026-07-29 (3) — kein Arrangement-Defekt: Onshapes Bogen-Winkel gehoeren seinem EIGENEN Frame (#444, v0.43.3)
+
+### 1. Die Hypothese aus Update (2) war falsch — gemessen, nicht argumentiert
+
+Update (2) schloss aus der Region-Abbildung von `Extrude 20`, es fehle die
+Imprint-Subdivision im Kernel: Onshape zerschneide den 1,5 mm breiten RING
+zwischen dem 41er- und dem 38er-Rechteck, wir machten daraus eine einzige
+atomare Flaeche. Nachgemessen ist beides falsch.
+
+Der Ring ist bei uns genau EINE Flaeche (237,0 mm² = 41² − 38²) — und bei
+Onshape auch. Die sechs Rand-Kanten, die eine Onshape-Region-Query nennt, sind
+kein vollstaendiger Rand, sondern eine DISAMBIGUIERUNG; aus ihnen zu schliessen,
+wo Onshape schneidet, traegt nicht. Das Arrangement des Kernels
+(`sketch_arrangement.rs`) planarisiert korrekt und hat in diesem Fall nichts
+uebersehen.
+
+### 2. Was wirklich fehlte: `clockwise` + `xDir`/`yDir` an `BTCurveGeometryCircle`
+
+`Sketch 4` zeichnet vier gleiche Schluesselloch-Aussparungen: eine gezeichnet,
+drei ueber Onshapes Spiegelung erzeugt (`…MirrorCS`). Onshape legt einen Bogen
+als Winkel in seinem EIGENEN Frame ab; `xDir`/`yDir` sind dessen x-Achse,
+`clockwise` seine Haendigkeit. Eine Spiegelung LAESST die Parameter stehen und
+kippt den Frame. Wir lasen `startParam`/`endParam` als Skizzenwinkel — fuer den
+Default-Frame (+x, ccw) richtig, fuer jede gespiegelte Kopie falsch.
+
+Beispiel, gemessen an `04uIDdMa1QEg1.MirrorCS` (r = 4,7 mm um (−2,689 | 23,35),
+`xDir` = (−1 | 0), `clockwise` = true, Parameter −π/2 … 0):
+
+| | Startpunkt | Endpunkt |
+|---|---|---|
+| gelesen als Skizzenwinkel (bis v0.43.2) | (−2,689 \| 18,65) | **(+2,011 \| 23,35)** |
+| ueber den eigenen Frame (ab v0.43.3) | (−2,689 \| 18,65) | **(−7,389 \| 23,35)** |
+
+Der wahre Endpunkt ist genau der Punkt, an dem die naechste Linie
+(`04uIDdMa1QEg3.MirrorCS`) beginnt. Falsch gelesen liegt der Bogen 9,4 mm
+daneben, die Tangenten treffen ihn nicht mehr, und der geschlossene Umriss der
+Aussparung faellt auf.
+
+Betroffen sind genau die Dokumente mit gespiegelten Boegen — ueber alle
+Fixtures gezaehlt: `#419` (`Sketch 4`, 6 Boegen) und `kabelbox` (`Sketch 6`, 6).
+**#416 hat einen einzigen Bogen, und der hat den Default-Frame** — #442 Punkt 2
+(`qWall(3, 13)` / `qWall(3, 19)` binden 0) ist von dieser Reparatur nicht
+beruehrt und hat weiterhin die in Update 2026-07-27 (7) gemessene Ursache.
+
+### 3. Repariert an drei Stellen, die zusammen bleiben muessen
+
+- `onshapeSketch.ts` — neue Funktion `arcWorldSpan` (Frame → Skizzenwinkel),
+  benutzt von der Sketch-Uebersetzung; der Umlaufsinn kommt aus `clockwise`
+  statt aus der Annahme „Onshape-Boegen laufen ccw“.
+- `onshapeImport.ts` — `sketchEntityVertices` liest denselben Bogen ueber
+  dieselbe Funktion. Ein Unit-Test haelt die beiden im Gleichschritt: driften
+  sie, sucht die Region-Aufloesung eine Flaeche an einer Stelle, an der der
+  Kernel keine Kurve hat, und meldet dafuer nichts.
+- `onshapeSketchFrame.ts` — der Frame-Abgleich bildet jetzt den FRAME ab
+  (`xDir`/`yDir`) und kippt bei einer Spiegelung `clockwise`; die Parameter
+  bleiben, damit bleibt Start Start. Vorher wurden die Winkel abgebildet und
+  bei det < 0 zusaetzlich Start/End getauscht.
+
+### 4. Zahlen, gemessen (#419)
+
+| | vorher (v0.43.2) | nachher (v0.43.3) |
+|---|---:|---:|
+| Atomare Flaechen in `Sketch 4` | 14 (2 davon 0,034 mm² Splitter) | **15**, alle vier Quadranten gleich |
+| Onshapes 14 Regionen → unsere Flaechen | 11, drei Kollisionen | **14, kollisionsfrei** |
+| `Extrude 20` Profil | `qCreatedBy`-artig ueber die ganze Platte | `qRegions(30, [0,1,2,3,5,6,7,8,9,10,11,12,13,14])` |
+| `qWall(31, 29)` / `qWall(31, 11)` | 0 / 0 | **1 / 1** (ebenso 26 und 17) |
+| Meldungen | 179 | **177** |
+| Feature-Namen in `KNOWN_GAPS` | 98 | **97** (`Thicken 7` faellt weg) |
+| Koerper | 15 | 15 |
+| Import-Dauer | 40,9 s | **47,5 s** |
+
+Die 15. Flaeche ist die 1110 mm² grosse Platte in der Mitte — und die ist
+Onshapes Auswahl NICHT. Genau deshalb ist das innere Rechteck jetzt Rand:
+seine vier Seiten trennen den gewaehlten Ring vom ungewaehlten Plattenkern,
+also traegt jede von ihnen eine Wand. `Thicken 7` findet seine beiden wieder
+(alle vier `qFace`-Verweise treffen genau die `qWall`-Flaechen) und BEISST —
+unterdrueckt man es, aendert sich das B-Rep von Koerper 11 (179 → 164 Kanten).
+
+Die +6,6 s Import-Dauer sind die Arbeit, die vorher gar nicht getan wurde:
+`Extrude 20` webt jetzt einen Rahmen mit zwoelf bogenberandeten Aussparungen
+statt einer vollen Platte, und `Thicken 7` baut ueberhaupt.
+
+### Offen
+
+1. **Imprint-Subdivision** bleibt als Thema bestehen (Update 2026-07-24, #412),
+   aber dieser Fall war KEIN Beleg dafuer. Wer sie wieder aufruft, braucht
+   einen Fall, in dem unsere Anordnung nachweislich zu grob ist — gemessen an
+   Flaechen, nicht an der Disambiguierungsliste einer Query.
+2. **#416** unveraendert (siehe oben), **#442** nicht beruehrt.

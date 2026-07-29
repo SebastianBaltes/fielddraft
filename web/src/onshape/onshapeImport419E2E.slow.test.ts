@@ -57,10 +57,10 @@ const GROUND_TRUTH = {
  * deleted — which is the point: the file has to be edited when the import gets
  * better, so the record cannot quietly go stale.
  *
- * 179 messages fall on these 98 features, and MOST of them are cascade — a
+ * 177 messages fall on these 97 features, and MOST of them are cascade — a
  * feature failing only because something it refers to never got built. Measured
- * after #443: 190 on 107 features beforehand (this comment claimed 192, which
- * was two stale — remeasured today), 216 on 118 before #424. The
+ * after #444: 179 on 98 features beforehand, 190 on 107 before #443 (that
+ * comment claimed 192, which was two stale), 216 on 118 before #424. The
  * buckets below are cut freshly from the current messages, so a single line is
  * not comparable one-to-one with the older list; the two TOTALS are:
  *
@@ -74,7 +74,7 @@ const GROUND_TRUTH = {
  *     6  unknown plane-query form
  *     5  end condition UP_TO_NEXT / UP_TO_SURFACE
  *     4  `startOffset` (refused, not misplaced)
- *     3  `qWall(…)` binds 0 faces                                    → #443 rest
+ *     1  `qWall(…)` binds 0 faces (`Sketch 30`, still open)
  *     2  pattern axis not resolvable in world coordinates
  *     2  feature type `printedHole` has no translator
  *     4  the rest: two hole positions that are not sketch points, one
@@ -85,6 +85,12 @@ const GROUND_TRUTH = {
  * `qCreatedBy(op, CAP_TOP)` binding four COPLANAR cap faces is not an
  * ambiguity for a PLANE, so `Sketch 11` imports — and with it `Sketch 12`,
  * `Boolean 3` and the extrudes 5, 11, 14, 15, 45, 47 that hung on the two.
+ *
+ * `Thicken 7` left in #444: the two walls it names exist now that `Sketch 4`'s
+ * three MIRRORED keyhole slots close (their arcs were read as sketch angles
+ * instead of angles of the arc's own, reflected frame). Nothing else moved —
+ * the other 97 names and the body count are bit-identical, which is the honest
+ * reading of a fix that only repairs geometry three copies of one slot had.
  *
  * The edge count moved 42+23 → 29+61 in #425 without a single message
  * disappearing, and that IS the finding: the 65 edge queries that used to fail
@@ -192,7 +198,6 @@ const KNOWN_GAPS = [
   "Thicken 3",
   "Thicken 4",
   "Thicken 5",
-  "Thicken 7",
 ];
 
 function wrap(k: WasmKernel): ImportKernel & { raw: WasmKernel } {
@@ -391,6 +396,48 @@ describe("#419 multi-part assembly", () => {
     // errors instead of fixing one; the repair is naming the cavity wall
     // (#429's derived-naming ground). See docs/research/440-…-provenance.md.
     expect(named("Thicken 6").params.thickness.value).toBeCloseTo(0.1, 6);
+  }, 900_000);
+
+  it("closes `Sketch 4`'s mirrored slots, so `Extrude 20` is a frame (#444)", async () => {
+    const { kernel } = await importFixture();
+    const calls = JSON.parse(kernel.raw.toJson()).feature_calls as any[];
+    const named = (n: string) => calls.find((c) => c.params?.display_name === n)!;
+
+    // `Sketch 4` draws a 44 × 44 mm plate with a 41 × 41 and a 38 × 38 rectangle
+    // inside it and FOUR identical keyhole slots — one drawn, three mirrored.
+    // Onshape selects 14 regions for `Extrude 20`: both 1.5 mm rings and all
+    // twelve faces the slots cut, but NOT the 1110 mm² plate in the middle.
+    //
+    // Until #444 the three mirrored slots' arcs were read as SKETCH angles,
+    // while Onshape stores them as angles of the arc's OWN frame — which a
+    // mirror REFLECTS. The copies' arcs therefore landed mirrored, their
+    // tangent lines no longer met them, and the arrangement had 14 faces
+    // instead of 15 (two of them 0.03 mm² slivers cut by an arc crossing a line
+    // it should have ended on). The 14 regions collapsed onto 11 of them, three
+    // pairs colliding, and the region that should have been a slot fell on the
+    // big plate — so the extrude covered the plate and its frame TOGETHER.
+    expect(named("Extrude 20").params.profiles).toBe(
+      "qRegions(30, [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])",
+    );
+
+    // The consequence, and the reason this has a ticket: with the plate in the
+    // profile the inner rectangle lay INSIDE the extruded area and bounded
+    // nothing, so none of its four sides minted a wall. `Thicken 7` names two
+    // of them and bound nothing at all. All four resolve now, each to exactly
+    // one face, and those faces are the ones `Thicken 7` asks for.
+    const walls = [29, 26, 17, 11].map((e) => kernel.resolveQuery(`qWall(31, ${e})`));
+    for (const [i, hits] of walls.entries()) {
+      expect(hits.length, `qWall(31, ${[29, 26, 17, 11][i]})`).toBe(1);
+    }
+    const wallHashes = walls.map((h) => String(h[0].idHash));
+    const asked = String(named("Thicken 7").params.faces);
+    for (const h of wallHashes) expect(asked, `Thicken 7 faces = ${asked}`).toContain(h);
+
+    // And it BITES: suppressing it moves the B-Rep of the body it thickens.
+    const before = kernel.raw.bodyBrepCounts(11);
+    kernel.raw.setFeatureSuppressed(named("Thicken 7").id, true);
+    expect(kernel.raw.bodyBrepCounts(11), "Thicken 7 moves nothing").not.toBe(before);
+    kernel.raw.setFeatureSuppressed(named("Thicken 7").id, false);
   }, 900_000);
 
   it("stands 90° rotated about Z — pinned as the measured defect it is", async () => {

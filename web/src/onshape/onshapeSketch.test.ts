@@ -79,6 +79,45 @@ describe("translateOnshapeSketch — geometry", () => {
     expect(p.sweep_angle as number).toBeCloseTo(Math.PI / 2, 6);
   });
 
+  it("reads a MIRRORED arc through its own frame, not as sketch angles (#444)", () => {
+    // A mirrored copy keeps its parameters and flips its FRAME: `clockwise`
+    // says the angle turns the other way, `xDir`/`yDir` where it starts from.
+    // Taken from #419 `Sketch 4`, entity `04uIDdMa1QEg1.MirrorCS` — a quarter
+    // of r = 4.7 mm around (−2.689 | 23.35), whose true far end is the point
+    // (−7.389 | 23.35) that the next line starts at. Read as sketch angles the
+    // arc lands at (+2.011 | 23.35) instead: mirrored about the wrong axis,
+    // 9.4 mm away, and the slot outline it belongs to falls open.
+    const sketch: OnshapeSketchFeature = {
+      geometry: [
+        {
+          btType: "BTMSketchCurveSegment-155",
+          entityId: "Arc1",
+          startParam: -Math.PI / 2,
+          endParam: 0,
+          geometry: {
+            btType: "BTCurveGeometryCircle-115",
+            xCenter: -0.0026891554437821694,
+            yCenter: 0.02335,
+            radius: 0.0047,
+            xDir: -1,
+            yDir: 0,
+            clockwise: true,
+          },
+        },
+      ],
+    };
+    const p = translateOnshapeSketch(sketch).subCalls[0].params as Record<string, number>;
+    const end = (p.start_angle as number) + (p.sweep_angle as number);
+    const c = p.center as unknown as [number, number];
+    expect(c[0] + p.radius * Math.cos(p.start_angle as number)).toBeCloseTo(-2.689, 3);
+    expect(c[1] + p.radius * Math.sin(p.start_angle as number)).toBeCloseTo(18.65, 3);
+    expect(c[0] + p.radius * Math.cos(end)).toBeCloseTo(-7.389, 3);
+    expect(c[1] + p.radius * Math.sin(end)).toBeCloseTo(23.35, 3);
+    // A reflected frame runs CLOCKWISE — the sweep must carry that sign, or the
+    // solver's arc gets its endpoints the wrong way round.
+    expect(p.sweep_angle as number).toBeCloseTo(-Math.PI / 2, 9);
+  });
+
   it("emits a standalone point but not curve endpoints", () => {
     const sketch: OnshapeSketchFeature = {
       geometry: [

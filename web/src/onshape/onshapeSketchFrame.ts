@@ -357,12 +357,6 @@ function mapDir(x: SketchXform, u: number, v: number): Vec2 {
   return [nz(x.a * u + x.b * v), nz(x.c * u + x.d * v)];
 }
 
-/** Einen Winkel in der Sketch-Ebene abbilden. Bei einer Drehung ist das ein
- *  Versatz, bei einer Spiegelung eine Umkehr um die Spiegelachse. */
-function mapAngle(x: SketchXform, angle: number): number {
-  return x.det >= 0 ? angle + x.angle : x.angle - angle;
-}
-
 // ── Den Payload umschreiben ────────────────────────────────────────
 
 /** Onshape-Ids, die der Sketch-Übersetzer auf FieldDrafts Ursprung (Entity 0)
@@ -421,27 +415,17 @@ export function transformSketchFeature(
       bt.startsWith("BTCurveGeometryEllipse")
     ) {
       [g.xCenter, g.yCenter] = mapPointM(x, g.xCenter, g.yCenter);
-      if (typeof g.xDir === "number" && typeof g.yDir === "number") {
-        [g.xDir, g.yDir] = mapDir(x, g.xDir, g.yDir);
-      }
-      // Bei einer Kreis-/Bogen-SEGMENT-Entity sind start/endParam WINKEL.
-      const bounded = String(e.btType ?? "").startsWith("BTMSketchCurveSegment");
-      if (bounded && bt.startsWith("BTCurveGeometryCircle")) {
-        const s = typeof e.startParam === "number" ? e.startParam : 0;
-        const t = typeof e.endParam === "number" ? e.endParam : 0;
-        if (x.det >= 0) {
-          e.startParam = mapAngle(x, s);
-          e.endParam = mapAngle(x, t);
-        } else {
-          // Eine Spiegelung dreht den Umlaufsinn um: derselbe Bogen läuft
-          // gegen den Uhrzeigersinn jetzt vom früheren END- zum STARTpunkt.
-          e.startParam = mapAngle(x, t);
-          e.endParam = mapAngle(x, s);
-          const sp = e.startPointId;
-          e.startPointId = e.endPointId;
-          e.endPointId = sp;
-        }
-      }
+      // `startParam`/`endParam` sind Winkel im EIGENEN Frame des Kreises, nicht
+      // in der Skizze (#444) — starr abgebildet wird deshalb der FRAME, nicht
+      // der Winkel. Bei einer Spiegelung kippt zusaetzlich sein Umlaufsinn: die
+      // Senkrechte zur x-Achse zeigt danach zur anderen Seite. Die Parameter
+      // selbst bleiben, und mit ihnen bleibt Start Start.
+      [g.xDir, g.yDir] = mapDir(
+        x,
+        typeof g.xDir === "number" ? g.xDir : 1,
+        typeof g.yDir === "number" ? g.yDir : 0,
+      );
+      if (x.det < 0) g.clockwise = !g.clockwise;
     }
   }
 

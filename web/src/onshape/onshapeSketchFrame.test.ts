@@ -20,6 +20,7 @@ import {
   transformSketchFeature,
   type MeasuredSketchFrame,
 } from "./onshapeSketchFrame";
+import { arcWorldSpan } from "./onshapeSketch";
 import { planeBasisFromNormal, type PlaneFrame } from "../sketchPlaneFrame";
 
 const fx = (name: string): any =>
@@ -176,6 +177,25 @@ const rot90 = {
   outOfPlaneMm: 0,
 };
 
+/** Float-Rauschen der Drehung wegschneiden (und −0 auf 0 legen). */
+const round = (v: number) => Math.round(v * 1e12) / 1e12 + 0;
+
+/** Die beiden Endpunkte eines Bogen-Payloads in Sketch-Koordinaten (Meter),
+ *  gelesen wie der Importer sie liest — über den EIGENEN Frame des Kreises
+ *  ({@link arcWorldSpan}). Das ist die Größe, die eine Abbildung erhalten muss;
+ *  `startParam` allein sagt ohne den Frame nichts. */
+function arcEnds(e: any): [number, number][] {
+  const g = e.geometry;
+  const { startAngle, sweep } = arcWorldSpan(g, e.startParam, e.endParam);
+  return [startAngle, startAngle + sweep].map(
+    (a) =>
+      [round(g.xCenter + g.radius * Math.cos(a)), round(g.yCenter + g.radius * Math.sin(a))] as [
+        number,
+        number,
+      ],
+  );
+}
+
 describe("den Onshape-Payload umschreiben", () => {
   it("dreht Punkte, Linien-Stützpunkte und -Richtungen", () => {
     const feat = {
@@ -228,13 +248,22 @@ describe("den Onshape-Payload umschreiben", () => {
     };
     const a = transformSketchFeature(feat, rot90).feature.entities[0] as any;
     expect([a.geometry.xCenter, a.geometry.yCenter]).toEqual([0, 0.01]);
-    expect(a.startParam).toBeCloseTo(Math.PI / 2, 12);
-    expect(a.endParam).toBeCloseTo(Math.PI, 12);
+    // `startParam`/`endParam` sind Winkel im EIGENEN Frame des Kreises (#444) —
+    // abgebildet wird deshalb der Frame, nicht der Winkel. Gemessen wird, was
+    // man sehen kann: der Bogen von (0,015 | 0) nach (0,01 | 0,005) muss
+    // dorthin wandern, wohin die Drehung diese beiden PUNKTE trägt.
+    expect(a.startParam).toBe(0);
+    expect(a.endParam).toBeCloseTo(Math.PI / 2, 12);
+    expect(arcEnds(a)).toEqual([
+      [0, 0.015],
+      [-0.005, 0.01],
+    ]);
     // Eine Drehung erhält den Umlaufsinn: Start bleibt Start.
+    expect(a.geometry.clockwise).toBeFalsy();
     expect(a.startPointId).toBe("A.start");
   });
 
-  it("dreht bei einer SPIEGELUNG den Umlaufsinn des Bogens um", () => {
+  it("kippt bei einer SPIEGELUNG den Umlaufsinn des Bogen-Frames", () => {
     const mirror = {
       a: 1,
       b: 0,
@@ -270,11 +299,18 @@ describe("den Onshape-Payload umschreiben", () => {
     };
     const a = transformSketchFeature(feat, mirror).feature.entities[0] as any;
     expect([a.geometry.xCenter, a.geometry.yCenter]).toEqual([0, -0.01]);
-    // Derselbe Bogen läuft gegen den Uhrzeigersinn jetzt vom früheren ENDpunkt.
-    expect(a.startParam).toBeCloseTo(-Math.PI / 2, 12);
-    expect(a.endParam).toBeCloseTo(0, 12);
-    expect(a.startPointId).toBe("A.end");
-    expect(a.endPointId).toBe("A.start");
+    // Eine Spiegelung kippt den Umlaufsinn des Frames — und NUR den. Die
+    // Parameter bleiben, damit bleibt Start Start; der Bogen von (0,005 | 0,01)
+    // nach (0 | 0,015) landet gespiegelt bei (0,005 | −0,01) → (0 | −0,015).
+    expect(a.geometry.clockwise).toBe(true);
+    expect(a.startParam).toBe(0);
+    expect(a.endParam).toBeCloseTo(Math.PI / 2, 12);
+    expect(arcEnds(a)).toEqual([
+      [0.005, -0.01],
+      [0, -0.015],
+    ]);
+    expect(a.startPointId).toBe("A.start");
+    expect(a.endPointId).toBe("A.end");
   });
 
   it("tauscht HORIZONTAL und VERTICAL, wenn die Achsen tauschen", () => {

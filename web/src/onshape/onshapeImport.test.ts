@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { importOnshapeFeatures, type ImportKernel } from "./onshapeImport";
+import {
+  importOnshapeFeatures,
+  sketchEntityVertices,
+  type ImportKernel,
+} from "./onshapeImport";
+import { translateOnshapeSketch } from "./onshapeSketch";
 
 function kabelbox(): { features: any[] } {
   return JSON.parse(
@@ -1716,5 +1721,57 @@ describe("P5 — linearPattern / circularPattern / mirror (#409/#419)", () => {
     ]);
     expect(callsOfType(kernel, "linear_pattern").length).toBe(1); // nur Muster 3
     expect(result.errors.join(" | ")).toContain("kein Flächen-Muster");
+  });
+});
+
+describe("Bogen-Lesart im Gleichschritt (#444)", () => {
+  /** Ein GESPIEGELTER Bogen: Parameter wie das Original, Frame reflektiert
+   *  (`clockwise`, `xDir`). Aus #419 `Sketch 4`, `04uIDdMa1QEg1.MirrorCS`. */
+  const mirroredArc = {
+    entities: [
+      {
+        btType: "BTMSketchCurveSegment-155",
+        entityId: "A",
+        startParam: -Math.PI / 2,
+        endParam: 0,
+        geometry: {
+          btType: "BTCurveGeometryCircle-115",
+          xCenter: -0.0026891554437821694,
+          yCenter: 0.02335,
+          radius: 0.0047,
+          xDir: -1,
+          yDir: 0,
+          clockwise: true,
+        },
+      },
+    ],
+  };
+
+  it("liest `sketchEntityVertices` denselben Bogen wie die Sketch-Übersetzung", () => {
+    // Die beiden Lesarten dürfen NIE auseinanderlaufen: die eine baut die
+    // Skizze im Kernel, die andere sucht die Region-Flächen, die zu Onshapes
+    // Auswahl gehören. Driften sie, sucht der Importer eine Fläche an einer
+    // Stelle, an der der Kernel gar keine Kurve hat — und meldet dafür nichts.
+    const poly = sketchEntityVertices(mirroredArc).get("A")!;
+    const p = translateOnshapeSketch(mirroredArc as any).subCalls[0].params as Record<
+      string,
+      number
+    >;
+    const c = p.center as unknown as [number, number];
+    const at = (a: number): [number, number] => [
+      c[0] + p.radius * Math.cos(a),
+      c[1] + p.radius * Math.sin(a),
+    ];
+    const ends: [number, number][] = [
+      at(p.start_angle as number),
+      at((p.start_angle as number) + (p.sweep_angle as number)),
+    ];
+    for (const k of [0, 1]) {
+      expect(poly[k === 0 ? 0 : poly.length - 1][0]).toBeCloseTo(ends[k][0], 6);
+      expect(poly[k === 0 ? 0 : poly.length - 1][1]).toBeCloseTo(ends[k][1], 6);
+    }
+    // …und zwar auf dem Bogen, der bei (−7,389 | 23,35) endet, nicht auf
+    // seinem Spiegelbild bei (+2,011 | 23,35).
+    expect(poly[poly.length - 1][0]).toBeCloseTo(-7.389, 3);
   });
 });
