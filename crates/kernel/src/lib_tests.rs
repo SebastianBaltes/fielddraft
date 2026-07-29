@@ -4925,3 +4925,90 @@ fn boolean_scope_names_the_whole_body_not_one_member() {
     assert!(solid(&k, [2.0, 0.0, 0.0]), "B on the near side of the cut stays");
     assert!(solid(&k, [7.0, 4.0, 0.0]), "B beside the cut stays");
 }
+
+/// #455 — ein Suppress-Toggle muss BEIDE Seiten bewegen: den gewobenen B-Rep
+/// UND den kompilierten Opcode-Strom, und zwar auf denselben Stand.
+///
+/// Der Verdacht des Tickets war, `setFeatureSuppressed` webe zwar neu, lasse
+/// den kompilierten SDF aber stehen — dann misst JEDE Messung über einen
+/// Toggle nichts und merkt es nicht. Der Referenzstand hier ist deshalb nicht
+/// das Vorher/Nachher desselben Kernels (das ein stehengebliebener Cache
+/// bestehen würde), sondern ein ZWEITES Dokument, das das Feature nie
+/// bekommen hat: mit unterdrücktem Feature muss das Feld Punkt für Punkt dem
+/// Dokument OHNE das Feature gleichen. Ein Cache-Treffer fiele hier auf.
+///
+/// Über die echte API-Kette (`add_feature_call` → `bodyBrepCounts` /
+/// `bodySdfEval`) — ein direkter `build_bounded_*`-Aufruf sieht einen
+/// Cache-Fehler nie (die Fillet-Serie hat das zweimal bezahlt).
+#[test]
+fn suppress_toggle_moves_brep_and_compiled_sdf() {
+    // Referenz: die nackte Box, ohne das Remove-Feature.
+    let mut reference = Kernel::new();
+    reference
+        .add_feature_call("box", r#"{"half_extents":[10.0,10.0,10.0]}"#)
+        .unwrap();
+
+    let mut k = Kernel::new();
+    let base = k
+        .add_feature_call("box", r#"{"half_extents":[10.0,10.0,10.0]}"#)
+        .unwrap();
+    let cut = k
+        .add_feature_call(
+            "box",
+            &format!(
+                r#"{{"half_extents":[3.0,3.0,3.0],"center":[10.0,0.0,0.0],"op":"remove","targets":"qCreatedBy({base})"}}"#
+            ),
+        )
+        .unwrap();
+
+    // Ein Gitter über die Box, das die Kerbe (x ∈ [7,13], |y|,|z| ≤ 3) trifft.
+    let grid: Vec<[f32; 3]> = (0..12)
+        .flat_map(|i| {
+            (0..12).flat_map(move |j| {
+                (0..12).map(move |l| {
+                    let c = |n: usize| -11.0 + 22.0 * (n as f32 + 0.5) / 12.0;
+                    [c(i), c(j), c(l)]
+                })
+            })
+        })
+        .collect();
+    let field = |k: &Kernel| -> Vec<f32> {
+        grid.iter().map(|p| k.body_sdf_eval(0, p[0], p[1], p[2])).collect()
+    };
+    let differ = |a: &[f32], b: &[f32]| a.iter().zip(b).filter(|(x, y)| x != y).count();
+
+    let cut_counts = k.body_brep_counts(0);
+    let cut_field = field(&k);
+    let cut_opcodes = k.body_sdf_opcodes_len(0);
+    let plain_counts = reference.body_brep_counts(0);
+    let plain_field = field(&reference);
+    assert!(
+        differ(&cut_field, &plain_field) > 100,
+        "die Kerbe ist im Feld überhaupt sichtbar"
+    );
+
+    k.set_feature_suppressed(cut, true).unwrap();
+    // 1. Der B-Rep sieht es …
+    assert_eq!(k.body_brep_counts(0), plain_counts, "unterdrückt = nackte Box (B-Rep)");
+    // 2. … und der kompilierte Strom AUCH, auf denselben Stand.
+    assert_eq!(
+        differ(&field(&k), &plain_field),
+        0,
+        "unterdrückt = nackte Box (SDF): {} von {} Punkten weichen ab — \
+         der kompilierte Strom ist stehengeblieben",
+        differ(&field(&k), &plain_field),
+        grid.len()
+    );
+    assert!(
+        k.body_sdf_opcodes_len(0) < cut_opcodes,
+        "der Schneider ist aus dem Opcode-Strom raus ({} → {})",
+        cut_opcodes,
+        k.body_sdf_opcodes_len(0)
+    );
+
+    // 3. Und zurück: beide Seiten kommen exakt auf den Ausgangsstand.
+    k.set_feature_suppressed(cut, false).unwrap();
+    assert_eq!(k.body_brep_counts(0), cut_counts, "wieder aktiv (B-Rep)");
+    assert_eq!(differ(&field(&k), &cut_field), 0, "wieder aktiv (SDF)");
+    assert_eq!(k.body_sdf_opcodes_len(0), cut_opcodes, "wieder aktiv (Opcodes)");
+}

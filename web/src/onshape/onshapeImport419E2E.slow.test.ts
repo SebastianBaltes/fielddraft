@@ -295,25 +295,23 @@ describe("#419 multi-part assembly", () => {
   }, 900_000);
 
   /**
-   * …and the honest other half: `Extrude 15` BUILDS and still takes nothing
-   * away. Pinned so it cannot be mistaken for finished — the #416 lesson
-   * („a feature that does nothing and says nothing is only distinguishable
-   * from one that works by its geometry") applies to this document too.
+   * `Extrude 15` CUTS since #456 (v0.50.1) — and only where Onshape's
+   * `side: +1` points. Pinned in BOTH directions, because for three tickets
+   * this feature built and took nothing away, and „a feature that does nothing
+   * and says nothing is only distinguishable from one that works by its
+   * geometry" (the #416 lesson).
    *
-   * Everything about the cutter measures right. As a NEW body the very same
-   * feature occupies x ∈ [−13,01; 6226,75] — starting exactly on the carrier
-   * plane and running 6239 mm INTO the material (a positive depth puts it on
-   * the other side, so the sign is right too), spanning the selected region's
-   * y and z. It selects `qRegion(48, 1)`, the 648,14 mm² triangle, which is
-   * what BOTH independent readings predict: Onshape's `side: +1` under the
-   * measured `det = +1` rule, and the fact that its region query names a
-   * `CAP_EDGE` of `Extrude 14` and no edge of `Extrude 5` at all.
-   *
-   * And as a REMOVE it changes nothing: over a 26³ grid across the target
-   * body's own box, 9859 of 19683 points are solid and NOT ONE of them
-   * changes when the feature is suppressed. The B-Rep of that body does move
-   * (18 ↔ 24 faces), so the cutter reaches the body — it just takes no volume.
-   * That is the open layer, and it is a boolean question, not a sketch one.
+   * Everything about the cutter measured right long before it bit. As a NEW
+   * body the very same feature occupies x ∈ [−13,01; 6226,75] — starting
+   * exactly on the carrier plane and running 6239 mm INTO the material (a
+   * positive depth puts it on the other side, so the sign is right too),
+   * spanning the selected region's y and z. It selects `qRegion(48, 1)`, the
+   * 648,14 mm² triangle, which is what BOTH independent readings predict:
+   * Onshape's `side: +1` under the measured `det = +1` rule, and the fact that
+   * its region query names a `CAP_EDGE` of `Extrude 14` and no edge of
+   * `Extrude 5` at all. What was wrong sat one layer below all of it: the
+   * boolean scope named a MEMBER of a multi-part body, so the subtraction
+   * reached only that member's subtree (#456).
    */
   it("cuts with `Extrude 15`, and only where Onshape does (#452)", async () => {
     const { kernel } = await importFixture();
@@ -321,24 +319,19 @@ describe("#419 multi-part assembly", () => {
     const ex15 = calls.find((c) => c.params?.display_name === "Extrude 15")!;
     expect(ex15.params.profiles, "the triangle Onshape names").toBe("qRegion(48, 1)");
 
-    // The baseline is a SECOND import with the feature REMOVED outright, not
-    // the same one with it suppressed. Two reasons, both measured:
-    //   * `setFeatureSuppressed` re-weaves the B-Rep but leaves the compiled
-    //     SDF standing — with `Extrude 15` suppressed the body's face count
-    //     moves 18 ↔ 24 while not one of 10 925 sampled SDF values changes by
-    //     more than 1e-6. Any SDF measurement taken across a suppress toggle
-    //     therefore measures nothing (#455);
-    //   * turning it into a NEW body instead leaves its PRISM standing as a
-    //     body, so points inside the prism flip for that reason alone — 1 698
-    //     of them, which reads exactly like a cut and is not one.
-    const base = wrapImportKernel(new WasmKernel());
-    base.raw.setSyncMeshing(true);
-    await importOnshapeFeatures(fixture("onshape-419-features.json"), base, {
-      sketches3d: fixture("onshape-419-sketches3d.json"),
-    });
-    const baseCalls = JSON.parse(base.raw.toJson()).feature_calls as any[];
-    base.raw.removeFeature(baseCalls.find((c) => c.params?.display_name === "Extrude 15")!.id);
-
+    // The baseline is the SAME import with the feature SUPPRESSED. #455
+    // suspected that path of re-weaving the B-Rep while leaving the compiled
+    // SDF standing, which would make every measurement across a toggle measure
+    // nothing; the pin used a second import with `removeFeature` because of it.
+    // Measured false: with `Extrude 15` suppressed the field is bit-identical
+    // to a second import that never got the feature (0 of these 10 925 points
+    // differ), and the toggle back restores all 10 925 values exactly — which
+    // is what the round-trip assertion below keeps pinned. What #455 really saw
+    // was this document BEFORE #456: with the cut a no-op, removing the feature
+    // outright moved the same zero points (measured on the v0.50.0 kernel).
+    // `operation: "new"` is the variant that would genuinely mislead — it
+    // leaves the PRISM standing as a body, and 1 698 points inside it flip for
+    // that reason alone.
     const frame = resolvePlaneFrame("qWall(44, 35)", kernel as unknown as PlaneFrameKernel)!;
     const world = (u: number, v: number, off: number) =>
       [0, 1, 2].map(
@@ -358,19 +351,28 @@ describe("#419 multi-part assembly", () => {
     for (let u = 4; u <= 31; u += 1.5)
       for (let v = -16; v <= 20; v += 1.5)
         for (let off = -1; off >= -34; off -= 1.5) inside.push(world(u, v, off));
-    const cutIn = scene(kernel, inside);
-    const rawIn = scene(base, inside);
-    const solid = inside.filter((_, i) => rawIn[i] < 0).length;
-    const removed = inside.filter((_, i) => rawIn[i] < 0 && cutIn[i] >= 0).length;
-
     // (b) OUTSIDE it — the OTHER half of the same carrier, which Onshape's
     // `side: +1` does not select: nothing may move there.
     const outside: number[][] = [];
     for (let u = -1.2; u <= 1.2; u += 0.3)
       for (let v = -20; v <= 20; v += 1)
         for (let off = -1; off >= -34; off -= 1) outside.push(world(u, v, off));
+
+    const cutIn = scene(kernel, inside);
     const cutOut = scene(kernel, outside);
-    const rawOut = scene(base, outside);
+    kernel.raw.setFeatureSuppressed(ex15.id, true);
+    const rawIn = scene(kernel, inside);
+    const rawOut = scene(kernel, outside);
+    kernel.raw.setFeatureSuppressed(ex15.id, false);
+    // The instrument checks itself (#455): un-suppressing has to bring every
+    // single value back, or the toggle is not a baseline but a coin flip.
+    expect(
+      scene(kernel, inside).filter((v, i) => v !== cutIn[i]).length,
+      "the suppress toggle is reversible to the bit",
+    ).toBe(0);
+
+    const solid = inside.filter((_, i) => rawIn[i] < 0).length;
+    const removed = inside.filter((_, i) => rawIn[i] < 0 && cutIn[i] >= 0).length;
 
     expect(solid, "material inside the selected region's prism").toBeGreaterThan(5_000);
     // BOTH directions. It took 470 of 6 601 when this pin was written — the
@@ -418,18 +420,33 @@ describe("#419 multi-part assembly", () => {
     expect(regions[0].aabb.max[1], "ellipse aabb").toBeCloseTo(9.05 + 10.352, 1);
 
     // And it BITES. Onshape's own depth is `0.01 mm` SYMMETRIC — a ±5 µm
-    // scribe, not a pocket — so the body's AABB cannot move and the SDF (whose
-    // build tolerance is 10 µm) does not carry the slit at all: `bodySdfEval`
-    // reads bit-identical with the feature suppressed. The B-Rep is where a cut
-    // this thin is visible, and it is, on the 25.4 × 25.4 × 18.1 mm block:
-    // 6 faces / 12 edges / 8 vertices → 7 / 14 / 12. Four of those faces come
-    // out with an unconnected outer loop, which is the kernel's honest answer
-    // to a cut thinner than its own tolerance — the import is faithful, the
-    // artefact is downstream of it.
+    // scribe, not a pocket — so the body's AABB cannot move and not one sample
+    // point changes SIGN: over a 14³ grid across the block, 1 372 of 2 744
+    // points are solid with the feature and exactly as many without it.
+    //
+    // The slit is IN the compiled field nonetheless, contrary to what this pin
+    // claimed until #455: suppressing the feature takes the body's opcode
+    // stream from 168 down to 49 and moves 134 of those 2 744 distances — the
+    // same 49 opcodes and the same 134 values as a second import that never got
+    // the feature. So the earlier reading („`bodySdfEval` reads bit-identical
+    // with the feature suppressed, the slit is below the 10 µm build
+    // tolerance") was a sampling artefact, not a property of the field.
+    //
+    // Where a cut this thin is properly visible is the B-Rep, on the
+    // 25.4 × 25.4 × 18.1 mm block: 6 faces / 12 edges / 8 vertices → 7 / 14 /
+    // 12. Four of those faces come out with an unconnected outer loop, which is
+    // the kernel's honest answer to a cut thinner than its own tolerance — the
+    // import is faithful, the artefact is downstream of it.
+    const scribedOps = kernel.raw.bodySdfOpcodesLen(0);
     const before = kernel.raw.bodyBrepCounts(0);
     kernel.raw.setFeatureSuppressed(named("Extrude 2").id, true);
+    const uncutOps = kernel.raw.bodySdfOpcodesLen(0);
     const after = kernel.raw.bodyBrepCounts(0);
     kernel.raw.setFeatureSuppressed(named("Extrude 2").id, false);
+    expect(uncutOps, "the scribe is in the compiled stream, not only in the B-Rep").toBeLessThan(
+      scribedOps,
+    );
+    expect(kernel.raw.bodySdfOpcodesLen(0), "and comes back with it").toBe(scribedOps);
     expect(JSON.parse(after), "uncut block").toMatchObject({
       faces: 6,
       edges: 12,
