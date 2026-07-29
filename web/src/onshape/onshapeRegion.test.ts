@@ -111,6 +111,40 @@ describe("sketchEntityVertices", () => {
     expect(pts.length).toBeGreaterThan(8);
     for (const [x, y] of pts) expect(Math.hypot(x - 10, y)).toBeCloseTo(50, 6);
   });
+
+  it("runs a full circle in ONSHAPE's direction, clockwise ones included (#446)", () => {
+    // The rim's DIRECTION is what „the region lies left of this edge" is
+    // measured against, so a circle Onshape parametrises clockwise — every
+    // mirrored copy is one — must come out clockwise. Read as a fixed
+    // counter-clockwise rim, the two mirrored bores of `Sketch 4` in the #419
+    // document elected the material AROUND them instead of their own inside.
+    const circle = (clockwise: boolean) =>
+      sketchEntityVertices({
+        entities: [
+          {
+            btType: "BTMSketchCurve-4",
+            entityId: "C",
+            geometry: {
+              btType: "BTCurveGeometryCircle-115",
+              xCenter: 0,
+              yCenter: 0,
+              radius: 0.05,
+              xDir: 1,
+              yDir: 0,
+              clockwise,
+            },
+          },
+        ],
+      }).get("C")!;
+    /** Twice the signed area — positive counter-clockwise. */
+    const orientation = (pts: [number, number][]) =>
+      pts.reduce((a, p, i) => {
+        const q = pts[(i + 1) % pts.length];
+        return a + (p[0] * q[1] - q[0] * p[1]);
+      }, 0);
+    expect(orientation(circle(false))).toBeGreaterThan(0);
+    expect(orientation(circle(true))).toBeLessThan(0);
+  });
 });
 
 describe("resolveRegionFaces", () => {
@@ -216,5 +250,25 @@ describe("resolveRegionFaces", () => {
 
   it("returns nothing when the kernel reports no metrics for the candidate", () => {
     expect(resolveRegionFaces(whole("P.bottom"), geom, faceAt, () => null).seed).toBeNull();
+  });
+
+  it("lets Onshape's flank OVERRULE the coverage ranking (#442/#446)", () => {
+    // `P.bottom` runs +x, so its LEFT is the plate half (face 2) and its RIGHT
+    // is the sheet around it (face 0). Coverage elects the plate either way —
+    // the edge is a rounding error of the sheet's perimeter. Onshape saying
+    // „the region is on the RIGHT" is the only thing that can say otherwise,
+    // and it must, or an extrude fills the hole it was fenced around.
+    const edge = (side: number) => [{ entityId: "P.bottom", ends: [], side }];
+    expect(resolveRegionFaces(edge(1), geom, faceAt, metrics).seed).toBe(2);
+    expect(resolveRegionFaces(edge(-1), geom, faceAt, metrics).seed).toBe(0);
+  });
+
+  it("reads the flank through the sketch's handedness (#446)", () => {
+    // In a MIRRORED basis left and right have traded places, and the sign is
+    // known for every sketch — either the in-plane map the importer applied or,
+    // for a payload taken literally, the identity's `+1` (the default here).
+    const edge = [{ entityId: "P.bottom", ends: [], side: -1 }];
+    expect(resolveRegionFaces(edge, geom, faceAt, metrics, -1).seed).toBe(2);
+    expect(resolveRegionFaces(edge, geom, faceAt, metrics, 1).seed).toBe(0);
   });
 });

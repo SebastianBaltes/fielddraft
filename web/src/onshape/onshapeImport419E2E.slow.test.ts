@@ -68,7 +68,10 @@ const GROUND_TRUTH = {
  *    38  chamfer/fillet edge shape with no FieldDraft counterpart    → #429
  *    24  cascade: wall plane names a feature that was not imported
  *    23  cascade: profile sketch missing
- *     8  Onshape's sketch plane stands SKEW to the resolved wall
+ *     8  Onshape's sketch plane stands SKEW to the resolved wall — SEVEN of
+ *        them are an artefact of `wrap()` below, which omits
+ *        `resolvedMateConnectors` and so cannot place a sketch on a mate
+ *        connector at all; the app has ONE (measured, #446 → ticket #448)
  *     8  no resolvable face / target or tool body
  *     7  cascade: cap plane names a feature that was not imported
  *     6  unknown plane-query form
@@ -501,5 +504,48 @@ describe("#419 multi-part assembly", () => {
     expect(bb.max[0]).toBeCloseTo(-GROUND_TRUTH.y[0], 0);
     expect(bb.min[1]).toBeCloseTo(GROUND_TRUTH.x[0], 0);
     expect(bb.max[1]).toBeLessThan(GROUND_TRUTH.x[1] + slack);
+  }, 900_000);
+
+  it("gives `Sketch 4`'s mirrored bores their own inside — in the APP's kernel (#446)", async () => {
+    // This one test drives the kernel THE APP DRIVES. Every other case in this
+    // file (and in the five sibling suites) builds `wrap()` by hand and leaves
+    // `resolvedMateConnectors` off it, so a sketch placed on a mate connector
+    // cannot resolve its plane at all — three of them here, and with them the
+    // features that stand on those. Measured on this fixture, same code, only
+    // the double differing: 14 bodies against 18, 99 failing features against
+    // 89, and EIGHT sketches whose plane resolves 90° skew against one. Closing
+    // that gap means re-measuring every pin in six files and has its own
+    // ticket (#448); until then this test is the one place where the numbers
+    // are the user's.
+    //
+    // And it is not academic. `Sketch 4`'s four keyhole slots are one drawing
+    // plus three MIRRORED copies, and a mirror flips a circle's parametrisation
+    // to CLOCKWISE. Onshape states its region flank against that direction; we
+    // flattened every full circle counter-clockwise regardless, so for the two
+    // mirrored Ø 1.9 mm bores „left of the edge" pointed outward and the veto
+    // elected the plate around them. In the app — where the flank was readable
+    // — three extrudes therefore LOST those two regions; in the double above,
+    // where no plane resolved, nobody noticed. Both configurations now name the
+    // same fourteen faces, which is the reading #444 established.
+    const kernel = wrap(new WasmKernel());
+    (kernel as any).resolvedMateConnectors = () =>
+      JSON.parse(kernel.raw.resolvedMateConnectors());
+    kernel.raw.setSyncMeshing(true);
+    const result = await importOnshapeFeatures(fixture("onshape-419-features.json"), kernel, {
+      sketches3d: fixture("onshape-419-sketches3d.json"),
+    });
+    const calls = JSON.parse(kernel.raw.toJson()).feature_calls as any[];
+    const profiles = (n: string) =>
+      String(calls.find((c) => c.params?.display_name === n)!.params.profiles);
+    for (const n of ["Extrude 20", "Extrude 23", "Extrude 49"]) {
+      expect(profiles(n), n).toContain(", 7, ");
+      expect(profiles(n), n).toContain(", 14]");
+    }
+    expect(profiles("Extrude 20")).toBe(
+      "qRegions(32, [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])",
+    );
+    // The size of #448, pinned so it cannot grow unnoticed: ONE skew plane here
+    // against the eight the poorer double produces.
+    expect(result.errors.filter((e) => e.includes("schief")).length).toBe(1);
   }, 900_000);
 });

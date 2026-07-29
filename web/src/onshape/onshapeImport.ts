@@ -283,11 +283,18 @@ interface SketchRecord {
    *  included), with their 2D endpoints — the only shape a revolve axis (#416)
    *  or a pattern direction (#409/#419) may name. */
   lineSegments: Map<string, SketchSegment>;
-  /** HANDEDNESS of our 2D basis against Onshape's, MEASURED (`SketchXform.det`):
-   *  `+1` same, `−1` mirrored, `null` when it could not be measured. It is the
-   *  sign that makes Onshape's per-edge `±1` flank readable in OUR basis (#442);
-   *  without it the flank says nothing and must not be used. */
-  frameDet: number | null;
+  /** HANDEDNESS of the 2D basis this sketch's geometry lives in, against
+   *  Onshape's: `+1` same, `−1` mirrored. It is the sign that makes Onshape's
+   *  per-edge `±1` flank readable in OUR coordinates (#442).
+   *
+   *  It is a RECHNUNG, not a measurement, and it always exists (#446): the
+   *  basis is whatever {@link alignSketchFrame} wrote the payload in. Rewritten
+   *  by the in-plane map, that is `SketchXform.det`; left alone — no 3D answer,
+   *  too few support points, a plane that resolved skew — the payload still
+   *  carries ONSHAPE'S OWN 2D coordinates, so the map is the identity and the
+   *  handedness is `+1`. There is no third case, and therefore no sketch whose
+   *  flank has to go unread. */
+  basisDet: number;
 }
 
 /** A straight sketch entity's two endpoints in sketch-space mm, in Onshape's
@@ -361,9 +368,16 @@ export function sketchEntityVertices(feat: AnyMsg): Map<string, [number, number]
       // `BTMSketchCurveSegment` carries its arc span in start/endParam as
       // angles OF ITS OWN FRAME — `arcWorldSpan` turns them into sketch angles,
       // the same reading `translateOnshapeSketch` uses (#444).
+      //
+      // A full circle runs through the SAME reading, and that is not cosmetic
+      // (#446): the polyline's DIRECTION is what „the region lies left of this
+      // edge" is measured against, and a circle Onshape parametrises CLOCKWISE
+      // (every mirrored copy is one) has its inside on the other flank. Read as
+      // a fixed counter-clockwise rim, the two mirrored Ø 1.9 mm bores of
+      // `Sketch 4` in the #419 document elected the material AROUND them.
       const unbounded = !String(e.btType ?? "").startsWith("BTMSketchCurveSegment");
       const span = unbounded
-        ? { startAngle: 0, sweep: Math.PI * 2 }
+        ? arcWorldSpan(g, 0, Math.PI * 2)
         : arcWorldSpan(g, e.startParam ?? 0, e.endParam ?? 0);
       const a0 = span.startAngle;
       const sweep = span.sweep;
@@ -963,7 +977,7 @@ async function resolveProfiles(
   const metrics = (i: number) => faceMetrics.get(i) ?? null;
 
   const resolutions = regionQueries.map((d) =>
-    resolveRegionFaces(d.edges, rec.entityGeom, faceAt, metrics, rec.frameDet),
+    resolveRegionFaces(d.edges, rec.entityGeom, faceAt, metrics, rec.basisDet),
   );
   const seeds = resolutions.map((r) => r.seed).filter((s): s is number => s !== null);
   const seedSet = new Set(seeds);
@@ -1231,6 +1245,15 @@ async function importMateConnectorPlane(
  * Fehlt die 3D-Antwort oder ist der Frame aus ihr nicht bestimmbar, wird der
  * Sketch wie bisher wörtlich übernommen — und genau das gemeldet.
  *
+ * Zurück kommt neben dem Payload die HÄNDIGKEIT der Basis, in der er nun steht
+ * (`det`, #446). Sie ist keine Messung, sondern eine Buchhaltung über die
+ * eigene Arbeit: umgeschrieben, ist es `SketchXform.det`; wörtlich übernommen,
+ * stehen dort Onshapes EIGENE 2D-Zahlen, die Abbildung ist die Identität und
+ * die Händigkeit `+1`. Ein dritter Fall existiert nicht — auch eine Ebene, die
+ * 90° schief aufgelöst hat, ändert an den 2D-Zahlen nichts, sie hängt sie nur
+ * woanders in den Raum. Deshalb ist Onshapes Flanken-Angabe für JEDEN Sketch
+ * lesbar, nicht nur für den mit messbarem Frame.
+ *
  * Zwei Befunde, die früher EINER waren (#427): „die Ebene steht schief" und
  * „die Ebene liegt parallel daneben" sind verschiedene Fehler, und nur der
  * erste macht die Umrechnung sinnlos. Steht die Normale, ist die In-Plane-
@@ -1250,17 +1273,20 @@ function alignSketchFrame(
   kernel: ImportKernel,
   three: OnshapeSketch3d | undefined,
   result: OnshapeImportResult,
-): { feature: AnyMsg; det: number | null } {
+): { feature: AnyMsg; det: number } {
+  // Wörtlich übernommen heißt: der Payload steht in ONSHAPES 2D-Basis, die
+  // Abbildung ist die Identität, die Händigkeit ist +1 (#446).
+  const LITERAL = { feature: feat, det: 1 };
   // Ein Kernel-Double ohne Geometrie-Leser kann keinen Frame liefern; das ist
   // kein Befund, sondern eine Testumgebung.
-  if (typeof kernel.bodyCount !== "function") return { feature: feat, det: null };
+  if (typeof kernel.bodyCount !== "function") return LITERAL;
   const fd = frameOf(kernel, planeQuery);
   if (!fd) {
     result.warnings.push(
       `${name}: FieldDrafts Frame für die Ebene "${planeQuery}" ist nicht ` +
         `auflösbar — Onshapes 2D-Koordinaten wörtlich übernommen`,
     );
-    return { feature: feat, det: null };
+    return LITERAL;
   }
   // Reicht die Korrespondenz nicht für Drehung UND Verschiebung, kann sie
   // trotzdem für die Verschiebung allein reichen — wenn die Drehung an diesem
@@ -1276,7 +1302,7 @@ function alignSketchFrame(
         : `${name}: fehlt in Onshapes 3D-Sketch-Antwort — Frame ungeprüft, ` +
           `2D-Koordinaten wörtlich übernommen`,
     );
-    return { feature: feat, det: null };
+    return LITERAL;
   }
 
   const x = inPlaneXform(os, fd);
@@ -1294,7 +1320,7 @@ function alignSketchFrame(
       `${name}: Onshapes Sketch-Ebene steht ${deg.toFixed(1)}° schief zur aufgelösten ` +
         `FieldDraft-Ebene "${planeQuery}" — Koordinaten NICHT umgerechnet`,
     );
-    return { feature: feat, det: null };
+    return LITERAL;
   }
   // Parallel, aber daneben: die Query hat eine andere Fläche erwischt — ein
   // Fehler, der genannt gehört. Die Basis stimmt trotzdem, also wird IN der
@@ -1304,6 +1330,24 @@ function alignSketchFrame(
       `${name}: die aufgelöste FieldDraft-Ebene "${planeQuery}" liegt ` +
         `${x.outOfPlaneMm.toFixed(4)} mm neben Onshapes Sketch-Ebene — Koordinaten IN der ` +
         `Ebene umgerechnet, der Versatz bleibt`,
+    );
+  }
+  // Eine SPIEGELUNG ist ein Befund über die EBENE, nicht über die Konvention
+  // (#446). Beide Systeme bauen ihre 2D-Basis rechtshändig auf die Normale der
+  // Ebene, die sie meinen; `det = n_os · (x_fd × y_fd)` ist deshalb `+1`,
+  // sobald beide dieselbe Fläche in derselben Orientierung meinen. Gemessen an
+  // den fünf Dokumenten mit 3D-Antwort: 29 Sketches mit auflösbarem Frame, 26×
+  // `+1`, zweimal gespiegelt, einer 90° schief. Die beiden Ausreißer sind genau
+  // die zwei bekannten Fehlauflösungen: eine
+  // koinzidente Fläche mit umgekehrter Normalen (die andere Seite einer 0,1 mm
+  // dicken Schale in #419) und ein Mate-Connector, dessen Z verdreht steht
+  // (#416, offen als #447). Umgerechnet wird trotzdem exakt — die Abbildung ist
+  // richtig, nur die Fläche darunter ist es nicht.
+  if (x.det < 0) {
+    result.warnings.push(
+      `${name}: die aufgelöste FieldDraft-Ebene "${planeQuery}" ist ENTGEGENGESETZT ` +
+        `orientiert zu Onshapes Sketch-Ebene (${describeXform(x)}) — die 2D-Umrechnung ` +
+        `bleibt exakt, aber gemeint war fast sicher eine andere Fläche`,
     );
   }
   if (x.identity) return { feature: feat, det: x.det };
@@ -1410,7 +1454,7 @@ async function importFeatures(
       // die Stelle, die sie holen sollte, nicht jeder einzelne Sketch.
       const aligned =
         frames3d.size === 0
-          ? { feature: feat, det: null }
+          ? { feature: feat, det: 1 }
           : alignSketchFrame(
               feat,
               name,
@@ -1430,7 +1474,7 @@ async function importFeatures(
         planeQuery,
         entityGeom: sketchEntityVertices(aligned.feature),
         lineSegments: sketchLineSegments(aligned.feature),
-        frameDet: aligned.det,
+        basisDet: aligned.det,
       });
       result.idMap[feat.featureId] = fdId;
       result.created.push(fdId);

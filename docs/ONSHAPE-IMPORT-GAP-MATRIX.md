@@ -2027,10 +2027,16 @@ Die #416-Dauer waechst, weil vorher vier Features gar nicht gebaut wurden und
    fehlt (schiefe Ebene, zu wenige Stuetzpunkte), bleibt das Veto aus und das
    Ranking ist das von #440. Ein `SketchXform.det`, das auch fuer nicht
    messbare Frames aus der Flaechen-Parametrisierung folgt, wuerde das schliessen.
+   → **Geschlossen in #446** (Update 2026-07-29 (7)): die Haendigkeit war nie eine
+   Messung, sondern eine Buchhaltung ueber die eigene Umrechnung, und ist damit
+   fuer JEDEN Sketch da.
 3. **Acht Skizzen in #419 stehen 90° schief** zu Onshapes eigener Ebene
    (`Sketch 4, 5, 10, 14, 15, 28, 29, 31`, jeweils auf `qWall`/`qCreatedBy(…,
    CAP_TOP)`). Sie werden trotzdem gebaut — sie tragen dort fuenf Koerper. Der
    Winkel steht jetzt in der Meldung; das ist die Zahl, an der die Ursache haengt.
+   → **Messartefakt**, aufgeklaert in #446 (Update (7) Punkt 5): sieben der acht
+   verschwinden, sobald die Test-Attrappe `resolvedMateConnectors` anbietet wie
+   die App. Ticket #448.
 4. #416s letzte Fehlermeldungen sind Klasse F/„abgeleitete Geometrie":
    `Chamfer 2` (SPLIT-Kantenstueck), `Fillet 2` (MERGE-Kante) und `Fillet 3`
    (Kanten, die es ohne Punkt 1 nicht gibt).
@@ -2202,3 +2208,146 @@ die positionelle Wand-Subs erwarten.
 | Branch-Wort | 49 Bit | 51 Bit (JS-exakt bis 53) |
 | `NAMING_SCHEMA_VERSION` | 5 | 6 |
 | #416 AABB, #419 Koerper/Flaechen | — | unveraendert gegenueber v0.45.0 |
+
+---
+
+## Update 2026-07-29 (7) — die Haendigkeit ist eine Buchhaltung, kein Abgleich (#446, v0.47.0)
+
+Punkt 2 der offenen Liste aus Update (4). Onshapes Flanken-Angabe (`[entity, ±1]`
+je Randkante) war nur dort benutzbar, wo der #415-Frame-Abgleich ein `det`
+lieferte; ohne das blieb das Veto aus und das Ranking war das von #440. Der
+Auftrag lautete, die Haendigkeit aus der Flaechen-Parametrisierung zu RECHNEN.
+
+Sie folgt aus etwas viel Naeherliegendem: **aus unserer eigenen Umrechnung.**
+
+### 1. Die Sonde zuerst: was `det` ueberhaupt misst
+
+Fuer zwei orthonormale Basen DERSELBEN Ebene ist die Determinante der
+2D-Basiswechsel-Matrix exakt
+
+    det = n_os · (x_fd × y_fd)
+
+— reine Algebra, keine Naeherung: aus `x_os = a·x_fd + c·y_fd`,
+`y_os = b·x_fd + d·y_fd` folgt `x_os × y_os = (ad − bc)·(x_fd × y_fd)`.
+Beide Systeme bauen ihre In-Plane-Basis rechtshaendig auf die Normale der
+Ebene, die sie meinen (FieldDraft in `planeBasisFromNormal`, Onshape mit
+Welt-Z als Oben-Referenz — an 29 gemessenen Frames bestaetigt: `n = ±Z`
+→ `y = ±Y`, sonst `y = Z − (Z·n)n` normiert und `x = y × n`). Also ist
+`det = +1`, sobald beide dieselbe Flaeche in derselben Orientierung meinen.
+
+Gemessen an allen fuenf Dokumenten mit 3D-Antwort (409, 414, 415, 416, 419), in
+der Konfiguration der App:
+
+| | Frames |
+|---|---|
+| `det = +1` | **26** |
+| `det = −1` | 2 |
+| Ebene 90° schief, `det` gegenstandslos | 1 |
+
+Und die zwei `−1` sind keine Konventions-Ausreisser, sondern genau die zwei
+bekannten FEHLAUFLOESUNGEN: `Sketch 15` in #419 sitzt auf der anderen Seite
+einer 0,1 mm dicken Thicken-Schale (koinzidente Flaeche, umgekehrte Normale),
+`Sketch 6` in #416 auf einem Mate-Connector, dessen Z verdreht steht (offen als
+#447). Eine gespiegelte In-Plane-Abbildung ist damit ein DIAGNOSE-Signal ueber
+die Ebene, nicht ueber die Basis-Konvention — und wird jetzt als Warnung
+ausgegeben.
+
+### 2. Und deshalb braucht die Flanke gar keine Messung
+
+Die Haendigkeit, die das Veto braucht, ist nicht die zwischen zwei Frames im
+Raum, sondern die zwischen **den 2D-Zahlen, in denen unsere Geometrie steht,**
+und Onshapes eigenen. Und die kennt der Importer immer, weil er sie selbst
+herstellt:
+
+- Payload umgeschrieben (`transformSketchFeature`) → `SketchXform.det`;
+- Payload woertlich uebernommen — keine 3D-Antwort, zu wenige Stuetzpunkte, ein
+  Frame, der nicht bestimmbar ist, eine Ebene, die 90° schief aufloest → dort
+  stehen ONSHAPES EIGENE 2D-Zahlen, die Abbildung ist die IDENTITAET, `det = +1`.
+
+Einen dritten Fall gibt es nicht. Auch eine 90° schief aufgeloeste Ebene aendert
+an den 2D-Zahlen nichts — sie haengt sie nur woanders in den Raum, waehrend die
+Regionen-Topologie in der Skizze dieselbe bleibt. `SketchRecord.frameDet`
+(nullable, „gemessen") heisst deshalb jetzt `basisDet` (immer da, „gerechnet"),
+und `resolveRegionFaces` liest die Flanke fuer JEDEN Sketch.
+
+Was das an Reichweite bringt (App-Konfiguration, 39 Sketches der fuenf
+Dokumente): 32 hatten eine lesbare Flanke, **jetzt 39**. In der aermeren
+Kernel-Attrappe der Slow-Suiten (siehe Punkt 5) waren es 19 von 39.
+
+### 3. Der eigentliche #419-Blocker war ein Kreis, keine Haendigkeit
+
+Update (4) hatte notiert, dass das Veto mit fest verdrahtetem `+1` zwei der
+vierzehn Regionen von #419s `Sketch 4` verschob. Genau vermessen ist das KEINE
+Haendigkeitsfrage:
+
+- Beide betroffenen Regionen sind Bohrungen, deren ganzer Rand aus EINER Kante
+  besteht (`edges=1/1` in der Sonde) — dem Vollkreis Ø 1,9 mm eines
+  Schluesselloch-Schlitzes.
+- Beide Kreise tragen `clockwise: true`. Das ist kein Zufall: es sind
+  Spiegel-KOPIEN (`…MirrorC`), und eine Spiegelung dreht den Umlaufsinn um.
+- `sketchEntityVertices` flachte einen Vollkreis mit fest verdrahtetem
+  Start 0 und Weite +2π ab, also IMMER gegen den Uhrzeigersinn. „Links der
+  Kurvenrichtung" zeigte damit fuer diese zwei Kurven nach aussen, und das Veto
+  waehlte das Material UM die Bohrung statt der Bohrung.
+
+Ein Vollkreis geht jetzt durch dieselbe Lesung wie ein Bogen (`arcWorldSpan`,
+#444) und laeuft in Onshapes eigener Richtung. Danach stimmt das Veto auf allen
+**82** Region-Queries des Dokuments mit dem Ranking ohne Veto ueberein — dieselben
+zwei Regionen eingeschlossen.
+
+### 4. Zahlen, gemessen
+
+Region-Queries, die bis zum Ranking kommen (Slow-Suiten-Konfiguration):
+
+| Dokument | Regionen | Veto scharf | schliesst Kandidaten aus | Kandidaten weg |
+|---|---|---|---|---|
+| #409 | 7 | 7 | 5 | 13 / 20 |
+| #414 | 7 | 7 | 5 | 8 / 16 |
+| #416 | 10 | 10 | 5 | 10 / 22 |
+| #419 | 68 | 66 | 56 | 120 / 190 |
+| **Summe** | **92** | **90** | **71** | **151 / 248** |
+
+Die ENTSCHEIDUNG aendert sich gegenueber „ohne Veto" an genau einer Stelle:
+`Extrude 1` in #416 waehlt Flaeche 0 statt Flaeche 5 — die Platte statt der
+Ø 4,14 mm-Bohrung, die #442 gemessen hatte.
+
+Dass sich sonst nichts bewegt, IST das Ergebnis: das Veto haelt an 71 Stellen
+Kandidaten heraus, die das Ranking bisher nur deshalb nicht gewaehlt hat, weil
+die Deckungsanteile dort zufaellig eindeutig genug waren. Aus einer Gewichtung,
+die man glauben muss, ist eine Entscheidung geworden, die man nachrechnen kann.
+
+**In der Konfiguration der APP** (Punkt 5) ist es kein Nullresultat: dort war
+die Flanke von `Sketch 4` lesbar, also biss der Vollkreis-Fehler aus Punkt 3
+wirklich. Drei Extrudes bekommen ihre zwei fehlenden Regionen zurueck — und
+landen auf genau der Vierzehner-Menge, die die Slow-Suite in ihrer eigenen,
+aermeren Konfiguration seit #444 pinnt:
+
+| | v0.46.0 (App) | v0.47.0 (App) |
+|---|---|---|
+| `Extrude 20` | 12 Flaechen (7 und 14 fehlen) | **14** — `qRegions(32, [0,1,2,3,5,6,7,8,9,10,11,12,13,14])` |
+| `Extrude 23` | 9 Flaechen | **11** (7 und 14 zurueck) |
+| `Extrude 49` | 6 Flaechen | **8** (7 und 14 zurueck) |
+
+Alle sechs Slow-Suiten (jetzt 39 Tests) sind gruen; Import-Dauern #416 3,3 s /
+#419 54 s wie zuvor. Ein neuer Test in der #419-Suite fuehrt die App-Attrappe
+mit und haelt genau dieses Ergebnis fest — sonst kann die Suite diese Klasse
+von Regression strukturell nicht sehen.
+
+### 5. Nebenbefund: die Slow-Suiten fahren eine aermere Kernel-Attrappe
+
+Beim Vermessen fiel auf, dass `wrap()` in den Slow-Suiten `resolvedMateConnectors`
+nicht anbietet — die App (`Kernel`) hat die Methode. Ohne sie kann
+`resolvePlaneFrame` eine Ebene auf einem Mate-Connector nicht aufloesen; in #419
+sind das drei Sketches, und weil deren Folge-Features dann fehlen, greifen acht
+weitere Sketches auf falsche Waende zu und loesen 90° schief auf. Genau diese
+acht sind die „acht Skizzen, die 90° schief stehen" aus Update (4) Punkt 3 —
+ein Messartefakt der Testumgebung, kein Defekt des Imports.
+
+| #419, gleicher Code | Attrappe der Suiten | volle Kernel-Oberflaeche |
+|---|---|---|
+| Koerper | 14 | **18** (Onshape: 17 Teile) |
+| Features mit Fehler | 99 | **89** |
+| Sketches mit 90° schiefer Ebene | 8 | **1** |
+
+Eigenes Ticket (**#448**): die Pins von sechs Dateien muessen dabei einzeln neu
+vermessen werden, und das ist der teure Teil.

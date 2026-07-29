@@ -214,7 +214,14 @@ interface WalkableEdge {
 /** Our reading of Onshape's `±1` (measured on the #416 document, `Extrude 2`'s
  *  first region: five of five adjacencies agree, and its mirror region agrees
  *  the other way round). `+1` is the LEFT of the curve's own direction, which
- *  is the side the probe offset `+n = (−dy, dx)` lands on. */
+ *  is the side the probe offset `+n = (−dy, dx)` lands on.
+ *
+ *  „The curve's own direction" is a contract on the polylines handed in:
+ *  each one must run the way ONSHAPE parametrises that curve, mapped through
+ *  whatever in-plane transform the payload was rewritten with. That is what
+ *  `sketchEntityVertices` produces — for lines from `startParam`/`endParam`,
+ *  for arcs AND full circles through `arcWorldSpan`, which honours the
+ *  `clockwise` flag a mirrored copy carries (#446). */
 const SIDE_LEFT = 1;
 
 function walkableEdge(
@@ -278,10 +285,12 @@ export function resolveRegionFaces(
   geom: Map<string, Polyline>,
   faceAt: (u: number, v: number) => number | null,
   metrics: (index: number) => FaceMetrics | null,
-  /** MEASURED handedness of our 2D basis against Onshape's (`SketchXform.det`):
-   *  `+1` same, `−1` mirrored. `null` — unmeasured — switches the flank veto
-   *  below OFF; a guessed handedness reads every flank backwards. */
-  frameDet: number | null = null,
+  /** Handedness of the basis this sketch's 2D geometry lives in, against
+   *  Onshape's: `+1` same, `−1` mirrored. It is COMPUTED, not measured, and
+   *  therefore always known (`SketchRecord.basisDet`, #446) — the importer
+   *  either rewrote the payload with a known in-plane map or left Onshape's own
+   *  coordinates standing, and the identity map is `+1`. */
+  basisDet: number = 1,
 ): RegionResolution {
   if (edges.length === 0) return EMPTY;
 
@@ -356,7 +365,7 @@ export function resolveRegionFaces(
         let who = touched.get(f);
         if (!who) touched.set(f, (who = new Set()));
         who.add(index);
-        if (edge.side === null || edge.side * (frameDet ?? 1) === flank) {
+        if (edge.side === null || edge.side * basisDet === flank) {
           let ok = onDeclaredSide.get(f);
           if (!ok) onDeclaredSide.set(f, (ok = new Set()));
           ok.add(index);
@@ -380,16 +389,23 @@ export function resolveRegionFaces(
   // plate's 0.18, whose perimeter counts every other bore too. Coverage alone
   // therefore elects the bore, and the extrude fills a Ø 4.14 mm hole.
   //
-  // A VETO, not a score, and only where the HANDEDNESS is measured. `+1` reads
-  // as the LEFT of the curve's own direction — verified on #416's `Extrude 2`,
-  // five of five adjacencies — but only in a basis oriented like Onshape's. On a
-  // MIRRORED one every flank reads backwards, and #419's `Sketch 4` is exactly
-  // that: applied there with a guessed sign it moved two of the fourteen regions
-  // #444 had just put right. So the sign comes from the frame measurement or the
-  // veto stays off.
-  const anyAgrees =
-    frameDet !== null &&
-    [...covered.keys()].some((f) => (onDeclaredSide.get(f)?.size ?? 0) > 0);
+  // A VETO, not a score. `+1` reads as the LEFT of the curve's own direction —
+  // verified on #416's `Extrude 2`, five of five adjacencies — in a basis
+  // oriented like Onshape's; on a mirrored one every flank reads backwards, so
+  // it is read through `basisDet`. That sign is a RECHNUNG over the importer's
+  // own payload rewrite and exists for every sketch (#446), which is what makes
+  // this a decision rather than a weighting.
+  //
+  // It used to be gated on a MEASURED handedness, because switched on with a
+  // hardwired `+1` it moved two of the fourteen regions of #419's `Sketch 4`.
+  // Those two were never a handedness question: both are bores whose whole
+  // boundary is ONE full circle that Onshape parametrises CLOCKWISE (a mirrored
+  // copy), and the flattened rim ran counter-clockwise regardless — so the
+  // flank read backwards for that one curve and elected the material around the
+  // bore. `sketchEntityVertices` follows Onshape's own direction now, and with
+  // it the veto agrees with the plain ranking on all 82 regions of that
+  // document (`docs/ONSHAPE-IMPORT-GAP-MATRIX.md`, Update 2026-07-29 (7)).
+  const anyAgrees = [...covered.keys()].some((f) => (onDeclaredSide.get(f)?.size ?? 0) > 0);
 
   let seed: number | null = null;
   let bestScore = 0;

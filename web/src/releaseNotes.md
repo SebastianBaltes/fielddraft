@@ -12,6 +12,11 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.47.0
+- feat(onshape) #446: Onshapes Angabe, auf WELCHER Seite einer Kante die gewählte Region liegt, wird jetzt für jede Skizze gelesen — bisher nur dort, wo ein Abgleich mit Onshapes 3D-Antwort sie bestätigen konnte. Ein Profil kann damit nicht mehr die Bohrung erwischen, um die es gezäunt ist.
+- fix(onshape) #446: Ein gespiegelt kopierter Vollkreis behält beim Import seine Umlaufrichtung. Vorher lag die Region an ihm auf der falschen Seite: die zwei Schlüsselloch-Bohrungen im #419-Dokument wählten das Material um sich herum statt ihr eigenes Inneres.
+- fix(onshape) #446: Sitzt die aufgelöste Ebene einer Skizze entgegengesetzt zu Onshapes, sagt der Import das jetzt. Das ist immer eine Fläche zu viel oder zu wenig — etwa die Rückseite einer dünnen Schale.
+
 ## 0.46.0
 - feat(kernel) #445: Wenn ein Extrude seine Wände nicht benennen kann, sind sie jetzt auch nicht mehr auffindbar. Vorher lieferte eine Wand-Auswahl auf so einem Feature stillschweigend die falsche Fläche — die x-te in Reihenfolge statt der gemeinten Kurve.
 - fix(kernel) #445: Damit kann ein Mate-Connector oder ein Fillet, der auf einer solchen Wand hängt, nicht mehr unbemerkt an der falschen Kante landen. Er meldet lieber, dass er nichts findet.
