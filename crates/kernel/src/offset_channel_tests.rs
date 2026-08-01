@@ -2044,3 +2044,102 @@ fn pick_on_plain_geometry_reports_no_synthetic_faces() {
     assert!(json.contains(r#""synthetic":[]"#), "Box-Deckel ist nicht synthetisch: {json}");
     assert!(json.contains(r#""contributors":[1]"#), "{json}");
 }
+
+/// Test-Helfer: läuft über alle `ArcChannel`-Knoten und reicht jeden Kanal
+/// durch.
+fn collect_channels(node: &BoundedCsg, f: &mut impl FnMut(&OffsetChannel)) {
+    match node {
+        BoundedCsg::ArcChannel { inner, channels, .. } => {
+            for ch in channels {
+                if !ch.arcs.is_empty() {
+                    f(ch);
+                }
+            }
+            collect_channels(inner, f);
+        }
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. } => {
+            collect_channels(left, f);
+            collect_channels(right, f);
+        }
+        BoundedCsg::Offset { inner, .. } | BoundedCsg::Shell { inner, .. } => {
+            collect_channels(inner, f)
+        }
+        _ => {}
+    }
+}
+
+// ─── #384 §8e: End-Kappen-Gate am offenen Spine-Ende ─────────────────────
+
+/// Struktur-Pin: JEDES offene Spine-Ende trägt als zweites Gate die
+/// Endebenen-Normale (nach innen). Damit ist `w < 0` für jeden Punkt
+/// jenseits des Nahtendes — die Kappe, die den §8d-Bound-Over-Claim trug,
+/// ist strukturell zu, ohne Opcode-Änderung. Geschlossene Spines (Steinmetz)
+/// haben kein Ende und bleiben unberührt.
+#[test]
+fn open_channel_ends_carry_the_end_plane_gate_384() {
+    for (name, node) in [
+        ("notch90", notch_union_node(90.0, 2.0)),
+        ("corner", corner_union_node(2.0)),
+    ] {
+        let corrected = synth(&node, 0.005);
+        let mut checked = 0usize;
+        collect_channels(&corrected, &mut |ch| {
+            let first = &ch.arcs[0];
+            let last = ch.arcs.last().unwrap();
+            let s = arc_point_at(first, 0.0);
+            let e = arc_point_at(last, 1.0);
+            let dx = [e[0] - s[0], e[1] - s[1], e[2] - s[2]];
+            if (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt() < 1e-4 {
+                return; // geschlossen
+            }
+            let t0 = arc_tangent_at(first, 0.0).unwrap();
+            let t1 = arc_tangent_at(last, 1.0).unwrap();
+            let d0: f32 = (0..3).map(|k| first.m2s[k] * t0[k]).sum();
+            let d1: f32 = (0..3).map(|k| last.m2e[k] * -t1[k]).sum();
+            assert!(
+                d0 > 0.999,
+                "{name}: Spine-Anfang ohne Endebenen-Gate (m2s·t̂ = {d0})"
+            );
+            assert!(
+                d1 > 0.999,
+                "{name}: Spine-Ende ohne Endebenen-Gate (m2e·(−t̂) = {d1})"
+            );
+            checked += 1;
+        });
+        assert!(checked > 0, "{name}: kein offener Kanal gefunden");
+    }
+}
+
+/// Feld-Pin zum Struktur-Pin: jenseits des Nahtendes ist der Term neutral
+/// (`channel_apply == d`), egal wie tief der naive Wert liegt. Vor §8e
+/// verschob er dort bis zu `gate = (c−1)·δ + 4·tol`.
+#[test]
+fn channel_term_is_off_beyond_the_seam_end_384() {
+    let corrected = synth(&notch_union_node(90.0, 2.0), 0.005);
+    let mut seen = 0usize;
+    collect_channels(&corrected, &mut |ch| {
+        let last = ch.arcs.last().unwrap();
+        let e = arc_point_at(last, 1.0);
+        let t = arc_tangent_at(last, 1.0).unwrap();
+        for r in [1.05f32, 1.5, 1.9] {
+            let rr = r * ch.delta;
+            // Punkt jenseits der Endebene, sonst mitten im Wirkkegel.
+            let p = [
+                e[0] + t[0] * rr * 0.6 + ch.arcs[0].m1s[0] * rr * 0.5,
+                e[1] + t[1] * rr * 0.6 + ch.arcs[0].m1s[1] * rr * 0.5,
+                e[2] + t[2] * rr * 0.6 + ch.arcs[0].m1s[2] * rr * 0.5,
+            ];
+            for d in [-1.0f32, -0.3, 0.0, 0.3, 1.0] {
+                assert_eq!(
+                    channel_apply(d, p, ch),
+                    d,
+                    "Kanal wirkt jenseits des Nahtendes (r={r}·δ, d={d})"
+                );
+            }
+        }
+        seen += 1;
+    });
+    assert!(seen > 0);
+}

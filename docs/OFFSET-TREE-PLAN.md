@@ -537,7 +537,40 @@ für Shell.
   **Neuer offener Befund (eigenes Paket):** bei `s ≥ 2·δ` (kein Prisma, vor wie
   nach unverändert) trägt der reguläre `OP_ARC_CHANNEL`-Pfad an der Außenkante
   des Trägerkörpers 0.760 mm ab, während er ≤ 0.01 mm zusagt — ein
-  Bound-Over-Claim des KANAL-Pfads.
+  Bound-Over-Claim des KANAL-Pfads. → aufgearbeitet in v0.56.4, s. u.
+* **Kanal-End-Kappe — GESCHLOSSEN (#384, v0.56.4, 2026-08-01).** Der
+  Bound-Over-Claim des KANAL-Pfads saß nicht am Kegel und nicht am
+  Trust-Radius, sondern an der **Endpunkt-Ball-Kappe** offener Spines:
+  `arc_closest` klemmt den Fußpunkt auf den Endpunkt, und die beiden
+  Kegel-Gates gehören zur KANTE — über die Richtung ENTLANG der Naht sagen sie
+  nichts. Hinter dem Nahtende wirkte der Term darum voll, bis
+  `K ≈ 1.95·δ`, quer über Flächen, die dort ungestört weiterlaufen (Tasche:
+  0.760 mm an der Außenkante; Spiegel am Erosions-Stopp: 0.800 mm
+  Phantom-Material an den Enden des `notch_union`-Dieders). Widerlegt und NICHT
+  die Ursache: ein zu großer Trust-Radius (dieselbe Fehlstelle entsteht bei
+  `de = 2.55 < c·δ`) und das Zurückschneiden der Spine (die Kappe wandert mit
+  und überschätzt dann `de` über der echten Naht: worst 0.632 → 1.500 mm).
+  Fix ohne Opcode-Änderung: das terminale Bogenstück (`0.25·δ`) trägt als
+  zweites Gate die **Endebenen-Normale** — jenseits der Endebene ist `w < 0`,
+  der Term also strukturell aus; davor ist das Gate wegen `⟨x−q*, t̂⟩ = 0`
+  neutral, die nlerp-Interpolation blendet stetig aus. Geschlossene Spines
+  (Steinmetz) bleiben byte-identisch, an gesnappten Enden übernimmt die
+  Vertex-Kugel mit ihren DREI Gates (C4).
+  **Was bleibt und jetzt gemeldet wird:** das seit Phase B notierte
+  Restrisiko „Fremdgeometrie näher als K im Kegelgebiet" ist gemessen
+  (Nachbar-Naht einer Taschen-Ecke 0.632 mm; Deckfläche am Dieder-Ende
+  0.848 mm bei α=90°, 2.040 mm bei α=60°) und wird durch die sequenzielle
+  Anwendung verschärft (das `gate = G + d` des nächsten Kanals sieht das
+  bereits angehobene `d`). Ein Randpunkt-Zeuge (`end_region_violation` +
+  `boundary_witness`, gedämpfter Newton) entscheidet je Stopp, ob die enge
+  Zusage hält; hält sie nicht, meldet die Capability die Gate-/B0-Schranke
+  `(c−1)·δ + 4·tol`, mindestens den gemessenen Fehler. Der saubere Endzustand
+  braucht ein DRITTES Gate im Opcode (End-Ebene bzw. Voronoi-Bisektor zur
+  Nachbar-Naht) — Semantik-Änderung in sechs Evaluator-Spiegeln, eigenes
+  Paket. Golden: 2 von 35 Szenen bewegen sich (`arc_channel_notch`,
+  `vertex_sphere_corner` — genau die mit offenen Spines, beide mit
+  Randpunkt-Zeugen als Beleg), 33 byte-identisch. Herleitung + Messtabellen:
+  `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8e.
 * **Interaktion mit Edge-Fillets/MaskedBlend- und smin-Stopps.** Der
   Pushdown stoppt an Blend-Knoten — dort gibt es keinen exakten Offset
   (Blendflächen sind keine Offset-abgeschlossene Klasse). Offset über

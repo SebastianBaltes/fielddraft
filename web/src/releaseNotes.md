@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.56.4
+- fix(kernel) #384: Ein Offset nach außen knabbert keine Kante mehr an, die weit weg von der Naht liegt. Rund um jede innere Kante setzt das Werkzeug einen schmalen Korrekturkörper — der endete bisher nicht dort, wo die Kante endet, sondern reichte als Kugelkappe noch fast zwei Offset-Weiten darüber hinaus. An der Außenkante des Trägers fraß das eine Kerbe von 0,76 Millimetern, angesagt war ein hundertstel Millimeter; beim Offset nach innen stand umgekehrt Material vor der Stirnfläche, wo längst Luft ist. Der Korrekturkörper hört jetzt an seinem eigenen Ende auf. Wo er trotzdem an fremdem Material vorbeigreift — etwa an der Ecke einer Taschenmündung —, sucht das Werkzeug einen Gegenbeweis am echten Rand und sagt dann die größere, wahre Schranke an, statt weiter eine schöne falsche zu versprechen.
+
 ## 0.56.3
 - fix(kernel) #384: Ein Offset nach außen frisst keine Wand mehr weg. Ein Hohlkörper mit dünner Wand — eine Schachtel, deren Innenraum ringsum geschlossen ist — verlor beim Vergrößern nach außen genau diese Wand: das Werkzeug hielt den vergrabenen Hohlraum für eine offene Tasche und trug den Deckel ab, bis vom Körper nichts übrig war, was noch zusammenhängt. Betroffen war jede Wand, die dünner als die halbe Offset-Weite ist. Ebenso lag der Boden einer Tasche zu tief, wenn der ausgeschnittene Körper oben überstand, und bei größerem Überstand stand über der Tasche ein Klotz Material, der dort nicht hingehört. Angesagt war jedes Mal eine Abweichung von einem hundertstel Millimeter. Das Werkzeug unterscheidet jetzt, ob ein Ausschnitt bündig, überstehend oder ganz vergraben ist, und meldet für den überstehenden Fall die größere, wahre Schranke statt einer schönen falschen.
 

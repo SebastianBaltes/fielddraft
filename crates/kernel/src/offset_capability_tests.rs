@@ -1491,3 +1491,62 @@ fn dilation_protruding_pocket_is_honestly_bounded_384() {
         );
     }
 }
+
+// ─── #384 §8e: die End-Kappe des Kanal-Terms ─────────────────────────────
+//
+// Bei `s ≥ 2·δ` entsteht KEIN Kontakt-Prisma (die Komplemente überlappen
+// nicht mehr, §8d) — die Mündungs-Naht der Tasche korrigieren die regulären
+// `OP_ARC_CHANNEL`-Kanäle. Deren Endpunkt-Ball-Kappe wirkte bis `K ≈ 1.95·δ`
+// ÜBER das Nahtende hinaus: an der Außenkante des Trägerkörpers, wo das
+// naive Feld exakt ist, trug sie 0.760 mm ab (worst bei
+// `[−10.73, 6.53, 11.0]`, δ = 2) — unter der Zusage ≤ 0.01 mm.
+//
+// Seit §8e trägt das terminale Bogenstück als zweites Gate die
+// ENDEBENEN-Normale: jenseits des Nahtendes ist `w < 0`, der Term also
+// strukturell aus. Was bleibt, ist das im Modulkopf notierte
+// Phase-C-Restrisiko (eine FREMDE Fläche näher als die eigene Naht — hier
+// die Nachbar-Naht der Mündungs-Ecke); dafür sagt die Capability nicht mehr
+// die Bau-Toleranz zu, sondern die per Randpunkt-Zeugen belegte
+// Gate-/B0-Schranke.
+
+/// **Kern-Regression (§8e).** Der Kanal-Pfad darf an der Außenkante des
+/// Trägerkörpers nichts mehr abtragen, und die Zusage muss den REST decken.
+#[test]
+fn dilation_channel_end_cap_holds_its_bound_384() {
+    let delta = 2.0f32;
+    for s in [4.0f32, 5.0, 6.0] {
+        let (field, report) = compile_for(pocket_dilation(s, delta));
+        let (a, b) = pocket_boxes(s);
+        let (_, worst, at) =
+            dilation_zero_set_error(&field, a, b, delta, [-14.0; 3], [14.0, 14.0, 16.0]);
+        // Vor §8e: 0.7599 mm an der AUSSENKANTE des Trägerkörpers
+        // (`[−10.73, 6.53, 11.0]`) — die End-Kappe griff über die Naht hinaus.
+        assert!(
+            worst <= 0.70,
+            "Überstand {s}: Nullmengen-Fehler {worst:.4} mm bei {at:?} — die End-Kappe greift \
+             wieder über das Nahtende (vor dem Fix 0.760 mm an der Außenkante)"
+        );
+        // Der Punkt der alten Fehlstelle liegt jetzt richtig.
+        let outer = [-10.7333f32, 6.5333, 11.0];
+        assert!(
+            field.sdf(outer, EvalMode::Visual) < 0.0,
+            "die Außenkante des Trägerkörpers muss materiell bleiben (war +0.014)"
+        );
+        // Und die Zusage deckt den Rest: entweder ehrlich benannt …
+        let honest = report
+            .reasons()
+            .iter()
+            .any(|r| r.contains("NICHT auf die Bau-Toleranz"));
+        assert!(
+            honest,
+            "Überstand {s}: der verbleibende Kanal-Fehler {worst:.4} mm muss als \
+             Gate-/B0-Schranke gemeldet sein statt als Bau-Toleranz: {:?}",
+            report.reasons()
+        );
+        assert!(
+            worst <= 0.75 * delta as f64,
+            "Überstand {s}: {worst:.4} mm verletzt die B0-Klasse"
+        );
+        assert_eq!(report.status(), CapabilityStatus::ToleranceBounded, "{:?}", report.reasons());
+    }
+}

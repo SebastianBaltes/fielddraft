@@ -1004,6 +1004,331 @@ fn arc_point_at(arc: &ChannelArc, t: f32) -> [f32; 3] {
     }
 }
 
+/// Tangenten-Einheitsvektor eines Bogens/Segments bei `t ∈ {0,1}`, in
+/// Kurvenrichtung (Start → Ende).
+fn arc_tangent_at(arc: &ChannelArc, t: f32) -> Option<[f32; 3]> {
+    let v = if arc.sweep < 0.0 {
+        arc.u
+    } else {
+        let phi = t * arc.sweep;
+        let (s, c) = phi.sin_cos();
+        [
+            -arc.u[0] * s + arc.v[0] * c,
+            -arc.u[1] * s + arc.v[1] * c,
+            -arc.u[2] * s + arc.v[2] * c,
+        ]
+    };
+    let l = norm(v);
+    if !(l > 1e-9) {
+        return None;
+    }
+    Some([v[0] / l, v[1] / l, v[2] / l])
+}
+
+/// #384 §8e — **Rand-Zeuge**: sucht von `x` aus einen Punkt `y` auf der
+/// Nullmenge des Komposit-Feldes `f` (der Körperoberfläche des Stopps) und
+/// liefert `|x − y|`. Weil `y` NACHWEISLICH auf dem Rand liegt, ist das eine
+/// harte OBERE Schranke für `dist(x, ∂Körper)` — und damit ein
+/// Gegenbeispiel gegen jede Distanz-Behauptung, die darüber hinausgeht.
+///
+/// Gedämpfter Newton-Marsch (Gradient JE SCHRITT neu — ein Strahl in
+/// Startrichtung verfehlt an Boolean-Kanten den nächsten Rand: über einer
+/// Taschen-Mündung zeigt der Gradient nach oben, der nächste Rand liegt
+/// seitlich an der Taschenwand). Gesucht wird nur bis `reach`; weiter
+/// entfernte Randpunkte widerlegen nichts. `None` = kein Zeuge (kein
+/// Beweis, keine Meldung).
+fn boundary_witness(
+    f: &dyn Fn([f32; 3]) -> f32,
+    x: [f32; 3],
+    reach: f32,
+    scale: f32,
+) -> Option<f32> {
+    if !(reach > 0.0) {
+        return None;
+    }
+    let eps = (scale * 1e-4).max(1e-5);
+    let h = (scale * 1e-3).max(1e-5);
+    let mut y = x;
+    for _ in 0..32 {
+        let fy = f(y);
+        if !fy.is_finite() {
+            return None;
+        }
+        if fy.abs() <= eps {
+            let u = norm(sub(y, x)) + fy.abs();
+            return if u <= reach { Some(u) } else { None };
+        }
+        let g = [
+            f([y[0] + h, y[1], y[2]]) - f([y[0] - h, y[1], y[2]]),
+            f([y[0], y[1] + h, y[2]]) - f([y[0], y[1] - h, y[2]]),
+            f([y[0], y[1], y[2] + h]) - f([y[0], y[1], y[2] - h]),
+        ];
+        let l = norm(g);
+        if !(l > 1e-9) || !l.is_finite() {
+            return None;
+        }
+        // Newton-Schritt entlang des normierten Gradienten, gedämpft auf den
+        // Suchradius (sonst spaziert der Marsch aus der Reichweite).
+        let step = (fy * 2.0 * h / l).clamp(-reach, reach);
+        y = [
+            y[0] - g[0] / l * step,
+            y[1] - g[1] / l * step,
+            y[2] - g[2] / l * step,
+        ];
+        if norm(sub(y, x)) > 2.0 * reach {
+            return None;
+        }
+    }
+    None
+}
+
+/// #384 §8e — **Beweis-Sonde gegen den Bound-Over-Claim am Nahtende.**
+///
+/// Die C2-Konstruktion ist nur dort exakt, wo der nächste Punkt der
+/// Naht-Kurve AUCH der nächste Randpunkt des Körpers ist. In der Umgebung
+/// eines offenen Spine-Endes ist das nicht garantiert: jenseits des Endes
+/// klemmt `arc_closest` den Fußpunkt auf den Endpunkt (das schließt seit
+/// [`close_open_end_caps`] das End-Gate), und seitlich davon kann eine
+/// NACHBAR-Naht näher liegen als die eigene — dann behauptet `de − δ` mehr
+/// Distanz, als es gibt. Verschärft wird das durch die sequenzielle
+/// Anwendung: hat ein Kanal `d` bereits (korrekt) angehoben, öffnet das
+/// `gate = G + d` des NÄCHSTEN weiter als beim naiven `d`.
+///
+/// Die Sonde tastet um jedes offene Ende den Wirkbereich ab (Kegel der
+/// Endpunkt-Gates, `δ < |x−E| < K`), wendet die Korrektur **vollständig**
+/// an (alle Kanäle, dann die Vertex-Kugeln — genau wie der Evaluator) und
+/// sucht ein **Gegenbeispiel**: einen Randpunkt des Körpers, der näher
+/// liegt, als das korrigierte Feld behauptet. Ein solcher Zeuge ist ein
+/// Beweis, kein Verdacht. Rückgabe: (Verletzung mm, Schranke, Ort).
+fn end_region_violation(
+    channels: &[OffsetChannel],
+    verts: &[VertexSphere],
+    field: &dyn Fn([f32; 3]) -> f32,
+    delta_signed: f32,
+    tol: f32,
+) -> Option<(f32, f32, [f32; 3])> {
+    let mut worst: Option<(f32, f32, [f32; 3])> = None;
+    for ch in channels {
+        if ch.arcs.is_empty() {
+            continue;
+        }
+        let dabs = ch.delta;
+        if !(dabs > 0.0) || !(ch.trust > dabs) {
+            continue;
+        }
+        let first = &ch.arcs[0];
+        let last = ch.arcs.last().unwrap();
+        let start = arc_point_at(first, 0.0);
+        let end = arc_point_at(last, 1.0);
+        if norm(sub(start, end)) < 1e-4 {
+            continue; // geschlossene Kurve — kein Ende, kein Kappen-Bereich
+        }
+        // Die Gates am Ende stammen seit `close_open_end_caps` aus dem
+        // End-Gate; für den Kegel-Filter zählen die GEOMETRISCHEN Gates des
+        // vorletzten Stützpunkts (sonst filterte die Sonde ihren eigenen Fix).
+        let ends = [
+            (start, nlerp(first.m1s, first.m1e, 1.0), nlerp(first.m2s, first.m2e, 1.0)),
+            (end, nlerp(last.m1e, last.m1s, 1.0), nlerp(last.m2e, last.m2s, 1.0)),
+        ];
+        for (e, m1, m2) in ends {
+            for dir in FIB_DIRS.iter() {
+                if dot(*dir, m1) <= 0.05 || dot(*dir, m2) <= 0.05 {
+                    continue;
+                }
+                for k in 1..=10 {
+                    // Wirkfenster des Terms: δ < de < K.
+                    let r = dabs + (ch.trust - dabs) * (k as f32 / 11.0);
+                    let x = [e[0] + dir[0] * r, e[1] + dir[1] * r, e[2] + dir[2] * r];
+                    let d = field(x) - delta_signed;
+                    if !d.is_finite() {
+                        continue;
+                    }
+                    let corr = verts_apply(channels_apply(d, x, channels), x, verts);
+                    // Geprüft wird die NULLMENGE (die Zusage des Stopps), und
+                    // nur, was der Term VERURSACHT: das naive Feld muss den
+                    // Punkt richtig klassifizieren, das korrigierte falsch.
+                    // Bewusst NICHT geprüft: reine Wert-Unterschätzungen des
+                    // konkaven Terms — die Luftseiten-Klemme `min(d, −w_geo)`
+                    // unterschätzt die Distanz absichtlich (march-sicher).
+                    let flipped = if delta_signed > 0.0 {
+                        d <= 0.0 && corr > 0.0
+                    } else {
+                        d >= 0.0 && corr < 0.0
+                    };
+                    if !flipped {
+                        continue;
+                    }
+                    // Zeuge: ein Randpunkt näher als δ beweist die wahre Lage.
+                    // Dilation: `dist(x, Körper) ≤ u < δ` ⇒ x liegt IN der
+                    // Dilatation (das Feld behauptet außen). Erosion:
+                    // `dist(x, ∁Körper) ≤ u < δ` ⇒ die δ-Kugel um x ragt aus dem
+                    // Körper, x liegt also NICHT in der Erosion (das Feld
+                    // behauptet innen). Beides ist ein harter Widerspruch.
+                    let Some(u) = boundary_witness(field, x, dabs - tol, ch.trust) else {
+                        continue;
+                    };
+                    if u >= dabs - tol {
+                        continue;
+                    }
+                    let viol = if delta_signed > 0.0 {
+                        corr + (dabs - u)
+                    } else {
+                        (dabs - u) - corr
+                    };
+                    if viol > tol && worst.map_or(true, |(w, _, _)| viol > w) {
+                        worst = Some((viol, ch.gate, x));
+                    }
+                }
+            }
+        }
+    }
+    worst
+}
+
+/// Teilstück eines Bogens/Segments für `t ∈ [t0, t1] ⊆ [0,1]` — samt
+/// nlerp-interpolierten Kegelvektoren und frischer Bounding-Sphere. Basis
+/// des End-Kappen-Gates (#384 §8e).
+fn arc_subrange(arc: &ChannelArc, t0: f32, t1: f32) -> Option<ChannelArc> {
+    if !(t1 > t0) {
+        return None;
+    }
+    let m1s = nlerp(arc.m1s, arc.m1e, t0);
+    let m2s = nlerp(arc.m2s, arc.m2e, t0);
+    let m1e = nlerp(arc.m1s, arc.m1e, t1);
+    let m2e = nlerp(arc.m2s, arc.m2e, t1);
+    let mut out = if arc.sweep < 0.0 {
+        segment_arc(arc_point_at(arc, t0), arc_point_at(arc, t1))?
+    } else {
+        let phi0 = t0 * arc.sweep;
+        let (s0, c0) = phi0.sin_cos();
+        let u = [
+            arc.u[0] * c0 + arc.v[0] * s0,
+            arc.u[1] * c0 + arc.v[1] * s0,
+            arc.u[2] * c0 + arc.v[2] * s0,
+        ];
+        let v = [
+            -arc.u[0] * s0 + arc.v[0] * c0,
+            -arc.u[1] * s0 + arc.v[1] * c0,
+            -arc.u[2] * s0 + arc.v[2] * c0,
+        ];
+        finish_arc(ChannelArc {
+            c: arc.c,
+            u,
+            v,
+            r: arc.r,
+            sweep: (t1 - t0) * arc.sweep,
+            bc: [0.0; 3],
+            br: 0.0,
+            m1s: [0.0; 3],
+            m2s: [0.0; 3],
+            m1e: [0.0; 3],
+            m2e: [0.0; 3],
+        })
+    };
+    out.m1s = m1s;
+    out.m2s = m2s;
+    out.m1e = m1e;
+    out.m2e = m2e;
+    Some(out)
+}
+
+/// #384 §8e — **End-Kappen-Gate.** Am offenen Ende einer Spine klemmt
+/// `arc_closest` den Fußpunkt auf den Endpunkt: jenseits des Nahtendes misst
+/// `de` die Distanz zu EINEM Punkt, während die beiden Kegel-Gates der Kante
+/// weiter offen stehen. Der Term wirkt dort bis `K ≈ 1.95·δ` über die Naht
+/// hinaus — quer über Flächen, die dort ungestört weiterlaufen (§8d-Befund:
+/// 0.760 mm Fehlstelle an der Außenkante des Trägerkörpers; Spiegel am
+/// Erosions-Stopp: 0.800 mm Phantom-Material an den Enden des
+/// `notch_union`-Dieders). Die C2-Exaktheit gilt dort nicht — der nächste
+/// Randpunkt ist nicht mehr der Fußpunkt.
+///
+/// Der Opcode kann das nicht selbst wissen: er hat je Bogen genau ZWEI
+/// Gates, und ein drittes wäre eine Semantik-Änderung in sechs
+/// Evaluator-Spiegeln. Aber die Gates sind **Daten**. Am terminalen
+/// Bogenstück (`0.25·δ`) wird das zweite Gate auf die **Endebenen-Normale**
+/// `∓t̂` gedreht:
+///
+/// * jenseits der Endebene ist `⟨x−E, ∓t̂⟩ < 0` ⇒ `w < 0` ⇒ der Term ist
+///   strukturell AUS — genau die Kappe, die den Bound-Over-Claim trug;
+/// * davor ist der Fußpunkt innerlich und `⟨x−q*, t̂⟩ = 0`, das Gate also
+///   neutral; die nlerp-Interpolation blendet die Korrektur auf dem kurzen
+///   Endstück stetig aus (kein Sprung im Feld).
+///
+/// Geschlossene Spines haben kein Ende und bleiben unberührt; an gesnappten
+/// Enden übernimmt die Vertex-Kugel mit ihren DREI Gates — genau die
+/// R&R-Arbeitsteilung „Kanten-Kanäle enden IN den Vertices" (C4).
+fn close_open_end_caps(channels: &mut [OffsetChannel], budget: usize) {
+    let mut arcs_total: usize = channels.iter().map(|c| c.arcs.len()).sum();
+    for ch in channels.iter_mut() {
+        if ch.arcs.is_empty() {
+            continue;
+        }
+        let start = arc_point_at(&ch.arcs[0], 0.0);
+        let end = arc_point_at(ch.arcs.last().unwrap(), 1.0);
+        if norm(sub(start, end)) < 1e-4 {
+            continue; // geschlossene Kurve — kein Ende, keine Kappe
+        }
+        let cap_len = 0.25 * ch.delta;
+        for at_start in [false, true] {
+            let idx = if at_start { 0 } else { ch.arcs.len() - 1 };
+            let arc = ch.arcs[idx].clone();
+            let Some(t) = arc_tangent_at(&arc, if at_start { 0.0 } else { 1.0 }) else {
+                continue;
+            };
+            // Gate-Vektor = Endebenen-Normale, nach INNEN gerichtet.
+            let gate_n = if at_start { t } else { [-t[0], -t[1], -t[2]] };
+            let len = if arc.sweep < 0.0 { arc.r } else { arc.r * arc.sweep };
+            if len > 2.0 * cap_len && arcs_total < budget {
+                let f = cap_len / len;
+                let (t0, t1) = if at_start { (0.0, f) } else { (1.0 - f, 1.0) };
+                let (Some(mut cap), Some(rest)) = (
+                    arc_subrange(&arc, t0, t1),
+                    if at_start {
+                        arc_subrange(&arc, t1, 1.0)
+                    } else {
+                        arc_subrange(&arc, 0.0, t0)
+                    },
+                ) else {
+                    continue;
+                };
+                if at_start {
+                    cap.m2s = gate_n;
+                    ch.arcs[idx] = rest;
+                    ch.arcs.insert(idx, cap);
+                } else {
+                    cap.m2e = gate_n;
+                    ch.arcs[idx] = rest;
+                    ch.arcs.push(cap);
+                }
+                arcs_total += 1;
+            } else if at_start {
+                // Bogen zu kurz (oder Arc-Budget erschöpft): das Gate gilt für
+                // den ganzen terminalen Bogen — die Korrektur blendet über ihn
+                // aus, die Kappe ist zu.
+                ch.arcs[idx].m2s = gate_n;
+            } else {
+                ch.arcs[idx].m2e = gate_n;
+            }
+        }
+    }
+}
+
+/// Deterministische Richtungs-Stichprobe (Fibonacci-Kugel, 240 Punkte) für
+/// [`end_region_violation`]. Als Konstante berechnet — die Sonde läuft je
+/// Kanal-Ende und darf keine Allokation kosten.
+static FIB_DIRS: std::sync::LazyLock<Vec<[f32; 3]>> = std::sync::LazyLock::new(|| {
+    let n = 240usize;
+    let ga = std::f64::consts::PI * (3.0 - 5.0f64.sqrt());
+    (0..n)
+        .map(|i| {
+            let z = 1.0 - 2.0 * (i as f64 + 0.5) / n as f64;
+            let r = (1.0 - z * z).max(0.0).sqrt();
+            let th = ga * i as f64;
+            [(r * th.cos()) as f32, (r * th.sin()) as f32, z as f32]
+        })
+        .collect()
+});
+
 /// Greedy-PCC-Fit: wachse Runs von Trace-Punkten, solange der Bogen durch
 /// (Start, Mitte, Ende) alle Zwischenpunkte innerhalb `fit_tol` trifft.
 /// Liefert je Bogen die Indizes (start, end) in `pts`.
@@ -3317,12 +3642,20 @@ fn synthesize_stop(
     delta: f32,
     tol: f32,
     report: &mut crate::offset_capability::CapabilityReport,
-) -> (Vec<OffsetChannel>, Vec<VertexSphere>, Vec<BoundedCsg>, Vec<crate::offset_rim::RimBlock>) {
+) -> (
+    Vec<OffsetChannel>,
+    Vec<VertexSphere>,
+    Vec<BoundedCsg>,
+    Vec<crate::offset_rim::RimBlock>,
+    // #384 §8e: `true` = die enge Kanal-Zusage ist an diesem Stopp widerlegt
+    // (der Aufrufer unterdrückt dann seine `tol`-Notiz).
+    bool,
+) {
     let union_form = delta < 0.0;
     let mut members = Vec::new();
     flatten_members(inner, union_form, 1.0, &mut members);
     if members.len() < 2 {
-        return (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new(), Vec::new(), false);
     }
     // Phase 4 (#398): der ∂P-Rand-Fillet dieses Stopps aus DERSELBEN
     // `contact_clips`-Quelle wie die Prismen (faithful Accept/Refuse-Mirror,
@@ -3682,7 +4015,11 @@ fn synthesize_stop(
                                     &members, &triple_cands, &ctx, union_form,
                                     gate_eps, gscale, &min_feat, &mut channel_idx,
                                 );
-                                return (channels, verts, prisms, rims);
+                                close_open_end_caps(&mut channels, MAX_ARCS_PER_STOP);
+                                let capped = audit_channel_end_caps(
+                                    &channels, &verts, inner, &prisms, delta, tol, report,
+                                );
+                                return (channels, verts, prisms, rims, capped);
                             }
                             // Schon von einer früheren Kurve abgedeckt?
                             if claimed.iter().any(|q| norm(sub(*q, seed)) < step * 1.5) {
@@ -3879,7 +4216,11 @@ fn synthesize_stop(
                                     snap_channel_ends_to_vertices(
                                         &mut channels, &chan_ends, &verts,
                                     );
-                                    return (channels, verts, prisms, rims);
+                                    close_open_end_caps(&mut channels, MAX_ARCS_PER_STOP);
+                                    let capped = audit_channel_end_caps(
+                                        &channels, &verts, inner, &prisms, delta, tol, report,
+                                    );
+                                    return (channels, verts, prisms, rims, capped);
                                 }
                                 channel_idx += 1;
                                 if !blocked.is_empty() {
@@ -3898,7 +4239,73 @@ fn synthesize_stop(
         &mut channel_idx,
     );
     snap_channel_ends_to_vertices(&mut channels, &chan_ends, &verts);
-    (channels, verts, prisms, rims)
+    close_open_end_caps(&mut channels, MAX_ARCS_PER_STOP);
+    let capped = audit_channel_end_caps(&channels, &verts, inner, &prisms, delta, tol, report);
+    (channels, verts, prisms, rims, capped)
+}
+
+/// #384 §8e: prüft NACH dem End-Kappen-Gate, ob die Korrektur in der
+/// Umgebung eines Nahtendes noch Punkte FALSCH KLASSIFIZIERT — mit einem
+/// Randpunkt-Zeugen als Beweis ([`end_region_violation`]).
+///
+/// Warum es das noch gibt, obwohl die Kappe zu ist: der Term kennt nur
+/// SEINE Naht. Läuft eine fremde Fläche näher an einem Punkt vorbei als die
+/// eigene Naht (die Deckfläche am Ende eines Dieders, die Nachbar-Naht einer
+/// Taschen-Ecke), dann behauptet `de − δ` mehr Distanz, als es gibt — das
+/// ist das im Modulkopf notierte Phase-C-Restrisiko („Fremdgeometrie NÄHER
+/// als K an der Kurve im Kegelgebiet"), jetzt gemessen statt vermutet. Der
+/// Opcode kann es nicht sehen (drittes Gate = Semantik-Änderung in sechs
+/// Evaluator-Spiegeln), die Synthese kann es nicht wegparametrieren — also
+/// wird es GEMELDET: der Stopp sagt dort nicht mehr die Bau-Toleranz zu,
+/// sondern die Gate-/B0-Schranke, mindestens aber den gemessenen Fehler.
+/// Das Feld bleibt unberührt (die Korrektur ist über die Naht hinweg
+/// weiterhin die beste verfügbare, s. §8e).
+///
+/// Rückgabe: `true`, wenn die enge Zusage gefallen ist (der Aufrufer
+/// unterdrückt dann seine `tol`-Notiz).
+fn audit_channel_end_caps(
+    channels: &[OffsetChannel],
+    verts: &[VertexSphere],
+    inner: &BoundedCsg,
+    prisms: &[BoundedCsg],
+    delta_signed: f32,
+    tol: f32,
+    report: &mut crate::offset_capability::CapabilityReport,
+) -> bool {
+    if channels.is_empty() {
+        return false;
+    }
+    let field = |x: [f32; 3]| -> f32 {
+        let mut v = inner.sdf(x, EvalMode::Visual);
+        for p in prisms {
+            // Spiegel der Prisma-Verdrahtung in `synthesize_offset_channels_reported`.
+            v = if delta_signed < 0.0 {
+                v.min(p.sdf(x, EvalMode::Visual))
+            } else {
+                v.max(-p.sdf(x, EvalMode::Visual))
+            };
+        }
+        v
+    };
+    let Some((viol, gate, at)) =
+        end_region_violation(channels, verts, &field, delta_signed, tol)
+    else {
+        return false;
+    };
+    // Schranke: die bewiesene Ein-Term-Auslenkung `(c−1)·δ + 4·tol` (= das
+    // Gate, zugleich die B0-Schranke der unkorrigierten Naht) — mindestens
+    // aber der GEMESSENE Fehler. Mehrere Terme an einem Punkt können sich
+    // addieren (das `gate = G + d` des nächsten Kanals sieht das bereits
+    // angehobene `d`), darum ist der Zeugenwert Teil der Schranke.
+    let bound = gate.max(viol);
+    report.note_tolerance(format!(
+        "Duale Boolean-Kante über Arc-Spline-Kanäle korrigiert — am Nahtende aber NICHT auf die \
+         Bau-Toleranz: dort greift der Term über Fremdgeometrie (Randpunkt-Zeuge bei \
+         [{:.2}, {:.2}, {:.2}], nachgewiesene Fehlklassifikation {viol:.3} mm). Fehler ≤ \
+         {bound:.3} mm (Gate-/B0-Schranke).",
+        at[0], at[1], at[2]
+    ));
+    true
 }
 
 /// C4-Spine-Snapping: verlängert Kanal-Kurven, deren Trace am
@@ -4030,7 +4437,8 @@ pub fn synthesize_offset_channels_reported(
             // Prismen, Konkavitäts-Gate inklusive) — sie schließen den δ-schmalen
             // Sliver/Keil, den das Prisma stehen lässt, und fließen in die
             // Capability-Note (Rest = tol statt 0.75·δ).
-            let (channels, verts, prisms, rims) = synthesize_stop(&inner, delta, tol, report);
+            let (channels, verts, prisms, rims, cap_over_claim) =
+                synthesize_stop(&inner, delta, tol, report);
             // #395: die Kontakt-Prismen als reguläre Boolean-Member VOR dem ±δ in
             // den gefalteten Baum hängen (Design §3.2). Da S ⊆ U (Erosion) bzw.
             // S ⊆ {f_inner ≥ 0} (Dilation) bleibt die naive Boolean-Nullmenge
@@ -4072,7 +4480,11 @@ pub fn synthesize_offset_channels_reported(
                 // `synthesize_stop` notiert) oder gar keine Korrektur.
                 return stop;
             }
-            if !channels.is_empty() || !verts.is_empty() {
+            if (!channels.is_empty() || !verts.is_empty()) && !cap_over_claim {
+                // #384 §8e: `cap_over_claim` heißt, die Sonde hat die enge
+                // Zusage an diesem Stopp mit einem Randpunkt-Zeugen widerlegt
+                // und die ehrliche (weitere) Schranke bereits notiert — dann
+                // wäre diese Notiz ein Bound-Over-Claim.
                 report.note_tolerance(format!(
                     "Duale Boolean-Kante über Arc-Spline-Kanäle toleranzbeschränkt korrigiert (Ziel-Toleranz ≤ {tol} mm)."
                 ));

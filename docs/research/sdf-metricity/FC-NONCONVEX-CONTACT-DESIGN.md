@@ -555,6 +555,129 @@ Außenkante des Trägerkörpers **0.760 mm** ab, während er ≤ 0.01 mm zusagt
 (`worst` bei `[−10.73, 6.53, 11.0]`, δ = 2). Das ist ein Bound-Over-Claim des
 KANAL-Pfads, nicht des Prisma-Pfads, und existiert unabhängig von #384-8d.
 
+## 8e. Die End-Kappe des Kanal-Terms (#384, 2026-08-01)
+
+§8d ließ einen Befund offen: bei `s ≥ 2·δ` — wo korrekt KEIN Prisma entsteht,
+vorher wie nachher — trug der reguläre `OP_ARC_CHANNEL`-Pfad an der
+**Außenkante des Trägerkörpers** 0.760 mm ab (worst bei `[−10.73, 6.53, 11.0]`,
+δ = 2), während die Capability ≤ 0.01 mm zusagte. Das ist ein Bound-Over-Claim
+um Faktor 76, und er sitzt weit weg von der Naht, die der Kanal korrigiert.
+
+### Diagnose: die Kappe, nicht der Kegel, nicht der Trust-Radius
+
+Die C2-Konstruktion ist exakt, solange der nächste Punkt `q*` der Naht-Kurve
+AUCH der nächste Randpunkt des Körpers ist. Am **offenen Spine-Ende** gilt das
+jenseits des Endes nicht mehr:
+
+* `arc_closest` klemmt den Fußpunkt auf den Endpunkt `E`. Für jeden Punkt
+  hinter der Endebene misst `de` die Distanz zu EINEM PUNKT, nicht zur Naht.
+* Die beiden Kegel-Gates `m̂₁, m̂₂` gehören zur KANTE. Sie schneiden den
+  Normalkegel des Dieders aus, aber sie sagen nichts über die Richtung
+  ENTLANG der Naht — hinter dem Ende stehen sie unverändert offen.
+* Ergebnis: eine Ball-Kappe des Radius `K = c·δ + 0.5·δ + 8·tol ≈ 1.95·δ`
+  um jedes Nahtende, in der der Term voll wirkt.
+
+Am Messpunkt: der Fußpunkt ist die Ecke der Taschenmündung `(−7, 7, 10)`,
+`de = 3.894 < K = 3.908`, beide Gates positiv (`+z`: 1.0, `−y`: 0.467),
+`w = K − de = 0.014 > 0`, naives `d = −0.762` (korrekt: die Außenkante von A
+liegt 1.238 entfernt, also INNERHALB der Dilatation). `max(d, w) = +0.014` ⇒
+Vorzeichenkipp. 544 Gitterpunkte einer 61³-Sonde fielen so.
+
+Zwei naheliegende Erklärungen sind **widerlegt**:
+
+* **Trust-Radius zu groß?** Nein. Dieselbe Fehlstelle entsteht bei
+  `de = 2.55` (also weit unter `c·δ = 2.83`, dem Ausmaß des legitimen Keils).
+  Der Trust-Radius begrenzt die Reichweite, nicht die Ursache.
+* **Spine zurückschneiden?** Verschlimmert es. Trimmt man das Ende um `K`,
+  wandert die Kappe mit — und wirkt jetzt über den Nahtabschnitt, den sie
+  gerade freigegeben hat, wo `de` die Distanz zur echten Naht ÜBERSCHÄTZT
+  (gemessen: worst 0.632 → 1.500 mm). Eine Kappe ist nur dort harmlos, wo die
+  Naht wirklich endet — und genau dort ist sie schädlich.
+
+Der Mechanismus ist NICHT auf den Dilations-Pfad beschränkt: am Erosions-Stopp
+addiert dieselbe Kappe. Am `notch_union`-Dieder (die B0-Fixture, α = 90°,
+δ = 2) steht 1.34 mm vor der Deckfläche `z = −50` Phantom-Material, wo das
+naive Feld korrekt Luft meldet: **0.800 mm**, gemessen gegen die exakte
+3D-Referenz `δ − dist(x, ∁Körper)`.
+
+### Fix: das End-Gate ist DATEN, nicht Semantik
+
+Der Opcode hat je Bogen genau ZWEI Gate-Vektoren; ein drittes wäre eine
+Semantik-Änderung in sechs Evaluator-Spiegeln (ausdrücklich außerhalb dieses
+Pakets). Aber die Gates sind **Daten**: `close_open_end_caps` spaltet am
+offenen Ende ein kurzes terminales Bogenstück (`0.25·δ`) ab und dreht dessen
+zweites Gate auf die **Endebenen-Normale** `∓t̂`:
+
+* jenseits der Endebene ist `⟨x−E, ∓t̂⟩ < 0` ⇒ `w < 0` ⇒ der Term ist
+  strukturell AUS — kein Sampling, kein Schwellwert, keine Heuristik;
+* davor ist der Fußpunkt innerlich, also `⟨x−q*, t̂⟩ = 0` und das Gate
+  neutral; die nlerp-Interpolation blendet die Korrektur auf dem kurzen
+  Endstück stetig aus (kein Feldsprung, keine neue Kante).
+
+Geschlossene Spines (Steinmetz) haben kein Ende und bleiben **byte-identisch**.
+An gesnappten Enden übernimmt die Vertex-Kugel mit ihren DREI Gates — genau die
+R&R-Arbeitsteilung „Kanten-Kanäle enden IN den Vertices" (C4).
+
+### Was danach bleibt (und jetzt ehrlich gemeldet wird)
+
+Die Kappe ist zu, der Kegel bleibt. Läuft eine **fremde Fläche** näher an
+einem Punkt vorbei als die eigene Naht, behauptet `de − δ` weiter zu viel
+Distanz — das ist das im Modulkopf seit Phase B notierte Restrisiko
+(„Fremdgeometrie NÄHER als K an der Kurve im Kegelgebiet"), jetzt **gemessen
+statt vermutet**:
+
+| Szene | Fremdfläche | Fehler |
+|---|---|---|
+| Tasche, `s ≥ 2·δ` | die NACHBAR-Naht der Mündungs-Ecke | 0.632 mm |
+| `notch_union` α=90° | die Deckfläche am Dieder-Ende | 0.848 mm |
+| `notch_union` α=60° | dieselbe | 2.040 mm |
+
+Verschärft wird das durch die **sequenzielle** Anwendung: hat ein Kanal `d`
+bereits (korrekt) angehoben, öffnet das `gate = G + d` des NÄCHSTEN weiter als
+beim naiven `d` — die Auslenkung kaskadiert über die Ein-Term-Schranke `G`
+hinaus. Beides ist mit den heutigen zwei Gates weder synthese- noch
+parameterseitig zu heilen.
+
+Deshalb sagt der Stopp dort **nicht mehr die Bau-Toleranz zu**. Ein
+Randpunkt-Zeuge entscheidet das, kein Schätzwert: `end_region_violation`
+tastet die Umgebung jedes offenen Nahtendes ab (Kegel der Endpunkt-Gates,
+`δ < |x−E| < K`), wendet die Korrektur VOLLSTÄNDIG an (alle Kanäle, dann die
+Vertex-Kugeln — wie der Evaluator) und sucht Punkte, die das naive Feld
+richtig und das korrigierte falsch klassifiziert. Für jeden Kandidaten
+marschiert `boundary_witness` (gedämpfter Newton, Gradient je Schritt neu —
+ein Strahl in Startrichtung verfehlt an Boolean-Kanten den nächsten Rand) auf
+die Körperoberfläche. Landet er näher als δ, ist die wahre Lage BEWIESEN:
+
+* Dilation: `dist(x, Körper) ≤ u < δ` ⇒ x liegt IN der Dilatation;
+* Erosion: `dist(x, ∁Körper) ≤ u < δ` ⇒ die δ-Kugel um x ragt heraus, x liegt
+  also NICHT in der Erosion.
+
+Gemeldet wird dann `(c−1)·δ + 4·tol` (das Gate — zugleich die B0-Schranke der
+unkorrigierten Naht), mindestens aber der gemessene Fehler. Bewusst NICHT
+gemeldet werden reine Wert-Unterschätzungen des konkaven Terms: die
+Luftseiten-Klemme `min(d, −w_geo)` unterschätzt die Distanz absichtlich
+(march-sicher).
+
+### Bilanz
+
+| Szene | vorher | nachher |
+|---|---|---|
+| Tasche `s ≥ 2·δ`, worst | 0.760 mm bei Zusage ≤ 0.01 | 0.632 mm bei Zusage ≤ 0.868 |
+| Tasche `s ≥ 2·δ`, Fehlklassifikationen (61³) | 544 | 204 |
+| Außenkante `[−10.73, 6.53, 11.0]` | +0.014 (Luft) | negativ (Material) |
+| `notch_union` Ende (z ∈ [44, 56]) | 0.800 mm | 0.500 mm |
+| Steinmetz (geschlossene Spine) | — | byte-identisch |
+
+Golden: 2 der 35 Szenen bewegen sich — `arc_channel_notch` und
+`vertex_sphere_corner`, also genau die beiden mit OFFENEN Kanal-Spines. Beide
+tragen den Fehler nachweislich (Randpunkt-Zeugen vor dem Fix: 0.848 mm bzw.
+0.970 mm); die 33 übrigen sind byte-identisch.
+
+**Der saubere Endzustand braucht ein drittes Gate im Opcode** (End-Ebene bzw.
+Voronoi-Bisektor zur Nachbar-Naht, dazu ein Kegel-Gate gegen Fremdflächen).
+Das ist eine Semantik-Änderung in sechs Evaluator-Spiegeln und damit ein
+eigenes Paket — hier bewusst nicht angefasst.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
