@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.51.0
+- feat(kernel) #384: Flächen, die Offset und Shell selbst erzeugen — die Rundung an einer Boolean-Naht, das Füllstück an einer bündigen Kontaktfläche —, sagen jetzt, woher sie stammen. Ein Klick auf so ein Füllstück wählte bisher gar nichts aus: es trug eine Kennung, die zu keinem Feature im Dokument gehört. Jetzt landet die Auswahl auf dem Feature, dem der Körper gehört. Und eine Naht-Rundung nennt jetzt BEIDE Flächen, zwischen denen sie sitzt, statt nur einer: das Messwerkzeug greift auf einer solchen Rundung auf diese beiden Flächen durch, statt den Klick zu verschlucken.
+
 ## 0.50.1
 - fix(kernel) #456 #452: Ein Boolean-Zielkörper meint jetzt wirklich den KÖRPER. „Zielkörper wählen" nannte bisher nur das eine Feature, auf das die Auswahl zeigte — bei einem Körper aus mehreren Features schnitt ein Entfernen deshalb nur aus diesem einen Teil und ließ den Rest stehen. Ohne Warnung, weil die Auswahl ja aufgelöst hatte. Im #419-Dokument war das der Grund, warum `Extrude 15` regenerierte und trotzdem kein Material abtrug; es fräst jetzt.
 

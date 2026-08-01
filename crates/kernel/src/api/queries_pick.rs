@@ -222,24 +222,69 @@ impl Kernel {
                 //     stripped). This is what selection, query-picking and
                 //     edge fillets consume — they map an id to a feature in
                 //     the tree, so they need the feature, not the face.
+                //     Synthetic contact prisms carry an id that no document
+                //     feature owns; they report their OWNER feature instead
+                //     (#384 §9, see below).
                 //   `branches`: the packed BranchIds (feature << SUB_BITS |
                 //     sub) in the same order. The analytic B-Rep edge overlay
                 //     matches a hovered edge by its colliding-face signature,
                 //     which is exactly these packed per-face ids.
+                //   `synthetic`: the second stage — one entry per hit face
+                //     that the offset/shell expansion SYNTHESISED, with its
+                //     parent references. Empty for ordinary geometry.
                 let mut contributors = String::from("[");
                 let mut branches = String::from("[");
+                // #384 Plan §9: die zweistufige Auflösung. `synthetic` listet
+                // je getroffener SYNTHETISCHER Fläche (Offset-Kanal,
+                // Vertex-Kugel, Kontakt-Prisma) ihre Klasse plus die
+                // Eltern-Referenzen; für alles andere bleibt es leer.
+                let mut synthetic: Vec<String> = Vec::new();
                 for (i, id) in hit.contributors.as_slice().iter().enumerate() {
                     if i > 0 {
                         contributors.push(',');
                         branches.push(',');
                     }
-                    contributors.push_str(&id.feature_id().to_string());
+                    let syn = crate::offset_channel::resolve_synthetic(bounded, id.as_u64());
+                    // Ein Kontakt-Prisma trägt eine SYNTHETISCHE Feature-Id
+                    // (Bit-19-Marker), die im Dokument nicht existiert — roh
+                    // gemeldet selektiert die UI damit nichts. Primär gilt das
+                    // Owner-Feature; nur wenn selbst das unbekannt ist
+                    // (Sentinel), bleibt die rohe Id stehen (ehrlich statt
+                    // erfunden). Die Arrays bleiben dabei parallel.
+                    let primary = syn
+                        .as_ref()
+                        .filter(|s| s.kind == crate::offset_channel::SyntheticKind::Prism)
+                        .and_then(|s| s.owner)
+                        .unwrap_or_else(|| id.feature_id());
+                    contributors.push_str(&primary.to_string());
                     branches.push_str(&id.as_u64().to_string());
+                    if let Some(s) = syn {
+                        let kind = match s.kind {
+                            crate::offset_channel::SyntheticKind::Channel => "channel",
+                            crate::offset_channel::SyntheticKind::VertexSphere => "vertex",
+                            crate::offset_channel::SyntheticKind::Prism => "prism",
+                        };
+                        let parents = s
+                            .parents
+                            .iter()
+                            .map(|p| p.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        let owner = match s.owner {
+                            Some(o) => o.to_string(),
+                            None => "null".to_string(),
+                        };
+                        synthetic.push(format!(
+                            r#"{{"branch":{},"kind":"{kind}","owner":{owner},"parents":[{parents}]}}"#,
+                            s.branch
+                        ));
+                    }
                 }
                 contributors.push(']');
                 branches.push(']');
+                let synthetic = format!("[{}]", synthetic.join(","));
                 format!(
-                    r#"{{"hit":true,"point":[{},{},{}],"normal":[{},{},{}],"t":{},"element":"{}","contributors":{},"branches":{}}}"#,
+                    r#"{{"hit":true,"point":[{},{},{}],"normal":[{},{},{}],"t":{},"element":"{}","contributors":{},"branches":{},"synthetic":{}}}"#,
                     hit.point[0],
                     hit.point[1],
                     hit.point[2],
@@ -250,6 +295,7 @@ impl Kernel {
                     hit.element.label(),
                     contributors,
                     branches,
+                    synthetic,
                 )
             }
         }

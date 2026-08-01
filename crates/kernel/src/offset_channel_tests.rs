@@ -1830,3 +1830,217 @@ fn fc3_two_island_contact_both_get_rims() {
         report.reasons()
     );
 }
+
+// ─── §9 Zweistufiges Picking (#384, v0.51.0) ─────────────────────────────────
+//
+// Die Provenance der synthetischen Flächen liegt seit Phase B/C im Baum, wurde
+// aber von der Query-/Web-Schicht nie ausgelesen. Diese beiden Tests fahren die
+// ECHTE API-Kette (Dokument → Features → `Kernel::pick`) und prüfen, was auf
+// einer Kanal- bzw. einer Prismenfläche ankommt.
+
+use serde_json::json;
+
+/// Box (z ∈ [−10, 0]) + darin steckender Zylinder (Achse Y), erodiert um
+/// −2 mm: der `−δ`-an-Union-Stopp synthetisiert konkave Kanäle entlang der
+/// Naht Zylindermantel ↔ Box-Deckel.
+fn cylinder_union_erosion_kernel() -> crate::Kernel {
+    let mut k = crate::Kernel::new();
+    k.document.feature_calls = vec![
+        fielddraft_protocol::FeatureCall::new(
+            "box",
+            FeatureId::from_u32(1),
+            json!({ "half_extents": [10.0, 10.0, 5.0], "translate": [0.0, 0.0, -5.0], "op": "new" }),
+        ),
+        fielddraft_protocol::FeatureCall::new(
+            "cylinder",
+            FeatureId::from_u32(2),
+            json!({ "radius": 6.0, "half_height": 8.0, "op": "add", "targets": "qCreatedBy(1)" }),
+        ),
+        fielddraft_protocol::FeatureCall::new(
+            "offset",
+            FeatureId::from_u32(3),
+            json!({ "targets": "qCreatedBy(1)", "delta": { "value": -2.0, "unit": "mm" } }),
+        ),
+    ];
+    k.bootstrap_features_from_calls().unwrap();
+    // Körper (und damit die gewobenen B-Reps) materialisieren — `pick` allein
+    // baut nur den Pick-Baum.
+    k.rebuild_mesh_internal();
+    k
+}
+
+/// Bündig auf eine Box gedockte zweite Box, erodiert um −2 mm: der koplanare
+/// Kontakt wird per Kontakt-Prisma korrigiert (#395/#398), dessen Flächen eine
+/// SYNTHETISCHE Feature-Id tragen.
+fn flush_contact_prism_kernel() -> crate::Kernel {
+    let mut k = crate::Kernel::new();
+    k.document.feature_calls = vec![
+        fielddraft_protocol::FeatureCall::new(
+            "box",
+            FeatureId::from_u32(1),
+            json!({ "half_extents": [10.0, 10.0, 5.0], "translate": [0.0, 0.0, -5.0], "op": "new" }),
+        ),
+        fielddraft_protocol::FeatureCall::new(
+            "box",
+            FeatureId::from_u32(2),
+            json!({ "half_extents": [6.0, 6.0, 5.0], "translate": [0.0, 0.0, 5.0],
+                    "op": "add", "targets": "qCreatedBy(1)" }),
+        ),
+        fielddraft_protocol::FeatureCall::new(
+            "offset",
+            FeatureId::from_u32(3),
+            json!({ "targets": "qCreatedBy(1)", "delta": { "value": -2.0, "unit": "mm" } }),
+        ),
+    ];
+    k.bootstrap_features_from_calls().unwrap();
+    k
+}
+
+/// Feuert ein deterministisches Raster von −z-Strahlen und sammelt jeden
+/// Treffer, dessen Payload einen `synthetic`-Eintrag trägt.
+fn scan_synthetic_hits(k: &mut crate::Kernel) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut x = -9.0f32;
+    while x <= 9.0 {
+        let mut y = -9.0f32;
+        while y <= 9.0 {
+            let json = k.pick(x, y, 100.0, 0.0, 0.0, -1.0);
+            if json.contains(r#""synthetic":[{"#) {
+                out.push(json);
+            }
+            y += 0.5;
+        }
+        x += 0.5;
+    }
+    out
+}
+
+/// Plan §9 (1)+(3): eine gepickte KANALFLÄCHE meldet primär ihre eigene
+/// Branch-Id (Identität, 0x700+-Band) und sekundär die BEIDEN Kanten-Eltern —
+/// die Mess-/Snap-Referenz, die der Kanal erbt. Vor v0.51.0 ging der zweite
+/// Elternteil in der Synthese verloren.
+#[test]
+fn pick_on_offset_channel_reports_both_edge_parents() {
+    let mut k = cylinder_union_erosion_kernel();
+    let hits = scan_synthetic_hits(&mut k);
+    assert!(!hits.is_empty(), "kein Treffer auf einer synthetischen Fläche");
+
+    let channel = hits
+        .iter()
+        .find(|j| j.contains(r#""kind":"channel""#))
+        .unwrap_or_else(|| panic!("keine Kanalfläche im Raster: {}", &hits[0]));
+    let v: serde_json::Value = serde_json::from_str(channel).unwrap();
+    let syn = v["synthetic"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["kind"] == "channel")
+        .unwrap()
+        .clone();
+
+    // (1) Identität: der gemeldete Branch IST der Kanal (reserviertes Band).
+    let branch = syn["branch"].as_u64().unwrap();
+    let sub = crate::csg::BranchId(branch).sub();
+    assert!(
+        (0x700..0x7FE).contains(&sub),
+        "Kanal-Branch {branch} liegt nicht im 0x700+-Band (sub {sub:#x})"
+    );
+    assert!(
+        v["branches"].as_array().unwrap().iter().any(|b| b.as_u64() == Some(branch)),
+        "Kanal-Branch fehlt in `branches`: {channel}"
+    );
+
+    // (3) Referenz: BEIDE Kanten-Eltern kommen an, und es sind die zwei
+    // Member-Features (Box 1 + Zylinder 2), nicht zweimal derselbe.
+    let parents: Vec<u64> =
+        syn["parents"].as_array().unwrap().iter().map(|p| p.as_u64().unwrap()).collect();
+    assert_eq!(parents.len(), 2, "Kanal muss GENAU zwei Eltern melden: {syn}");
+    assert!(parents[0] <= parents[1], "Eltern-Paar muss geordnet sein: {parents:?}");
+    let parent_feats: Vec<u32> =
+        parents.iter().map(|p| crate::csg::BranchId(*p).feature_id()).collect();
+    assert_eq!(parent_feats, vec![1, 2], "Eltern-Features falsch: {parents:?}");
+    // Kein Elternteil liegt selbst im Kanal-Band (Kollisionswächter).
+    for p in &parents {
+        assert!(crate::csg::BranchId(*p).sub() < 0x700, "Elternteil im Kanal-Band: {p}");
+    }
+    assert_eq!(syn["owner"].as_u64(), Some(1), "Owner-Feature des Kanals: {syn}");
+
+    // Und der Nutzen davon: BEIDE Eltern-BranchIds finden sich in den
+    // gewobenen B-Reps wieder — erst dadurch kann die Web-Schicht sie als
+    // Mess-/Snap-Referenz auflösen (`syntheticParentElements`). Eine
+    // Provenance, die auf nichts Auflösbares zeigt, wäre wertlos.
+    let mut woven: Vec<u64> = Vec::new();
+    for i in 0..k.body_count() {
+        let faces: serde_json::Value = serde_json::from_str(&k.body_brep_faces(i)).unwrap();
+        for f in faces.as_array().unwrap() {
+            woven.push(f["branchId"].as_u64().unwrap());
+        }
+    }
+    for p in &parents {
+        assert!(
+            woven.contains(p),
+            "Elternteil {p} ist in keiner gewobenen B-Rep auflösbar (von {} Flächen)",
+            woven.len()
+        );
+    }
+}
+
+/// Plan §9 (1): eine gepickte PRISMENFLÄCHE trägt eine synthetische
+/// Feature-Id (Bit-19-Marker), die kein Dokument-Feature besitzt. `pick`
+/// löst sie über `prism_owner` auf das Owner-Feature auf — vorher stand in
+/// `contributors` eine Id, zu der die UI schlicht nichts fand.
+#[test]
+fn pick_on_contact_prism_resolves_owner_feature() {
+    let mut k = flush_contact_prism_kernel();
+    let hits = scan_synthetic_hits(&mut k);
+    let prism = hits
+        .iter()
+        .find(|j| j.contains(r#""kind":"prism""#))
+        .unwrap_or_else(|| panic!("keine Prismenfläche im Raster ({} Treffer)", hits.len()));
+    let v: serde_json::Value = serde_json::from_str(prism).unwrap();
+
+    let syn = v["synthetic"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["kind"] == "prism")
+        .unwrap()
+        .clone();
+    let branch = syn["branch"].as_u64().unwrap();
+    let feat = crate::csg::BranchId(branch).feature_id();
+    assert!(is_prism_feat(feat), "Prisma-Branch {branch} trägt keinen Marker");
+    assert_eq!(prism_owner(feat), Some(1), "Owner muss min(1,2)=1 sein");
+    assert_eq!(syn["owner"].as_u64(), Some(1));
+    assert!(syn["parents"].as_array().unwrap().is_empty(), "Prisma führt kein Branch-Paar");
+
+    // Die parallelen Arrays: an der Position des Prisma-Branches steht in
+    // `contributors` das OWNER-Feature, nicht die synthetische Id.
+    let branches: Vec<u64> =
+        v["branches"].as_array().unwrap().iter().map(|b| b.as_u64().unwrap()).collect();
+    let contributors: Vec<u64> =
+        v["contributors"].as_array().unwrap().iter().map(|c| c.as_u64().unwrap()).collect();
+    assert_eq!(branches.len(), contributors.len(), "Arrays müssen parallel bleiben");
+    let idx = branches.iter().position(|b| *b == branch).unwrap();
+    assert_eq!(contributors[idx], 1, "Prisma muss auf sein Owner-Feature auflösen");
+    assert!(
+        !contributors.iter().any(|c| is_prism_feat(*c as u32)),
+        "keine synthetische Id darf als Contributor durchrutschen: {contributors:?}"
+    );
+}
+
+/// Gewöhnliche Geometrie bleibt unberührt: kein `synthetic`-Eintrag, kein
+/// verändertes Contributor-Verhalten.
+#[test]
+fn pick_on_plain_geometry_reports_no_synthetic_faces() {
+    let mut k = crate::Kernel::new();
+    k.document.feature_calls = vec![fielddraft_protocol::FeatureCall::new(
+        "box",
+        FeatureId::from_u32(1),
+        json!({ "half_extents": [10.0, 10.0, 10.0], "op": "new" }),
+    )];
+    k.bootstrap_features_from_calls().unwrap();
+    let json = k.pick(0.0, 0.0, 100.0, 0.0, 0.0, -1.0);
+    assert!(json.contains(r#""hit":true"#), "{json}");
+    assert!(json.contains(r#""synthetic":[]"#), "Box-Deckel ist nicht synthetisch: {json}");
+    assert!(json.contains(r#""contributors":[1]"#), "{json}");
+}

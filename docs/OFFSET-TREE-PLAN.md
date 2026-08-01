@@ -428,7 +428,8 @@ für Shell.
   Worst-Case IM Band), Toleranz-Staffelung (Render 0.01 mm / Export
   0.001 mm), Opcode-Budget (`SDF_MAX_OPCODES`) beobachten. Offene Frage:
   f32-GPU-Verhalten der Bogen-Distanz + Gating (Spike war f64).
-* **Provenance/Picking — ENTSCHIEDEN (vor Phase B, 2026-07-18).**
+* **Provenance/Picking — ENTSCHIEDEN (vor Phase B, 2026-07-18),
+  VERDRAHTET (v0.51.0, 2026-08-01).**
   Dreiteilige Regel, konsistent mit der A2-Konvention für Join-Bögen:
   (1) **FeatureId des Kanal-Terms = das Offset/Shell-Feature selbst** —
   das Feature, das den Körper synthetisiert hat, ist der Contributor
@@ -440,6 +441,47 @@ für Shell.
   **Picking/Hover löst zweistufig auf:** primär das Offset/Shell-Feature,
   sekundär die beiden Eltern-Flächen-Provenances als Mess-/Snap-Referenz
   (der Kanal „erbt" die Eltern also für Bemaßung, nicht für Identität).
+
+  **Was gebaut wurde (v0.51.0)** — plus die Abweichungen, die die Sonde
+  gegen den Ist-Zustand aufgedeckt hat:
+
+  * `OffsetChannel.parents: [u64; 2]` führt jetzt BEIDE Kanten-Eltern-
+    BranchIds. Vorher trug der Kanal nur `branch` — und das ist ein
+    einziges Feature-Feld, in dem der KLEINERE Elternteil steckt; der
+    zweite ging in der Synthese verloren. Regel (2) ist damit weiterhin
+    nur halb umgesetzt (der Sub ist ein Synthese-Zähler, nicht aus dem
+    Paar abgeleitet) — das Paar selbst ist aber jetzt da, wo es die
+    Regel braucht: am Term.
+  * **Regel (1) ist NICHT wörtlich umsetzbar** und war es nie: der
+    `Offset`/`Shell`-Knoten trägt gar keine FeatureId (weder in `CsgNode`
+    noch in `BoundedCsg`), das Feature ist ein körperweiter Modifier. Der
+    Contributor eines Kanals ist deshalb der **Owner** — die kleinste
+    beteiligte Eltern-Feature-Id —, und für Kontakt-Prismen das per
+    `prism_owner` dekodierte Owner-Feature. Das ist die A2-Konvention der
+    Vertex-Kugeln, nicht die Plan-Formulierung; die Plan-Formulierung
+    verlangte eine Id, die es im Baum nicht gibt.
+  * `Kernel::pick` liefert ein neues Feld **`synthetic`**: je getroffener
+    synthetischer Fläche `{branch, kind: channel|vertex|prism, owner,
+    parents}` (leer bei gewöhnlicher Geometrie). `offset_channel::
+    resolve_synthetic` ist die Auflösung dahinter — Prismen am
+    Bit-19-Marker, Kanäle/Vertex-Kugeln per Baum-Treffer (der Sub allein
+    beweist nichts, das 0x700+-Band teilt sich mit den Sketch-Join-Bögen
+    aus `offset_fold`).
+  * **Behobener Fehlbefund am Prisma:** eine gepickte Prismenfläche
+    meldete in `contributors` ihre synthetische Feature-Id (Bit-19-Marker,
+    z. B. `524352`) — eine Id, zu der die UI schlicht nichts findet, also
+    selektierte ein Klick darauf gar nichts. `pick` löst sie jetzt auf das
+    Owner-Feature auf; nur ein nicht kodierbarer Owner (Sentinel) lässt
+    die rohe Id stehen (ehrlich statt erfunden). Die beiden Arrays
+    bleiben parallel.
+  * Web-Seite: `syntheticProvenance.ts` löst die Eltern-BranchIds gegen
+    die gewobenen B-Reps zu regulären `PickedElement`s auf; das
+    **Measure-Werkzeug** greift auf einer synthetischen Fläche auf sie
+    durch (vorher verschluckte es den Klick, weil dort nichts hovert).
+  * **Offen:** Vertex-Kugeln führen kein Eltern-Tripel mit (die Synthese
+    kennt dort nur Member-Feature-Ids, keine Branch-Ids) — sie melden
+    `kind: "vertex"` mit leerer Eltern-Liste. Snapping nutzt die
+    Referenzen noch nicht.
 * **Interaktion mit Edge-Fillets/MaskedBlend- und smin-Stopps.** Der
   Pushdown stoppt an Blend-Knoten — dort gibt es keinen exakten Offset
   (Blendflächen sind keine Offset-abgeschlossene Klasse). Offset über

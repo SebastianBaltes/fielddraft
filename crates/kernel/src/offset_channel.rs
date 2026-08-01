@@ -131,6 +131,13 @@ pub struct OffsetChannel {
     pub bound_r: f32,
     /// Provenance-BranchId des Kanal-Terms (0x700+-Band, Plan §9).
     pub branch: u64,
+    /// Plan §9, Stufe 2 des zweistufigen Pickings: die BranchIds der BEIDEN
+    /// Kanten-Eltern-Flächen, geordnet (`parents[0] <= parents[1]`) — dieselbe
+    /// Ordnung, aus der `branch` seinen Feature-Anteil zieht. Der Kanal *erbt*
+    /// sie als Mess-/Snap-Referenz, NICHT als Identität: gepickt wird der
+    /// Kanal (`branch`), gemessen/gesnappt wird an den Eltern. Reine
+    /// Metadaten — feldneutral, kein Opcode sieht sie.
+    pub parents: [u64; 2],
 }
 
 /// offset_tree Phase C4 (#384): Rossignac–Requicha-**Vertex-Kugel** an
@@ -1256,6 +1263,7 @@ fn build_channel(
     closed: bool,
     ctx: &StopCtx,
     branch: u64,
+    parents: [u64; 2],
     report: &mut crate::offset_capability::CapabilityReport,
 ) -> Option<OffsetChannel> {
     // Winkel-Statistik: γ = Winkel zwischen den Normalen.
@@ -1358,6 +1366,7 @@ fn build_channel(
         bound_c: bc,
         bound_r: br + 1e-3,
         branch,
+        parents,
     })
 }
 
@@ -3631,7 +3640,13 @@ fn synthesize_stop(
                             let branch =
                                 crate::csg::BranchId::from_parts(pa.feature_id(), pa.instance(), sub)
                                     .as_u64();
-                            if let Some(ch) = build_channel(&pts, closed, &ctx, branch, report) {
+                            // Plan §9 Stufe 2: BEIDE Eltern mitführen. `branch`
+                            // kann nur einen tragen (ein Feature-Feld); die
+                            // sekundäre Mess-/Snap-Referenz braucht das Paar.
+                            let parents = [pa.as_u64(), pb.as_u64()];
+                            if let Some(ch) =
+                                build_channel(&pts, closed, &ctx, branch, parents, report)
+                            {
                                 total_arcs += ch.arcs.len();
                                 if total_arcs > MAX_ARCS_PER_STOP {
                                     // Kein stiller Cap (#384 offset_capability).
@@ -4188,6 +4203,115 @@ pub fn channels_interference(root: &BoundedCsg) -> usize {
         }
     }
     hits
+}
+
+// ─── Zweistufiges Picking (Plan §9, Stufe 2) ────────────────────────────────
+//
+// Die synthetischen Terme dieses Moduls (Kanäle, Vertex-Kugeln, Kontakt-
+// Prismen) tragen Provenance, die vor v0.51.0 NIEMAND auflöste: eine gepickte
+// Kanalfläche meldete nur die Branch-Id EINES der beiden Kanten-Eltern, eine
+// gepickte Prismenfläche eine synthetische Feature-Id (Bit-19-Marker), die im
+// Dokument gar nicht existiert — die Web-Schicht selektierte damit nichts.
+//
+// [`resolve_synthetic`] ist die Rückgewinnung: primär bleibt die gepickte
+// Fläche selbst (Identität, `branch`), sekundär liefert sie die Eltern als
+// Mess-/Snap-Referenz bzw. das Owner-Feature.
+
+/// Klasse einer synthetischen Offset-Fläche.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntheticKind {
+    /// Arc-Spline-Kanal an einer dualen Boolean-Naht (Phase B).
+    Channel,
+    /// Rossignac–Requicha-Vertex-Kugel an einer Triple-Junction (Phase C4).
+    VertexSphere,
+    /// Kontakt-Prisma an einer koplanaren Kontaktfläche (#395/#398).
+    Prism,
+}
+
+/// Sekundäre Auflösung eines Pick-Treffers auf einer synthetischen Fläche.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SyntheticFace {
+    /// Die gepickte Branch-Id selbst (primäre Identität).
+    pub branch: u64,
+    pub kind: SyntheticKind,
+    /// Kanal: die BEIDEN Kanten-Eltern-BranchIds (geordnet). Vertex-Kugel und
+    /// Prisma führen kein Branch-Paar mit — dort ist die Liste leer und
+    /// `owner` trägt die Provenance.
+    pub parents: Vec<u64>,
+    /// Owner-Feature (Prisma: aus [`prism_owner`]; Kanal/Vertex-Kugel: das
+    /// Feature-Feld der Branch-Id). `None` nur, wenn ein Prisma-Owner beim
+    /// Kodieren nicht ins 12-Bit-Feld passte (Sentinel) — dann ist die
+    /// Provenance ehrlich unbekannt statt falsch.
+    pub owner: Option<u32>,
+}
+
+/// Basis des reservierten Sub-Bands synthetischer Offset-Flächen (Plan §9).
+/// Teilt sich das Band mit `offset_fold::JOIN_ARC_SUB_BASE`, deshalb ist der
+/// Sub allein KEIN Beweis: [`resolve_synthetic`] verlangt zusätzlich einen
+/// Treffer im Baum.
+pub const CHANNEL_SUB_BASE: u32 = 0x700;
+
+/// Plan §9, Stufe 2: löst eine gepickte Branch-Id gegen den Pick-/Mesh-Baum
+/// auf. `None` = keine synthetische Fläche (normale Feature-Geometrie).
+pub fn resolve_synthetic(tree: &BoundedCsg, branch: u64) -> Option<SyntheticFace> {
+    let id = crate::csg::BranchId(branch);
+    // Kontakt-Prismen sind an der Feature-Id erkennbar (Bit-19-Marker) — kein
+    // Baum-Lauf nötig, das Schema ist selbsttragend.
+    if is_prism_feat(id.feature_id()) {
+        return Some(SyntheticFace {
+            branch,
+            kind: SyntheticKind::Prism,
+            parents: Vec::new(),
+            owner: prism_owner(id.feature_id()),
+        });
+    }
+    if id.sub() < CHANNEL_SUB_BASE {
+        return None;
+    }
+    fn walk(n: &BoundedCsg, branch: u64) -> Option<SyntheticFace> {
+        match n {
+            BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
+                for c in channels {
+                    if c.branch == branch {
+                        return Some(SyntheticFace {
+                            branch,
+                            kind: SyntheticKind::Channel,
+                            parents: c.parents.to_vec(),
+                            owner: Some(crate::csg::BranchId(branch).feature_id()),
+                        });
+                    }
+                }
+                for v in verts {
+                    if v.branch == branch {
+                        return Some(SyntheticFace {
+                            branch,
+                            kind: SyntheticKind::VertexSphere,
+                            parents: Vec::new(),
+                            owner: Some(crate::csg::BranchId(branch).feature_id()),
+                        });
+                    }
+                }
+                walk(inner, branch)
+            }
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. }
+            | BoundedCsg::SmoothUnion { left, right, .. }
+            | BoundedCsg::SmoothDifference { left, right, .. }
+            | BoundedCsg::MaskedBlend { left, right, .. }
+            | BoundedCsg::Morph { left, right, .. } => {
+                walk(left, branch).or_else(|| walk(right, branch))
+            }
+            BoundedCsg::Twist { inner, .. }
+            | BoundedCsg::Bend { inner, .. }
+            | BoundedCsg::Displace { inner, .. }
+            | BoundedCsg::Shell { inner, .. }
+            | BoundedCsg::InnerWall { inner, .. }
+            | BoundedCsg::Offset { inner, .. } => walk(inner, branch),
+            _ => None,
+        }
+    }
+    walk(tree, branch)
 }
 
 /// Debug-Helfer: zählt Vertex-Kugeln im Baum (Tests, Telemetrie, C4).

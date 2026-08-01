@@ -61,6 +61,33 @@ export interface PickHit {
    *  the same order. Used by the analytic B-Rep edge overlay to match a
    *  hovered edge by its colliding-face signature. */
   branches: number[];
+  /** #384 (docs/OFFSET-TREE-PLAN.md §9), second stage of the two-step pick:
+   *  one entry per hit face that the offset/shell expansion SYNTHESISED —
+   *  empty (or absent, on an older kernel) for ordinary feature geometry. */
+  synthetic?: SyntheticFace[];
+}
+
+/** Class of a synthetic offset/shell surface (mirrors
+ *  `offset_channel::SyntheticKind`). */
+export type SyntheticKind = "channel" | "vertex" | "prism";
+
+/**
+ * A picked face that no document feature drew: the offset/shell expansion
+ * synthesised it at a Boolean seam (`channel`), a triple junction (`vertex`)
+ * or a coplanar contact (`prism`).
+ *
+ * Two-stage provenance (Plan §9): `branch` stays the face's IDENTITY, while
+ * `owner`/`parents` are the inherited MEASURE/SNAP references — a channel
+ * inherits the two faces whose seam it rounds, a prism its owner feature.
+ */
+export interface SyntheticFace {
+  /** The picked branch id itself (identity). */
+  branch: number;
+  kind: SyntheticKind;
+  /** Owning feature id, or `null` when the kernel could not encode it. */
+  owner: number | null;
+  /** Channel: the two parent face branch ids (ordered). Empty otherwise. */
+  parents: number[];
 }
 export interface PickMiss {
   hit: false;

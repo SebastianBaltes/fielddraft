@@ -97,6 +97,10 @@ import { getPublishedPickCamera, publishPickCamera } from "./pickCameraBridge";
 import { publishSketchCamera } from "./sketchCameraBridge";
 import { requestOverlayRedraw } from "./sketchOverlayBridge";
 import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
+import {
+  syntheticParentElements,
+  type SyntheticProvenanceKernel,
+} from "./syntheticProvenance";
 import { getMateInferenceSnap } from "./mateInferenceBridge";
 import type { PickedElement } from "./elementQuery";
 import { MeasurePanel } from "./MeasurePanel";
@@ -535,9 +539,13 @@ function handleChamferClick(
 }
 
 
-function handleMeasureClick(store: {
-  addMeasureEntity(el: PickedElement): void;
-}): void {
+function handleMeasureClick(
+  store: {
+    addMeasureEntity(el: PickedElement): void;
+    kernel: SyntheticProvenanceKernel;
+  },
+  click: PickResult | null,
+): void {
   // stv8 + me9w: Measure picks a B-Rep VERTEX, EDGE or FACE by its stable
   // id_hash. `getHoveredElement` already merges the three overlays by the CAD
   // priority vertex > edge > face, so the most specific element under the
@@ -545,7 +553,19 @@ function handleMeasureClick(store: {
   // length / area / coordinates / distance. A click over nothing is ignored
   // (keeps the current measure set intact).
   const el = getHoveredElement();
-  if (el) store.addMeasureEntity(el);
+  if (el) {
+    store.addMeasureEntity(el);
+    return;
+  }
+  // #384 §9, zweite Stufe: eine SYNTHETISCHE Offset-Fläche (Kanal, Eckkugel,
+  // Kontakt-Prisma) hat keinen B-Rep-Hash — sie ist gar nicht gewoben, also
+  // hovert hier nichts und der Klick fiel bisher ins Leere. Der Kanal erbt
+  // aber die beiden Flächen, deren Naht er rundet: die messen wir statt
+  // seiner. Genau das ist die Regel „Eltern für Bemaßung, nicht für
+  // Identität".
+  for (const parent of syntheticParentElements(store.kernel, click)) {
+    store.addMeasureEntity(parent);
+  }
 }
 
 function handleSelectionClick(
@@ -1375,7 +1395,7 @@ export function Viewport({
       return;
     }
     if (state?.measureMode) {
-      handleMeasureClick(store);
+      handleMeasureClick(store, click);
       return;
     }
 
