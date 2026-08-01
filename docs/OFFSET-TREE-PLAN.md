@@ -508,9 +508,36 @@ für Shell.
   B0-Schranke ≈0.75·δ zu statt der engen `channel_tol`.
   SSOT der Herleitung + Vertragstabelle:
   `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8c.
-  Offen bleibt der duale DILATIONS-Pfad (`synthesize_contact_prisms_dilation`),
-  der weiter das symmetrische Fenster fährt; er sagt nie `exact` zu, eine
-  Fehl-Verankerung wäre dort ein Bound-Over-Claim statt einer Exakt-Lüge.
+* **Dilations-Duale — GESCHLOSSEN (#384, v0.56.3, 2026-08-01).** Der duale
+  Pfad (`synthesize_contact_prisms_dilation`) fuhr weiter das symmetrische
+  Fenster, und das Vorzeichen bedeutet dort etwas ANDERES: `s = O_i + O_j` misst
+  die Durchdringung der KOMPLEMENTE, `s < 0` heißt „der Subtrahend ist
+  vergraben" — ein geschlossener Hohlraum hinter einem Deckel der Dicke `|s|`,
+  also **gar kein Kontakt**. Das Fenster hielt jeden Deckel < 0.5·δ für einen
+  bündigen Kontakt und trug ihn per Prisma ab. Praktisch wichtigster Fall: die
+  geschlossene Box-Shell (`s = −w` auf allen sechs Achsen). Gemessen gegen die
+  exakte Distanz zu `A \ B` (δ = 2 mm): bei Wandstärke 0.3·δ fielen **60 % aller
+  Innenpunkte der wahren Dilatation** weg, 5766 davon lagen im echten Solid —
+  bei einer Zusage von **≤ 0.01 mm**. Ebenso: `0 < s ≤ 0.5·δ` senkte den
+  Taschenboden um genau `s` (bis 1 mm), `0.5·δ < s < 2·δ` bekam gar kein Prisma
+  und ließ einen 5.159 mm dicken Phantom-Fin über der Tasche stehen.
+  Der Fix nutzt dieselbe `face_pair_penetration`-Klassifikation, verankert das
+  Prisma an der echten Rückseite (`depth_pos − pen`, nur für endlich dicke
+  Member — die ¬box-`margin` bleibt eine Reichweite ab der Ankerebene) und macht
+  `contact_clips` auch im Dilations-Zweig bündig-only. SSI-Nähte bleiben hier
+  aber für JEDES Kontakt-Paar unterdrückt (gemessen, nicht gespiegelt: die
+  Kanäle SUBTRAHIEREN am Dilations-Stopp und griffen sonst bis an die Außenkante
+  des Trägerkörpers durch). Golden byte-identisch.
+  **Kosten an der Kalibrierung:** `thin_wall_shell_status_unchanged_397` fror in
+  der BOX-Spalte für `w < 0.5·δ` genau diese Falschaussage ein; die Zeilen gehen
+  auf `exact` — die mit derselben Referenz belegte WAHRE Zusage (0 Fehler für
+  jede Wandstärke). Die EXTRUDE-Spalte, der eigentliche #397-Gegenstand, steht
+  unverändert. Herleitung + Messtabellen:
+  `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8d.
+  **Neuer offener Befund (eigenes Paket):** bei `s ≥ 2·δ` (kein Prisma, vor wie
+  nach unverändert) trägt der reguläre `OP_ARC_CHANNEL`-Pfad an der Außenkante
+  des Trägerkörpers 0.760 mm ab, während er ≤ 0.01 mm zusagt — ein
+  Bound-Over-Claim des KANAL-Pfads.
 * **Interaktion mit Edge-Fillets/MaskedBlend- und smin-Stopps.** Der
   Pushdown stoppt an Blend-Knoten — dort gibt es keinen exakten Offset
   (Blendflächen sind keine Offset-abgeschlossene Klasse). Offset über

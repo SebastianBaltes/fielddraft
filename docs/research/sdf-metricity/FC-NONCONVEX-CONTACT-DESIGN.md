@@ -453,6 +453,107 @@ Koinzidenz-Fenster. Er sagt nie `exact` zu (¬box unbeschränkt), eine
 Fehl-Verankerung dort wäre also ein Bound-Over-Claim, keine Exakt-Lüge — und
 seine 0.5·δ-Kalibrierung ist per `thin_wall_shell_status_unchanged_397`
 eingefroren. Die signierte Behandlung dort ist ein eigener Schritt.
+→ nachgeholt in §8d.
+
+## 8d. Der duale Dilations-Pfad — dasselbe Fenster, gedrehtes Vorzeichen (#384, 2026-08-01)
+
+§8c ließ den Dilations-Pfad offen mit der Vermutung, eine Fehl-Verankerung
+wäre dort „nur" ein Bound-Over-Claim. Die Messung bestätigt den Befund und
+verschärft ihn: der Pfad **verletzt seine engste Zusage um den Faktor 200**,
+und die eingefrorene Kalibrierung war der Grund.
+
+### Was der Pfad wirklich bedient
+
+Dilation distribuiert über Union exakt — der Pfad existiert also für die
+Intersection/Difference-Form. In der Komplement-Dualität (§8c-Rahmen, De
+Morgan) sind die Member `¬A` (unbeschränkt, `sign = +1`) und `B` (der
+Subtrahend, `sign = −1`); die signierte Größe ist
+
+    s := O_i + O_j,   O = −sign·o    ⇒   für A − B:  s = o_B − o_A
+
+Sie misst die Durchdringung der KOMPLEMENTE, und darum bedeutet ihr Vorzeichen
+etwas anderes als bei der Erosion — es DREHT sich:
+
+| `s` | Geometrie | wahre Lage |
+|---|---|---|
+| `s = 0` | bündig ausgeschnittene Tasche (flush cut), Taschenmund koplanar mit A's Außenfläche | echter submergierter Kontakt — der Fall, für den die Korrektur gebaut wurde |
+| `s > 0` | B ragt um `s` aus A heraus; der Taschenboden liegt um `s` höher | Kontakt mit Überstand — Prisma nötig, aber anders verankert |
+| `s < 0` | B ist um `|s|` VERGRABEN: geschlossener Hohlraum hinter einem Deckel der Dicke `|s|` | **gar kein Kontakt** — es gibt keinen Taschenmund und keinen Phantom-Fin |
+
+Bei der Erosion war `s < 0` der harmlose Luftspalt; hier ist `s < 0` der
+gefährliche Fall. Die praktisch wichtigste Geometrie dieser Lage ist die
+**geschlossene Shell** `Difference(box, box)` mit Wandstärke `w`: sie ist
+`s = −w` auf allen sechs Achsen gleichzeitig.
+
+### Gemessen (δ = 2 mm, Referenz = exakte Distanz zu `A \ B` über dessen ≤6-Box-Zerlegung; `|d − δ|` ist eine UNTERE Schranke des Nullmengen-Fehlers)
+
+Sonde: A = Box he 10³, B = Box he [7,7,5], Mittelpunkt `z = 5 + s`
+(`crates/kernel/src/offset_capability_tests.rs`).
+
+| Lage | Status (vorher) | zugesagt (vorher) | REAL (vorher) | nachher |
+|---|---|---|---|---|
+| `s ∈ [−1.0, −0.05]` (Deckel bis 0.5·δ) | `tolerance_bounded` | ≤ 0.01 mm | **≥ 2.000 mm = 1.0·δ** | `exact`, 0.000 mm |
+| `s = 0` (bündig) | `tolerance_bounded` | ≤ 0.01 mm | 0.000 mm | unverändert |
+| `0 < s ≤ 0.5·δ` | `tolerance_bounded` | ≤ 0.01 mm | **genau `s`, bis 1.000 mm** | ≤ 1.500 mm zugesagt, 0.395 mm real |
+| `0.5·δ < s < 2·δ` | `tolerance_bounded` | ≤ 0.01 mm | **5.159 mm** (kein Prisma → Phantom-Fin über der Tasche) | ≤ 1.500 mm zugesagt, 0.395 mm real |
+
+Box-Shell, Wandstärke `w`, dieselbe Referenz, 61³-Gitter:
+
+| `w/δ` | Status (vorher) | fehlklassifizierte Innenpunkte (vorher) | nachher |
+|---|---|---|---|
+| 0.1 | `tolerance_bounded` (≤ 0.01 mm) | 62118 / 94958 = 65 % | 0 / 94958, `exact` |
+| 0.3 | `tolerance_bounded` (≤ 0.01 mm) | 60780 / 101104 = 60 %, davon 5766 im echten SOLID | 0, `exact` |
+| 0.5 | `tolerance_bounded` (≤ 0.01 mm) | 63632 / 106506 = 60 %, davon 11508 im echten Solid | 0, `exact` |
+| 0.8 | `exact` | 0 | unverändert |
+| 1.0 | `exact` | 0 | unverändert |
+
+Das Prisma spannte beim vergrabenen Hohlraum von der Deckel-AUSSENfläche quer
+durch den Deckel bis zur Rückseite des Hohlraums und subtrahierte alles
+dazwischen — der Deckel verschwand, der Hohlraum wurde zum Kamin. Die duale
+Sicherheits-Stichprobe `prism_outside_inner` (7³ Punkte über der Prisma-AABB)
+sieht das nicht: bei ~5 mm Abtastweite fällt ein 0.6-mm-Deckel durch das Raster.
+
+### Fix (Spiegel von §8c, nicht blind gespiegelt)
+
+1. **`face_pair_penetration` auch hier** — dieselbe Funktion, dieselbe
+   f32-Rundungsklasse `0.02·δ` für BEIDE Facettenklassen. `s < −round_tol` →
+   kein Kontakt (vergrabener Hohlraum), `s ≥ 2·δ` → keine Korrektur nötig,
+   sonst Kontakt mit `pen = max(s, 0)`.
+2. **Prisma-Ausdehnung `depth_pos − pen`**, wenn die `+n̂`-Seite ein ECHTER
+   Member ist (`sign = −1`, endliche Dicke). Ist sie die ¬box-Seite, bleibt
+   `margin` unangetastet: das ist keine Rückseite, sondern eine synthetische
+   Reichweite ab der Ankerebene, die ≥ lateraler Reichweite von P bleiben muss.
+3. **`contact_clips` (Rim-Quelle) wird bündig-only** — auch im
+   Dilations-Zweig. Ein durchdringender Kontakt hat keine gemeinsame Ebene Π;
+   der Rim legte seine Spine sonst auf die falsche und sagte dafür die enge
+   Bau-Toleranz zu. Statt dessen `pen_unrimmed` → ehrliche B0-Schranke 0.75·δ
+   (Phase-4-Multi-Clip-Regel, damit ein bündiger Nachbar-Kontakt am selben
+   Stopp die Zusage nicht wieder verengt).
+4. **SSI-Nähte bleiben hier für JEDES Kontakt-Paar unterdrückt** — anders als
+   am Erosions-Stopp, und das ist gemessen statt gespiegelt. Am Dilations-Stopp
+   SUBTRAHIEREN die Kanäle (konvexe Dualkante). Der Kanal über der
+   Mündungs-Naht eines durchdringenden Kontakts griff im Versuch bis an die
+   AUSSENkante des Trägerkörpers durch und trug dort legitimes Material ab:
+   0.760 mm Fehlstelle gegen 0.395 mm ehrlichen B0-Keil mit Unterdrückung.
+   Beide Varianten halten die 0.75·δ-Zusage; die kleinere gewinnt.
+
+### Was das die eingefrorene Kalibrierung kostet
+
+`thin_wall_shell_status_unchanged_397` fror für die BOX-Spalte bei
+`w < 0.5·δ` genau diese Falschaussage ein (`tolerance_bounded` ≤ 0.01 mm bei
+2.000 mm realem Fehler). Der Pin bewegt sich also — aber nicht als
+Abwägung, sondern als Streichung: die WAHRE Zusage der Familie ist `exact`,
+belegt mit derselben Referenz, die auch die (unveränderten) Zeilen ≥ 0.8·δ
+bestätigt. Die EXTRUDE-Spalte — der eigentliche #397-Gegenstand (eff-Fallback
+mit enger Koinzidenz) — steht unverändert.
+
+### Neuer, hier NICHT behobener Befund (eigenes Paket)
+
+Bei `s ≥ 2·δ` (kein Prisma, unverändert vor wie nach dem Fix) korrigiert der
+reguläre `OP_ARC_CHANNEL`-Pfad die Mündungs-Naht und trägt dabei an der
+Außenkante des Trägerkörpers **0.760 mm** ab, während er ≤ 0.01 mm zusagt
+(`worst` bei `[−10.73, 6.53, 11.0]`, δ = 2). Das ist ein Bound-Over-Claim des
+KANAL-Pfads, nicht des Prisma-Pfads, und existiert unabhängig von #384-8d.
 
 ## 9. Geschriebene Dateien
 

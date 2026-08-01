@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.56.3
+- fix(kernel) #384: Ein Offset nach außen frisst keine Wand mehr weg. Ein Hohlkörper mit dünner Wand — eine Schachtel, deren Innenraum ringsum geschlossen ist — verlor beim Vergrößern nach außen genau diese Wand: das Werkzeug hielt den vergrabenen Hohlraum für eine offene Tasche und trug den Deckel ab, bis vom Körper nichts übrig war, was noch zusammenhängt. Betroffen war jede Wand, die dünner als die halbe Offset-Weite ist. Ebenso lag der Boden einer Tasche zu tief, wenn der ausgeschnittene Körper oben überstand, und bei größerem Überstand stand über der Tasche ein Klotz Material, der dort nicht hingehört. Angesagt war jedes Mal eine Abweichung von einem hundertstel Millimeter. Das Werkzeug unterscheidet jetzt, ob ein Ausschnitt bündig, überstehend oder ganz vergraben ist, und meldet für den überstehenden Fall die größere, wahre Schranke statt einer schönen falschen.
+
 ## 0.56.2
 - fix(kernel) #384: Ein Offset nach innen reißt keinen Spalt mehr in eine Naht, an der zwei Körper einander durchdringen. Standen zwei Klötze nicht bündig aufeinander, sondern steckten ein bis vier Millimeter ineinander, dann zerfiel das Ergebnis in zwei getrennte Stücke mit Luft dazwischen — obwohl das Material an der Naht dicker ist als überall sonst. Umgekehrt wurde eine Fuge von einem Zehntelmillimeter kurzerhand zugeschmiert, und ein knapp überstehendes Prisma ließ Material stehen, wo längst keins mehr sein darf. Alle drei Fälle meldete das Werkzeug obendrein als „exakt“. Die Prüfung unterscheidet jetzt, ob sich zwei Flächen berühren, durchdringen oder ob Luft dazwischen liegt, und der Korrekturkörper endet dort, wo der zweite Körper endet. Wo eine Durchdringung bleibt, die nur näherungsweise geschlossen ist, sagt das Werkzeug die Abweichung ehrlich an, statt sie zu verschweigen.
 

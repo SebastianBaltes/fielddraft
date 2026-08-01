@@ -2907,16 +2907,18 @@ fn synthesize_contact_prisms_dilation(
         refused: false,
         rim_bound: 0.0,
         pairs: Vec::new(),
-        // Der Dilations-Pfad bleibt beim symmetrischen Koinzidenz-Fenster
-        // (#384 behandelt den Erosions-Stopp); er sagt ohnehin nie `exact` zu.
         pen_unrimmed: false,
     };
     let delta = ctx.delta as f64;
-    let coincide_tol = (0.5 * delta).max(1e-3);
-    // #397-Dünnwand-Abgrenzung für Nicht-Box-Facetten (s. Erosions-Pfad): eine
-    // dünne Extrude-Shell-Wand (outer − inner, Deckel um w versetzt) darf keinen
-    // Prisma-Kontakt vortäuschen. Box-Box behält 0.5·δ (Status-Gefrier).
-    let coincide_eff = (0.02 * delta).max(1e-3);
+    // #384 (Dilations-Duale): die signierte Lage `s = O_i + O_j` im KOMPLEMENT
+    // trennt die drei Lagen genauso wie am Erosions-Stopp — nur bedeutet sie
+    // hier etwas anderes (s. Doku oben): `s = 0` bündiger Schnitt, `s > 0` der
+    // Subtrahend ragt um `s` aus dem Solid heraus, `s < 0` er ist um `|s|`
+    // VERGRABEN (Deckel/Steg der Dicke `|s|` — gar kein Kontakt). Klemme auf
+    // „bündig" ist die f32-Rundungsklasse `0.02·δ` (#397) für BEIDE
+    // Facettenklassen; das alte symmetrische `0.5·δ`-Box-Fenster hielt jeden
+    // vergrabenen Hohlraum mit Deckel < 0.5·δ für einen Kontakt und trug ihn ab.
+    let round_tol = (0.02 * delta).max(1e-3);
     let overlap_min = (0.5 * delta).max(1e-3);
     let clip_tol = (1e-3 * delta).max(1e-4);
 
@@ -2945,14 +2947,9 @@ fn synthesize_contact_prisms_dilation(
                     }
                     let oi = -si * fa.o;
                     let oj = -sj * fb.o;
-                    let coincide = if fa.box_rect && fb.box_rect {
-                        coincide_tol
-                    } else {
-                        coincide_eff
-                    };
-                    if (oi + oj).abs() > coincide {
+                    let Some(pen) = face_pair_penetration(oi + oj, delta, round_tol) else {
                         continue;
-                    }
+                    };
                     let n = fnrm(eff_i); // Komplement-Außennormale von Member i (Π-Normale).
                     let (e1, e2, _) = plane_frame(n);
                     let comps = clip_faces(fa, fb, e1, e2, clip_tol, overlap_min);
@@ -2980,7 +2977,20 @@ fn synthesize_contact_prisms_dilation(
                         // Cap-Tiefen: −n-Seite = Member i, +n-Seite = Member j. Box-
                         // Komplement (sign=−1) → echte Dicke; ¬box (sign=+1) → Marge.
                         let depth_neg = if si < 0.0 { fa.depth } else { margin };
-                        let depth_pos = if sj < 0.0 { fb.depth } else { margin };
+                        // #384: das Prisma ist an Member i's Komplement-Ebene
+                        // verankert; Member j's Komplement beginnt erst bei
+                        // `O_i − pen`, seine Rückseite liegt also bei
+                        // `o + depth_pos − pen`. Ohne den Abzug ragte das Prisma
+                        // bei einer Durchdringung um genau `pen` über die
+                        // Gegenseite hinaus — in ECHTES Material (gemessen: der
+                        // Taschenboden sank um `pen`, bis 0.5·δ). Für die
+                        // ¬box-Seite (sign=+1) ist `margin` keine echte Rückseite,
+                        // sondern eine synthetische Reichweite AB DER ANKEREBENE
+                        // (sie muss ≥ lateraler Reichweite von P bleiben, s. o.) —
+                        // dort wird nichts abgezogen. Bei `pen == 0` ist beides
+                        // bit-identisch zum Bestandspfad.
+                        let depth_pos =
+                            if sj < 0.0 { (fb.depth - pen).max(0.0) } else { margin };
                         let feat = encode_prism_feat(owner, *prism_idx);
                         let Some(prism) =
                             build_prism_component(comp, e1, e2, n, o, depth_neg, depth_pos, feat)
@@ -2996,8 +3006,26 @@ fn synthesize_contact_prisms_dilation(
                         }
                         *prism_idx += 1;
                         res.prisms.push(prism);
+                        // SSI-Nähte bleiben hier für JEDES Kontakt-Paar
+                        // unterdrückt — anders als am Erosions-Stopp (#384), und
+                        // das ist gemessen, nicht gespiegelt: am Dilations-Stopp
+                        // SUBTRAHIEREN die Kanäle (konvexe Dualkante), und der
+                        // Kanal über der Mündungs-Naht eines durchdringenden
+                        // Kontakts griff im Versuch bis an die AUSSENkante des
+                        // Trägerkörpers durch und trug dort legitimes Material ab
+                        // (0.760 mm Fehlstelle bei δ = 2 gegen 0.395 mm ehrlichem
+                        // B0-Keil mit Unterdrückung). Beide Varianten halten die
+                        // 0.75·δ-Zusage; die kleinere gewinnt.
                         if !res.pairs.contains(&(i, j)) {
                             res.pairs.push((i, j));
+                        }
+                        if pen > 0.0 {
+                            // Der ∂P-Rim spiegelt (wie am Erosions-Stopp) nur
+                            // bündige Kontakte — ein durchdringender hat keine
+                            // gemeinsame Ebene Π. Also darf die Zusage nicht die
+                            // enge `channel_tol` eines bündigen Nachbar-Kontakts
+                            // am selben Stopp nennen.
+                            res.pen_unrimmed = true;
                         }
                         // Restfehler: konvexer B0-Keil am Kontaktrand ∂P (dual zum
                         // konkaven Sliver), ehrlich als ≈0.75·δ gemeldet. Den
@@ -3095,11 +3123,13 @@ pub(crate) fn contact_clips(inner: &BoundedCsg, delta_signed: f64) -> Vec<Contac
     let mut members = Vec::new();
     flatten_members(inner, union_form, 1.0, &mut members);
     let delta = delta_signed.abs();
-    let coincide_tol = (0.5 * delta).max(1e-3);
-    // #397-Dünnwand-Abgrenzung wie in `synthesize_contact_prisms`: Nicht-Box-
-    // Facetten koinzidieren nur bis auf f32-Rundung (~1e-4), eine gestapelte
-    // Wand der Stärke w unterscheidet sich um genau w → enge Toleranz, sonst
-    // spiegelte der Rim einen Kontakt, den die Prisma-Synthese verweigert.
+    // #397-Dünnwand-Abgrenzung wie in `synthesize_contact_prisms`: Facetten
+    // koinzidieren nur bis auf f32-Rundung (~1e-4), eine gestapelte Wand der
+    // Stärke w unterscheidet sich um genau w → enge Toleranz, sonst spiegelte
+    // der Rim einen Kontakt, den die Prisma-Synthese verweigert. Seit #384 für
+    // BEIDE Facettenklassen und BEIDE Stopp-Richtungen (das lose 0.5·δ-Fenster
+    // gab es nur noch für Box-Box am Dilations-Stopp und war dort genau der
+    // Bound-Over-Claim, s. §8d).
     let coincide_eff = (0.02 * delta).max(1e-3);
     let overlap_min = (0.5 * delta).max(1e-3);
 
@@ -3142,13 +3172,6 @@ pub(crate) fn contact_clips(inner: &BoundedCsg, delta_signed: f64) -> Vec<Contac
             let owner = min_feat[i].min(min_feat[j]);
             for fa in fi {
                 for fb in fj {
-                    // Koinzidenz-Toleranz: Box-Box lose 0.5·δ (status-erhaltend,
-                    // Golden-gefroren), Nicht-Box eng 0.02·δ (Dünnwand-Abgrenzung).
-                    let coincide = if fa.box_rect && fb.box_rect {
-                        coincide_tol
-                    } else {
-                        coincide_eff
-                    };
                     // Detektion: koplanar-antiparallel + koinzident. Erosion an
                     // den WAHREN Normalen, Dilation an den effektiven (Komplement).
                     let n = if concave {
@@ -3174,7 +3197,14 @@ pub(crate) fn contact_clips(inner: &BoundedCsg, delta_signed: f64) -> Vec<Contac
                         if fdot(eff_i, eff_j) > -0.9995 {
                             continue;
                         }
-                        if (-si * fa.o + -sj * fb.o).abs() > coincide {
+                        // #384 (dual): auch hier NUR bündige Kontakte spiegeln.
+                        // `s < −Rundungsklasse` ist gar kein Kontakt (vergrabener
+                        // Hohlraum hinter einem Deckel), `s > 0` eine
+                        // Durchdringung ohne gemeinsame Ebene Π — der Rim legte
+                        // seine Spine sonst auf die falsche Ebene und sagte die
+                        // enge Bau-Toleranz für einen Saum zu, den er gar nicht
+                        // schließt.
+                        if (-si * fa.o + -sj * fb.o).abs() > coincide_eff {
                             continue;
                         }
                         fnrm(eff_i)
@@ -3479,7 +3509,19 @@ fn synthesize_stop(
         if !contact.prisms.is_empty() {
             prisms = contact.prisms;
             prism_pairs = contact.pairs;
-            if rim_closes {
+            if contact.pen_unrimmed {
+                // #384 (dual): DURCHDRINGENDER Kontakt am Dilations-Stopp — der
+                // Subtrahend ragt um `s < 2·δ` aus dem Solid heraus. Das Prisma
+                // tilgt den flächigen Phantom-Fin; der ∂P-Rim spiegelt nur
+                // bündige Kontakte, also wird hier die weitere B0-Schranke
+                // zugesagt statt der engen `channel_tol` (Phase-4-Multi-Clip-Regel).
+                report.note_tolerance(format!(
+                    "Durchdringender koplanarer Kontakt an einem Dilations-Stopp (Überstand < 2·δ) \
+                     per Kontakt-Prisma (Komplement-Dualität) korrigiert; Restfehler = konvexer \
+                     B0-Keil am Kontaktrand ∂P ≤ {:.3} mm (≈0.75·δ).",
+                    contact.rim_bound
+                ));
+            } else if rim_closes {
                 report.note_tolerance(format!(
                     "Koplanare submergierte Kontaktfläche an einem Dilations-Stopp per Kontakt-Prisma \
                      (Komplement-Dualität) + ∂P-Rand-Fillet (OP_RIM_FILLET) korrigiert; Restfehler = \

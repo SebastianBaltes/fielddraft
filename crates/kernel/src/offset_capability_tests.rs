@@ -795,19 +795,30 @@ fn extrude_flush_pocket_dilation_prism_p2() {
 
 /// PFLICHT-Kalibrierung #397: Dünnwand-Shells (Difference outer − inner) dürfen
 /// durch die sign-bewusste Verallgemeinerung NICHT ihre (bessere) Zusage
-/// verlieren. Der Status muss für jede Wandstärke w ∈ {0.3,0.5,0.8,1.0,2.0}·δ
-/// exakt der HEAD-Baseline entsprechen (vor #397 per Print-Harness gemessen).
-/// Box-Shells laufen über die Dilations-Prisma-Synthese (inert gegen #397); die
-/// Extrude-Shells erreichen den eff-Fallback und belegen, dass die enge
-/// Koinzidenz-Toleranz (0.02·δ) jede Wand ≥ 0.3·δ verwirft.
+/// verlieren. Die EXTRUDE-Spalte ist der eigentliche #397-Gegenstand: sie
+/// erreicht den eff-Fallback und belegt, dass die enge Koinzidenz-Toleranz
+/// (0.02·δ) jede Wand ≥ 0.3·δ verwirft — sie steht unverändert auf der
+/// HEAD-Baseline.
+///
+/// **Korrektur der BOX-Spalte (#384, v0.56.3).** Für w < 0.5·δ stand dort
+/// `tolerance_bounded` — und das war KEINE bessere Zusage, sondern eine
+/// falsche: die Box-Shell lief über die Dilations-Prisma-Synthese, deren
+/// unsigniertes Fenster den vergrabenen Hohlraum (`s = −w`) für einen bündigen
+/// Kontakt hielt. Das Prisma trug daraufhin die Wand ab, während die Zusage
+/// ≤ 0.01 mm lautete; gemessen gegen die exakte Distanz zu `A \ B` fielen
+/// 60 % aller Innenpunkte der wahren Dilatation weg (Fehler ≥ 2.000 mm = 1.0·δ,
+/// s. `dilation_thin_wall_shell_zero_set_is_exact_384`). Die WAHRE Zusage
+/// dieser Familie ist `exact` — dieselbe Messung zeigt für JEDE Wandstärke
+/// (auch 0.1·δ) null Nullmengen-Fehler, und die Zeilen ≥ 0.8·δ standen schon
+/// immer so.
 #[test]
 fn thin_wall_shell_status_unchanged_397() {
     let delta = 2.0f32;
     let ho = 10.0f32;
-    // (w/δ, erwarteter BOX-Status, erwarteter EXTRUDE-Status) — HEAD-Baseline.
+    // (w/δ, erwarteter BOX-Status, erwarteter EXTRUDE-Status).
     let expect = [
-        (0.3f32, CapabilityStatus::ToleranceBounded, CapabilityStatus::Exact),
-        (0.5, CapabilityStatus::ToleranceBounded, CapabilityStatus::Exact),
+        (0.3f32, CapabilityStatus::Exact, CapabilityStatus::Exact),
+        (0.5, CapabilityStatus::Exact, CapabilityStatus::Exact),
         (0.8, CapabilityStatus::Exact, CapabilityStatus::Exact),
         (1.0, CapabilityStatus::Exact, CapabilityStatus::Exact),
         (2.0, CapabilityStatus::Exact, CapabilityStatus::Exact),
@@ -831,7 +842,7 @@ fn thin_wall_shell_status_unchanged_397() {
         assert_eq!(
             report_for(box_shell).status(),
             want_box,
-            "Box-Dünnwand w/δ={f} Status ≠ HEAD-Baseline"
+            "Box-Dünnwand w/δ={f} Status ≠ Soll"
         );
         assert_eq!(
             report_for(ext_shell).status(),
@@ -1204,4 +1215,279 @@ fn penetrating_stack_erosion_end_to_end_384() {
     // und das Feld oben ist nachweislich korrekt.
     let cap = k.feature_capabilities.get(&id(3)).expect("offset capability present");
     assert_eq!(cap.status, CapabilityStatus::Exact, "reasons: {:?}", cap.reasons);
+}
+
+
+// ─── #384 Dilations-Duale: die signierte Lage im Komplement ───────────────
+//
+// Der DILATIONS-Prisma-Pfad (`synthesize_contact_prisms_dilation`) prüfte die
+// Lage zweier anti-paralleler Komplement-Facetten bis v0.56.2 mit demselben
+// UNSIGNIERTEN Fenster (`|O_i + O_j| ≤ 0.5·δ`), das der Erosions-Pfad in
+// #384 verloren hat. Die signierte Größe bedeutet hier aber etwas ANDERES
+// (Komplement-Dualität, Design §8d):
+//
+//   `s = O_i + O_j`,  `O = −sign·o`  ⇒  für `A − B` ist `s = o_B − o_A`
+//
+//   * `s = 0`   bündig ausgeschnittene Tasche (Taschenmund koplanar mit A's
+//               Außenfläche) — der Fall, für den die Korrektur gebaut wurde;
+//   * `s > 0`   B ragt um `s` aus A heraus (Taschenboden liegt `s` höher);
+//   * `s < 0`   B ist um `|s|` VERGRABEN — ein geschlossener Hohlraum hinter
+//               einem Deckel/Steg der Dicke `|s|`. **Gar kein Kontakt.**
+//
+// Das Vorzeichen dreht sich also gegenüber der Erosion: dort war `s < 0` der
+// harmlose Luftspalt, hier ist es der gefährliche Fall. Gemessen (δ = 2 mm,
+// Referenz = exakte Distanz zu `A \ B`):
+//
+// | Lage | Status (alt) | zugesagt (alt) | real (alt) | nach dem Fix |
+// |---|---|---|---|---|
+// | `s < 0`, Deckel ≤ 0.5·δ | `tolerance_bounded` | ≤ 0.01 mm | **≥ 2.000 mm** (der Deckel wird ABGETRAGEN) | `exact`, 0.000 mm |
+// | `s = 0` | `tolerance_bounded` | ≤ 0.01 mm | 0.000 mm | unverändert |
+// | `0 < s ≤ 0.5·δ` | `tolerance_bounded` | ≤ 0.01 mm | **= s** (bis 1.000 mm) | ≤ 1.5 mm zugesagt, 0.395 mm real |
+// | `0.5·δ < s < 2·δ` | `tolerance_bounded` | ≤ 0.01 mm | **5.159 mm** (kein Prisma, Phantom-Fin) | ≤ 1.5 mm zugesagt, 0.395 mm real |
+//
+// Der `s < 0`-Fall ist der schwerste: die dünnwandige Box-Shell
+// (`Difference(box, box)`, Wand `w < 0.5·δ`) IST dieser Fall mit `s = −w` auf
+// allen sechs Achsen. Das Prisma spannte dort vom Deckel-Außenrand quer durch
+// die Wand bis zur Rückseite des Hohlraums und subtrahierte sie — 60 % aller
+// Innenpunkte der wahren Dilatation fielen weg, 5766 davon lagen im echten
+// Solid selbst. Zugesagt waren 0.01 mm.
+
+/// Exakte Distanz zu `A \ B` (achsparallele Boxen) über die ≤6-Box-Zerlegung
+/// des Differenzkörpers — die Ground-Truth-Referenz dieser Sonden. Die wahre
+/// Dilatation um δ ist genau `{x : dist(x, A\B) ≤ δ}`.
+fn dist_to_box_minus_box(p: [f64; 3], a: ([f64; 3], [f64; 3]), b: ([f64; 3], [f64; 3])) -> f64 {
+    let mut c0 = [0.0f64; 3];
+    let mut c1 = [0.0f64; 3];
+    for k in 0..3 {
+        c0[k] = b.0[k].max(a.0[k]);
+        c1[k] = b.1[k].min(a.1[k]);
+    }
+    let mut boxes: Vec<([f64; 3], [f64; 3])> = Vec::new();
+    if (0..3).any(|k| c1[k] <= c0[k]) {
+        boxes.push(a); // B trifft A gar nicht
+    } else {
+        if c0[0] > a.0[0] {
+            boxes.push(([a.0[0], a.0[1], a.0[2]], [c0[0], a.1[1], a.1[2]]));
+        }
+        if c1[0] < a.1[0] {
+            boxes.push(([c1[0], a.0[1], a.0[2]], [a.1[0], a.1[1], a.1[2]]));
+        }
+        if c0[1] > a.0[1] {
+            boxes.push(([c0[0], a.0[1], a.0[2]], [c1[0], c0[1], a.1[2]]));
+        }
+        if c1[1] < a.1[1] {
+            boxes.push(([c0[0], c1[1], a.0[2]], [c1[0], a.1[1], a.1[2]]));
+        }
+        if c0[2] > a.0[2] {
+            boxes.push(([c0[0], c0[1], a.0[2]], [c1[0], c1[1], c0[2]]));
+        }
+        if c1[2] < a.1[2] {
+            boxes.push(([c0[0], c0[1], c1[2]], [c1[0], c1[1], a.1[2]]));
+        }
+    }
+    let mut best = f64::INFINITY;
+    for (lo, hi) in boxes {
+        let mut d2 = 0.0;
+        for k in 0..3 {
+            let dk = (lo[k] - p[k]).max(0.0).max(p[k] - hi[k]);
+            d2 += dk * dk;
+        }
+        best = best.min(d2.sqrt());
+    }
+    best
+}
+
+/// Misst die Nullmenge des kompilierten Feldes gegen die wahre Dilatation von
+/// `A \ B` auf einem Gitter über `[lo,hi]³`. Rückgabe: (Zahl der
+/// Fehlklassifikationen mit messbarem Abstand zur wahren Grenze, größter
+/// solcher Abstand, dessen Ort). `|d − δ|` ist wegen der 1-Lipschitz-Stetigkeit
+/// von `d` eine UNTERE Schranke des wahren Nullmengen-Fehlers — die Zahlen
+/// unten sind also konservativ. Punkte, die exakt auf der Grenzfläche liegen
+/// (`|d − δ| ≤ 1e-3`), zählen nicht: dort ist das Vorzeichen per Definition
+/// unbestimmt.
+fn dilation_zero_set_error(
+    field: &BoundedCsg,
+    a: ([f64; 3], [f64; 3]),
+    b: ([f64; 3], [f64; 3]),
+    delta: f32,
+    lo: [f64; 3],
+    hi: [f64; 3],
+) -> (usize, f64, [f64; 3]) {
+    let n = 60;
+    let (mut miss, mut worst, mut worst_p) = (0usize, 0.0f64, [0.0f64; 3]);
+    for ix in 0..=n {
+        for iy in 0..=n {
+            for iz in 0..=n {
+                let t = [ix, iy, iz].map(|i| i as f64 / n as f64);
+                let p = [
+                    lo[0] + (hi[0] - lo[0]) * t[0],
+                    lo[1] + (hi[1] - lo[1]) * t[1],
+                    lo[2] + (hi[2] - lo[2]) * t[2],
+                ];
+                let d = dist_to_box_minus_box(p, a, b);
+                let err = (d - delta as f64).abs();
+                if err <= 1e-3 {
+                    continue; // exakt auf der wahren Grenzfläche
+                }
+                let got = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+                if (d <= delta as f64) != (got < 0.0) {
+                    miss += 1;
+                    if err > worst {
+                        worst = err;
+                        worst_p = p;
+                    }
+                }
+            }
+        }
+    }
+    (miss, worst, worst_p)
+}
+
+/// A = Box he 10³ (Ursprung), B = Box he [7,7,5] mit Mittelpunkt `z = 5 + s`,
+/// unter Dilation `+delta`. `s > 0`: B ragt oben aus A heraus; `s = 0`:
+/// bündige Tasche; `s < 0`: vergrabener Hohlraum mit Deckel der Dicke `|s|`.
+fn pocket_dilation(s: f32, delta: f32) -> CsgNode {
+    let a = leaf_box(1, [10.0, 10.0, 10.0]);
+    let b = CsgNode::Transform(
+        Transform {
+            translate: [0.0, 0.0, 5.0 + s],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+        },
+        Box::new(leaf_box(2, [7.0, 7.0, 5.0])),
+    );
+    CsgNode::Offset(Box::new(CsgNode::Difference(Box::new(a), Box::new(b))), delta)
+}
+
+fn pocket_boxes(s: f32) -> (([f64; 3], [f64; 3]), ([f64; 3], [f64; 3])) {
+    (
+        ([-10.0, -10.0, -10.0], [10.0, 10.0, 10.0]),
+        ([-7.0, -7.0, s as f64], [7.0, 7.0, s as f64 + 10.0]),
+    )
+}
+
+/// **Kern-Regression (Dilations-Duale).** Ein VERGRABENER Hohlraum (`s < 0`)
+/// ist kein koplanarer Kontakt: das naive `max(f_A, −f_B) − δ` ist dort
+/// zero-set-exakt (kein Phantom-Fin, es gibt keinen Taschenmund). Vor dem Fix
+/// hielt das unsignierte Fenster jeden Deckel dünner als 0.5·δ für einen
+/// bündigen Kontakt und trug ihn per Prisma ab — unter der Zusage ≤ 0.01 mm.
+#[test]
+fn dilation_buried_cavity_is_not_a_contact_384() {
+    let delta = 2.0f32;
+    for s in [-1.0f32, -0.9, -0.5, -0.2, -0.05] {
+        let (field, report) = compile_for(pocket_dilation(s, delta));
+        let (a, b) = pocket_boxes(s);
+        let (miss, worst, at) =
+            dilation_zero_set_error(&field, a, b, delta, [-14.0; 3], [14.0, 14.0, 16.0]);
+        assert_eq!(
+            miss, 0,
+            "Deckel {} mm: {miss} Nullmengen-Fehler, größter {worst:.4} mm bei {at:?} — \
+             der vergrabene Hohlraum darf kein Kontakt-Prisma auslösen",
+            -s
+        );
+        assert_eq!(
+            report.status(),
+            CapabilityStatus::Exact,
+            "Deckel {} mm: getrennte Grenzflächen ⇒ das naive Feld ist zero-set-exakt — reasons: {:?}",
+            -s,
+            report.reasons()
+        );
+    }
+}
+
+/// Dieselbe Lage in ihrer praktisch wichtigsten Form: die geschlossene
+/// Box-Shell `Difference(box, box)` unter Dilation. Ihre sechs Wandpaare sind
+/// `s = −w`. Vor dem Fix verschwand für `w < 0.5·δ` der halbe Körper (60 % der
+/// Innenpunkte, darunter Punkte im echten Solid) — bei zugesagten 0.01 mm.
+/// Die Wandstärken ≥ 0.8·δ belegen mit derselben Referenz, dass `exact` die
+/// WAHRE Zusage dieser Familie ist (dort lief sie schon immer so).
+#[test]
+fn dilation_thin_wall_shell_zero_set_is_exact_384() {
+    let delta = 2.0f32;
+    let ho = 10.0f32;
+    for f in [0.1f32, 0.3, 0.5, 0.8, 1.0] {
+        let w = f * delta;
+        let node = CsgNode::Offset(
+            Box::new(CsgNode::Difference(
+                Box::new(leaf_box(1, [ho, ho, ho])),
+                Box::new(leaf_box(2, [ho - w, ho - w, ho - w])),
+            )),
+            delta,
+        );
+        let (field, report) = compile_for(node);
+        let hi = (ho - w) as f64;
+        let (miss, worst, at) = dilation_zero_set_error(
+            &field,
+            ([-10.0, -10.0, -10.0], [10.0, 10.0, 10.0]),
+            ([-hi, -hi, -hi], [hi, hi, hi]),
+            delta,
+            [-14.0; 3],
+            [14.0; 3],
+        );
+        assert_eq!(
+            miss, 0,
+            "Wand w/δ={f}: {miss} Nullmengen-Fehler, größter {worst:.4} mm bei {at:?}"
+        );
+        assert_eq!(
+            report.status(),
+            CapabilityStatus::Exact,
+            "Wand w/δ={f}: die Shell-Dilatation ist nachweislich zero-set-exakt — reasons: {:?}",
+            report.reasons()
+        );
+    }
+}
+
+/// Pin: der BÜNDIGE Schnitt (`s = 0`) läuft unverändert über Prisma +
+/// ∂P-Rand-Fillet und ist an dieser Geometrie messbar fehlerfrei. Diese
+/// Kalibrierung darf sich durch die signierte Klassifikation NICHT bewegen.
+#[test]
+fn dilation_flush_pocket_unchanged_384() {
+    let delta = 2.0f32;
+    let (field, report) = compile_for(pocket_dilation(0.0, delta));
+    let (a, b) = pocket_boxes(0.0);
+    let (miss, worst, at) =
+        dilation_zero_set_error(&field, a, b, delta, [-14.0; 3], [14.0, 14.0, 16.0]);
+    assert_eq!(miss, 0, "bündige Tasche: {miss} Fehler, größter {worst:.4} mm bei {at:?}");
+    assert_eq!(report.status(), CapabilityStatus::ToleranceBounded, "{:?}", report.reasons());
+    assert!(
+        report.reasons().iter().any(|r| r.contains("Rand-Fillet (OP_RIM_FILLET)")),
+        "der bündige Schnitt muss weiter über Prisma + ∂P-Rand-Fillet laufen: {:?}",
+        report.reasons()
+    );
+}
+
+/// Ragt der Subtrahend um `0 < s < 2·δ` heraus, verankert das Prisma seit dem
+/// Fix an Member j's echter Rückseite (`depth_pos − pen`) statt an der eigenen
+/// Ebene, und die Zusage nennt die weitere B0-Schranke statt der Bau-Toleranz
+/// eines Rand-Fillets, den es an dieser Geometrie nicht gibt. Vor dem Fix
+/// sank der Taschenboden um genau `s` (`s ≤ 0.5·δ`) bzw. stand über der Tasche
+/// ein 5.159 mm dicker Phantom-Fin (`s > 0.5·δ`, gar kein Prisma) — beides
+/// unter der Zusage ≤ 0.01 mm.
+#[test]
+fn dilation_protruding_pocket_is_honestly_bounded_384() {
+    let delta = 2.0f32;
+    for s in [0.05f32, 0.2, 0.5, 0.9, 1.0, 1.5, 1.9, 3.0, 3.9] {
+        let (field, report) = compile_for(pocket_dilation(s, delta));
+        let (a, b) = pocket_boxes(s);
+        let (_, worst, at) =
+            dilation_zero_set_error(&field, a, b, delta, [-14.0; 3], [14.0, 14.0, 16.0]);
+        assert!(
+            worst <= 0.75 * delta as f64,
+            "Überstand {s}: Nullmengen-Fehler {worst:.4} mm bei {at:?} verletzt die \
+             zugesagte B0-Schranke {:.3} mm",
+            0.75 * delta
+        );
+        assert_eq!(report.status(), CapabilityStatus::ToleranceBounded, "{:?}", report.reasons());
+        assert!(
+            report.reasons().iter().any(|r| r.contains("Durchdringender koplanarer Kontakt")),
+            "Überstand {s} muss als Durchdringung benannt sein: {:?}",
+            report.reasons()
+        );
+        assert!(
+            !report.reasons().iter().any(|r| r.contains("Rand-Fillet (OP_RIM_FILLET)")),
+            "Überstand {s}: der ∂P-Rand-Fillet hat hier keine gemeinsame Ebene Π und darf \
+             seine enge Bau-Toleranz nicht zusagen: {:?}",
+            report.reasons()
+        );
+    }
 }
