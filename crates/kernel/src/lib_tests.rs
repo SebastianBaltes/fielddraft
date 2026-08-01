@@ -2962,7 +2962,9 @@ fn hole_without_scope_warns_and_drills_nothing() {
         String::new(),
     )
     .unwrap();
-    assert_eq!(k.body_count(), 2, "an unscoped hole drills nothing (own preview body)");
+    // The box stays whole; the unscoped cutter stack (shaft + 118° drill
+    // point, #404 P4) shows as its own red preview bodies.
+    assert_eq!(k.body_count(), 3, "an unscoped hole drills nothing (own preview bodies)");
     let feats: serde_json::Value =
         serde_json::from_str(&k.list_features().unwrap()).unwrap();
     let hole_row = feats
@@ -4671,10 +4673,13 @@ fn woven_cone_half_angles(k: &mut Kernel) -> Vec<f64> {
 /// coaxial cylinder faces.
 #[test]
 fn hole_counterbore_stacks_a_wide_flat_seat() {
+    // `tip: flat` isolates P3: the drill point is P4's gate, and a cone at
+    // the floor would move the blind bottom asserted below.
     let mut k = hole_styled_block(
         "counterbore",
         r#""cbore_diameter": { "value": 12.0, "unit": "mm" },
-           "cbore_depth": { "value": 4.0, "unit": "mm" },"#,
+           "cbore_depth": { "value": 4.0, "unit": "mm" },
+           "tip": "flat","#,
         12.0,
     );
     let seat = 2.0 * hole_bore_radius_at(&k, 0.0, 0.0, -2.0);
@@ -4701,6 +4706,146 @@ fn hole_counterbore_stacks_a_wide_flat_seat() {
     // below pins it. The SDF asserts above are the authoritative geometry.
     let radii = woven_cylinder_radii(&mut k);
     assert!(radii.iter().any(|r| (r - 6.0).abs() < 1e-3), "no Ø12 seat face: {radii:?}");
+}
+
+// ─── #404 P4: drill point & depth semantics ───────────────────────────────
+
+/// **P4 gate — the drill point exists and has the norm angle.** A blind M6
+/// bore ends in a cone, not a flat floor: 118° general purpose, 135° split
+/// point, `custom` free, `flat` opting out. The cone height is `R /
+/// tan(included/2)` — the 0.3005·Ø / 0.2071·Ø of every twist-drill chart —
+/// and the weave reports the matching `cone` half-angle.
+#[test]
+fn hole_drill_tip_cones_the_blind_floor_at_the_norm_angle() {
+    // (tip key, custom angle, expected included angle)
+    let cases: &[(&str, f32, Option<f32>)] =
+        &[("a118", 118.0, Some(118.0)), ("a135", 118.0, Some(135.0)),
+          ("custom", 100.0, Some(100.0)), ("flat", 118.0, None)];
+    for (tip, custom_deg, included) in cases {
+        let mut k = hole_styled_block(
+            "simple",
+            &format!(
+                r#""tip": "{tip}",
+                   "tip_custom": {{ "value": {custom_deg}, "unit": "deg" }},"#
+            ),
+            12.0,
+        );
+        let floor = hole_floor_depth_at(&k, 0.0, 0.0);
+        match included {
+            // Flat: the bore stops dead at the entered depth.
+            None => assert!(
+                (floor - 12.0).abs() < 2e-3,
+                "flat floor at {floor:.4} mm, expected 12"
+            ),
+            Some(deg) => {
+                let h = 3.0 / (deg / 2.0).to_radians().tan();
+                // `depth_to_tip = false`: 12 mm reaches the SHOULDER, the
+                // point hangs below it.
+                assert!(
+                    (floor - (12.0 + h)).abs() < 2e-3,
+                    "{deg}°: tip at {floor:.4} mm, expected {:.4}",
+                    12.0 + h
+                );
+                // The shoulder itself: full Ø6 just above 12 mm, already
+                // tapering just below it.
+                let at_shoulder = 2.0 * hole_bore_radius_at(&k, 0.0, 0.0, -11.9);
+                assert!(
+                    (at_shoulder - 6.0).abs() < 2e-3,
+                    "{deg}°: Ø {at_shoulder:.4} above the shoulder, expected 6"
+                );
+                let in_cone = 2.0 * hole_bore_radius_at(&k, 0.0, 0.0, -(12.0 + h / 2.0));
+                assert!(
+                    (in_cone - 3.0).abs() < 2e-2,
+                    "{deg}°: Ø {in_cone:.4} halfway down the point, expected ~3"
+                );
+                let half = (deg / 2.0).to_radians() as f64;
+                let angles = woven_cone_half_angles(&mut k);
+                assert!(
+                    angles.iter().any(|a| (a - half).abs() < 2e-3),
+                    "{deg}°: no drill-point cone at {half:.4} rad; got {angles:?}"
+                );
+            }
+        }
+    }
+}
+
+/// **P4 gate — `depth_to_tip` moves the reference point, nothing else.**
+/// With the SAME 12 mm and the same 118° point, `depth_to_tip = false` puts
+/// the shoulder at 12 mm and the tip at 12 + h; `true` puts the tip at 12 mm
+/// and the shoulder at 12 − h. Both are probed on the bore axis, so the two
+/// readings differ by exactly one cone height.
+#[test]
+fn hole_depth_to_tip_switches_which_end_the_depth_names() {
+    let h = 3.0f32 / 59.0f32.to_radians().tan(); // 118° point on a Ø6 bore
+    let bore = |to_tip: bool| -> Kernel {
+        hole_styled_block("simple", &format!(r#""tip": "a118", "depth_to_tip": {to_tip},"#), 12.0)
+    };
+
+    let k_shoulder = bore(false);
+    let k_tip = bore(true);
+    let floor_shoulder = hole_floor_depth_at(&k_shoulder, 0.0, 0.0);
+    let floor_tip = hole_floor_depth_at(&k_tip, 0.0, 0.0);
+    assert!(
+        (floor_shoulder - (12.0 + h)).abs() < 2e-3,
+        "depth-to-shoulder: tip at {floor_shoulder:.4}, expected {:.4}",
+        12.0 + h
+    );
+    assert!(
+        (floor_tip - 12.0).abs() < 2e-3,
+        "depth-to-tip: tip at {floor_tip:.4}, expected 12"
+    );
+    assert!(
+        (floor_shoulder - floor_tip - h).abs() < 2e-3,
+        "the two semantics must differ by exactly one cone height {h:.4}"
+    );
+
+    // And the shoulder moves with them: at 11.9 mm the shoulder-referenced
+    // bore is still full Ø6, the tip-referenced one is already in the cone.
+    let full = 2.0 * hole_bore_radius_at(&k_shoulder, 0.0, 0.0, -11.9);
+    assert!((full - 6.0).abs() < 2e-3, "shoulder ref: Ø {full:.4} at 11.9 mm, expected 6");
+    let tapered = 2.0 * hole_bore_radius_at(&k_tip, 0.0, 0.0, -11.9);
+    assert!(tapered < 5.0, "tip ref: Ø {tapered:.4} at 11.9 mm must already be tapering");
+
+    // A depth shorter than the point itself cannot reach full diameter — a
+    // named parameter error, not a silently inverted cone.
+    let mut k = Kernel::new();
+    let box_id = k
+        .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, -10.0, 10.0, 10.0, 10.0)
+        .unwrap();
+    let sketch_id = k
+        .add_sketch(
+            "qCreatedBy(origin_plane_xy)",
+            r#"[{ "type": "sketch_point", "id": "100", "params": { "at": [0.0, 0.0] } }]"#,
+        )
+        .unwrap();
+    let hole_id = k
+        .add_feature_call(
+            "hole",
+            &format!(
+                r#"{{
+                    "style": "simple", "hole_type": "drilled", "standard_size": "M6",
+                    "end_type": "blind", "depth": {{ "value": 1.0, "unit": "mm" }},
+                    "tip": "a118", "depth_to_tip": true,
+                    "locations": "qSketchPoint({sketch_id}, 1)",
+                    "targets": "qCreatedBy({box_id})"
+                }}"#
+            ),
+        )
+        .unwrap();
+    let err = k.feature_errors.get(&FeatureId::from_u32(hole_id)).cloned().unwrap_or_default();
+    assert!(err.contains("depth"), "expected a depth error, got {err:?}");
+}
+
+/// A through-all bore has no floor, so it must carry no drill point either —
+/// the tip fields are simply ignored (Onshape hides them).
+#[test]
+fn hole_through_all_has_no_drill_tip() {
+    let k = hole_bored_cube("drilled", "normal", "M6", 6.0);
+    // Full Ø6 right down to the far side of the 20 mm cube.
+    for z in [-9.0f32, -5.0, 0.0, 5.0, 9.0] {
+        let d = 2.0 * hole_bore_radius_at(&k, 0.0, 0.0, z);
+        assert!((d - 6.0).abs() < 2e-3, "through bore Ø {d:.4} at z={z}, expected 6");
+    }
 }
 
 /// Pins the branch-identity fold that limits how much of a multi-cutter hole
@@ -4774,9 +4919,12 @@ fn hole_countersink_cuts_the_entered_cone_at_every_angle() {
     for angle_deg in [90.0f32, 82.0, 120.0] {
         let mut k = hole_styled_block(
             "countersink",
+            // `tip: flat` isolates P3: with a drill point the floor cone
+            // would be the second `cone` face in the weave.
             &format!(
                 r#""csink_diameter": {{ "value": 12.0, "unit": "mm" }},
-                   "csink_angle": {{ "value": {angle_deg}, "unit": "deg" }},"#
+                   "csink_angle": {{ "value": {angle_deg}, "unit": "deg" }},
+                   "tip": "flat","#
             ),
             12.0,
         );

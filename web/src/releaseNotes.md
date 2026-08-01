@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.54.0
+- feat(kernel) #404: Ein Sackloch endet jetzt so, wie ein Bohrer es hinterlässt: mit einer Kegelspitze statt eines Frässtempels. 118° ist voreingestellt (der Allzweck-Anschliff), 135° für harte Werkstoffe, „Flat" für den alten flachen Grund, „Custom" für alles andere. Dazu die Frage, die auf jeder Zeichnung steht: misst die eingetragene Tiefe bis zur Spitze oder bis zur letzten vollen Stelle? „Depth to tip" schaltet zwischen beiden um — aus, wie bisher gewohnt, meint die Schulter, und die Spitze steht darunter. Eine Tiefe, die kürzer wäre als die Spitze selbst, wird abgelehnt statt still zu einem Kegelstumpf zu verkommen. Durchgangslöcher haben keinen Grund und bekommen folgerichtig auch keine Spitze.
+
 ## 0.53.0
 - feat(kernel) #404: Löcher können jetzt gesenkt werden. „Counterbore" setzt einen breiten flachen Sitz an die Mündung, in dem ein Zylinderschraubenkopf verschwindet — Durchmesser und Tiefe frei einstellbar. „Countersink" fräst stattdessen einen Kegel, dessen Durchmesser oben exakt der eingetragene ist; den Öffnungswinkel gibt man als vollen Winkel an (90° metrisch, 82° UNC, 120° Blech), die Tiefe rechnet sich daraus von selbst. Ein Senkmaß, das kleiner wäre als die Bohrung selbst, oder ein unmöglicher Winkel werden mit einer benannten Meldung abgelehnt statt still verbogen.
 

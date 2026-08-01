@@ -124,6 +124,37 @@ pub struct HoleDef {
     #[param(name = "Opposite direction", default = false, ui_hint = "opposite_direction")]
     pub opposite_direction: bool,
 
+    /// Drill-point angle at a BLIND bore's floor (P4). A real twist drill
+    /// leaves a cone, not a flat bottom: `118°` is the general-purpose
+    /// standard, `135°` the split-point / hard-material grind, `flat` an
+    /// end-mill floor, `custom` reads [`tip_custom`]. Ignored for
+    /// `through_all` — a hole that goes all the way through has no floor.
+    ///
+    /// Like Onshape, the value is the **included** angle: 118° means the cone
+    /// walls are 59° off the bore axis, so its height is `R / tan(59°)`
+    /// (≈ 0.3·Ø, the machinist's rule of thumb).
+    ///
+    /// [`tip_custom`]: HoleDef::tip_custom
+    #[param(
+        name = "Tip angle",
+        default = ::std::string::String::from("a118"),
+        variants = "a118=118°,a135=135°,flat=Flat,custom=Custom"
+    )]
+    pub tip: String,
+
+    /// Free drill-point included angle — used only when `tip = custom`.
+    #[param(name = "Tip angle (custom)", default = ::fielddraft_protocol::Angle::deg(118.0))]
+    pub tip_custom: ::fielddraft_protocol::Angle,
+
+    /// What `depth` measures on a blind bore with a drill point (P4):
+    /// `false` (default) = down to the **shoulder**, the last full-diameter
+    /// point, with the cone sitting BELOW it — the drawing convention;
+    /// `true` = down to the cone's **tip**, so the full-diameter part ends
+    /// `R / tan(angle/2)` earlier. Irrelevant for `tip = flat`, where both
+    /// readings coincide.
+    #[param(name = "Depth to tip", default = false)]
+    pub depth_to_tip: bool,
+
     /// Bore locations: comma-separated point/anchor queries — sketch points
     /// (`qSketchPoint(<sketch>, <entity>)`), mate connectors
     /// (`qCreatedBy(<mc>)`), B-Rep vertices (`qVertex(<hash>)`) or faces. Each
@@ -303,6 +334,36 @@ fn style_stack(d: &HoleDef, bore_radius: f32) -> Result<StyleStack, FeatureError
     }
 }
 
+/// Height (mm) of the drill-point cone at a blind bore's floor, or `None` for
+/// a flat bottom (#404 P4).
+///
+/// The schema carries the **included** angle; the cone's wall is half of that
+/// off the axis, so a bore of radius `r` needs `r / tan(included/2)` of axial
+/// room. 118° → 0.3005·Ø, 135° → 0.2071·Ø — the two numbers stamped on every
+/// twist-drill chart.
+fn tip_cone_height(d: &HoleDef, bore_radius: f32) -> Result<Option<f32>, FeatureError> {
+    let included_deg = match d.tip.as_str() {
+        "flat" => return Ok(None),
+        "a118" => 118.0,
+        "a135" => 135.0,
+        "custom" => d.tip_custom.to_rad().to_degrees(),
+        // An unknown key from a newer document: a flat floor is the reading
+        // that cannot silently mis-cut.
+        _ => return Ok(None),
+    };
+    let half = included_deg.to_radians() / 2.0;
+    if !(half > 1e-3 && half < std::f32::consts::FRAC_PI_2 - 1e-3) {
+        return Err(FeatureError::InvalidParameter {
+            feature: HoleDef::TYPE_NAME,
+            name: "tip_custom",
+            message: format!(
+                "included tip angle must be strictly between 0° and 180°, got {included_deg:.1}°"
+            ),
+        });
+    }
+    Ok(Some(bore_radius / half.tan()))
+}
+
 pub struct HoleFeature;
 
 impl FeatureKind for HoleFeature {
@@ -404,8 +465,37 @@ impl FeatureKind for HoleFeature {
         // OUTSIDE the material, so the blind depth into the body is unaffected.
         const MOUTH_EPS: f32 = 0.1;
 
-        // P3 style stack, resolved once — identical at every location.
+        // P3 style stack + P4 drill point, resolved once — identical at every
+        // location. A through-all bore has no floor, so it has no tip.
         let stack = style_stack(&d, radius)?;
+        let tip_height = if through_all { None } else { tip_cone_height(&d, radius)? };
+
+        // P4 depth semantics. `shaft_end` is where the full-diameter part
+        // stops; `tip_span` is the cone below it, if any.
+        //
+        // - `depth_to_tip = false` (default): `depth` reaches the SHOULDER and
+        //   the cone hangs below it — the bore ends up `tip_height` deeper
+        //   than the number, exactly like a real drill.
+        // - `depth_to_tip = true`: `depth` reaches the TIP, so the
+        //   full-diameter part stops `tip_height` earlier.
+        let (shaft_end, tip_span) = match tip_height {
+            None => (depth_mm, None),
+            Some(h) if d.depth_to_tip => {
+                let shoulder = depth_mm - h;
+                if shoulder <= 0.0 {
+                    return Err(FeatureError::InvalidParameter {
+                        feature: HoleDef::TYPE_NAME,
+                        name: "depth",
+                        message: format!(
+                            "depth-to-tip {depth_mm:.3} mm is shorter than the {h:.3} mm drill \
+                             point — the bore never reaches full diameter"
+                        ),
+                    });
+                }
+                (shoulder, Some((shoulder, depth_mm)))
+            }
+            Some(h) => (depth_mm, Some((depth_mm, depth_mm + h))),
+        };
 
         for (i, (origin, axis)) in frames.iter().enumerate() {
             // Drill INTO the body: opposite the outward anchor axis by default;
@@ -431,7 +521,7 @@ impl FeatureKind for HoleFeature {
                 // Pad both ends so the cutter clears the body surface cleanly.
                 (lo - 1.0, hi + 1.0)
             } else {
-                (-MOUTH_EPS, depth_mm)
+                (-MOUTH_EPS, shaft_end)
             };
 
             // This location's cutter stack as
@@ -485,6 +575,19 @@ impl FeatureKind for HoleFeature {
                         xf,
                     ));
                 }
+            }
+
+            if let Some((tip_lo, tip_hi)) = tip_span {
+                // The drill point: a cone of the bore radius at the shoulder
+                // narrowing to a true point at `tip_hi`. `Primitive::Cone`
+                // puts `r_bottom` at local −Y, which is the shallow end.
+                let (hh, xf) = axial_span(*origin, dir, tip_lo, tip_hi);
+                parts.push((
+                    format!("{i}t"),
+                    " tip",
+                    Primitive::Cone { r_bottom: radius, r_top: 0.0, half_height: hh },
+                    xf,
+                ));
             }
 
             // Hierarchical child ids (`<hole>/<i>`, `<hole>/<i>c`, …) so

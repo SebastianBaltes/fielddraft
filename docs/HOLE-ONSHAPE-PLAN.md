@@ -426,6 +426,41 @@ Gepinnt in `hole_sibling_cutters_share_one_branch`. Die Behebung ist eine Entsch
 BranchId-Schema (freies Sub-Band wie beim Fillet vs. Instanz-Ordinal `~i` — letzteres kollidiert
 mit Pattern-Kopien, s. `branch_identity`-Doku) und gehört bewusst NICHT in eine Feature-Phase.
 
+### P4 — Umgesetzt (v0.54.0)
+
+**Geometrie.** Der Bohrgrund eines **blinden** Lochs bekommt einen `Primitive::Cone`
+(`r_bottom = Bohrradius`, `r_top = 0`, also eine echte Spitze) als weiteren Remove-Cutter unter
+`<hole>/<i>t` — wieder ohne neuen Opcode. Kegelhöhe `h = R / tan(Winkel/2)`; `tip` ist wie
+`csink_angle` der **volle** Öffnungswinkel. Damit fallen genau die Zahlen der Bohrer-Tabellen:
+118° → `h = 0.3005·Ø`, 135° → `h = 0.2071·Ø`. `through_all` bekommt **keine** Spitze (ein Loch,
+das durchgeht, hat keinen Grund).
+
+**Neue Felder:** `tip` (`a118` · `a135` · `flat` · `custom`, Default **a118** — Onshapes
+Voreinstellung, also ein Verhaltenswechsel gegenüber P1–P3, wo der Grund flach war),
+`tip_custom: Angle` (118°) und `depth_to_tip: bool` (false).
+
+**Tiefen-Semantik.** `depth_to_tip = false` (Default, die Zeichnungs-Konvention): `depth`
+erreicht die **Schulter**, die Spitze hängt darunter — das Loch ist am Ende `h` tiefer als die
+eingetragene Zahl. `depth_to_tip = true`: `depth` erreicht die **Spitze**, der volle Durchmesser
+endet `h` früher. Ist die Tiefe kürzer als die Spitze selbst, erreicht das Loch nie den vollen
+Durchmesser — das wird mit einem benannten `depth`-Fehler abgelehnt statt still zu einem
+Kegelstumpf zu werden.
+
+**Gate gemessen** (SDF-Bisektion auf der Bohrachse, M6-Ø6, Tiefe 12 mm):
+`flat` → Grund bei **12.000 mm**. `a118` → Spitze bei **13.803 mm** (= 12 + 3/tan 59°),
+`a135` → **13.243**, `custom 100°` → **14.518**; bei 11.9 mm steht überall noch der volle
+**Ø6.000**, auf halber Kegelhöhe **≈ Ø3**. `body_brep_faces` meldet jeweils eine `cone`-Fläche
+mit `halfAngle` = 59° / 67.5° / 50°. Die Umschaltung selbst
+(`hole_depth_to_tip_switches_which_end_the_depth_names`): mit derselben 12-mm-Eingabe und
+demselben 118°-Anschliff liegt die Spitze einmal bei **13.803**, einmal bei **12.000** — die
+Differenz ist auf 2e-3 mm genau **eine** Kegelhöhe; bei 11.9 mm ist die schulter-bezogene
+Bohrung noch voll Ø6, die spitzen-bezogene schon verjüngt (Ø < 5).
+
+**Folgeanpassungen:** `hole_without_scope_warns_and_drills_nothing` erwartet jetzt 3 statt 2
+Körper (der ungescopte Cutter-Stapel ist Schaft **plus** Spitze); die P3-Gates setzen
+`tip: "flat"`, damit sie genau eine Sache prüfen (und weil der zuletzt gepushte Cutter wegen des
+Branch-Folds die `cone`-Fläche im Weave stellt — s. P3-Nebenbefund).
+
 ## 7. Offene Fragen / Risiken
 
 1. **Sketch-Punkt-Referenzierung (größtes Risiko, blockiert P1-Zielselektion):** Taucht ein
