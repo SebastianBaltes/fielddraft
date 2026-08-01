@@ -2070,15 +2070,15 @@ fn collect_channels(node: &BoundedCsg, f: &mut impl FnMut(&OffsetChannel)) {
     }
 }
 
-// ─── #384 §8e: End-Kappen-Gate am offenen Spine-Ende ─────────────────────
+// ─── #384 §8f: das dritte Gate am offenen Spine-Ende ────────────────────
 
-/// Struktur-Pin: JEDES offene Spine-Ende trägt als zweites Gate die
-/// Endebenen-Normale (nach innen). Damit ist `w < 0` für jeden Punkt
-/// jenseits des Nahtendes — die Kappe, die den §8d-Bound-Over-Claim trug,
-/// ist strukturell zu, ohne Opcode-Änderung. Geschlossene Spines (Steinmetz)
-/// haben kein Ende und bleiben unberührt.
+/// Struktur-Pin: JEDES offene Spine-Ende trägt einen End-Halbraum, und der
+/// zeigt nach INNEN (`⟨n̂, t̂⟩ > 0`). Damit ist `s₃ < 0` für jeden Punkt weit
+/// jenseits des Nahtendes — die Ball-Kappe, die den §8d/§8e-Bound-Over-Claim
+/// trug, ist strukturell zu. Geschlossene Spines (Steinmetz) haben kein Ende
+/// und behalten den neutralen Sentinel.
 #[test]
-fn open_channel_ends_carry_the_end_plane_gate_384() {
+fn open_channel_ends_carry_the_third_gate_384() {
     for (name, node) in [
         ("notch90", notch_union_node(90.0, 2.0)),
         ("corner", corner_union_node(2.0)),
@@ -2096,25 +2096,60 @@ fn open_channel_ends_carry_the_end_plane_gate_384() {
             }
             let t0 = arc_tangent_at(first, 0.0).unwrap();
             let t1 = arc_tangent_at(last, 1.0).unwrap();
-            let d0: f32 = (0..3).map(|k| first.m2s[k] * t0[k]).sum();
-            let d1: f32 = (0..3).map(|k| last.m2e[k] * -t1[k]).sum();
-            assert!(
-                d0 > 0.999,
-                "{name}: Spine-Anfang ohne Endebenen-Gate (m2s·t̂ = {d0})"
-            );
-            assert!(
-                d1 > 0.999,
-                "{name}: Spine-Ende ohne Endebenen-Gate (m2e·(−t̂) = {d1})"
-            );
+            // Je Ende muss MINDESTENS ein Halbraum existieren, dessen Normale
+            // in die Spine zeigt (Endebene ODER Voronoi-Bisektor — beide
+            // erfüllen ⟨n̂, t̂_innen⟩ > 0).
+            for (label, tin) in [("Anfang", t0), ("Ende", [-t1[0], -t1[1], -t1[2]])] {
+                let ok = ch.end_planes.iter().any(|g| {
+                    let n = [g[0], g[1], g[2]];
+                    let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                    l > 0.5 && (0..3).map(|k| n[k] * tin[k]).sum::<f32>() > 0.3
+                });
+                assert!(ok, "{name}: Spine-{label} ohne drittes Gate: {:?}", ch.end_planes);
+            }
             checked += 1;
         });
         assert!(checked > 0, "{name}: kein offener Kanal gefunden");
     }
 }
 
+/// Struktur-Pin der Gegenrichtung: eine GESCHLOSSENE Spine (Steinmetz)
+/// bekommt kein drittes Gate — alle vier Slots bleiben der neutrale
+/// Sentinel, `end_plane_gate` liefert exakt `END_PLANE_OFF`, und das
+/// Feld ist damit wertidentisch zur Konstruktion ohne drittes Gate.
+#[test]
+fn closed_spines_keep_the_neutral_third_gate_384() {
+    let corrected = synth(&steinmetz_node(1.5), 0.005);
+    let mut seen = 0usize;
+    collect_channels(&corrected, &mut |ch| {
+        let s = arc_point_at(&ch.arcs[0], 0.0);
+        let e = arc_point_at(ch.arcs.last().unwrap(), 1.0);
+        let dx = [e[0] - s[0], e[1] - s[1], e[2] - s[2]];
+        if (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt() >= 1e-4 {
+            return; // offen — hier nicht Gegenstand
+        }
+        assert_eq!(
+            ch.end_planes,
+            [crate::offset_channel::END_PLANE_NONE; 4],
+            "geschlossene Spine mit drittem Gate"
+        );
+        for p in [[0.0f32, 0.0, 0.0], [5.0, 3.0, -2.0], [-9.0, 12.0, 4.0]] {
+            assert_eq!(
+                crate::offset_channel::end_plane_gate(p, ch),
+                crate::offset_channel::END_PLANE_OFF
+            );
+        }
+        seen += 1;
+    });
+    assert!(seen > 0, "Steinmetz: keine geschlossene Spine gefunden");
+}
+
 /// Feld-Pin zum Struktur-Pin: jenseits des Nahtendes ist der Term neutral
 /// (`channel_apply == d`), egal wie tief der naive Wert liegt. Vor §8e
-/// verschob er dort bis zu `gate = (c−1)·δ + 4·tol`.
+/// verschob er dort bis zu `gate = (c−1)·δ + 4·tol`; seit §8f trägt das
+/// dritte Gate diese Neutralität (`s₃ ≤ −δ` jenseits der Endebene ⇒ konvex
+/// abgeschaltet, konkav auf eine POSITIVE Distanzschranke geklemmt, die
+/// `min(d, ·)` nie unterschreitet).
 #[test]
 fn channel_term_is_off_beyond_the_seam_end_384() {
     let corrected = synth(&notch_union_node(90.0, 2.0), 0.005);

@@ -19,8 +19,9 @@
 //! ```text
 //! q*        = nächster Punkt der Kanten-Kurve zu x (Arc-Spline)
 //! m̂_A, m̂_B  = duale Kegelvektoren  m_A ∝ n_A − (n_A·n_B)·n_B  (auf der Kurve)
-//! w(x)      = min( ⟨x−q*, m̂_A⟩, ⟨x−q*, m̂_B⟩, |x−q*| − δ, K − |x−q*|, gate )
-//! w_geo     = min(⟨x−q*, m̂_A⟩, ⟨x−q*, m̂_B⟩, |x−q*| − δ, K − |x−q*|)
+//! s₃(x)     = min_k( ⟨x, n̂_k⟩ − c_k )   (End-Halbräume, §8f — je offenem
+//!             Spine-Ende einer; geschlossene Spine: Sentinel ⇒ +∞)
+//! w_geo     = min(⟨x−q*, m̂_A⟩, ⟨x−q*, m̂_B⟩, s₃, |x−q*| − δ, K − |x−q*|)
 //! w         = min(w_geo, gate)
 //! konvex:   f = max(d, w)
 //! konkav:   f = min(d, −w)      falls w > 0        (Sliver addieren)
@@ -49,8 +50,31 @@
 //!   Endpunkt-Ball-Kappe dadurch bis ~δ Material über das Ende hinaus;
 //!   seit C4 ist das Band scharf und die Ecke gehört der Vertex-Kugel.
 //!
+//! * `s₃` (**das dritte Gate**, #384 §8f): je offenem Spine-Ende ein
+//!   affiner Halbraum. Die zwei Kegel-Gates schneiden nur QUER zur Naht;
+//!   sie sagen nichts darüber, wie weit der Term ENTLANG der Naht über
+//!   deren Ende hinaus greift — genau dort klemmt `arc_closest` den
+//!   Fußpunkt auf den Endpunkt und `de − δ` behauptet zu viel Distanz.
+//!   Welche Ebene, entscheidet die Synthese ([`set_end_plane_gates`])
+//!   strukturell:
+//!   * endet die Naht an FREMDER FLÄCHE, die um `δ` nach innen geschobene
+//!     **Endebene** `⟨x−E, t̂⟩ − δ`. Beweis: jeder Randpunkt `y` jenseits
+//!     der Endebene erfüllt `|x−y| ≥ ⟨x−y,t̂⟩ ≥ ⟨x−E,t̂⟩`, also ist
+//!     `w_geo ≤ min(de, ⟨x−E,t̂⟩) − δ ≤ dist(x,∂Ω) − δ`;
+//!   * schließt eine NACHBAR-NAHT an, der **Voronoi-Bisektor**
+//!     `⟨x−E, t̂ − t̂_nachbar⟩` — dann korrigiert genau der Kanal, dessen
+//!     Naht wirklich näher liegt, und der Nachbar deckt die Gegenseite.
+//!   Geschlossene Spines haben kein Ende: Sentinel ⇒ `s₃ = +∞` ⇒
+//!   feldwert-neutral (Steinmetz bleibt bit-identisch).
+//!
 //! Restrisiko (Plan §9, Phase-C-Witness): Fremdgeometrie NÄHER als K an
-//! der Kurve im Kegelgebiet — dort gibt es keine Exaktheitsgarantie.
+//! der Kurve im Kegelgebiet — dort gibt es keine Exaktheitsgarantie. Seit
+//! §8f ist der Anteil, der ÜBER DIE NAHTENDEN kam, per `s₃` geschlossen;
+//! unberührt bleibt Fremdgeometrie, die QUER zur Naht innerhalb des
+//! Normalkegels näher liegt, und die **Kaskade**: zwei Kanäle desselben
+//! Stopps können denselben Punkt nacheinander um je bis zu `G` auslenken
+//! (an Junctions nicht mehr — dort trennt der Bisektor —, aber im Feld
+//! zweier weit auseinander liegender Nähte weiterhin).
 //!
 //! ## Synthese
 //!
@@ -129,6 +153,24 @@ pub struct OffsetChannel {
     /// Bounding-Sphere der ganzen Kurve (exakter Fernfeld-Skip).
     pub bound_c: [f32; 3],
     pub bound_r: f32,
+    /// #384 §8f — **das dritte Gate**: je offenem Spine-Ende EINE affine
+    /// Halbraum-Schranke `s₃ = ⟨x, n̂⟩ − c` (gespeichert als `[nx,ny,nz,c]`).
+    /// Sie geht als weiterer Term in `w_geo` ein und begrenzt damit die
+    /// Reichweite des Terms ENTLANG der Naht — die beiden Kegel-Gates `m̂₁/m̂₂`
+    /// schneiden nur QUER dazu.
+    ///
+    /// Welche Ebene je Ende gilt, entscheidet [`set_end_plane_gates`]
+    /// strukturell: die um `δ` nach innen geschobene **Endebene**, wenn die
+    /// Naht an fremder Fläche endet, sonst der **Voronoi-Bisektor** zur
+    /// anschließenden Nachbar-Naht.
+    ///
+    /// Geschlossene Spines haben kein Ende: dort steht der Sentinel
+    /// `[0,0,0,−1e30]` ⇒ `s₃ = 1e30` ⇒ feldwert-neutral.
+    ///
+    /// Vier Slots: je Ende bis zu ZWEI Halbräume — an einer Triple-Junction
+    /// grenzen zwei Nachbar-Nähte an, und jede bekommt ihre eigene
+    /// Voronoi-Bisektor-Ebene.
+    pub end_planes: [[f32; 4]; 4],
     /// Provenance-BranchId des Kanal-Terms (0x700+-Band, Plan §9).
     pub branch: u64,
     /// Plan §9, Stufe 2 des zweistufigen Pickings: die BranchIds der BEIDEN
@@ -297,6 +339,26 @@ pub fn channel_skip(d: f32, p: [f32; 3], ch: &OffsetChannel) -> bool {
     ch.trust - dbs <= if ch.concave { -d } else { d }
 }
 
+/// Sentinel eines nicht belegten End-Halbraums (#384 §8f): `n̂ = 0`,
+/// `c = −END_PLANE_OFF` ⇒ `s₃ = END_PLANE_OFF` ⇒ feldwert-neutral. Als
+/// f32-Konstante exakt darstellbar und in jedem Spiegel identisch.
+pub const END_PLANE_OFF: f32 = 1.0e30;
+
+/// Der neutrale End-Halbraum (geschlossene Spine / kein Ende).
+pub const END_PLANE_NONE: [f32; 4] = [0.0, 0.0, 0.0, -END_PLANE_OFF];
+
+/// #384 §8f — **das dritte Gate**: `s₃ = min_k(⟨x, n̂_k⟩ − c_k)` über die
+/// beiden End-Halbräume des Kanals. Neutral (`+1e30`) für geschlossene
+/// Spines. 1:1-Spiegel in Opcode-Interpreter, WGSL/TSL, C++, fidget, Dual.
+#[inline]
+pub fn end_plane_gate(p: [f32; 3], ch: &OffsetChannel) -> f32 {
+    let mut s = f32::INFINITY;
+    for g in &ch.end_planes {
+        s = s.min(p[0] * g[0] + p[1] * g[1] + p[2] * g[2] - g[3]);
+    }
+    s
+}
+
 /// Wendet EINEN Kanal auf den naiven Stopp-Wert `d` an (Modul-Doku).
 /// Die CPU-Referenz aller Spiegel (Opcode-Interpreter, WGSL, C++, fidget).
 pub fn channel_apply(d: f32, p: [f32; 3], ch: &OffsetChannel) -> f32 {
@@ -322,7 +384,11 @@ pub fn channel_apply(d: f32, p: [f32; 3], ch: &OffsetChannel) -> f32 {
     //   `gate − d` gegen dieses geklemmte statt das naive d und öffnete
     //   fälschlich — an Triple-Junctions addierte der zweite Kanal
     //   Material in wahre Luft (Vorzeichen-Kipp am Ecken-Fixture).
-    let w_geo = s1.min(s2).min(de - ch.delta).min(ch.trust - de);
+    let w_geo = s1
+        .min(s2)
+        .min(end_plane_gate(p, ch))
+        .min(de - ch.delta)
+        .min(ch.trust - de);
     let w = w_geo.min(gate);
     if ch.concave {
         if w > 0.0 {
@@ -986,7 +1052,7 @@ fn finish_arc(mut arc: ChannelArc) -> ChannelArc {
 }
 
 /// Punkt bei Parameter t ∈ [0,1] (Bogen: φ = t·sweep; Segment linear).
-fn arc_point_at(arc: &ChannelArc, t: f32) -> [f32; 3] {
+pub fn arc_point_at(arc: &ChannelArc, t: f32) -> [f32; 3] {
     if arc.sweep < 0.0 {
         [
             arc.c[0] + arc.u[0] * (t * arc.r),
@@ -1082,17 +1148,23 @@ fn boundary_witness(
     None
 }
 
-/// #384 §8e — **Beweis-Sonde gegen den Bound-Over-Claim am Nahtende.**
+/// #384 §8e/§8f — **Beweis-Sonde gegen den Bound-Over-Claim am Nahtende.**
 ///
 /// Die C2-Konstruktion ist nur dort exakt, wo der nächste Punkt der
 /// Naht-Kurve AUCH der nächste Randpunkt des Körpers ist. In der Umgebung
-/// eines offenen Spine-Endes ist das nicht garantiert: jenseits des Endes
-/// klemmt `arc_closest` den Fußpunkt auf den Endpunkt (das schließt seit
-/// [`close_open_end_caps`] das End-Gate), und seitlich davon kann eine
-/// NACHBAR-Naht näher liegen als die eigene — dann behauptet `de − δ` mehr
-/// Distanz, als es gibt. Verschärft wird das durch die sequenzielle
-/// Anwendung: hat ein Kanal `d` bereits (korrekt) angehoben, öffnet das
-/// `gate = G + d` des NÄCHSTEN weiter als beim naiven `d`.
+/// eines offenen Spine-Endes ist das nicht selbstverständlich: jenseits des
+/// Endes klemmt `arc_closest` den Fußpunkt auf den Endpunkt, und seitlich
+/// davon kann eine NACHBAR-Naht oder eine Deckfläche näher liegen als die
+/// eigene Naht — dann behauptete `de − δ` mehr Distanz, als es gibt.
+/// Verschärft wurde das durch die sequenzielle Anwendung: hat ein Kanal `d`
+/// bereits (korrekt) angehoben, öffnet das `gate = G + d` des NÄCHSTEN
+/// weiter als beim naiven `d`.
+///
+/// Seit §8f schließt das dritte Gate ([`set_end_plane_gates`]) genau diesen
+/// Anteil beweisbar. Die Sonde bleibt trotzdem — als **Wächter**, nicht als
+/// Dauerbefund: sie hält den Beweis empirisch nach und meldet ein ehrliches
+/// Downgrade, falls doch ein Zeuge auftaucht (etwa an Geometrien, deren
+/// Naht-Trace vor dem echten Ende abbricht).
 ///
 /// Die Sonde tastet um jedes offene Ende den Wirkbereich ab (Kegel der
 /// Endpunkt-Gates, `δ < |x−E| < K`), wendet die Korrektur **vollständig**
@@ -1123,12 +1195,12 @@ fn end_region_violation(
         if norm(sub(start, end)) < 1e-4 {
             continue; // geschlossene Kurve — kein Ende, kein Kappen-Bereich
         }
-        // Die Gates am Ende stammen seit `close_open_end_caps` aus dem
-        // End-Gate; für den Kegel-Filter zählen die GEOMETRISCHEN Gates des
-        // vorletzten Stützpunkts (sonst filterte die Sonde ihren eigenen Fix).
+        // Der Kegel-Filter läuft auf den GEOMETRISCHEN Dualkegel-Vektoren der
+        // Endpunkte (seit §8f sind sie unverbogen — das dritte Gate steckt im
+        // Halbraum, nicht mehr in `m̂₂` eines abgespaltenen Kappen-Bogens).
         let ends = [
-            (start, nlerp(first.m1s, first.m1e, 1.0), nlerp(first.m2s, first.m2e, 1.0)),
-            (end, nlerp(last.m1e, last.m1s, 1.0), nlerp(last.m2e, last.m2s, 1.0)),
+            (start, first.m1s, first.m2s),
+            (end, last.m1e, last.m2e),
         ];
         for (e, m1, m2) in ends {
             for dir in FIB_DIRS.iter() {
@@ -1185,129 +1257,118 @@ fn end_region_violation(
     worst
 }
 
-/// Teilstück eines Bogens/Segments für `t ∈ [t0, t1] ⊆ [0,1]` — samt
-/// nlerp-interpolierten Kegelvektoren und frischer Bounding-Sphere. Basis
-/// des End-Kappen-Gates (#384 §8e).
-fn arc_subrange(arc: &ChannelArc, t0: f32, t1: f32) -> Option<ChannelArc> {
-    if !(t1 > t0) {
-        return None;
-    }
-    let m1s = nlerp(arc.m1s, arc.m1e, t0);
-    let m2s = nlerp(arc.m2s, arc.m2e, t0);
-    let m1e = nlerp(arc.m1s, arc.m1e, t1);
-    let m2e = nlerp(arc.m2s, arc.m2e, t1);
-    let mut out = if arc.sweep < 0.0 {
-        segment_arc(arc_point_at(arc, t0), arc_point_at(arc, t1))?
-    } else {
-        let phi0 = t0 * arc.sweep;
-        let (s0, c0) = phi0.sin_cos();
-        let u = [
-            arc.u[0] * c0 + arc.v[0] * s0,
-            arc.u[1] * c0 + arc.v[1] * s0,
-            arc.u[2] * c0 + arc.v[2] * s0,
-        ];
-        let v = [
-            -arc.u[0] * s0 + arc.v[0] * c0,
-            -arc.u[1] * s0 + arc.v[1] * c0,
-            -arc.u[2] * s0 + arc.v[2] * c0,
-        ];
-        finish_arc(ChannelArc {
-            c: arc.c,
-            u,
-            v,
-            r: arc.r,
-            sweep: (t1 - t0) * arc.sweep,
-            bc: [0.0; 3],
-            br: 0.0,
-            m1s: [0.0; 3],
-            m2s: [0.0; 3],
-            m1e: [0.0; 3],
-            m2e: [0.0; 3],
-        })
-    };
-    out.m1s = m1s;
-    out.m2s = m2s;
-    out.m1e = m1e;
-    out.m2e = m2e;
-    Some(out)
-}
-
-/// #384 §8e — **End-Kappen-Gate.** Am offenen Ende einer Spine klemmt
-/// `arc_closest` den Fußpunkt auf den Endpunkt: jenseits des Nahtendes misst
-/// `de` die Distanz zu EINEM Punkt, während die beiden Kegel-Gates der Kante
-/// weiter offen stehen. Der Term wirkt dort bis `K ≈ 1.95·δ` über die Naht
-/// hinaus — quer über Flächen, die dort ungestört weiterlaufen (§8d-Befund:
-/// 0.760 mm Fehlstelle an der Außenkante des Trägerkörpers; Spiegel am
-/// Erosions-Stopp: 0.800 mm Phantom-Material an den Enden des
-/// `notch_union`-Dieders). Die C2-Exaktheit gilt dort nicht — der nächste
-/// Randpunkt ist nicht mehr der Fußpunkt.
+/// #384 §8f — **das dritte Gate als Synthese-Schritt.** Die zwei
+/// Kegel-Gates `m̂₁/m̂₂` schneiden nur QUER zur Naht; über das ENDE der Naht
+/// hinaus stehen sie unverändert offen, und `arc_closest` klemmt den
+/// Fußpunkt dort auf den Endpunkt. Genau da behauptete `de − δ` mehr
+/// Distanz, als es gibt (§8e-Restfehler). Das dritte Gate ist ein
+/// **affiner Halbraum je offenem Spine-Ende**, der als weiterer Term in
+/// `w_geo` steht.
 ///
-/// Der Opcode kann das nicht selbst wissen: er hat je Bogen genau ZWEI
-/// Gates, und ein drittes wäre eine Semantik-Änderung in sechs
-/// Evaluator-Spiegeln. Aber die Gates sind **Daten**. Am terminalen
-/// Bogenstück (`0.25·δ`) wird das zweite Gate auf die **Endebenen-Normale**
-/// `∓t̂` gedreht:
+/// **Welche Ebene — gemessen, nicht geraten.** Die zwei Restfehler-Familien
+/// aus §8e verlangen VERSCHIEDENE Ebenen, und der Unterschied ist
+/// geometrisch scharf:
 ///
-/// * jenseits der Endebene ist `⟨x−E, ∓t̂⟩ < 0` ⇒ `w < 0` ⇒ der Term ist
-///   strukturell AUS — genau die Kappe, die den Bound-Over-Claim trug;
-/// * davor ist der Fußpunkt innerlich und `⟨x−q*, t̂⟩ = 0`, das Gate also
-///   neutral; die nlerp-Interpolation blendet die Korrektur auf dem kurzen
-///   Endstück stetig aus (kein Sprung im Feld).
+/// * **Die Naht endet an einer FREMDEN FLÄCHE** (`notch_union`: der Dieder
+///   läuft in die Deckfläche `z = ±50`). Dann ist der Abstand zu dieser
+///   Fläche ein echter Konkurrent im Distanz-Minimum. Beweisbare Schranke:
+///   jeder Randpunkt `y` jenseits der Endebene erfüllt
+///   `|x−y| ≥ ⟨x−y, t̂⟩ ≥ ⟨x−E, t̂⟩`, also ist
+///   `s₃ = ⟨x−E, t̂⟩ − δ` (**um δ verschobene Endebene**) korrekt: `w_geo`
+///   fällt auf `min(de, ⟨x−E,t̂⟩) − δ ≤ dist(x,∂Ω) − δ`. Gemessen schließt
+///   das den notch-Fehler exakt (α=90°: 0.496 → 0.000 mm; α=60°:
+///   0.998 → 0.000 mm), und es kostet dort NICHTS: im δ-Band vor der
+///   Deckfläche dominiert deren eigene Schranke ohnehin das naive Feld.
 ///
-/// Geschlossene Spines haben kein Ende und bleiben unberührt; an gesnappten
-/// Enden übernimmt die Vertex-Kugel mit ihren DREI Gates — genau die
-/// R&R-Arbeitsteilung „Kanten-Kanäle enden IN den Vertices" (C4).
-fn close_open_end_caps(channels: &mut [OffsetChannel], budget: usize) {
-    let mut arcs_total: usize = channels.iter().map(|c| c.arcs.len()).sum();
-    for ch in channels.iter_mut() {
+/// * **Die Naht endet, weil eine NACHBAR-NAHT anschließt** (Taschenmund:
+///   vier Mündungs-Nähte treffen sich paarweise in den Ecken). Jenseits des
+///   Endes liegt dann kein unbekannter Konkurrent, sondern ein Kanal, den
+///   der Evaluator ohnehin auswertet. Zuständig ist, wessen Naht NÄHER
+///   liegt — das ist die **Voronoi-Bisektor-Ebene** durch `E` mit
+///   `n̂ ∝ t̂ − t̂_nachbar` (beide Tangenten ins jeweilige Spine-Innere;
+///   wegen `d(x,L)² = |x−E|² − ⟨x−E,t̂⟩²` ist `⟨x−E, t̂−t̂_n⟩ = 0` genau die
+///   Gleichabstandsfläche). Die um δ verschobene Endebene wäre hier zu
+///   stumpf: sie schaltet den Term im ganzen δ-Band vor der Ecke ab,
+///   obwohl er dort exakt ist (gemessen: Taschen-Restfehler 0.395 mm statt
+///   0.000 mm).
+///
+/// Der Diskriminator ist damit rein strukturell: endet die Spine eines
+/// ANDEREN Kanals desselben Stopps im selben Punkt, gilt der Bisektor
+/// (bis zu zwei Nachbarn je Ende — an einer Triple-Junction sind es genau
+/// zwei); sonst die um δ verschobene Endebene.
+///
+/// Das ersetzt die §8e-Kappe (ein terminales Bogenstück, dessen zweites
+/// Kegel-Gate auf `∓t̂` gedreht wurde): die war ein reiner Halbraum an der
+/// Endebene, verbog dafür aber den echten Dualkegel des letzten Bogens und
+/// kostete je Ende einen Bogen.
+///
+/// Geschlossene Spines (Steinmetz) haben kein Ende: alle vier Halbräume
+/// bleiben der neutrale Sentinel, das Feld ist wertidentisch zu einem
+/// Kanal ohne drittes Gate.
+fn set_end_plane_gates(channels: &mut [OffsetChannel]) {
+    // Alle offenen Spine-Enden des Stopps mit ihrer Innen-Tangente sammeln.
+    let mut ends: Vec<(usize, [f32; 3], [f32; 3])> = Vec::new();
+    for (ci, ch) in channels.iter().enumerate() {
         if ch.arcs.is_empty() {
             continue;
         }
-        let start = arc_point_at(&ch.arcs[0], 0.0);
-        let end = arc_point_at(ch.arcs.last().unwrap(), 1.0);
-        if norm(sub(start, end)) < 1e-4 {
-            continue; // geschlossene Kurve — kein Ende, keine Kappe
+        let s = arc_point_at(&ch.arcs[0], 0.0);
+        let e = arc_point_at(ch.arcs.last().unwrap(), 1.0);
+        if norm(sub(s, e)) < 1e-4 {
+            continue; // geschlossene Kurve — kein Ende
         }
-        let cap_len = 0.25 * ch.delta;
-        for at_start in [false, true] {
-            let idx = if at_start { 0 } else { ch.arcs.len() - 1 };
-            let arc = ch.arcs[idx].clone();
-            let Some(t) = arc_tangent_at(&arc, if at_start { 0.0 } else { 1.0 }) else {
+        if let Some(t) = arc_tangent_at(&ch.arcs[0], 0.0) {
+            ends.push((ci, s, t));
+        }
+        if let Some(t) = arc_tangent_at(ch.arcs.last().unwrap(), 1.0) {
+            ends.push((ci, e, [-t[0], -t[1], -t[2]]));
+        }
+    }
+    for ch in channels.iter_mut() {
+        ch.end_planes = [END_PLANE_NONE; 4];
+    }
+    // Zwei Enden gelten als dieselbe Junction, wenn sie näher als 0.5·δ
+    // liegen: der Prädiktor-Korrektor-Trace stoppt am
+    // `on_composite_boundary`-Gate typisch einen Schritt VOR der Ecke, die
+    // beiden Spine-Enden treffen sich also nicht exakt.
+    let mut slot = vec![0usize; channels.len()];
+    for (k, (ci, e, t)) in ends.iter().enumerate() {
+        let ch_delta = channels[*ci].delta;
+        let join = 0.5 * ch_delta;
+        let mut planes: Vec<[f32; 4]> = Vec::new();
+        for (m, (cj, e2, t2)) in ends.iter().enumerate() {
+            if m == k || cj == ci || norm(sub(*e, *e2)) > join {
                 continue;
-            };
-            // Gate-Vektor = Endebenen-Normale, nach INNEN gerichtet.
-            let gate_n = if at_start { t } else { [-t[0], -t[1], -t[2]] };
-            let len = if arc.sweep < 0.0 { arc.r } else { arc.r * arc.sweep };
-            if len > 2.0 * cap_len && arcs_total < budget {
-                let f = cap_len / len;
-                let (t0, t1) = if at_start { (0.0, f) } else { (1.0 - f, 1.0) };
-                let (Some(mut cap), Some(rest)) = (
-                    arc_subrange(&arc, t0, t1),
-                    if at_start {
-                        arc_subrange(&arc, t1, 1.0)
-                    } else {
-                        arc_subrange(&arc, 0.0, t0)
-                    },
-                ) else {
-                    continue;
-                };
-                if at_start {
-                    cap.m2s = gate_n;
-                    ch.arcs[idx] = rest;
-                    ch.arcs.insert(idx, cap);
-                } else {
-                    cap.m2e = gate_n;
-                    ch.arcs[idx] = rest;
-                    ch.arcs.push(cap);
-                }
-                arcs_total += 1;
-            } else if at_start {
-                // Bogen zu kurz (oder Arc-Budget erschöpft): das Gate gilt für
-                // den ganzen terminalen Bogen — die Korrektur blendet über ihn
-                // aus, die Kappe ist zu.
-                ch.arcs[idx].m2s = gate_n;
-            } else {
-                ch.arcs[idx].m2e = gate_n;
+            }
+            // Voronoi-Bisektor zur Nachbar-Naht: n̂ ∝ t̂ − t̂_nachbar.
+            let n = sub(*t, *t2);
+            let l = norm(n);
+            if l < 1e-3 {
+                continue; // gleiche Richtung — kein trennender Bisektor
+            }
+            let n = [n[0] / l, n[1] / l, n[2] / l];
+            // Verankert im MITTELPUNKT der beiden Trace-Enden: beide Nachbarn
+            // bekommen so exakt dieselbe Ebene mit entgegengesetzter Normale,
+            // die Zerlegung ist damit lückenlos und überschneidungsfrei.
+            let mid = [
+                0.5 * (e[0] + e2[0]),
+                0.5 * (e[1] + e2[1]),
+                0.5 * (e[2] + e2[2]),
+            ];
+            planes.push([n[0], n[1], n[2], dot(mid, n)]);
+        }
+        if planes.len() > 2 {
+            planes.clear(); // mehr als eine Triple-Junction — konservativ
+        }
+        if planes.is_empty() {
+            // Kein Nachbar-Kanal: die Naht endet an fremder Geometrie.
+            planes.push([t[0], t[1], t[2], dot(*e, *t) + ch_delta]);
+        }
+        for pl in planes {
+            let s = &mut slot[*ci];
+            if *s < 4 {
+                channels[*ci].end_planes[*s] = pl;
+                *s += 1;
             }
         }
     }
@@ -1690,6 +1751,9 @@ fn build_channel(
         gate,
         bound_c: bc,
         bound_r: br + 1e-3,
+        // #384 §8f: die End-Halbräume setzt `set_end_plane_gates` NACH dem
+        // Vertex-Snapping (das die Kurve noch verlängert) — hier neutral.
+        end_planes: [END_PLANE_NONE; 4],
         branch,
         parents,
     })
@@ -4015,7 +4079,7 @@ fn synthesize_stop(
                                     &members, &triple_cands, &ctx, union_form,
                                     gate_eps, gscale, &min_feat, &mut channel_idx,
                                 );
-                                close_open_end_caps(&mut channels, MAX_ARCS_PER_STOP);
+                                set_end_plane_gates(&mut channels);
                                 let capped = audit_channel_end_caps(
                                     &channels, &verts, inner, &prisms, delta, tol, report,
                                 );
@@ -4216,7 +4280,7 @@ fn synthesize_stop(
                                     snap_channel_ends_to_vertices(
                                         &mut channels, &chan_ends, &verts,
                                     );
-                                    close_open_end_caps(&mut channels, MAX_ARCS_PER_STOP);
+                                    set_end_plane_gates(&mut channels);
                                     let capped = audit_channel_end_caps(
                                         &channels, &verts, inner, &prisms, delta, tol, report,
                                     );
@@ -4239,7 +4303,7 @@ fn synthesize_stop(
         &mut channel_idx,
     );
     snap_channel_ends_to_vertices(&mut channels, &chan_ends, &verts);
-    close_open_end_caps(&mut channels, MAX_ARCS_PER_STOP);
+    set_end_plane_gates(&mut channels);
     let capped = audit_channel_end_caps(&channels, &verts, inner, &prisms, delta, tol, report);
     (channels, verts, prisms, rims, capped)
 }

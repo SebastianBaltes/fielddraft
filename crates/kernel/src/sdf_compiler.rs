@@ -97,12 +97,12 @@ pub const OP_MASKED_BLEND: u32   = 0x40; // +var: n + n×point(3) + mask_r+blend
 // offset_tree Phase B (#384): Kanal-Korrekturkörper an einem dualen
 // Offset-Stopp — pops den naiven Stopp-Wert d, pusht die korrigierte
 // Distanz (CPU-Referenz: `offset_channel::channel_apply`).
-// Header (8): n_arcs + concave(0/1) + delta + trust_gate… genau:
-//   n_arcs(1) + concave(1) + delta(1) + trust(1) + gate(1) +
-//   bound_c(3) + bound_r(1) = 9
+// Header (25): n_arcs(1) + concave(1) + delta(1) + trust(1) + gate(1) +
+//   bound_c(3) + bound_r(1) + end_planes(4×4 = 16; #384 §8f, je Slot
+//   [nx,ny,nz,c] mit s₃ₖ = ⟨x,n̂ₖ⟩ − cₖ, neutraler Slot [0,0,0,−1e30]).
 // je Bogen (27): c(3) u(3) v(3) r(1) sweep(1; −1 = Segment) bc(3) br(1)
 //   m1s(3) m2s(3) m1e(3) m2e(3).
-pub const OP_ARC_CHANNEL: u32    = 0x41; // +9+27N
+pub const OP_ARC_CHANNEL: u32    = 0x41; // +25+27N
 
 // offset_tree Phase C4 (#384): Rossignac–Requicha-Vertex-Kugel an einer
 // Triple-Junction — pops den Stopp-Wert d, pusht die korrigierte Distanz
@@ -652,6 +652,10 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
                 out.push(ch.gate);
                 out.extend_from_slice(&ch.bound_c);
                 out.push(ch.bound_r);
+                // #384 §8f: die vier End-Halbräume (drittes Gate).
+                for g in &ch.end_planes {
+                    out.extend_from_slice(g);
+                }
                 for a in &ch.arcs {
                     out.extend_from_slice(&a.c);
                     out.extend_from_slice(&a.u);
@@ -2000,6 +2004,14 @@ pub fn eval_opcodes_with_volumes(
                 let gate_w = rd!();
                 let bc = rd3!();
                 let br = rd!();
+                // #384 §8f: drittes Gate — vier affine End-Halbräume,
+                // `s₃ = min_k(⟨x,n̂ₖ⟩ − cₖ)` (Spiegel von `end_plane_gate`).
+                let mut s3 = f32::INFINITY;
+                for _ in 0..4 {
+                    let n = rd3!();
+                    let c = rd!();
+                    s3 = s3.min(pt[0] * n[0] + pt[1] * n[1] + pt[2] * n[2] - c);
+                }
                 let arc_base = pc;
                 pc += n * ARC_STRIDE;
                 let d = pop_v!();
@@ -2111,7 +2123,7 @@ pub fn eval_opcodes_with_volumes(
                 let gate = if concave { gate_w - d } else { gate_w + d };
                 // Rollen-Trennung (C4): Geometrie-Klemme vs. Add-Gate —
                 // 1:1-Spiegel von `channel_apply`.
-                let w_geo = s1.min(s2).min(best - delta).min(trust - best);
+                let w_geo = s1.min(s2).min(s3).min(best - delta).min(trust - best);
                 let w = w_geo.min(gate);
                 push_v!(if concave {
                     if w > 0.0 {

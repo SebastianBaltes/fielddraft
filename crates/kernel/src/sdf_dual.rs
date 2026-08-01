@@ -442,9 +442,19 @@ fn eval_bounded_d3_open(
                     D3::from(ch.gate as f64) + d
                 };
                 let min_d3 = |a: D3, b: D3| if a.re <= b.re { a } else { b };
+                // #384 §8f: drittes Gate — vier affine End-Halbräume. Anders
+                // als q*/m̂ sind sie KONSTANTEN, die Ableitung also exakt.
+                let mut s3 = D3::from(f64::INFINITY);
+                for g in &ch.end_planes {
+                    let v = p[0] * D3::from(g[0] as f64)
+                        + p[1] * D3::from(g[1] as f64)
+                        + p[2] * D3::from(g[2] as f64)
+                        - D3::from(g[3] as f64);
+                    s3 = min_d3(s3, v);
+                }
                 // Rollen-Trennung (C4) — Spiegel von `channel_apply`.
                 let w_geo = min_d3(
-                    min_d3(s1, s2),
+                    min_d3(min_d3(s1, s2), s3),
                     min_d3(
                         de - D3::from(ch.delta as f64),
                         D3::from(ch.trust as f64) - de,

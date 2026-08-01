@@ -445,9 +445,22 @@ fn channel_to_tree(
     } else {
         Tree::from(ch.gate as f64) + d.clone()
     };
+    // #384 §8f: drittes Gate — vier affine End-Halbräume (Konstanten).
+    let mut s3: Option<Tree> = None;
+    for g in &ch.end_planes {
+        let v = p[0].clone() * g[0] as f64
+            + p[1].clone() * g[1] as f64
+            + p[2].clone() * g[2] as f64
+            - g[3] as f64;
+        s3 = Some(match s3 {
+            Some(prev) => prev.min(v),
+            None => v,
+        });
+    }
     // Rollen-Trennung (C4) — Spiegel von `channel_apply`.
     let w_geo = s1
         .min(s2)
+        .min(s3.expect("end_planes ist ein Array fester Länge"))
         .min(best.clone() - ch.delta as f64)
         .min(neg(best) + ch.trust as f64);
     let w = w_geo.clone().min(gate);

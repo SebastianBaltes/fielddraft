@@ -784,8 +784,9 @@ export function buildVmSdfEvalFn(
         // Offset-Stopp — 1:1-Spiegel der CPU-Referenz
         // (`kernel offset_channel::channel_apply` / `eval_opcodes`
         // OP_ARC_CHANNEL-Arm), inklusive des exakten Bounding-Sphere-Skips
-        // (feldwert-identisch). Header: n(1) concave(1) delta(1) trust(1)
-        // gate(1) bound_c(3) bound_r(1); je Bogen 27 Floats:
+        // (feldwert-identisch). Header 25: n(1) concave(1) delta(1) trust(1)
+        // gate(1) bound_c(3) bound_r(1) end_planes(4×4 — das dritte Gate,
+        // #384 §8f); je Bogen 27 Floats:
         // c(3) u(3) v(3) r(1) sweep(1; <0 = Segment) bc(3) br(1)
         // m1s(3) m2s(3) m1e(3) m2e(3).
         const nArcs = floatToIntFn({ v: rd() }).toVar();
@@ -795,6 +796,14 @@ export function buildVmSdfEvalFn(
         const gateW = rd().toVar();
         const bcx = rd(), bcy = rd(), bcz = rd();
         const br = rd().toVar();
+        // Drittes Gate: s₃ = min_k(⟨x, n̂ₖ⟩ − cₖ) — Spiegel von
+        // `offset_channel::end_plane_gate`. Neutraler Slot: n̂ = 0, c = −1e30.
+        const s3 = float(1e30).toVar();
+        for (let g = 0; g < 4; g++) {
+          const gn = vec3(rd(), rd(), rd());
+          const gc = rd();
+          s3.assign(min(s3, vec3(ptx, pty, ptz).dot(gn).sub(gc)));
+        }
         const arcBase = pc.toVar();
         pc.addAssign(nArcs.mul(27));
         const d = popV().toVar();
@@ -897,7 +906,7 @@ export function buildVmSdfEvalFn(
             const gate = concave.greaterThan(0.5).select(gateW.sub(d), gateW.add(d));
             // Rollen-Trennung (C4, CPU-Referenz channel_apply):
             // Geometrie-Klemme (Luft-Distanzschranke) vs. Add-Gate.
-            const wGeo = min(min(s1, s2), min(best.sub(delta), trust.sub(best)));
+            const wGeo = min(min(min(s1, s2), s3), min(best.sub(delta), trust.sub(best)));
             const w = min(wGeo, gate);
             const inactive = wGeo.greaterThan(0.0).select(d, min(d, wGeo.negate()));
             const concRes = w.greaterThan(0.0).select(min(d, w.negate()), inactive);

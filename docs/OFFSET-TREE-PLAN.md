@@ -571,6 +571,34 @@ für Shell.
   `vertex_sphere_corner` — genau die mit offenen Spines, beide mit
   Randpunkt-Zeugen als Beleg), 33 byte-identisch. Herleitung + Messtabellen:
   `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8e.
+* **Das dritte Gate — ERLEDIGT (#384 §8f, 2026-08-02).** `OP_ARC_CHANNEL`
+  trägt jetzt je offenem Spine-Ende einen affinen Halbraum; `w_geo` bekommt
+  den Term `s₃ = min_k(⟨x,n̂ₖ⟩ − cₖ)`. Welche Ebene, entscheidet die Synthese
+  strukturell und gemessen: endet die Naht an FREMDER FLÄCHE, die um δ nach
+  innen geschobene End-Ebene `⟨x−E,t̂⟩ − δ` (jeder Randpunkt jenseits der
+  Endebene ist mindestens `⟨x−E,t̂⟩` weit weg ⇒ `w_geo ≤ dist(x,∂Ω) − δ`);
+  schließt eine NACHBAR-NAHT an, der Voronoi-Bisektor `⟨x−E, t̂ − t̂_n⟩`
+  (dann korrigiert genau der Kanal, dessen Naht näher liegt). Beides ist
+  nötig — die verschobene End-Ebene allein lässt an der Taschen-Ecke
+  0.395 mm stehen, der reine Bisektor am Dieder-Ende 0.496/0.998 mm.
+  Messbilanz: Tasche `s ≥ 2δ` 0.632 → **0.000 mm** (204 → 0
+  Fehlklassifikationen), notch α=90° 0.496 → **0.000**, α=60° 0.998 →
+  **0.000**; alle drei Randpunkt-Zeugen-Downgrades fallen. Geschlossene
+  Spines (Steinmetz) bleiben feldwert-BIT-identisch. Die §8e-Kappe
+  (abgespaltenes terminales Bogenstück mit verdrehtem `m̂₂`) entfällt
+  ersatzlos. Wire-Format bricht hart: Header 9 → 25 Floats (`+25+27N`),
+  gespiegelt in SECHS Evaluatoren (`offset_channel.rs`, `sdf_compiler.rs`
+  `eval_opcodes`, `sdf_dual.rs`, `fidget_bridge.rs`,
+  `web/src/sdfVmInterpreter.ts`, `cgal-mesher/src/sdf_interp.h`) plus
+  Encoder und `tape_spec.h::op_len`; `check_interp` grün (35 Szenen,
+  17920 Checks, worst 2e-6). Golden: 3 von 35 Szenen bewegen sich
+  (`arc_channel_steinmetz` nur im Tape, SDF-Werte identisch;
+  `arc_channel_notch`, `vertex_sphere_corner` auch im Feld), 32
+  byte-identisch. **Offen bleibt der Kaskaden-Effekt**: an Junctions ist er
+  weg (der Bisektor trennt), zwischen entfernten Nähten desselben Stopps
+  nicht — gemessen unverändert bis zu 2 Terme je Punkt und `2·G`
+  Gesamt-Auslenkung, ohne dass an den Fixturen noch eine
+  Fehlklassifikation entsteht. Herleitung + Messtabellen: §8f.
 * **Interaktion mit Edge-Fillets/MaskedBlend- und smin-Stopps.** Der
   Pushdown stoppt an Blend-Knoten — dort gibt es keinen exakten Offset
   (Blendflächen sind keine Offset-abgeschlossene Klasse). Offset über

@@ -106,7 +106,8 @@ inline int payload_len(const float* buf, int n, uint32_t tag, int pc) {
     case OP_ARC_CHANNEL: {
       if (pc >= n) return -1;
       int np = (int)buf[pc];
-      return 9 + 27 * np;
+      // Header 25 (inkl. der 4x4 End-Halbraeume, #384 §8f), je Bogen 27.
+      return 25 + 27 * np;
     }
     case OP_VERTEX_SPHERE: return 16;
     case OP_RIM_FILLET: {

@@ -677,6 +677,158 @@ tragen den Fehler nachweislich (Randpunkt-Zeugen vor dem Fix: 0.848 mm bzw.
 Voronoi-Bisektor zur Nachbar-Naht, dazu ein Kegel-Gate gegen Fremdflächen).
 Das ist eine Semantik-Änderung in sechs Evaluator-Spiegeln und damit ein
 eigenes Paket — hier bewusst nicht angefasst.
+→ ausgeführt in §8f.
+
+## 8f. Das dritte Gate im Kanal-Opcode (#384, 2026-08-02)
+
+§8e schloss die Endpunkt-Ball-Kappe synthese-seitig (End-Gate als DATEN auf
+einem abgespaltenen terminalen Bogenstück) und meldete den Rest per
+Randpunkt-Zeugen ehrlich als Downgrade. Der Rest waren drei Fälle, alle mit
+derselben Ursache: **eine fremde Fläche oder eine Nachbar-Naht liegt näher
+als die eigene Naht, und die zwei Kegel-Gates sehen das nicht** — sie
+schneiden den Normalkegel QUER zur Naht aus, sagen aber nichts darüber, wie
+weit der Term ENTLANG der Naht über deren Ende hinaus greifen darf.
+
+Dieses Paket macht das dritte Gate zur Opcode-Semantik.
+
+### Reproduktion (die Messung vor dem Design)
+
+Eigene Sonde, gegen dieselben exakten Referenzen wie §8d/§8e (Tasche: exakte
+Distanz zu `A \ B` über dessen ≤6-Box-Zerlegung; notch: `dist(x, ∁Körper)`
+als Strahl-Minimum über beide OBBs, je Richtung exakt):
+
+| Szene | Fehler (Reproduktion) | Ort |
+|---|---|---|
+| Tasche `s ≥ 2·δ`, δ = 2 | **0.632 mm**, 204 Fehlklassifikationen (61³) | `[−6.07, −5.13, 11.0]` |
+| `notch_union` α = 90° | **0.496 mm** | `[0.33, −3.67, 48.5]` |
+| `notch_union` α = 60° | **0.998 mm** | `[0.33, −5.00, 49.0]` |
+
+Die Diagnose fiel erst mit der Term-für-Term-Aufschlüsselung am worst-Punkt:
+
+* **Tasche.** Vier Mündungs-Nähte (`x = ±7`, `y = ±7` in `z = 10`) treffen
+  sich paarweise in den vier Ecken. Am worst-Punkt liegt Naht 2 mit
+  `de = 1.368` richtig (`de − δ = −0.632` ist exakt), Naht 3 liegt mit
+  `de = 2.118` weiter weg und behauptet `+0.118`. Weil der konvexe Term
+  `f = max(d, w)` bildet, **gewinnt die FALSCHE, weiter entfernte Naht** —
+  die Kaskade `gate = G + d` öffnete ihr zusätzlich den Weg.
+* **notch.** Die Naht endet in der Deckfläche `z = ±50`. Am worst-Punkt ist
+  `de = 3.682`, der wahre Abstand zum Komplement aber `1.504` — die
+  Deckfläche. Der Fußpunkt ist dabei INNERLICH (`z = 48.5 < 50`), die
+  §8e-Kappe greift also gar nicht; das ist kein Klemm-, sondern ein
+  Distanz-Wettbewerbs-Fehler.
+
+### Design-Entscheidung: End-Ebene UND Bisektor — die Messung erzwingt beide
+
+§8e skizzierte „End-Ebene bzw. Voronoi-Bisektor, dazu ein Kegel-Gate gegen
+Fremdflächen". Gemessen wurde jede Variante einzeln:
+
+| Variante | Tasche `s ≥ 2δ` | notch 90° | notch 60° |
+|---|---|---|---|
+| §8e (Ausgangsstand) | 0.632 mm / 204 | 0.496 mm | 0.998 mm |
+| nur **um δ verschobene End-Ebene** (`s₃ = ⟨x−E,t̂⟩ − δ`) | 0.395 mm / 20 | **0.000** | **0.000** |
+| nur **reine End-Ebene** (`s₃ = ⟨x−E,t̂⟩`) | — | 0.496 mm (unverändert) | 0.998 mm (unverändert) |
+| **End-Ebene an fremder Fläche, Bisektor an Nachbar-Naht** | **0.000 / 0** | **0.000** | **0.000** |
+
+Die Zahlen sagen klar, warum keine Variante allein reicht:
+
+* Der **δ-Versatz ist am notch zwingend.** Die Endebene ist dort die
+  Deckfläche selbst; `s₃ = ⟨x−E,t̂⟩ − δ` heißt genau „nimm den Abstand zu
+  dieser Fläche als weiteren Kandidaten ins Distanz-Minimum auf", und
+  `w_geo` fällt auf `min(de, ⟨x−E,t̂⟩) − δ` — den exakten Wert. Ohne
+  Versatz ist `s₃ = 1.5 > 0` und ändert nichts.
+* Der **δ-Versatz ist an der Taschen-Ecke zu stumpf.** Er schaltet den Term
+  im ganzen δ-Band vor der Ecke ab, obwohl er dort exakt wäre: der
+  Restfehler 0.395 mm ist kein Über-Claim mehr, sondern ein UNTER-korrigierter
+  Punkt (`[−5.13, −5.13, 11.5]`, naiv = korrigiert = −0.133, wahr = +0.395) —
+  und das Randpunkt-Zeugen-Downgrade fiele dort still weg, weil ein Zeuge
+  nur die Richtung „behauptet außen, ist innen" beweisen kann. Eine tighte
+  Zusage über einem 0.395-mm-Fehler wäre genau die Lüge, die die Doktrin
+  verbietet.
+* Der **Bisektor ist an der Taschen-Ecke exakt.** Wegen
+  `d(x,L)² = |x−E|² − ⟨x−E,t̂⟩²` ist die Gleichabstandsfläche zweier in `E`
+  zusammenlaufender Nahtgeraden die Ebene `⟨x−E, t̂ − t̂_n⟩ = 0`. Beide
+  Nachbarn bekommen dieselbe Ebene mit entgegengesetzter Normale (verankert
+  im MITTELPUNKT der beiden Trace-Enden — der Prädiktor-Korrektor stoppt am
+  `on_composite_boundary`-Gate typisch einen Schritt vor der Ecke, hier
+  0.26 mm), die Zerlegung ist also lückenlos und überschneidungsfrei: es
+  korrigiert immer genau der Kanal, dessen Naht wirklich am nächsten liegt.
+
+**Der Diskriminator ist strukturell, nicht heuristisch:** endet die Spine
+eines ANDEREN Kanals desselben Stopps im selben Punkt (Toleranz 0.5·δ), gilt
+der Bisektor — bis zu zwei Nachbarn je Ende, an einer Triple-Junction sind es
+genau zwei. Sonst die um δ verschobene End-Ebene. Ein **separates Kegel-Gate
+gegen Fremdflächen** (die dritte Zutat der §8e-Skizze) hat sich als
+**nicht nötig** erwiesen: der §8d-Befund an der Außenkante des Trägerkörpers
+(`[−10.73, 6.53, 11.0]`) liegt innerhalb des δ-Bandes vor einem Nahtende und
+fällt schon durch die verschobene End-Ebene.
+
+### Semantik und Format (das Wire-Format wechselt hart)
+
+    s₃(x)  = min_k( ⟨x, n̂_k⟩ − c_k )       k = 0..3
+    w_geo  = min( ⟨x−q*,m̂₁⟩, ⟨x−q*,m̂₂⟩, s₃, |x−q*|−δ, K−|x−q*| )
+
+Vier Slots je Kanal (zwei Enden × bis zu zwei Nachbarn), Sentinel für einen
+unbelegten Slot `[0,0,0,−1e30]` ⇒ `s₃ = 1e30` ⇒ feldwert-neutral. Der
+`OP_ARC_CHANNEL`-Header wächst von 9 auf 25 Floats (`+25+27N`); es gibt keine
+zweite, alte Form.
+
+Damit entfällt die §8e-Kappe ersatzlos: das Abspalten eines terminalen
+Bogenstücks und das Verdrehen von dessen `m̂₂` auf `∓t̂` verbog den echten
+Dualkegel und kostete je Ende einen Bogen. Das dritte Gate ist stärker (der
+δ-Versatz), exakt (kein nlerp-Ausblenden) und billiger.
+
+### Die Spiegel (sechs plus zwei Formatstellen)
+
+| # | Spiegel | Datei |
+|---|---|---|
+| 1 | CPU-Referenz `channel_apply` / `end_plane_gate` | `crates/kernel/src/offset_channel.rs` |
+| 2 | Opcode-Interpreter `eval_opcodes` (Autorität) | `crates/kernel/src/sdf_compiler.rs` |
+| 3 | Dual-Zahlen-Eval `eval_bounded_d3_open` | `crates/kernel/src/sdf_dual.rs` |
+| 4 | fidget-Baum `channel_to_tree` | `crates/kernel/src/fidget_bridge.rs` |
+| 5 | WebGPU/TSL-VM | `web/src/sdfVmInterpreter.ts` |
+| 6 | C++-Port des Interpreters | `cgal-mesher/src/sdf_interp.h` |
+| + | Opcode-Encoder (Payload-Layout) | `crates/kernel/src/sdf_compiler.rs` |
+| + | Tape-Längentabelle `op_len` (9+27N → 25+27N) | `cgal-mesher/src/tape_spec.h` |
+
+(`web/src/sdfRenderer.ts` trägt nur die Opcode-Konstante und den
+Layout-Kommentar, `crates/kernel/src/bvh.rs` ruft die CPU-Referenz direkt
+auf — beide sind keine eigenständigen Auswertungen.)
+
+### Bilanz
+
+| Szene | §8d | §8e | §8f |
+|---|---|---|---|
+| Tasche `s ≥ 2·δ`, worst | 0.760 mm bei Zusage ≤ 0.01 | 0.632 mm bei Zusage ≤ 0.868 | **0.000 mm**, Zusage ≤ 0.01 wahr |
+| Tasche, Fehlklassifikationen (61³) | 544 | 204 | **0** |
+| Außenkante `[−10.73, 6.53, 11.0]` | +0.014 (Luft) | negativ (Material) | negativ (Material) |
+| `notch_union` α = 90°, Nahtende | 0.800 mm | 0.496 mm | **0.000 mm** |
+| `notch_union` α = 60°, Nahtende | — | 0.998 mm | **0.000 mm** |
+| Steinmetz (geschlossene Spine) | — | byte-identisch | Feld **bit-identisch** (Tape wächst um den Header) |
+| Randpunkt-Zeugen-Downgrade | — | Tasche + beide notch | **keins** |
+| Kaskade (max. Terme je Punkt / Gesamt-Auslenkung, Tasche) | — | 2 / 1.737 mm = 2·G | 2 / 1.737 mm = 2·G — **unverändert offen** |
+
+### Was OFFEN bleibt
+
+* **Der Kaskaden-Effekt ist NICHT erledigt.** Gemessen an derselben Sonde
+  vor und nach dem Fix: an der Tasche lenken weiterhin bis zu ZWEI Kanäle
+  denselben Punkt aus, in Summe bis `2·G = 1.737 mm` — die Ein-Term-Schranke
+  `G = (c−1)·δ + 4·tol` ist also weiterhin keine globale Schranke. Was das
+  dritte Gate erledigt, ist die Kaskade AN DEN JUNCTIONS: dort trennt der
+  Bisektor die Zuständigkeiten, und genau dort verursachte sie die
+  §8e-Restfehler. Zwei weit auseinander liegende Nähte desselben Stopps
+  können sich weiterhin addieren; an den gemessenen Fixturen führt das zu
+  keiner einzigen Fehlklassifikation, strukturell ausgeschlossen ist es
+  nicht.
+* **Quer zur Naht** bleibt das Phase-C-Restrisiko unverändert: liegt
+  Fremdgeometrie innerhalb des Normalkegels näher als `K`, gibt es keine
+  Exaktheitsgarantie. Der Randpunkt-Zeugen-Audit (`end_region_violation`)
+  bleibt deshalb als Wächter stehen — er meldet heute an keiner Fixture
+  mehr etwas, ist aber kein Dauer-Downgrade, sondern der empirische
+  Nachhalter des Beweises.
+* Die Junction-Erkennung nutzt die Trace-Enden, nicht die exakte Ecke
+  (Toleranz 0.5·δ, Anker im Mittelpunkt). Ein Spine-Snapping auf die
+  ECHTE Kanten-Ecke (analog `snap_channel_ends_to_vertices`, das heute nur
+  auf Vertex-Kugeln snappt) würde den Bisektor exakt verankern.
 
 ## 9. Geschriebene Dateien
 

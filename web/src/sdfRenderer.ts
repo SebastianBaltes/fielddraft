@@ -66,7 +66,8 @@ export const OP_LOFT_MORPH     = 0x39;
 export const OP_MASKED_BLEND   = 0x40;
 // offset_tree Phase B (#384): Kanal-Korrekturkörper an einem dualen
 // Offset-Stopp — pops den naiven Stopp-Wert, pusht die korrigierte
-// Distanz. Header 9 Floats + 27 je Bogen (Spiegel von
+// Distanz. Header 25 Floats (inkl. der 4×4 End-Halbräume, das dritte
+// Gate aus #384 §8f) + 27 je Bogen (Spiegel von
 // `kernel/src/offset_channel.rs::channel_apply`).
 export const OP_ARC_CHANNEL    = 0x41;
 // offset_tree Phase C4 (#384): Vertex-Kugel an einer Triple-Junction.

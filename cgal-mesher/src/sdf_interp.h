@@ -1111,8 +1111,9 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         // offset_tree Phase B (#384): Kanal-Korrekturkoerper an einem
         // dualen Offset-Stopp — 1:1-Spiegel des Rust-CPU-Interpreters
         // (sdf_compiler.rs OP_ARC_CHANNEL / offset_channel::channel_apply),
-        // inklusive des exakten Bounding-Sphere-Skips. Header 9 Floats,
-        // je Bogen 27: c(3) u(3) v(3) r sweep(<0 = Segment) bc(3) br
+        // inklusive des exakten Bounding-Sphere-Skips. Header 25 Floats
+        // (9 + 4x4 End-Halbraeume, #384 §8f), je Bogen 27:
+        // c(3) u(3) v(3) r sweep(<0 = Segment) bc(3) br
         // m1s(3) m2s(3) m1e(3) m2e(3).
         const int kArc = 27;
         int n = (int)rd();
@@ -1122,6 +1123,15 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float gate_w = rd();
         float bc[3] = {rd(), rd(), rd()};
         float br = rd();
+        // Drittes Gate: s3 = min_k(<x, n_k> - c_k) (offset_channel::
+        // end_plane_gate). Neutraler Slot: n = 0, c = -1e30.
+        float s3 = FD_FLT_MAX;
+        for (int g = 0; g < 4; ++g) {
+          float gn[3] = {rd(), rd(), rd()};
+          float gc = rd();
+          float v = pt[0] * gn[0] + pt[1] * gn[1] + pt[2] * gn[2] - gc;
+          s3 = fminf_(s3, v);
+        }
         int base = pc;
         pc += n * kArc;
         float d = pop_v();
@@ -1231,7 +1241,8 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float gate = concave ? gate_w - d : gate_w + d;
         // Rollen-Trennung (C4, CPU-Referenz channel_apply): Geometrie-
         // Klemme (Luft-Distanzschranke) vs. Add-Gate.
-        float w_geo = fminf_(fminf_(s1, s2), fminf_(best - delta, trust - best));
+        float w_geo = fminf_(fminf_(fminf_(s1, s2), s3),
+                             fminf_(best - delta, trust - best));
         float w = fminf_(w_geo, gate);
         push_v(concave
                    ? (w > 0.0f ? fminf_(d, -w)

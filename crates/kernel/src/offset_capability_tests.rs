@@ -1492,61 +1492,170 @@ fn dilation_protruding_pocket_is_honestly_bounded_384() {
     }
 }
 
-// ─── #384 §8e: die End-Kappe des Kanal-Terms ─────────────────────────────
+// ─── #384 §8f: das dritte Gate im Kanal-Opcode ───────────────────────────
 //
 // Bei `s ≥ 2·δ` entsteht KEIN Kontakt-Prisma (die Komplemente überlappen
 // nicht mehr, §8d) — die Mündungs-Naht der Tasche korrigieren die regulären
 // `OP_ARC_CHANNEL`-Kanäle. Deren Endpunkt-Ball-Kappe wirkte bis `K ≈ 1.95·δ`
 // ÜBER das Nahtende hinaus: an der Außenkante des Trägerkörpers, wo das
 // naive Feld exakt ist, trug sie 0.760 mm ab (worst bei
-// `[−10.73, 6.53, 11.0]`, δ = 2) — unter der Zusage ≤ 0.01 mm.
+// `[−10.73, 6.53, 11.0]`, δ = 2) — unter der Zusage ≤ 0.01 mm. §8e schloss
+// die Kappe synthese-seitig (Kegel-Gate des terminalen Bogens auf `∓t̂`) und
+// kam auf 0.632 mm / 204 Fehlklassifikationen — den Rest trug die
+// NACHBAR-Naht der Mündungs-Ecke, die näher lag als die eigene.
 //
-// Seit §8e trägt das terminale Bogenstück als zweites Gate die
-// ENDEBENEN-Normale: jenseits des Nahtendes ist `w < 0`, der Term also
-// strukturell aus. Was bleibt, ist das im Modulkopf notierte
-// Phase-C-Restrisiko (eine FREMDE Fläche näher als die eigene Naht — hier
-// die Nachbar-Naht der Mündungs-Ecke); dafür sagt die Capability nicht mehr
-// die Bau-Toleranz zu, sondern die per Randpunkt-Zeugen belegte
-// Gate-/B0-Schranke.
+// Seit §8f hat der Opcode ein DRITTES Gate: je offenem Spine-Ende einen
+// affinen Halbraum. An einer Ecke, in der eine Nachbar-Naht anschließt, ist
+// das der Voronoi-Bisektor zwischen beiden Nähten — damit korrigiert immer
+// genau der Kanal, dessen Naht wirklich am nächsten liegt. Gemessen gegen
+// dieselbe exakte ≤6-Box-Referenz: **0 Fehlklassifikationen, 0.000 mm.**
 
-/// **Kern-Regression (§8e).** Der Kanal-Pfad darf an der Außenkante des
-/// Trägerkörpers nichts mehr abtragen, und die Zusage muss den REST decken.
+/// **Kern-Regression (§8f).** Der Taschen-Stopp mit `s ≥ 2·δ` ist an der
+/// exakten Referenz messbar fehlerfrei — und sagt das jetzt auch zu.
 #[test]
-fn dilation_channel_end_cap_holds_its_bound_384() {
+fn dilation_channel_end_gate_is_exact_384() {
     let delta = 2.0f32;
     for s in [4.0f32, 5.0, 6.0] {
         let (field, report) = compile_for(pocket_dilation(s, delta));
         let (a, b) = pocket_boxes(s);
-        let (_, worst, at) =
+        let (miss, worst, at) =
             dilation_zero_set_error(&field, a, b, delta, [-14.0; 3], [14.0, 14.0, 16.0]);
-        // Vor §8e: 0.7599 mm an der AUSSENKANTE des Trägerkörpers
-        // (`[−10.73, 6.53, 11.0]`) — die End-Kappe griff über die Naht hinaus.
-        assert!(
-            worst <= 0.70,
-            "Überstand {s}: Nullmengen-Fehler {worst:.4} mm bei {at:?} — die End-Kappe greift \
-             wieder über das Nahtende (vor dem Fix 0.760 mm an der Außenkante)"
+        // Vor §8e: 0.760 mm / 544 Fehler. Nach §8e: 0.632 mm / 204.
+        // Mit dem dritten Gate: 0.
+        assert_eq!(
+            miss, 0,
+            "Überstand {s}: {miss} Nullmengen-Fehler, größter {worst:.4} mm bei {at:?}"
         );
-        // Der Punkt der alten Fehlstelle liegt jetzt richtig.
+        // Der Punkt der alten §8d-Fehlstelle liegt richtig.
         let outer = [-10.7333f32, 6.5333, 11.0];
         assert!(
             field.sdf(outer, EvalMode::Visual) < 0.0,
             "die Außenkante des Trägerkörpers muss materiell bleiben (war +0.014)"
         );
-        // Und die Zusage deckt den Rest: entweder ehrlich benannt …
-        let honest = report
-            .reasons()
-            .iter()
-            .any(|r| r.contains("NICHT auf die Bau-Toleranz"));
+        // Und das Randpunkt-Zeugen-Downgrade aus §8e ist WEG, weil der
+        // Fehler weg ist — nicht, weil die Sonde weggeschaut hätte.
         assert!(
-            honest,
-            "Überstand {s}: der verbleibende Kanal-Fehler {worst:.4} mm muss als \
-             Gate-/B0-Schranke gemeldet sein statt als Bau-Toleranz: {:?}",
+            !report.reasons().iter().any(|r| r.contains("NICHT auf die Bau-Toleranz")),
+            "Überstand {s}: das dritte Gate schließt den Fehler, das Downgrade muss fallen: {:?}",
             report.reasons()
-        );
-        assert!(
-            worst <= 0.75 * delta as f64,
-            "Überstand {s}: {worst:.4} mm verletzt die B0-Klasse"
         );
         assert_eq!(report.status(), CapabilityStatus::ToleranceBounded, "{:?}", report.reasons());
     }
 }
+
+/// Der Spiegel am EROSIONS-Stopp: am `notch_union`-Dieder endet die Naht in
+/// den Deckflächen `z = ±50`. Dort gibt es keine Nachbar-Naht, sondern eine
+/// fremde FLÄCHE — das dritte Gate ist die um δ nach innen geschobene
+/// Endebene. Gemessen wird gegen die exakte 3D-Referenz
+/// `dist(x, ∁Körper)`: ein Punkt, den das Feld als IN der Erosion meldet,
+/// dessen δ-Kugel aber aus dem Körper ragt, ist ein bewiesener Fehler.
+/// Vor §8f: 0.496 mm (α = 90°) bzw. 0.998 mm (α = 60°).
+#[test]
+fn erosion_notch_seam_end_is_exact_384() {
+    let delta = 2.0f32;
+    for alpha in [90.0f64, 60.0] {
+        let (field, report) = compile_for(notch_union_node(alpha, delta as f64));
+        let (mut worst, mut at) = (0.0f64, [0.0f64; 3]);
+        let n = 40;
+        for ix in 0..=n {
+            for iy in 0..=n {
+                for iz in 0..=n {
+                    let p = [
+                        -10.0 + 20.0 * ix as f64 / n as f64,
+                        -10.0 + 20.0 * iy as f64 / n as f64,
+                        42.0 + 12.0 * iz as f64 / n as f64,
+                    ];
+                    let got = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+                    if got >= 0.0 {
+                        continue; // „nicht in der Erosion" — nichts zu beweisen
+                    }
+                    let u = dist_to_notch_complement(alpha, p);
+                    if delta as f64 - u > worst {
+                        worst = delta as f64 - u;
+                        at = p;
+                    }
+                }
+            }
+        }
+        assert!(
+            worst <= 1e-2,
+            "notch α={alpha}: das Feld behauptet Erosion bei {at:?}, die δ-Kugel ragt aber \
+             {worst:.4} mm heraus"
+        );
+        assert!(
+            !report.reasons().iter().any(|r| r.contains("NICHT auf die Bau-Toleranz")),
+            "notch α={alpha}: das §8e-Downgrade muss fallen: {:?}",
+            report.reasons()
+        );
+    }
+}
+
+/// Obere Schranke für `dist(p, ∁(Box₁ ∪ Box₂))` des `notch_union`-Körpers:
+/// je Richtung exakt (Slab-Intervalle beider OBBs, verschmolzene Komponente
+/// um `t = 0`), über eine dichte Fibonacci-Richtungsmenge minimiert. Eine
+/// OBERE Schranke genügt: sie kann einen Fehler nur unterschätzen, nie
+/// erfinden.
+fn dist_to_notch_complement(alpha_deg: f64, p: [f64; 3]) -> f64 {
+    let gamma = std::f64::consts::PI - alpha_deg.to_radians();
+    let boxes: [([f64; 3], [f64; 3], f64); 2] = [
+        ([0.0, -50.0, 0.0], [100.0, 50.0, 50.0], 0.0),
+        (
+            [50.0 * gamma.sin(), -50.0 * gamma.cos(), 0.0],
+            [100.0, 50.0, 50.0],
+            gamma,
+        ),
+    ];
+    let ga = std::f64::consts::PI * (3.0 - 5.0f64.sqrt());
+    let n = 600usize;
+    let mut best = f64::INFINITY;
+    for i in 0..n {
+        let z = 1.0 - 2.0 * (i as f64 + 0.5) / n as f64;
+        let r = (1.0 - z * z).max(0.0).sqrt();
+        let th = ga * i as f64;
+        let d = [r * th.cos(), r * th.sin(), z];
+        let mut iv: Vec<(f64, f64)> = Vec::new();
+        for (c, h, rot) in boxes {
+            // In das Box-Frame drehen (Rotation um z um −rot).
+            let (sn, cs) = (-rot).sin_cos();
+            let rel = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+            let o = [rel[0] * cs - rel[1] * sn, rel[0] * sn + rel[1] * cs, rel[2]];
+            let dl = [d[0] * cs - d[1] * sn, d[0] * sn + d[1] * cs, d[2]];
+            let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
+            let mut hit = true;
+            for k in 0..3 {
+                if dl[k].abs() < 1e-12 {
+                    if o[k].abs() > h[k] {
+                        hit = false;
+                    }
+                } else {
+                    let a = (-h[k] - o[k]) / dl[k];
+                    let b = (h[k] - o[k]) / dl[k];
+                    t0 = t0.max(a.min(b));
+                    t1 = t1.min(a.max(b));
+                }
+            }
+            if hit && t1 >= t0 && t1 > 0.0 {
+                iv.push((t0.max(0.0), t1));
+            }
+        }
+        if iv.is_empty() {
+            return 0.0;
+        }
+        iv.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        if iv[0].0 > 1e-12 {
+            return 0.0; // p liegt außerhalb des Körpers
+        }
+        let mut end = 0.0f64;
+        for (a, b) in iv {
+            if a <= end + 1e-9 {
+                end = end.max(b);
+            } else {
+                break;
+            }
+        }
+        best = best.min(end);
+    }
+    best
+}
+
+
