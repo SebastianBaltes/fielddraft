@@ -376,6 +376,59 @@ fn branch_id_carries_the_wall_occurrence_ordinal() {
     const { assert!(BranchId::INNER_WALL_FLAG < 1 << BranchId::SUB_BITS) };
 }
 
+/// #404: every cutter of one `hole` feature gets its own slice of the sub
+/// range, and NOTHING else does. The read-back keys off a distinctive local
+/// prefix precisely because other features mint plain numeric child locals.
+#[test]
+fn hole_cutter_subs_are_disjoint_and_leave_other_features_alone() {
+    use crate::csg::{
+        hole_cutter_sub, HOLE_LOCAL_PREFIX, HOLE_SUFFIX_COUNTERBORE, HOLE_SUFFIX_COUNTERSINK,
+        HOLE_SUFFIX_TIP,
+    };
+    let shaft = |i: u32| format!("{HOLE_LOCAL_PREFIX}{i}");
+    let part = |i: u32, s: &str| format!("{HOLE_LOCAL_PREFIX}{i}{s}");
+
+    // Location 0's shaft keeps subs 0/1/2 — a plain one-bore hole is named
+    // exactly as it was before the fix (bump 7 moves no id it need not move).
+    for sub in 0..3 {
+        assert_eq!(hole_cutter_sub(&shaft(0), sub), Some(sub));
+    }
+
+    // Every (location, part, face) triple is distinct…
+    let mut seen = std::collections::HashSet::new();
+    for i in 0..8 {
+        for suffix in ["", HOLE_SUFFIX_COUNTERBORE, HOLE_SUFFIX_COUNTERSINK, HOLE_SUFFIX_TIP] {
+            for sub in 0..3 {
+                let got = hole_cutter_sub(&part(i, suffix), sub).expect("a hole cutter local");
+                assert!(seen.insert(got), "sub {got} minted twice (bore{i}{suffix}, face {sub})");
+                // …and stays clear of the positional-wall band, the reserved
+                // cap/blend ids and the inner-wall flag above them.
+                assert!(got < BranchId::POSITIONAL_WALL_FLAG, "sub {got} left the free range");
+            }
+        }
+    }
+
+    // Adding a counterbore leaves the shaft's names alone: the part slot is
+    // fixed, not a running index into the stack.
+    assert_eq!(hole_cutter_sub(&shaft(3), 0), hole_cutter_sub(&shaft(3), 0));
+    assert_ne!(
+        hole_cutter_sub(&part(3, HOLE_SUFFIX_COUNTERBORE), 0),
+        hole_cutter_sub(&shaft(3), 0)
+    );
+
+    // Nothing else is touched — not a flat feature id, not the numeric child
+    // locals `sweep` / `context_resolve` mint, not the hard edge cutters.
+    for local in ["", "0", "1", "12p", "3w", "cut_cyl", "cut_box", "boreX", "bore"] {
+        assert_eq!(hole_cutter_sub(local, 1), None, "{local:?} is not a hole cutter");
+    }
+    // …and through the one funnel: a fillet cutter still lands in its own
+    // reserved band, a plain feature face still passes through.
+    let fillet = FeatureId::from_u32(4).child(crate::csg::CUTTER_LOCAL_ROUND);
+    assert_eq!(BranchId::from_feature_sub(&fillet, 0).sub(), BranchId::BLEND_SUB);
+    assert_eq!(BranchId::from_feature_sub(&fillet, 1).sub(), BranchId::CUTTER_AUX_ROUND + 1);
+    assert_eq!(BranchId::from_feature_sub(&FeatureId::from_u32(4), 5).sub(), 5);
+}
+
 // ─── #384 Phase D2: closed-shell → complement-duality expansion ──────────────
 
 fn box_leaf(id: u32, half: [f32; 3]) -> CsgNode {

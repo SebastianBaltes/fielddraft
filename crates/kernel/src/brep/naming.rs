@@ -82,7 +82,17 @@ use crate::brep::{BRep, EdgeGeometry, EdgeId, FaceId, SurfaceGeometry, VertexId}
 ///   up by one — every `id_hash` in every document changed, as bumps 3 and 5
 ///   did. Only unattributable profiles change MEANING; the rest change only
 ///   their word.
-pub const NAMING_SCHEMA_VERSION: u32 = 6;
+/// - **7** — per-cutter hole sub-bands (#404): every cutter of a `hole`
+///   feature is a `FeatureId::child` of it and they all shared one sub range,
+///   so `collect_halfspaces` — one `insert` per branch word — kept only the
+///   LAST cutter's faces. [`crate::csg::hole_cutter_sub`] gives each location
+///   and each stacked part (counterbore / countersink / drill point) its own
+///   slice, so a two-point hole names both bores and a counterbore names its
+///   seat, its shaft wall and its floor at once. As narrow as bump 4: only
+///   holes re-key, and location 0's plain shaft keeps subs 0/1/2, so a
+///   single simple bore is named exactly as before. Documents without a
+///   FieldDraft `hole` are byte-identical.
+pub const NAMING_SCHEMA_VERSION: u32 = 7;
 use crate::csg::BranchId;
 
 // ─── deterministic hash ───────────────────────────────────────────────────

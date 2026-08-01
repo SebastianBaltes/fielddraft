@@ -1928,8 +1928,8 @@ fn regenerate_resolves_length_formulas_against_variables() {
     let cutter = ctx
         .features
         .iter()
-        .find(|f| f.id == id(3).child("0"))
-        .expect("hole cutter present under child id 3/0");
+        .find(|f| f.id == id(3).child("bore0"))
+        .expect("hole cutter present under child id 3.bore0");
     match &cutter.export_primitive().expect("primitive") {
         Primitive::Cylinder { radius, .. } => {
             // width(50) / 5 / 2 (hole → radius) = 5
@@ -2005,8 +2005,8 @@ fn hole_builds_remove_cylinder_cutter_per_location() {
     let cutter = ctx
         .features
         .iter()
-        .find(|f| f.id == id(3).child("0"))
-        .expect("hole cutter present under child id 3/0");
+        .find(|f| f.id == id(3).child("bore0"))
+        .expect("hole cutter present under child id 3.bore0");
     assert!(cutter.id.parent().is_some());
     assert_eq!(cutter.op, BoolOp::Remove);
     match &cutter.export_primitive().expect("primitive") {

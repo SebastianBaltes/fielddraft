@@ -422,9 +422,11 @@ Der Defekt existiert also schon seit P1 (Mehrfach-Löcher) und betrifft **nur** 
 Flächen-Set — das entfernte Volumen, das Mesh und das SDF sind in beiden Fällen identisch
 (alle SDF-Proben oben bestätigen die volle Stapel-Geometrie). Praktisch heißt das: die zweite
 Bohrung bzw. die Schaftwand unter einer Senkung lässt sich derzeit nicht anklicken/messen.
-Gepinnt in `hole_sibling_cutters_share_one_branch`. Die Behebung ist eine Entscheidung am
+Gepinnt in `hole_sibling_cutters_share_one_branch` (heute
+`hole_sibling_cutters_get_their_own_branches`). Die Behebung ist eine Entscheidung am
 BranchId-Schema (freies Sub-Band wie beim Fillet vs. Instanz-Ordinal `~i` — letzteres kollidiert
 mit Pattern-Kopien, s. `branch_identity`-Doku) und gehört bewusst NICHT in eine Feature-Phase.
+**Nachtrag: behoben in v0.56.1**, s. den Abschnitt „Geschwister-Cutter" unten.
 
 ### P4 — Umgesetzt (v0.54.0)
 
@@ -627,6 +629,72 @@ Default: er sieht normkonform aus. Die Senkmaße bleiben daher bei den P3-Vorgab
 vorliegt — dann mit Transkriptions-Guard wie bei `hole_iso`.
 
 Testzahlen: Kernel 1513 → **1515** grün, Web 2072 → **2082** grün, `tsc -b` sauber.
+
+### Geschwister-Cutter — behoben (v0.56.1)
+
+Der in P3 notierte Nebenbefund ist erledigt: jeder Cutter eines Lochs hat jetzt
+seine eigene BranchId, also seine eigene analytische Fläche.
+
+**Wo es brach — nachgemessen.** Nicht im Weave, sondern eine Ebene davor:
+`collect_halfspaces` (`brep/weaving/surface_registry.rs`) baut die Karte
+`Branch-Wort → (HalfSpace, Transform)` mit **einem `insert` je Wort**. Zwei
+Cutter mit demselben Wort heißt: der zuletzt eingefügte gewinnt, der andere
+existiert als Fläche nicht. Das Wort war für alle gleich, weil
+`FeatureId::branch_identity` jedes `child` auf das `(feature, instance)`-Paar
+des Lochs faltet **und** `BranchId::from_feature_sub` den Sub bis dahin
+unverändert durchreichte.
+
+Betroffen war mehr als die zweite Bohrung. Beim Messen fiel auf, dass schon ein
+**einzelnes blindes gebohrtes Loch** seine Schaftwand verlor: die Spitze wird
+nach dem Schaft gepusht und überschrieb dessen Mantel-Sub, so dass die von
+`body_brep_faces` gemeldete „Zylinder“-Fläche in Wahrheit der Spitzenkegel war.
+Beim Counterbore blieb nur der Sitz übrig, beim Countersink nur der Kegel.
+
+**Lösung: reservierte Sub-Bänder wie beim Fillet-Cutter, aber als Layout.** Das
+Band an der Spitze des Sub-Feldes (0x1FE0…0x1FFF) reicht für eine Handvoll
+Teilkörper, nicht für `32 · Positionen`. `csg::hole_cutter_sub` staffelt den Sub
+daher: drei Bits Primitivfläche, zwei Bits Teil-Art (Schaft · Counterbore ·
+Countersink · Spitze), sieben Bits Positions-Ordinal — alles unterhalb von
+`POSITIONAL_WALL_FLAG`, im freien unteren Teil des Feldes. Ein Loch schwenkt
+keine Skizze, hat also keine eigenen Entity-Ordinale, mit denen das kollidieren
+könnte. Der Re-Key sitzt in `BranchId::from_feature_sub` — der einen Stelle ohne
+Lockstep, über die Weave, Seed-Paare, Hot-SDF-Attribution und Queries alle
+lesen.
+
+Zwei Eigenschaften sind Absicht: **Position 0/Schaft behält die Subs 0/1/2**
+(ein schlichtes Ein-Loch-Bohrbild heißt exakt wie vorher), und **jede Teil-Art
+hat einen festen Slot** (ein nachträglicher Counterbore verschiebt die Namen des
+Schafts nicht). Verworfen wurde das Instanz-Ordinal: `instance` ist das Ordinal
+der Muster-Kopie, das ein Loch in einer Kopie **erbt** — `instance = i` gäbe der
+zweiten Bohrung in Kopie 0 den Namen der ersten in Kopie 2. Ebenfalls verworfen
+das `occurrence`-Feld: fünf Bits reichen für 32 Positionen, und seine Bedeutung
+ist das Wand-Vorkommen einer Skizzenkurve, das `qWall` bewusst zusammenfasst.
+
+Die Cutter heißen jetzt `bore«i»` / `bore«i»c|s|t` statt `«i»` / `«i»c|s|t`: die
+Rückabbildung liest den lokalen Id-Teil, und `sweep` („0“) wie
+`context_resolve` („«qi»“) vergeben ebenfalls rein numerische Kind-Locals.
+
+**Gates gemessen** (echte API-Kette `add_feature_call` → `body_brep_faces` /
+`resolveQuery`):
+
+- **Zwei Positionen, ein Feature:** dasselbe Flächen-Set wie zwei Löcher mit je
+  einer Bohrung (4 gekrümmte Flächen: Mantel + Spitzenkegel je Bohrung), beide
+  Ø6-Wandungen bei x = ±5, **verschiedene** `branchId`s bei **gleicher**
+  `featureId`.
+- **Counterbore Ø12 × 4 über Ø6 × 12:** `cylinder`-Radien 6.0 **und** 3.0
+  gleichzeitig, dazu die Sitzfläche als `plane` 4 mm unter der Oberfläche —
+  Sitz, Schaftwand und Grund in einem Flächen-Set.
+- **Pick über die Query-API:** das exportierte `qFace(hash @ fingerprint)` der
+  **zweiten** Bohrung bindet über `resolveQuery` genau ein Element, dieselbe
+  `idHash`, Schwerpunkt auf der +x-Seite.
+- **Gegenprobe:** zwei getrennte Loch-Features verhalten sich unverändert.
+
+`NAMING_SCHEMA_VERSION` 6 → **7** (Löcher werden neu verschlüsselt). Die 35
+Golden-Szenen sind byte-identisch (`gen_golden` vorher/nachher), die sechs
+Onshape-E2E-Suiten laufen vorher wie nachher **49/49** grün — der Beweis, dass
+der Fix additiv ist.
+
+Testzahlen: Kernel 1515 → **1516** grün, Web **2082** grün, `tsc -b` sauber.
 
 ## 7. Offene Fragen / Risiken
 

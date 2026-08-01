@@ -323,14 +323,97 @@ pub const CUTTER_LOCAL_BEVEL: &str = "cut_bevel";
 ///
 /// Anything that is not a cutter sub-solid passes through untouched.
 pub fn cutter_sub(id: &FeatureId, sub: u32) -> u32 {
-    match id.local.as_str() {
+    let local = id.local.as_str();
+    match local {
         CUTTER_LOCAL_ROUND if sub == 0 => BranchId::BLEND_SUB,
         CUTTER_LOCAL_ROUND => BranchId::CUTTER_AUX_ROUND + sub,
         CUTTER_LOCAL_BEVEL if sub == 1 => BranchId::BLEND_SUB,
         CUTTER_LOCAL_BEVEL => BranchId::CUTTER_AUX_BEVEL + sub,
         CUTTER_LOCAL_BOX => BranchId::CUTTER_AUX_BOX + sub,
-        _ => sub,
+        _ => hole_cutter_sub(local, sub).unwrap_or(sub),
     }
+}
+
+// ─── hole cutters (#404) ──────────────────────────────────────────────────
+
+/// Local id segment of each cutter a `hole` feature drills — minted by
+/// [`crate::features::hole`] and read back by [`hole_cutter_sub`]. Location
+/// `i`'s shaft is `bore«i»`; the stacked parts append one letter
+/// ([`HOLE_SUFFIX_COUNTERBORE`] …).
+///
+/// The prefix is what makes the read-back **unambiguous**: several features
+/// mint plain numeric child locals (`sweep`'s `0`, `context_resolve`'s
+/// `«qi»`), and a bare `«i»` would have re-keyed theirs too. Constants rather
+/// than literals so the two ends cannot drift apart, exactly as for
+/// [`CUTTER_LOCAL_ROUND`].
+pub const HOLE_LOCAL_PREFIX: &str = "bore";
+pub const HOLE_SUFFIX_COUNTERBORE: &str = "c";
+pub const HOLE_SUFFIX_COUNTERSINK: &str = "s";
+pub const HOLE_SUFFIX_TIP: &str = "t";
+
+/// Width of one cutter part's slice of the sub range: 3 bits, enough for
+/// every face a cutter primitive splits into (a cylinder and a cone have
+/// three each; a six-faced box would still fit).
+const HOLE_PART_SHIFT: u32 = 3;
+/// Width of one LOCATION's slice: four part kinds over [`HOLE_PART_SHIFT`].
+const HOLE_LOCATION_SHIFT: u32 = HOLE_PART_SHIFT + 2;
+/// Highest location ordinal the sub range holds. Location `i`'s block ends
+/// exactly at [`BranchId::POSITIONAL_WALL_FLAG`], so a hole never reaches the
+/// positional-wall band, the reserved cap ids or the inner-wall flag.
+const HOLE_LOCATION_MASK: u32 = (BranchId::POSITIONAL_WALL_FLAG >> HOLE_LOCATION_SHIFT) - 1;
+const _: () = assert!(HOLE_LOCATION_MASK == 127);
+
+/// Re-key the sub-index of ONE cutter of a `hole` feature into its own slot
+/// of that feature's sub range — the same medicine the hard edge cutter gets
+/// above, sized for a stack that grows with the location count (#404).
+///
+/// Every cutter of a hole is a `FeatureId::child` of it, so they all share
+/// its `branch_identity()`; before this re-key their sub-ids collided and
+/// `collect_halfspaces` — a plain `insert` per branch word — kept only the
+/// LAST one. The removed volume was always right (the SDF sees every cutter),
+/// but the second bore of a two-point hole and the shaft wall under a
+/// counterbore had no analytic face, so neither could be picked or measured.
+///
+/// Layout of the returned sub, low to high: three bits of primitive face
+/// (mantle / the two caps), two bits of part kind (shaft, counterbore,
+/// countersink, drill point), seven bits of location ordinal. Two properties
+/// are deliberate:
+///
+/// - **Location 0's shaft keeps subs 0/1/2** — a plain one-bore hole names
+///   its faces exactly as it did before #404's fix, so adding the fix moves
+///   no id it does not have to move.
+/// - **Part kind has a FIXED slot** — putting a counterbore on an existing
+///   hole leaves the shaft's names alone instead of shifting the stack.
+///
+/// The band lives in the low, nameable part of the sub range rather than in
+/// the reserved cap/cutter band at the top: that band has room for a fixed
+/// handful of sub-solids, not for `32 · locations`. Nothing collides there —
+/// a hole feature sweeps no sketch, so it has no entity ordinals of its own
+/// — and the sub still sorts BELOW the reserved cap ids, which is the
+/// ordering rule the weave reads (see [`BranchId`]).
+///
+/// `None` for any local that is not a hole cutter, so callers pass through.
+/// A location ordinal past [`HOLE_LOCATION_MASK`] aliases back onto an
+/// earlier one (the same field-width limit `OCCURRENCE_MAX` states for
+/// walls); 128 bores in a single hole feature is a pattern, not a dialog.
+pub fn hole_cutter_sub(local: &str, sub: u32) -> Option<u32> {
+    let rest = local.strip_prefix(HOLE_LOCAL_PREFIX)?;
+    let strip = |suffix: &str| rest.strip_suffix(suffix);
+    let (digits, part) = if let Some(d) = strip(HOLE_SUFFIX_COUNTERBORE) {
+        (d, 1u32)
+    } else if let Some(d) = strip(HOLE_SUFFIX_COUNTERSINK) {
+        (d, 2)
+    } else if let Some(d) = strip(HOLE_SUFFIX_TIP) {
+        (d, 3)
+    } else {
+        (rest, 0)
+    };
+    let location: u32 = digits.parse().ok()?;
+    Some(
+        ((location & HOLE_LOCATION_MASK) << HOLE_LOCATION_SHIFT)
+            | (part << HOLE_PART_SHIFT)
+            | (sub & ((1 << HOLE_PART_SHIFT) - 1)),
+    )
 }
 
 /// Maximum number of branches that can simultaneously be "active" at a

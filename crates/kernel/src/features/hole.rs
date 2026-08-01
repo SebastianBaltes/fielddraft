@@ -22,7 +22,10 @@ use serde_json::Value;
 
 use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
 
-use crate::csg::{DecodedFeature, PrimitiveModifiers};
+use crate::csg::{
+    DecodedFeature, PrimitiveModifiers, HOLE_LOCAL_PREFIX, HOLE_SUFFIX_COUNTERBORE,
+    HOLE_SUFFIX_COUNTERSINK, HOLE_SUFFIX_TIP,
+};
 
 use super::merge_scope::target_ids_from_queries;
 use super::{Context, FeatureError, FeatureKind, FeatureSchema, optional_display_name, positive_f32};
@@ -931,13 +934,16 @@ impl FeatureKind for HoleFeature {
             };
 
             // This location's cutter stack as
-            // `(child-id local, name suffix, primitive, placement)`. The shaft
-            // keeps the bare `<hole>/<i>` id it has had since P1.
+            // `(child-id local, name suffix, primitive, placement)`. The local
+            // is what `csg::hole_cutter_sub` reads back to give each cutter
+            // its own slice of the hole's sub range — without it every cutter
+            // of one hole folds onto one branch word and only the last one's
+            // faces reach the B-Rep (#404).
             let mut parts: Vec<(String, &'static str, Primitive, Transform)> = Vec::new();
 
             let (half_height, xf) = axial_span(*origin, dir, t_lo, t_hi);
             parts.push((
-                i.to_string(),
+                format!("{HOLE_LOCAL_PREFIX}{i}"),
                 "",
                 Primitive::Cylinder { center: [0.0, 0.0, 0.0], radius, half_height },
                 xf,
@@ -952,7 +958,7 @@ impl FeatureKind for HoleFeature {
                     let (hh, xf) =
                         axial_span(*origin, dir, t_start - MOUTH_EPS, t_start + cbore_d);
                     parts.push((
-                        format!("{i}c"),
+                        format!("{HOLE_LOCAL_PREFIX}{i}{HOLE_SUFFIX_COUNTERBORE}"),
                         " counterbore",
                         Primitive::Cylinder {
                             center: [0.0, 0.0, 0.0],
@@ -971,7 +977,7 @@ impl FeatureKind for HoleFeature {
                     let (hh, xf) =
                         axial_span(*origin, dir, t_start - MOUTH_EPS, t_start + csink_d);
                     parts.push((
-                        format!("{i}s"),
+                        format!("{HOLE_LOCAL_PREFIX}{i}{HOLE_SUFFIX_COUNTERSINK}"),
                         " countersink",
                         // `Primitive::Cone` runs along local +Y with `r_bottom`
                         // at −half_height — the mouth end, since +Y maps onto
@@ -992,14 +998,14 @@ impl FeatureKind for HoleFeature {
                 // puts `r_bottom` at local −Y, which is the shallow end.
                 let (hh, xf) = axial_span(*origin, dir, tip_lo, tip_hi);
                 parts.push((
-                    format!("{i}t"),
+                    format!("{HOLE_LOCAL_PREFIX}{i}{HOLE_SUFFIX_TIP}"),
                     " tip",
                     Primitive::Cone { r_bottom: radius, r_top: 0.0, half_height: hh },
                     xf,
                 ));
             }
 
-            // Hierarchical child ids (`<hole>/<i>`, `<hole>/<i>c`, …) so
+            // Hierarchical child ids (`<hole>.bore<i>`, `<hole>.bore<i>c`, …) so
             // `sync_feature_calls` drops the derived primitives on the next
             // sync — the `hole` FeatureCall stays the authoritative wire form.
             let bore_name = if i == 0 { name.clone() } else { format!("{name} #{}", i + 1) };

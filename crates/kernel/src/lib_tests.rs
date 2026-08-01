@@ -4693,19 +4693,28 @@ fn hole_counterbore_stacks_a_wide_flat_seat() {
     let bottom = hole_floor_depth_at(&k, 0.0, 0.0);
     assert!((bottom - 12.0).abs() < 2e-3, "blind bottom at {bottom:.4} mm, expected 12");
 
-    // The weave must report the seat as a real Ø12 cylindrical face.
-    //
-    // It does NOT (yet) report the Ø6 shaft face below the seat: every cutter
-    // of one hole feature is a `FeatureId::child` of that hole, and
-    // `FeatureId::branch_identity` folds all of them onto the same
-    // `(feature, instance)` pair — so their sub-ids collide and only the last
-    // cutter's faces survive the weave. That is a pre-existing kernel property
-    // (the same fold is documented on `BranchId::CUTTER_AUX_ROUND`, and it
-    // already swallows the second bore of a P1 multi-location hole), not
-    // something the style stack introduces; `hole_sibling_cutters_share_one_branch`
-    // below pins it. The SDF asserts above are the authoritative geometry.
+    // The weave must report BOTH walls — the Ø12 seat AND the Ø6 shaft below
+    // it — as separate cylindrical faces. Before #404's sub-band fix the two
+    // cutters of one hole shared a branch word and only the last one's faces
+    // survived the weave, so the shaft wall under the seat was not selectable
+    // (`hole_sibling_cutters_get_their_own_branches` pins the same property
+    // across LOCATIONS).
     let radii = woven_cylinder_radii(&mut k);
     assert!(radii.iter().any(|r| (r - 6.0).abs() < 1e-3), "no Ø12 seat face: {radii:?}");
+    assert!(radii.iter().any(|r| (r - 3.0).abs() < 1e-3), "no Ø6 shaft face: {radii:?}");
+
+    // …and both floors: the annular seat the screw head rests on, 4 mm down,
+    // AND the blind bottom of the Ø6 bore 12 mm down. The block's own top
+    // face is at local z = +10, so a floor `d` mm deep sits at `10 − d`.
+    let faces: serde_json::Value = serde_json::from_str(&k.body_brep_faces(0)).unwrap();
+    let plane_at = |depth: f64| {
+        faces.as_array().unwrap().iter().any(|f| {
+            f["surfaceKind"] == "plane"
+                && (f["centroidLocal"][2].as_f64().unwrap() - (10.0 - depth)).abs() < 0.2
+        })
+    };
+    assert!(plane_at(4.0), "no counterbore seat floor at 4 mm: {faces}");
+    assert!(plane_at(12.0), "no blind bore bottom at 12 mm: {faces}");
 }
 
 // ─── #404 P4: drill point & depth semantics ───────────────────────────────
@@ -4848,18 +4857,21 @@ fn hole_through_all_has_no_drill_tip() {
     }
 }
 
-/// Pins the branch-identity fold that limits how much of a multi-cutter hole
-/// reaches the B-Rep, so the day it is lifted this test says so out loud.
+/// **#404 gate — the siblings of ONE hole have their own names.** Every
+/// cutter of a hole is a `FeatureId::child` of it, so `branch_identity` folds
+/// them all onto one `(feature, instance)` pair; until
+/// [`crate::csg::hole_cutter_sub`] gave each its own slice of the sub range
+/// they also shared one sub, and `collect_halfspaces` — one `insert` per
+/// branch word — kept only the LAST cutter's surface. The second bore of a
+/// two-point hole was then un-pickable and un-measurable, and this test
+/// pinned that as a known limit.
 ///
-/// TWO hole features drilling one bore each weave BOTH bores (4 cutter faces
-/// on top of the box's 6). ONE hole feature drilling the SAME two bores welds
-/// only one of them, because `<hole>/0` and `<hole>/1` collapse to the same
-/// `(feature, instance)` pair. The removed VOLUME is identical either way —
-/// only the analytic face set differs, so meshing and SDF are unaffected;
-/// what suffers is picking / measuring the second bore's wall.
+/// It now pins the opposite: ONE hole feature with two locations weaves the
+/// SAME faces as TWO hole features drilling one bore each, both bores are
+/// present at their own x, and their branch ids differ.
 #[test]
-fn hole_sibling_cutters_share_one_branch() {
-    let bore_faces = |one_feature: bool| -> usize {
+fn hole_sibling_cutters_get_their_own_branches() {
+    let build = |one_feature: bool| -> Kernel {
         let mut k = Kernel::new();
         let box_id = k
             .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, -10.0, 10.0, 10.0, 10.0)
@@ -4895,17 +4907,79 @@ fn hole_sibling_cutters_share_one_branch() {
                     .unwrap();
             }
         }
-        let faces: serde_json::Value = serde_json::from_str(&k.body_brep_faces(0)).unwrap();
-        // The box contributes 6 planes; everything beyond that is bore.
-        faces.as_array().unwrap().len() - 6
+        k
     };
-    assert_eq!(bore_faces(false), 4, "two hole features weave both bores (mantle + bottom each)");
+    // The box contributes 6 planes; everything curved is bore.
+    let bores = |k: &mut Kernel| -> Vec<serde_json::Value> {
+        let faces: serde_json::Value = serde_json::from_str(&k.body_brep_faces(0)).unwrap();
+        faces
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["surfaceKind"] != "plane")
+            .cloned()
+            .collect()
+    };
+
+    let mut k_split = build(false);
+    let mut k_single = build(true);
+    let split = bores(&mut k_split);
+    let single = bores(&mut k_single);
     assert_eq!(
-        bore_faces(true),
-        2,
-        "KNOWN LIMIT: sibling cutters of ONE hole feature fold onto one branch, \
-         so only one bore reaches the B-Rep — lift this the day branch_identity \
-         distinguishes siblings"
+        single.len(),
+        split.len(),
+        "one hole with two locations must weave as many bore faces as two holes with one \
+         each — got {} vs {}",
+        single.len(),
+        split.len()
+    );
+
+    // Both bores are there, each with its own cylindrical wall at its own x.
+    for (feature, faces) in [("two hole features", &split), ("one hole feature", &single)] {
+        for x in [-5.0f64, 5.0] {
+            let wall = faces.iter().find(|f| {
+                f["surfaceKind"] == "cylinder"
+                    && (f["centroidLocal"][0].as_f64().unwrap() - x).abs() < 0.1
+            });
+            assert!(
+                wall.is_some(),
+                "{feature}: no Ø6 bore wall at x={x}; faces: {faces:?}"
+            );
+        }
+    }
+    // …and the two walls of the ONE feature carry DIFFERENT branch ids — the
+    // whole point: a shared word is what silently dropped one of them.
+    let branches: Vec<u64> = single
+        .iter()
+        .filter(|f| f["surfaceKind"] == "cylinder")
+        .map(|f| f["branchId"].as_u64().unwrap())
+        .collect();
+    assert_eq!(branches.len(), 2, "two bore walls, got {branches:?}");
+    assert_ne!(branches[0], branches[1], "sibling cutters still share one branch word");
+    // Same feature, though — a hole's cutters are ITS geometry, so selection
+    // and `qCreatedBy(hole)` still resolve to the hole itself.
+    let feature_of = |b: u64| crate::csg::BranchId(b).feature_id();
+    assert_eq!(feature_of(branches[0]), feature_of(branches[1]));
+
+    // The user-visible end of the chain: the SECOND bore's wall is a
+    // selectable element. Its exported `qFace(hash @ fingerprint)` must
+    // resolve — through the real query API — back to exactly that wall.
+    let second = single
+        .iter()
+        .find(|f| {
+            f["surfaceKind"] == "cylinder" && f["centroidLocal"][0].as_f64().unwrap() > 0.0
+        })
+        .expect("the +x bore wall");
+    let query = second["query"].as_str().unwrap();
+    let hits: serde_json::Value =
+        serde_json::from_str(&k_single.resolve_query(query)).unwrap();
+    let hits = hits.as_array().expect("resolve_query returned an array");
+    assert_eq!(hits.len(), 1, "{query} must bind exactly one element, got {hits:?}");
+    assert_eq!(hits[0]["kind"], "face");
+    assert_eq!(hits[0]["idHash"], second["idHash"], "bound a different face");
+    assert!(
+        hits[0]["centroid"][0].as_f64().unwrap() > 0.0,
+        "the +x bore's query bound the −x bore: {hits:?}"
     );
 }
 

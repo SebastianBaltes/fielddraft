@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.56.1
+- fix(kernel) #404: Jede Bohrung eines Lochs lässt sich jetzt einzeln anklicken und messen. Bisher führte ein Loch mit zwei Positionen nur eine der beiden Bohrungswandungen als Fläche, und unter einer Senkung fehlte die Schaftwand darunter — das Volumen stimmte, aber die Fläche war nicht greifbar: kein Maß, keine Skizze darauf, keine Auswahl. Der Grund war ein gemeinsamer Name für alle Schneidkörper eines Lochs; jeder bekommt nun seinen eigenen. Ein Senkloch zeigt damit Sitz, Schaftwand und Grund gleichzeitig, und die zweite Bohrung trägt eine eigene Kennung.
+
 ## 0.56.0
 - feat(web) #404: Der Loch-Dialog zeigt nur noch, was zur Sache gehört. Die Passung erscheint bei einem Durchgangsloch, das freie Maß bei „Custom“, die Senkmaße beim Senken, die Tiefe beim Sackloch — und der Anschliff-Block verschwindet ganz, sobald das Loch durchgeht. Statt zwanzig Feldern, von denen die Hälfte ins Leere zeigt, stehen dort die sieben bis elf, die etwas bewirken. Dazu heißt ein Loch jetzt nach dem, was es bohrt: „M6 tapped ×3“ oder „M8 clearance counterbore ×2“ im Baum statt „Hole 7“ — ein selbst vergebener Name gewinnt weiterhin. Und die Bohrpunkte lassen sich endlich sehen und einsammeln: der Punkt unter dem Cursor leuchtet auf, solange das Positionsfeld scharf ist, und ein aufgezogenes Rechteck übernimmt alle Punkte darin auf einmal statt acht Löcher einzeln anzuklicken.
 

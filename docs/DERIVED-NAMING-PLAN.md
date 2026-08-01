@@ -637,6 +637,61 @@ G1-Ketten, die sich nur die kleinste Entity-Id teilen (`traced_group_ids` nimmt
 das Minimum), aber ein impliziter Merge zweier verschiedener Flächen — genau
 das, was das Projekt nicht tut.
 
+### Schritt 3' — Sub-Bänder für Loch-Cutter (v0.56.1, #404)
+
+Schritt 3 gab den **Teilkörpern eines harten Kanten-Cutters** reservierte
+Sub-Bänder (`CUTTER_AUX_*`), weil sie als `FeatureId::child`ren desselben
+Fillets alle auf dasselbe `(feature, instance)`-Paar falten. Dieselbe Faltung
+traf jeden Cutter eines `hole`-Features — nur zahlreicher: ein Loch erzeugt je
+Position einen Schaft und, je nach Stil, einen Counterbore-, Countersink- und
+Spitzen-Cutter obendrauf.
+
+**Wo genau es brach — gemessen, nicht vermutet.** Nicht im Weave.
+`collect_halfspaces` (`brep/weaving/surface_registry.rs`) baut die Karte
+`Branch-Wort → (HalfSpace, Transform)` mit **einem `insert` je Wort**: teilen
+sich zwei Cutter ein Wort, gewinnt schlicht der zuletzt eingefügte. Das
+Volumen war immer richtig (das SDF sieht jeden Cutter), aber die analytische
+Fläche des anderen existierte nicht. Betroffen war mehr als die zweite
+Bohrung: bei einem blinden gebohrten Loch überschrieb die **Spitze** die
+Mantelfläche des Schafts, so dass die gemeldete „Zylinder“-Fläche in
+Wirklichkeit der Spitzenkegel war; beim Counterbore blieb nur der Sitz übrig.
+
+**Gewählt: A (Re-Key in `BranchId::from_feature_sub`), aber als LAYOUT statt
+als festes Band.** Das reservierte Band an der Feldspitze (0x1FE0…0x1FFF) hat
+Platz für eine Handvoll Teilkörper, nicht für `32 · Positionen`. Der Sub eines
+Loch-Cutters ist deshalb gestaffelt: drei Bits Primitivfläche (Mantel + zwei
+Deckel), zwei Bits Teil-Art (Schaft · Counterbore · Countersink · Spitze),
+sieben Bits Positions-Ordinal — zusammen unter `POSITIONAL_WALL_FLAG`, also im
+freien, unteren Teil des Sub-Feldes. Dort kollidiert nichts: ein Loch schwenkt
+keine Skizze und hat folglich keine eigenen Entity-Ordinale, und die Ordnung
+„jede Wand sortiert unter den reservierten Kappen-IDs“ bleibt gewahrt.
+
+Zwei Eigenschaften sind Absicht: **Position 0/Schaft behält die Subs 0/1/2**
+(ein schlichtes Ein-Loch-Bohrbild heißt exakt wie vorher), und **die Teil-Art
+hat einen festen Slot** (ein nachträglicher Counterbore verschiebt die Namen
+des Schafts nicht).
+
+**Verworfen: B — Instanz-Ordinal je Position.** Das `instance`-Feld ist das
+Ordinal der Muster-Kopie, und ein Loch in einer Kopie **erbt** es
+(`«pattern».«source»~2.0` liest `(source, 2)`). `instance = i` zu schreiben
+hieße, der zweiten Bohrung in Kopie 0 den Namen der ersten Bohrung in Kopie 2
+zu geben.
+
+**Verworfen: das `occurrence`-Feld.** Es hätte gepasst (fünf Bits, im
+Namensraum des Features), aber nur 32 Positionen getragen, und seine
+dokumentierte Bedeutung ist das Wand-Vorkommen EINER Skizzenkurve, das
+`qWall` bewusst ignoriert — ein Feld, das Bohrungen bewusst zusammenfasst,
+ist das falsche, um sie zu trennen.
+
+Die Rückabbildung braucht einen **unterscheidbaren lokalen Id-Teil**: die
+Cutter heißen jetzt `bore«i»`, `bore«i»c|s|t` statt `«i»`, `«i»c|s|t`. Mehrere
+Features vergeben rein numerische Kind-Locals (`sweep` „0“, `context_resolve`
+„«qi»“), ein nacktes `«i»` hätte deren Subs mit umgeschrieben.
+
+`NAMING_SCHEMA_VERSION` 6 → **7**. So schmal wie Bump 4: nur Löcher werden neu
+verschlüsselt; die sechs Onshape-Suiten (49 Tests) laufen vorher wie nachher
+grün, die 35 Golden-Szenen sind byte-identisch.
+
 ---
 
 ## 6. Woran gemessen wird
