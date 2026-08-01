@@ -363,6 +363,69 @@ innerhalb 2e-3 mm: M6 drilled **Ø6.000**, clearance close/normal/loose **Ø6.40
 M6-Clearance-Loch eine `surfaceKind = "cylinder"`-Fläche mit `radius = 3.3` — die Bohrung ist
 ein echter Zylinder, nicht nur ein Loch im Feld.
 
+### P3 — Umgesetzt (v0.53.0)
+
+**Kein neuer Opcode — sondiert, nicht vermutet.** Vor dem ersten Strich Code wurde geprüft, was
+an Kegel-Primitiven existiert: `Primitive::Cone { r_bottom, r_top, half_height }` (Kegelstumpf
+um die lokale +Y-Achse, `r_top = 0` = spitzer Kegel) ist **schon in allen Evaluatoren** —
+CPU-Tape (`sdf_eval.rs`), BVH/Fold (`csg.rs`, `offset_fold.rs`), Dual (`sdf_dual.rs`), Fidget
+(`fidget_bridge.rs`), TSL (`web/src/sdfRenderer.ts::sdfConeFn` + `sdfVmInterpreter.ts`),
+STEP/OCCT (`step_commands.rs`, `occt.worker.ts`) — und über `primitive_halfspaces` sogar als
+analytische `HalfSpace::Cone`-Fläche webbar. Der Stil-Stapel braucht damit **null**
+Evaluator-Arbeit; die P1-Lehre des Fillet-Cutters ist eingehalten. Kein Golden-Lauf nötig
+(rein additive Feature-Arbeit, kein Evaluator angefasst).
+
+**Geometrie.** Pro Location wird ein Stapel koaxialer Remove-Cutter erzeugt (Entfernen einer
+Vereinigung == Vereinigung der Entfernungen). Alle Teile laufen durch eine gemeinsame
+Platzierungsfunktion `axial_span(origin, dir, t_lo, t_hi)` mit `t = 0` an der Ankerfläche,
+positiv ins Material:
+
+- **Schaft** wie bisher, Kind-Id `<hole>/<i>`.
+- **Counterbore** `<hole>/<i>c`: Zylinder `Ø = cbore_diameter` von `-ε` bis `cbore_depth`.
+  Der Radius wird auf `≥` Schaftradius geklemmt (ein schmalerer „Senk"-Zylinder fräst nichts).
+- **Countersink** `<hole>/<i>s`: `Primitive::Cone` von `-ε` bis `csink_depth`, mit
+  `csink_depth = (R_senk − R_bohrung) / tan(Winkel/2)`. Der Mündungs-Überstand verlängert den
+  Kegel **entlang seiner eigenen Wand** (`r_bottom = R_senk + ε·tan(Winkel/2)`) statt ihn flach
+  zu kappen — nur so bleibt der Kreis auf der Fläche exakt der eingetragene Durchmesser.
+  `csink_angle` ist wie in Onshape der **volle Öffnungswinkel**, nie der halbe.
+
+**Neue Felder** (alle `Length`, der Winkel `Angle`): `cbore_diameter` (11 mm),
+`cbore_depth` (6 mm), `csink_diameter` (12 mm), `csink_angle` (90°). Bewusst **keine**
+Norm-Auto-Ableitung aus `standard_size`: DIN 974-1 (Senkungen für Zylinderschrauben) und
+ISO 15065 (Senkungen für Senkschrauben) sind eigene Tabellen, und geraten wird hier nichts —
+das Auto-Ausfüllen gehört zu P6/UI. Entartungen werden mit **benanntem** Parameterfehler
+abgelehnt: Senk-Ø ≤ Bohrungs-Ø, Winkel außerhalb (0°, 180°), nicht-positive Maße.
+
+**Gate gemessen.** Counterbore Ø12 × 4 mm über einer blinden M6-Ø6 × 12 mm-Bohrung, gebohrt
+von der Oberseite eines Blocks (Skizzenebene == Deckfläche, damit die Mündung auf einer echten
+Freifläche sitzt): SDF-Bisektion liefert **Ø12.000** im Sitz (2 mm tief), **Ø6.000** im Schaft
+(6 mm tief), die Stufe bei **4.000 mm** und den blinden Grund bei **12.000 mm** (alle < 2e-3 mm
+Abweichung). `body_brep_faces` webt den Sitz als analytische `cylinder`-Fläche mit `radius 6.0`.
+Countersink Ø12 über derselben Bohrung, für **90°, 82° und 120°**: der Radius folgt in allen
+drei Fällen exakt `6 − t·tan(Winkel/2)` (geprüft bei t = 0.25 / 0.5 / 1.0 mm), unterhalb der
+Kegeltiefe steht wieder der Ø6-Schaft, und `body_brep_faces` meldet eine `cone`-Fläche mit
+`halfAngle` = 0.7854 / 0.7156 / 1.0472 rad (= 45° / 41° / 60°, also genau der halbe
+Öffnungswinkel).
+
+**Nebenbefund (pre-existing, NICHT von P3 verursacht) — Geschwister-Cutter teilen sich einen
+Branch.** Beim Messen fiel auf, dass `body_brep_faces` vom Stapel nur die Flächen des
+**zuletzt** gepushten Cutters führt: der Ø6-Schaft unterhalb des Sitzes taucht nicht als
+eigene Fläche auf. Ursache ist `FeatureId::branch_identity`, das für alle
+`FeatureId::child`ren eines Features dasselbe `(feature, instance)`-Paar liefert — dieselbe
+Faltung, die auf `BranchId::CUTTER_AUX_ROUND` bereits dokumentiert ist (der Fillet-Cutter löst
+sie über reservierte Sub-Bänder in `cutter_sub`). Gegenprobe, empirisch:
+
+- **zwei Hole-Features** mit je einer Bohrung → 4 Bohrungs-Flächen (beide Bohrungen gewebt);
+- **ein Hole-Feature** mit denselben zwei Locations → 2 Flächen (nur eine Bohrung gewebt).
+
+Der Defekt existiert also schon seit P1 (Mehrfach-Löcher) und betrifft **nur** das analytische
+Flächen-Set — das entfernte Volumen, das Mesh und das SDF sind in beiden Fällen identisch
+(alle SDF-Proben oben bestätigen die volle Stapel-Geometrie). Praktisch heißt das: die zweite
+Bohrung bzw. die Schaftwand unter einer Senkung lässt sich derzeit nicht anklicken/messen.
+Gepinnt in `hole_sibling_cutters_share_one_branch`. Die Behebung ist eine Entscheidung am
+BranchId-Schema (freies Sub-Band wie beim Fillet vs. Instanz-Ordinal `~i` — letzteres kollidiert
+mit Pattern-Kopien, s. `branch_identity`-Doku) und gehört bewusst NICHT in eine Feature-Phase.
+
 ## 7. Offene Fragen / Risiken
 
 1. **Sketch-Punkt-Referenzierung (größtes Risiko, blockiert P1-Zielselektion):** Taucht ein

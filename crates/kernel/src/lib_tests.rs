@@ -4581,6 +4581,282 @@ fn hole_clearance_bore_is_a_cylinder_face_of_the_iso_radius() {
     );
 }
 
+// ─── #404 P3: counterbore & countersink (the style stack) ─────────────────
+
+/// Depth (positive, mm below the anchor face at `z = 0`) at which the cutter
+/// stack's floor sits on the vertical ray through `(x, y)` — the open→solid
+/// crossing found by bisecting the compiled SDF.
+///
+/// On the bore axis this is the blind bottom; on a ray between the shaft and
+/// the counterbore radius it is the flat counterbore seat.
+fn hole_floor_depth_at(k: &Kernel, x: f32, y: f32) -> f32 {
+    let (mut open, mut solid) = (-1.0e-3f32, -19.0f32);
+    assert!(k.body_sdf_eval(0, x, y, open) > 0.0, "({x},{y}) must be open at the face");
+    assert!(k.body_sdf_eval(0, x, y, solid) < 0.0, "({x},{y}) must be solid deep down");
+    for _ in 0..48 {
+        let mid = 0.5 * (open + solid);
+        if k.body_sdf_eval(0, x, y, mid) > 0.0 {
+            open = mid;
+        } else {
+            solid = mid;
+        }
+    }
+    -0.5 * (open + solid)
+}
+
+/// A 20 mm block whose TOP face is exactly the `z = 0` sketch plane, bored
+/// once at the origin with the given style. Because the mouth sits on a real
+/// free surface, the counterbore seat / countersink cone are measurable where
+/// the user sees them. `extra` injects the style-specific schema fields.
+fn hole_styled_block(style: &str, extra: &str, depth_mm: f32) -> Kernel {
+    let mut k = Kernel::new();
+    let box_id = k
+        .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, -10.0, 10.0, 10.0, 10.0)
+        .unwrap();
+    let sub_calls = r#"[
+        { "type": "sketch_point", "id": "100", "params": { "at": [0.0, 0.0] } }
+    ]"#;
+    let sketch_id = k.add_sketch("qCreatedBy(origin_plane_xy)", sub_calls).unwrap();
+    let params = format!(
+        r#"{{
+            "style": "{style}",
+            "hole_type": "drilled",
+            "fit": "normal",
+            "standard_size": "M6",
+            "diameter": {{ "value": 6.0, "unit": "mm" }},
+            "end_type": "blind",
+            "depth": {{ "value": {depth_mm}, "unit": "mm" }},
+            {extra}
+            "locations": "qSketchPoint({sketch_id}, 1)",
+            "targets": "qCreatedBy({box_id})"
+        }}"#
+    );
+    let hole_id = k.add_feature_call("hole", &params).unwrap();
+    assert_eq!(
+        k.feature_errors.get(&FeatureId::from_u32(hole_id)),
+        None,
+        "styled hole must parse ({style})"
+    );
+    k
+}
+
+/// Every analytic radius the woven body reports for a `cylinder` face.
+fn woven_cylinder_radii(k: &mut Kernel) -> Vec<f64> {
+    let faces: serde_json::Value = serde_json::from_str(&k.body_brep_faces(0)).unwrap();
+    faces
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["surfaceKind"] == "cylinder")
+        .filter_map(|f| f["surfaceParams"]["radius"].as_f64())
+        .collect()
+}
+
+/// Every analytic half-angle (radians) the woven body reports for a `cone` face.
+fn woven_cone_half_angles(k: &mut Kernel) -> Vec<f64> {
+    let faces: serde_json::Value = serde_json::from_str(&k.body_brep_faces(0)).unwrap();
+    faces
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["surfaceKind"] == "cone")
+        .filter_map(|f| f["surfaceParams"]["halfAngle"].as_f64())
+        .collect()
+}
+
+/// **P3 gate — counterbore.** A Ø12 × 4 mm seat over a blind Ø6 × 12 mm M6
+/// bore. Measured on the geometry, not the definition: the SDF must be Ø12
+/// inside the seat and Ø6 below it, the flat step must sit exactly 4 mm down
+/// and the blind bottom exactly 12 mm down, and the weave must report BOTH
+/// coaxial cylinder faces.
+#[test]
+fn hole_counterbore_stacks_a_wide_flat_seat() {
+    let mut k = hole_styled_block(
+        "counterbore",
+        r#""cbore_diameter": { "value": 12.0, "unit": "mm" },
+           "cbore_depth": { "value": 4.0, "unit": "mm" },"#,
+        12.0,
+    );
+    let seat = 2.0 * hole_bore_radius_at(&k, 0.0, 0.0, -2.0);
+    assert!((seat - 12.0).abs() < 2e-3, "seat Ø {seat:.4}, expected 12");
+    let shaft = 2.0 * hole_bore_radius_at(&k, 0.0, 0.0, -6.0);
+    assert!((shaft - 6.0).abs() < 2e-3, "shaft Ø {shaft:.4}, expected 6");
+
+    // 4.5 mm off-axis lies between the two radii, so its floor IS the seat.
+    let step = hole_floor_depth_at(&k, 4.5, 0.0);
+    assert!((step - 4.0).abs() < 2e-3, "counterbore seat at {step:.4} mm, expected 4");
+    let bottom = hole_floor_depth_at(&k, 0.0, 0.0);
+    assert!((bottom - 12.0).abs() < 2e-3, "blind bottom at {bottom:.4} mm, expected 12");
+
+    // The weave must report the seat as a real Ø12 cylindrical face.
+    //
+    // It does NOT (yet) report the Ø6 shaft face below the seat: every cutter
+    // of one hole feature is a `FeatureId::child` of that hole, and
+    // `FeatureId::branch_identity` folds all of them onto the same
+    // `(feature, instance)` pair — so their sub-ids collide and only the last
+    // cutter's faces survive the weave. That is a pre-existing kernel property
+    // (the same fold is documented on `BranchId::CUTTER_AUX_ROUND`, and it
+    // already swallows the second bore of a P1 multi-location hole), not
+    // something the style stack introduces; `hole_sibling_cutters_share_one_branch`
+    // below pins it. The SDF asserts above are the authoritative geometry.
+    let radii = woven_cylinder_radii(&mut k);
+    assert!(radii.iter().any(|r| (r - 6.0).abs() < 1e-3), "no Ø12 seat face: {radii:?}");
+}
+
+/// Pins the branch-identity fold that limits how much of a multi-cutter hole
+/// reaches the B-Rep, so the day it is lifted this test says so out loud.
+///
+/// TWO hole features drilling one bore each weave BOTH bores (4 cutter faces
+/// on top of the box's 6). ONE hole feature drilling the SAME two bores welds
+/// only one of them, because `<hole>/0` and `<hole>/1` collapse to the same
+/// `(feature, instance)` pair. The removed VOLUME is identical either way —
+/// only the analytic face set differs, so meshing and SDF are unaffected;
+/// what suffers is picking / measuring the second bore's wall.
+#[test]
+fn hole_sibling_cutters_share_one_branch() {
+    let bore_faces = |one_feature: bool| -> usize {
+        let mut k = Kernel::new();
+        let box_id = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, -10.0, 10.0, 10.0, 10.0)
+            .unwrap();
+        let sketch_id = k
+            .add_sketch(
+                "qCreatedBy(origin_plane_xy)",
+                r#"[
+                    { "type": "sketch_point", "id": "100", "params": { "at": [-5.0, 0.0] } },
+                    { "type": "sketch_point", "id": "101", "params": { "at": [5.0, 0.0] } }
+                ]"#,
+            )
+            .unwrap();
+        let call = |locs: &str| {
+            format!(
+                r#"{{
+                    "style": "simple", "hole_type": "drilled", "standard_size": "M6",
+                    "end_type": "blind", "depth": {{ "value": 12.0, "unit": "mm" }},
+                    "locations": "{locs}",
+                    "targets": "qCreatedBy({box_id})"
+                }}"#
+            )
+        };
+        if one_feature {
+            k.add_feature_call(
+                "hole",
+                &call(&format!("qSketchPoint({sketch_id}, 1), qSketchPoint({sketch_id}, 2)")),
+            )
+            .unwrap();
+        } else {
+            for e in [1, 2] {
+                k.add_feature_call("hole", &call(&format!("qSketchPoint({sketch_id}, {e})")))
+                    .unwrap();
+            }
+        }
+        let faces: serde_json::Value = serde_json::from_str(&k.body_brep_faces(0)).unwrap();
+        // The box contributes 6 planes; everything beyond that is bore.
+        faces.as_array().unwrap().len() - 6
+    };
+    assert_eq!(bore_faces(false), 4, "two hole features weave both bores (mantle + bottom each)");
+    assert_eq!(
+        bore_faces(true),
+        2,
+        "KNOWN LIMIT: sibling cutters of ONE hole feature fold onto one branch, \
+         so only one bore reaches the B-Rep — lift this the day branch_identity \
+         distinguishes siblings"
+    );
+}
+
+/// **P3 gate — countersink.** A Ø12 cone over the same Ø6 bore, at each of
+/// the three common included angles. The cone must have EXACTLY the entered
+/// face diameter at the top face and the norm slope below it, the transition
+/// to the shaft must land at `(R_sink − R_bore) / tan(angle/2)`, and the
+/// weave must report a `cone` surface with the matching half-angle.
+#[test]
+fn hole_countersink_cuts_the_entered_cone_at_every_angle() {
+    for angle_deg in [90.0f32, 82.0, 120.0] {
+        let mut k = hole_styled_block(
+            "countersink",
+            &format!(
+                r#""csink_diameter": {{ "value": 12.0, "unit": "mm" }},
+                   "csink_angle": {{ "value": {angle_deg}, "unit": "deg" }},"#
+            ),
+            12.0,
+        );
+        let half = (angle_deg / 2.0).to_radians();
+        let slope = half.tan();
+        // Inside the cone the radius shrinks linearly from 6.0 at the face.
+        for t in [0.25f32, 0.5, 1.0] {
+            let expect = 6.0 - t * slope;
+            let got = hole_bore_radius_at(&k, 0.0, 0.0, -t);
+            assert!(
+                (got - expect).abs() < 3e-3,
+                "{angle_deg}°: radius {got:.4} at {t} mm deep, expected {expect:.4}"
+            );
+        }
+        // Below the cone the plain Ø6 shaft resumes.
+        let cone_depth = 3.0 / slope;
+        let shaft = hole_bore_radius_at(&k, 0.0, 0.0, -(cone_depth + 2.0));
+        assert!(
+            (shaft - 3.0).abs() < 2e-3,
+            "{angle_deg}°: shaft radius {shaft:.4} below the cone, expected 3"
+        );
+
+        let angles = woven_cone_half_angles(&mut k);
+        assert!(
+            angles.iter().any(|a| (a - half as f64).abs() < 2e-3),
+            "{angle_deg}°: no cone face at half-angle {half:.4} rad; got {angles:?}"
+        );
+    }
+}
+
+/// A countersink that is not actually wider than its own bore, or an
+/// out-of-range cone angle, must surface a NAMED parameter error through the
+/// real API chain rather than silently emitting an inverted / needle-thin
+/// cone. (The regen loop is error-tolerant, so the failure lands in
+/// `feature_errors` instead of aborting the document.)
+#[test]
+fn hole_countersink_rejects_degenerate_geometry() {
+    let bad = |extra: &str| -> String {
+        let mut k = Kernel::new();
+        let box_id = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, -10.0, 10.0, 10.0, 10.0)
+            .unwrap();
+        let sketch_id = k
+            .add_sketch(
+                "qCreatedBy(origin_plane_xy)",
+                r#"[{ "type": "sketch_point", "id": "100", "params": { "at": [0.0, 0.0] } }]"#,
+            )
+            .unwrap();
+        let params = format!(
+            r#"{{
+                "style": "countersink", "hole_type": "drilled", "standard_size": "M6",
+                "end_type": "blind", "depth": {{ "value": 12.0, "unit": "mm" }},
+                {extra}
+                "locations": "qSketchPoint({sketch_id}, 1)",
+                "targets": "qCreatedBy({box_id})"
+            }}"#
+        );
+        let hole_id = k.add_feature_call("hole", &params).unwrap();
+        k.feature_errors
+            .get(&FeatureId::from_u32(hole_id))
+            .cloned()
+            .unwrap_or_default()
+    };
+    // Ø5 sink over a Ø6 bore: not a countersink at all.
+    let e = bad(r#""csink_diameter": { "value": 5.0, "unit": "mm" },"#);
+    assert!(e.contains("csink_diameter"), "expected a csink_diameter error, got {e:?}");
+    // A 180° "cone" is a flat disc.
+    let e = bad(
+        r#""csink_diameter": { "value": 12.0, "unit": "mm" },
+           "csink_angle": { "value": 180.0, "unit": "deg" },"#,
+    );
+    assert!(e.contains("csink_angle"), "expected a csink_angle error, got {e:?}");
+    // Sane numbers still go through cleanly.
+    let e = bad(
+        r#""csink_diameter": { "value": 12.0, "unit": "mm" },
+           "csink_angle": { "value": 90.0, "unit": "deg" },"#,
+    );
+    assert_eq!(e, "", "a valid countersink must not error");
+}
+
 /// #414 P1 — the edge chamfer through the REAL wasm API chain: the
 /// `addChamferEdge` SETTER (not a hand-written feature call), the compiled
 /// opcode stream via `bodySdfEval`, a document save/load round-trip, and an

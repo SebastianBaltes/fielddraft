@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.53.0
+- feat(kernel) #404: Löcher können jetzt gesenkt werden. „Counterbore" setzt einen breiten flachen Sitz an die Mündung, in dem ein Zylinderschraubenkopf verschwindet — Durchmesser und Tiefe frei einstellbar. „Countersink" fräst stattdessen einen Kegel, dessen Durchmesser oben exakt der eingetragene ist; den Öffnungswinkel gibt man als vollen Winkel an (90° metrisch, 82° UNC, 120° Blech), die Tiefe rechnet sich daraus von selbst. Ein Senkmaß, das kleiner wäre als die Bohrung selbst, oder ein unmöglicher Winkel werden mit einer benannten Meldung abgelehnt statt still verbogen.
+
 ## 0.52.0
 - feat(kernel) #404: Ein Loch weiß jetzt, wozu es da ist. Neben der Größe (die Norm-Liste reicht von M1.6 bis M24 statt nur bis M12) wählt man jetzt die Art: „Drilled" bohrt auf Nenndurchmesser, „Clearance" auf das Durchgangsmaß nach ISO 273 — mit der Passung „Close", „Normal" oder „Loose" —, „Tapped" auf das Kernloch der Regelsteigung. Ein M6 wird damit auf Knopfdruck zu Ø6,0 · Ø6,4/6,6/7,0 · Ø5,0, ohne dass man eine Tabelle nachschlagen muss. Das Gewinde selbst bleibt wie in Onshape kosmetisch: entfernt wird das Kernloch, keine gefräste Wendel.
 

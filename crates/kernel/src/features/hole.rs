@@ -29,9 +29,13 @@ use super::{Context, FeatureError, FeatureKind, FeatureSchema, optional_display_
 #[derive(FeatureSchema)]
 #[schema(type = "hole")]
 pub struct HoleDef {
-    /// Hole style (geometry base form). P1 ships `simple`; `counterbore` /
-    /// `countersink` are reserved so P3 adds the stacked cutter without a
-    /// wire-format break.
+    /// Hole style (geometry base form). `simple` is the bare shaft;
+    /// `counterbore` stacks a wider flat-bottomed cylinder at the mouth,
+    /// `countersink` a cone (P3). Each stacked part is its own Remove cutter
+    /// coaxial with the shaft — a union of removes is the same solid as
+    /// removing the union, so the stack needs no new SDF opcode: every
+    /// evaluator (CPU tape, BVH, dual, fidget, TSL, CGAL) already understands
+    /// `Primitive::Cylinder` and `Primitive::Cone`.
     #[param(
         name = "Style",
         default = ::std::string::String::from("simple"),
@@ -89,6 +93,30 @@ pub struct HoleDef {
     /// `end_type = blind`.
     #[param(name = "Depth", default = ::fielddraft_protocol::Length::mm(10.0))]
     pub depth: ::fielddraft_protocol::Length,
+
+    /// Counterbore diameter — the wide flat seat at the mouth that swallows a
+    /// cap-screw head. Only read for `style = counterbore`. Clamped to at
+    /// least the bore Ø: a counterbore narrower than its own shaft would
+    /// carve nothing and just confuse the preview.
+    #[param(name = "Counterbore Ø", default = ::fielddraft_protocol::Length::mm(11.0))]
+    pub cbore_diameter: ::fielddraft_protocol::Length,
+
+    /// Counterbore depth, measured from the anchor face down to the flat
+    /// seat. Only read for `style = counterbore`.
+    #[param(name = "Counterbore depth", default = ::fielddraft_protocol::Length::mm(6.0))]
+    pub cbore_depth: ::fielddraft_protocol::Length,
+
+    /// Countersink diameter **at the anchor face** — the wide end of the
+    /// cone. Only read for `style = countersink`; must exceed the bore Ø.
+    #[param(name = "Countersink Ø", default = ::fielddraft_protocol::Length::mm(12.0))]
+    pub csink_diameter: ::fielddraft_protocol::Length,
+
+    /// Countersink **included** cone angle (the full apex angle, not the
+    /// half-angle): 90° metric, 82° UNC, 100°/120° sheet metal. The cone
+    /// depth follows from it and the two diameters — it is never entered
+    /// directly, exactly like Onshape. Only read for `style = countersink`.
+    #[param(name = "Countersink angle", default = ::fielddraft_protocol::Angle::deg(90.0))]
+    pub csink_angle: ::fielddraft_protocol::Angle,
 
     /// Flip the bore direction (Onshape's opposite-direction arrow). By
     /// default the hole drills *into* the body (opposite the anchor's outward
@@ -180,6 +208,99 @@ fn quat_from_to(from: [f32; 3], to: [f32; 3]) -> [f32; 4] {
     let w = 1.0 + dot;
     let inv = 1.0 / (c[0] * c[0] + c[1] * c[1] + c[2] * c[2] + w * w).sqrt();
     [c[0] * inv, c[1] * inv, c[2] * inv, w * inv]
+}
+
+/// Place an origin-centred, **local +Y**-axis primitive so that it spans
+/// `[t_lo, t_hi]` measured along `dir` from `origin`. Returns the primitive's
+/// `half_height` plus the transform that puts it there.
+///
+/// Every cutter part of a hole (shaft, counterbore, countersink cone, drill
+/// tip) is authored through this one function, so `t` is a single shared
+/// coordinate: `t = 0` is the anchor face, growing positive INTO the material.
+fn axial_span(origin: [f32; 3], dir: [f32; 3], t_lo: f32, t_hi: f32) -> (f32, Transform) {
+    let half_height = (t_hi - t_lo) / 2.0;
+    let mid_t = (t_hi + t_lo) / 2.0;
+    (
+        half_height,
+        Transform {
+            translate: [
+                origin[0] + dir[0] * mid_t,
+                origin[1] + dir[1] * mid_t,
+                origin[2] + dir[2] * mid_t,
+            ],
+            // The cutter primitives (Cylinder, Cone) run along local +Y.
+            rotation: quat_from_to([0.0, 1.0, 0.0], dir),
+            scale: [1.0, 1.0, 1.0],
+        },
+    )
+}
+
+/// The counterbore / countersink geometry the chosen `style` stacks on top of
+/// the plain shaft, already reduced to numbers (#404 P3).
+#[derive(Clone, Copy)]
+enum StyleStack {
+    /// `style = simple` — nothing but the shaft.
+    None,
+    /// A wider flat-bottomed cylinder at the mouth.
+    Counterbore { radius: f32, depth: f32 },
+    /// A cone at the mouth: `radius` at the anchor face, tapering to the bore
+    /// radius `depth` below it. `slope = tan(included/2)` is carried so the
+    /// mouth overshoot widens the cone along its own wall instead of clipping
+    /// it flat — that is what keeps the face circle at the entered diameter.
+    Countersink { radius: f32, depth: f32, slope: f32 },
+}
+
+/// Reduce the style-specific schema fields to [`StyleStack`] numbers, or fail
+/// the feature with a NAMED parameter error the dialog surfaces.
+///
+/// `bore_radius` is the shaft radius the stack has to meet: a counterbore is
+/// clamped up to it (a narrower one would carve nothing), a countersink must
+/// genuinely exceed it or there is no cone to build.
+fn style_stack(d: &HoleDef, bore_radius: f32) -> Result<StyleStack, FeatureError> {
+    match d.style.as_str() {
+        "counterbore" => {
+            let dia = d.cbore_diameter.to_mm();
+            positive_f32(dia, HoleDef::TYPE_NAME, "cbore_diameter")?;
+            let depth = d.cbore_depth.to_mm();
+            positive_f32(depth, HoleDef::TYPE_NAME, "cbore_depth")?;
+            Ok(StyleStack::Counterbore { radius: (dia / 2.0).max(bore_radius), depth })
+        }
+        "countersink" => {
+            let dia = d.csink_diameter.to_mm();
+            positive_f32(dia, HoleDef::TYPE_NAME, "csink_diameter")?;
+            let radius = dia / 2.0;
+            if radius <= bore_radius {
+                return Err(FeatureError::InvalidParameter {
+                    feature: HoleDef::TYPE_NAME,
+                    name: "csink_diameter",
+                    message: format!(
+                        "must exceed the bore Ø ({:.3} mm), got {dia:.3} mm",
+                        bore_radius * 2.0
+                    ),
+                });
+            }
+            // Included angle → half-angle off the axis. Outside (0°, 180°) the
+            // cone degenerates into a needle or inverts into a disc.
+            let half_angle = d.csink_angle.to_rad() / 2.0;
+            if !(half_angle > 1e-3 && half_angle < std::f32::consts::FRAC_PI_2 - 1e-3) {
+                return Err(FeatureError::InvalidParameter {
+                    feature: HoleDef::TYPE_NAME,
+                    name: "csink_angle",
+                    message: format!(
+                        "included angle must be strictly between 0° and 180°, got {:.1}°",
+                        half_angle.to_degrees() * 2.0
+                    ),
+                });
+            }
+            // Cone depth from the two radii and the wall slope: the radius
+            // shrinks by `tan(half_angle)` per mm of depth. A 90° sink on a
+            // Ø6 bore with a Ø12 face circle is exactly 3 mm deep.
+            let slope = half_angle.tan();
+            Ok(StyleStack::Countersink { radius, depth: (radius - bore_radius) / slope, slope })
+        }
+        // `simple` and any variant a later phase adds: the bare shaft.
+        _ => Ok(StyleStack::None),
+    }
 }
 
 pub struct HoleFeature;
@@ -283,6 +404,9 @@ impl FeatureKind for HoleFeature {
         // OUTSIDE the material, so the blind depth into the body is unaffected.
         const MOUTH_EPS: f32 = 0.1;
 
+        // P3 style stack, resolved once — identical at every location.
+        let stack = style_stack(&d, radius)?;
+
         for (i, (origin, axis)) in frames.iter().enumerate() {
             // Drill INTO the body: opposite the outward anchor axis by default;
             // `opposite_direction` flips it.
@@ -310,36 +434,74 @@ impl FeatureKind for HoleFeature {
                 (-MOUTH_EPS, depth_mm)
             };
 
-            let half_height = (t_hi - t_lo) / 2.0;
-            let mid_t = (t_hi + t_lo) / 2.0;
-            let center = [
-                origin[0] + dir[0] * mid_t,
-                origin[1] + dir[1] * mid_t,
-                origin[2] + dir[2] * mid_t,
-            ];
-            // Cylinder axis is local +Y; orient it onto `dir`.
-            let rotation = quat_from_to([0.0, 1.0, 0.0], dir);
+            // This location's cutter stack as
+            // `(child-id local, name suffix, primitive, placement)`. The shaft
+            // keeps the bare `<hole>/<i>` id it has had since P1.
+            let mut parts: Vec<(String, &'static str, Primitive, Transform)> = Vec::new();
 
-            // Hierarchical child id (`<hole>/<i>`) so `sync_feature_calls`
-            // drops the derived primitives on the next sync — the `hole`
-            // FeatureCall stays the authoritative wire form.
-            ctx.features.push(DecodedFeature::from_parts(
-                id.child(i.to_string()),
-                if i == 0 { name.clone() } else { format!("{name} #{}", i + 1) },
-                BoolOp::Remove,
-                Primitive::Cylinder {
-                    center: [0.0, 0.0, 0.0],
-                    radius,
-                    half_height,
-                },
-                Transform {
-                    translate: center,
-                    rotation,
-                    scale: [1.0, 1.0, 1.0],
-                },
-                PrimitiveModifiers::NONE,
-                target_ids.clone(),
+            let (half_height, xf) = axial_span(*origin, dir, t_lo, t_hi);
+            parts.push((
+                i.to_string(),
+                "",
+                Primitive::Cylinder { center: [0.0, 0.0, 0.0], radius, half_height },
+                xf,
             ));
+
+            match stack {
+                StyleStack::None => {}
+                StyleStack::Counterbore { radius: cbore_r, depth: cbore_d } => {
+                    // A flat-bottomed wide cylinder from the mouth down. The
+                    // seat therefore sits exactly at `t = cbore_depth`.
+                    let (hh, xf) = axial_span(*origin, dir, -MOUTH_EPS, cbore_d);
+                    parts.push((
+                        format!("{i}c"),
+                        " counterbore",
+                        Primitive::Cylinder {
+                            center: [0.0, 0.0, 0.0],
+                            radius: cbore_r,
+                            half_height: hh,
+                        },
+                        xf,
+                    ));
+                }
+                StyleStack::Countersink { radius: csink_r, depth: csink_d, slope } => {
+                    // A frustum whose radius is EXACTLY `csink_r` at the anchor
+                    // face (`t = 0`) and the bore radius at `t = csink_d`. The
+                    // mouth overshoot extends it further out along its own wall
+                    // (hence the `+ MOUTH_EPS * slope`), so the circle the user
+                    // sees on the face keeps the entered diameter.
+                    let (hh, xf) = axial_span(*origin, dir, -MOUTH_EPS, csink_d);
+                    parts.push((
+                        format!("{i}s"),
+                        " countersink",
+                        // `Primitive::Cone` runs along local +Y with `r_bottom`
+                        // at −half_height — the mouth end, since +Y maps onto
+                        // the drilling direction.
+                        Primitive::Cone {
+                            r_bottom: csink_r + MOUTH_EPS * slope,
+                            r_top: radius,
+                            half_height: hh,
+                        },
+                        xf,
+                    ));
+                }
+            }
+
+            // Hierarchical child ids (`<hole>/<i>`, `<hole>/<i>c`, …) so
+            // `sync_feature_calls` drops the derived primitives on the next
+            // sync — the `hole` FeatureCall stays the authoritative wire form.
+            let bore_name = if i == 0 { name.clone() } else { format!("{name} #{}", i + 1) };
+            for (local, name_suffix, primitive, transform) in parts {
+                ctx.features.push(DecodedFeature::from_parts(
+                    id.child(local),
+                    format!("{bore_name}{name_suffix}"),
+                    BoolOp::Remove,
+                    primitive,
+                    transform,
+                    PrimitiveModifiers::NONE,
+                    target_ids.clone(),
+                ));
+            }
         }
         Ok(())
     }
