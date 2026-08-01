@@ -829,6 +829,201 @@ auf — beide sind keine eigenständigen Auswertungen.)
   (Toleranz 0.5·δ, Anker im Mittelpunkt). Ein Spine-Snapping auf die
   ECHTE Kanten-Ecke (analog `snap_channel_ends_to_vertices`, das heute nur
   auf Vertex-Kugeln snappt) würde den Bisektor exakt verankern.
+  → gemessen und ausgeführt in §8g (der Versatz ist die DIFFERENZ der
+  Rückstände; bei Standard-Skala harmlos, ab dem 8-fach skalierten Bauteil
+  0.436 mm bei zugesagten 0.01).
+
+## 8g. Die Vertex-Kugel und der Junction-Anker (#384, 2026-08-02)
+
+§8f schloss die Kanal-Enden mit dem dritten Gate und ließ am Ende zwei
+Verdachtsflächen ausdrücklich UNGEMESSEN stehen: die Vertex-Kugeln (haben sie
+dieselbe Fremdgeometrie-Exposition wie die Kanäle vor §8f?) und den
+Junction-Anker (der Bisektor wird von Trace-Enden aufgespannt, die ~0.26 mm
+vor der echten Ecke stehen — bricht das irgendwo eine Schranke?).
+
+**Beide brechen.** Und die Sonden fanden dabei einen dritten, davon
+unabhängigen Bruch: die Schranke, die der Randpunkt-Zeugen-Wächter selbst
+meldet, war ein Zirkelschluss.
+
+### Sonde 1 — die dünne Ecken-Schale (Vertex-Kugel gegen Nachbar-Ecke)
+
+Drei Platten der Dicke `t` (Länge 80, δ = 2 mm) bilden im Ursprung eine
+konkave Raumecke; Material lokal `{−t≤x≤0} ∪ {−t≤y≤0} ∪ {−t≤z≤0}`. Die acht
+Würfelecken von `[−t, 0]³` sind acht konkave Trieder — mit `t` lässt sich ihr
+Abstand exakt einstellen. Referenz: `dist(x, ∁(∪Boxen))` als Strahl-Minimum
+über 400 Fibonacci-Richtungen, je Richtung exakt (verschmolzene
+Slab-Intervalle ab `t = 0`) — eine OBERE Schranke, die einen Fehler nur
+unterschätzen, nie erfinden kann. Gitter 44³, um einen irrationalen Bruchteil
+versetzt: ein achsen-ausgerichtetes Raster landet sonst genau auf den
+Kegel-Randebenen der Kugeln, wo das Feld exakt 0 ist und das Vorzeichen
+Rauschen wird.
+
+| `t/δ` | Fehlklassifikationen | worst | davon Kanäle | davon Vertex-Kugeln | ZUSAGE |
+|---|---|---|---|---|---|
+| 2.0 | 21670 | 1.945 mm | 1.869 | 1.945 | ≤ 1.867 mm — **GEBROCHEN** |
+| 2.2 | 16746 | 1.961 mm | 1.451 | 1.961 | ≤ 1.533 mm — **GEBROCHEN** |
+| 2.5 | 8310 | 1.482 mm | 0.862 | 1.482 | ≤ 1.277 mm — **GEBROCHEN** |
+| 3.0 | 510 | **0.523 mm** | 0.000 | 0.523 | **≤ 0.010 mm — GEBROCHEN, Faktor 52** |
+| 3.5 | 19 | 0.267 mm | 0.267 | 0.000 | ≤ 0.868 mm (hält) |
+| 4.6 | 0 | 0.000 | — | — | ≤ 0.010 mm (hält) |
+
+Die Zeile `t/δ = 3.0` ist der Kern: dort ist der Fehler AUSSCHLIESSLICH die
+Vertex-Kugel (die Kanäle sind fehlerfrei), und der Stopp sagt die volle
+Bau-Toleranz zu, ohne dass irgendwer widerspricht.
+
+**Warum niemand widersprach.** `end_region_violation` — der Zeugen-Wächter aus
+§8e, den §8f ausdrücklich als „empirischen Nachhalter des Beweises" stehen
+ließ — iteriert über `channels`. Vertex-Kugeln kamen darin nur als Teil des
+angewandten Feldes vor, nie als eigene Sonden-Quelle. Der Wächter hatte eine
+blinde Stelle in genau der Größe des Terms, den er nicht kannte.
+
+**Der Mechanismus** ist der §8f-Mechanismus mit Punkt-Spine. Die Kugel
+behauptet `dist(x, ∁Ω) = |x−v|` im ganzen Trieder-Kegel bis `K = (c_v+0.5)·δ`
+(orthogonal: `2.28·δ`). Steht eine zweite konkave Ecke `v'` im Abstand `D`,
+erreicht ihr Komplement-Oktant Kegelpunkte früher als `v` — und weil der
+konkave Term `f = min(d, −w)` bildet, GEWINNT die falsche, weiter entfernte
+Ecke. Aufgeschlüsselt bei `t = 3·δ` (also `D = 6 mm`) am Punkt
+`[−0.5, −1.5, −0.5]`: `ρ = 4.55` zur Ecke `(0,−6,0)`, der wahre Abstand zur
+Luft aber `1.66` (zur Ecke im Ursprung). Die ferne Kugel setzt `f = −0.011`;
+das naive Feld hatte mit `+0.5` richtig gelegen. Am Gitterpunkt
+`[0, −1.5, 0]` — exakt auf der Kegel-Randebene — kippt dasselbe auf
+`f = −1e−9` bei einem wahren Fehler von 0.497 mm.
+
+Die Schwelle ist elementar und deckt sich mit der Messung: ein
+Komplement-Punkt `y` mit `dist(x,y) < δ` erfüllt `|v−y| < K + δ`, also kann
+eine Fehlklassifikation nur auftreten, wenn `D < K + δ = 3.28·δ = 6.56 mm`.
+`t/δ = 3.0` (D = 6) bricht, `t/δ = 3.5` (D = 7) nicht.
+
+### Sonde 2 — die skalierte Tasche (Junction-Anker)
+
+Dieselbe Taschen-Fixture wie §8d/§8f (`A = Box he 10`, `B = Box he [7,7,5]`,
+`s = 3·δ`, kein Prisma), aber um `f` skaliert; δ bleibt bei 2 mm. Die
+Trace-Schrittweite ist `2 %` der Überlappungs-AABB, wächst also mit dem
+Bauteil. Referenz: die exakte ≤6-Box-Zerlegung von `A \ B`, Gitter 45³ lokal
+um EINE Mündungs-Ecke.
+
+| `f` | Schritt | Rückstand der Trace-Enden | Bisektor-Slots | Fehlklassifikationen | worst | ZUSAGE |
+|---|---|---|---|---|---|---|
+| 1 | 0.28 mm | 0.26 mm = 0.13·δ | 8/8 | 0 | 0.000 | ≤ 0.010 (hält) |
+| 2 | 0.56 mm | 0.52 mm | 8/8 | 0 | 0.000 | ≤ 0.868 (hält) |
+| 4 | 1.12 mm | 1.03 mm | 4/8 | 0 | 0.000 | ≤ 0.010 (hält) |
+| 8 | 2.24 mm | 2.06 mm | 2/8 | **23** | **0.436 mm** | **≤ 0.010 — GEBROCHEN** |
+| 16 | 4.48 mm | 4.11 mm | 2/8 | **35** | **0.436 mm** | **≤ 0.010 — GEBROCHEN** |
+
+Zwei getrennte Ursachen, die sich hier überlagern:
+
+* **Die Junction-TOLERANZ war körpergrößen-blind.** Zwei Enden galten als
+  dieselbe Junction, wenn sie näher als `0.5·δ` lagen. Der Rückstand skaliert
+  aber mit dem Schritt, nicht mit δ; ab `f = 4` fällt die Erkennung
+  reihenweise aus, der Bisektor weicht der stumpferen δ-Endebene — und deren
+  Restfehler ist genau der in §8f vermessene (dort 0.395 mm / 20 Fehler, hier
+  0.436 mm).
+* **Der ANKER selbst.** §8f verankerte den Bisektor im Mittelpunkt der beiden
+  Trace-Enden mit dem Argument, beide Nachbarn bekämen so dieselbe Ebene.
+  Richtig — aber die Ebene sitzt nur dann an der Ecke, wenn beide Traces
+  GLEICH weit davor stehen. Ausgerechnet:
+
+      ⟨mid − E, n̂⟩ = (g₁ − g₂)·(1 − cos θ) / (2·|t̂₁ − t̂₂|)
+
+  Der Versatz ist also nicht der Rückstand, sondern dessen **DIFFERENZ** —
+  und der Prädiktor-Korrektor stoppt je nach Phasenlage irgendwo im letzten
+  Schritt, `g₁ − g₂` streut über eine volle Schrittweite. Gemessen bei
+  `f = 16` an einer Ecke: `g₁ = 0.02 mm`, `g₂ = 4.07 mm` ⇒ 1.43 mm
+  Ebenen-Versatz. **Das ist zugleich der Negativ-Befund zur Ausgangsfrage:**
+  bei der Standard-Skala (`f = 1`, Rückstände ≤ 0.26 mm) ist der Versatz
+  ≤ 0.09 mm und richtet messbar NICHTS an — 0 Fehlklassifikationen. Der
+  Anker ist kein Problem der Größenordnung 0.26 mm, sondern eines der
+  Skalierung.
+
+### Sonde 3 — der Zeuge als Schranke (Nebenbefund, eigener Bruch)
+
+`audit_channel_end_caps` meldete bei einem Zeugen `Fehler ≤ max(gate, viol)`,
+also im Zweifel den GEMESSENEN Zeugenwert als Schranke. Das ist ein
+Zirkelschluss: der Zeuge ist eine Stichprobe (240 Fibonacci-Richtungen × 10
+Radien je Ende) und damit eine UNTERE Schranke des Fehlers, nie eine obere.
+An der 2·δ-Schale gemessen: Zeuge 1.632 mm gemeldet, echter Nullmengen-Fehler
+1.869 mm — die Zusage war um 0.24 mm gelogen. Der Bruch ist älter als dieses
+Paket (§8e führte die Formel ein) und wurde erst durch die neuen Sonden
+sichtbar.
+
+### Fix — vier Schritte, alle in der SYNTHESE, kein Opcode
+
+Der Opcode bleibt unangetastet: `trust`, `end_planes` und die Bogenkette sind
+DATEN (§8e-Präzedenz). Kein Wire-Format wechselt, kein Spiegel wird angefasst,
+`check_interp` bleibt unberührt.
+
+1. **Nachbar-Kegel-Klemme** (`clamp_vertex_trust`). `K ← min(K, max(D − δ, δ))`
+   mit `D` = Abstand zum nächsten anderen gelösten Trieder-Punkt des Stopps —
+   auch zu den VERWEIGERTEN: ein verweigerter Kegel bekommt keinen Term, sein
+   Komplement-Oktant konkurriert aber trotzdem. Die Untergrenze `δ` leert das
+   materialaddierende Band `(δ, K)`, lässt die march-sichere
+   Luftseiten-Klemme für `ρ < δ` aber wortgleich; die Klemme kann also nur
+   WENIGER Material addieren, nie mehr.
+2. **Junction-Toleranz am Schritt** statt an δ: `join = max(0.5·δ, 3·step)`,
+   symmetrisch über das Maximum beider Kanal-Schritte (sonst sähe A den
+   Nachbarn B, B aber nicht A, und die Zerlegung bekäme ein Loch). `3·step`
+   ist derselbe Radius, mit dem `snap_channel_ends_to_vertices` seit C4 an
+   die Vertex-Kugeln snappt.
+3. **Anker in der echten Ecke** (`junction_anchor`): der gemeinsame Punkt der
+   beiden Spine-GERADEN statt der Mittelpunkt der Enden. Symmetrisch
+   konstruiert (das nächste Punktepaar zweier Geraden ist rollensymmetrisch),
+   mit Rückfall auf den Mittelpunkt bei (anti)parallelen Tangenten und wenn
+   die Lösung aus dem Suchfenster läuft.
+4. **Spine-Snapping an die Kanal↔Kanal-Junction**
+   (`snap_channel_ends_to_junctions`) — der in §8f als offen notierte Punkt.
+   Beide Nähte werden bis zur gemeinsamen Ecke verlängert; ist der terminale
+   Bogen bereits ein kollineares Segment, wird er verlängert statt ein
+   zweites angehängt. Untergrenze `0.1·δ`, gemessen kalibriert: darüber
+   schließt der Snap jeden Ecken-Restfehler der Schalen-Sonde, darunter
+   schließt er keinen mehr, verschiebt aber Tape und gewobene B-Rep — an der
+   Zylinder∪Box-Fixture kostete ein 0.033-mm-Anbau (0.017·δ) die Weave eine
+   ganze Mantelfläche und dem Kanal damit seine auflösbare Provenance
+   (`pick_on_offset_channel_reports_both_edge_parents`).
+5. **Der Wächter sieht jetzt auch Kugeln** und **ein Zeuge ist keine
+   Schranke**: `end_region_violation` sondiert zusätzlich den Kegel jeder
+   Vertex-Kugel (`δ < ρ < K`); übersteigt ein Zeuge die strukturelle
+   Ein-Term-Schranke `gate`, wirkt der Term außerhalb des Modells, unter dem
+   sie hergeleitet wurde — dann meldet die Capability `conservative`
+   („keine Schranke mehr belegbar") statt einer Stichprobe.
+
+### Bilanz
+
+| Szene | vorher | Zusage vorher | nachher | Zusage nachher |
+|---|---|---|---|---|
+| Ecken-Schale `t/δ = 3.0` | 510 Fehler, 0.523 mm | ≤ 0.010 (still) | **0**, 0.000 | ≤ 0.010 wahr |
+| Ecken-Schale `t/δ = 3.5` | 19 Fehler, 0.267 mm | ≤ 0.868 | **0**, 0.000 | ≤ 0.010 wahr |
+| Ecken-Schale `t/δ = 4.0` | 5 Fehler, 0.119 mm | ≤ 0.868 | **0**, 0.000 | ≤ 0.010 wahr |
+| Ecken-Schale `t/δ = 4.4` | 28 Fehler, 0.407 mm | ≤ 0.868 | **0**, 0.000 | ≤ 0.010 wahr |
+| Ecken-Schale `t/δ = 5.0` | 25 Fehler, 0.500 mm | ≤ 0.868 | **0**, 0.000 | ≤ 0.010 wahr |
+| Ecken-Schale `t/δ ≤ 2.5` | bis 1.945 mm | ≤ 1.867 (gebrochen) | 1.869 mm | `conservative`, keine Zusage |
+| Tasche `f = 8` | 23 Fehler, 0.436 mm | ≤ 0.010 (still) | **0**, 0.000 | ≤ 0.010 wahr |
+| Tasche `f = 16` | 35 Fehler, 0.436 mm | ≤ 0.010 (still) | **0**, 0.000 | ≤ 0.010 wahr |
+| Tasche `f = 1` (Standard-Skala) | 0 | ≤ 0.010 | **0** | unverändert |
+| Golden (35 Szenen) | — | — | **35/35 byte-identisch** | — |
+
+Die Golden-Neutralität ist kein Zufall, sondern die Aussage des Pakets: alle
+vier Eingriffe greifen erst dort, wo eine Nachbar-Ecke näher als `K + δ` steht
+oder der Trace-Schritt gegen δ läuft. Keine der 35 Referenzszenen liegt in
+diesem Bereich — die gemessenen Brüche saßen genau NEBEN dem, was die
+Golden-Suite abdeckt.
+
+### Was OFFEN bleibt
+
+* **Fremdgeometrie ohne Trieder-Punkt.** Die Nachbar-Kegel-Klemme misst `D`
+  gegen die gelösten Trieder-Punkte des Stopps. Konkurriert stattdessen eine
+  freie FLÄCHE (ein Deckel, der ohne eigene Ecke am Kegel vorbeizieht), gibt
+  es keinen Kandidaten für `D`. Strukturell geschlossen ist dieser Fall NICHT;
+  er fällt seit diesem Paket aber wenigstens dem Zeugen-Wächter auf, der
+  jetzt auch um Vertex-Kugeln sondiert — also honest downgrade statt stiller
+  Falschaussage.
+* **Der Kaskaden-Effekt** bleibt wie in §8f: zwei weit auseinanderliegende
+  Nähte desselben Stopps können sich weiterhin addieren (bis `2·G`), ohne
+  dass an einer Fixture eine Fehlklassifikation entsteht.
+* **Das Bogen-Budget.** `snap_channel_ends_to_junctions` verlängert das
+  terminale Segment, wenn es kollinear ist, hängt sonst einen Bogen an. An
+  gekrümmten Nähten wächst das Tape also um einen Bogen je gesnappter
+  Junction. An den gemessenen Fixturen bleibt es weit unter
+  `MAX_ARCS_PER_STOP`.
 
 ## 9. Geschriebene Dateien
 
@@ -844,7 +1039,10 @@ auf — beide sind keine eigenständigen Auswertungen.)
   S ⊆ U, Stufe-2-Klemme (submergierte-Π-Luftseiten-Klemme).
 - `docs/research/sdf-metricity/F396-RIM-OPCODE-DESIGN.md` — ∂P-Rand-Fillet
   (radiale Distanz + Halbraum-Maske + Nearest-Feature, Over-Fill = 0).
-- `crates/kernel/src/offset_channel.rs` — `box_contact_faces`, `clip_convex`,
+- `crates/kernel/src/offset_channel.rs` — §8g: `clamp_vertex_trust`,
+  `junction_anchor`, `snap_channel_ends_to_junctions`, `set_end_plane_gates`,
+  `end_region_violation`, `audit_channel_end_caps`; ferner
+  `box_contact_faces`, `clip_convex`,
   `cleanup_poly`, `plane_frame`, `build_prism_member`, `prism_subset_of_union`,
   `prism_outside_inner`, `contact_clips`, `synthesize_stop`.
 - `crates/kernel/src/offset_rim.rs` — `rims_from_clip`, `edge_on_rect`/

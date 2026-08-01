@@ -1659,3 +1659,316 @@ fn dist_to_notch_complement(alpha_deg: f64, p: [f64; 3]) -> f64 {
 }
 
 
+
+// ─── #384 §8g: Vertex-Kugel-Exposition und Junction-Anker ────────────────
+//
+// §8f schloss die Kanal-Enden mit dem dritten Gate. Zwei benachbarte
+// Verdachtsflächen blieben UNGEMESSEN — beide brachen, beide gemessen an
+// exakten Referenzen:
+//
+// 1. **Vertex-Kugel gegen Nachbar-Ecke.** Der C4-Term behauptet
+//    `dist(x, ∁Ω) = |x−v|` im ganzen Trieder-Kegel bis `K = (c_v+0.5)·δ`.
+//    Sitzt eine ZWEITE konkave Ecke näher als `K + δ`, erreicht deren
+//    Komplement-Oktant Kegelpunkte früher als `v` — und weil der konkave
+//    Term ein `min` bildet, GEWINNT die falsche, weiter entfernte Ecke
+//    (dieselbe Fehlerklasse wie §8f an den Nahtenden, nur mit Punkt-Spine).
+//    Gemessen an der dünnen Ecken-Schale (drei Platten der Dicke `t`,
+//    δ = 2 mm), Referenz `dist(x, ∁(∪Boxen))` als Strahl-Minimum:
+//
+//    | `t/δ` | vorher | Zusage vorher | nachher |
+//    |---|---|---|---|
+//    | 3.0 | 510 Fehlklassifikationen, worst 0.523 mm | ≤ 0.01 mm (STILL) | **0**, ≤ 0.01 wahr |
+//    | 3.5 | 19, worst 0.267 mm | ≤ 0.868 mm | **0**, ≤ 0.01 |
+//    | 4.4 | 28, worst 0.407 mm | ≤ 0.868 mm | **0**, ≤ 0.01 |
+//    | 5.0 | 25, worst 0.500 mm | ≤ 0.868 mm | **0**, ≤ 0.01 |
+//    | ≤ 2.5 | bis 1.945 mm | ≤ 1.867 mm (GEBROCHEN) | `conservative`, keine Zusage |
+//
+//    Die Sonde war zugleich der Beleg, dass der Randpunkt-Zeugen-Wächter
+//    aus §8e/§8f eine blinde Stelle hatte: er lief nur um KANAL-Enden,
+//    nie um Vertex-Kugeln. Bei `t/δ = 3.0` meldete er darum gar nichts.
+//
+// 2. **Junction-Anker.** Der Bisektor wurde im MITTELPUNKT der beiden
+//    Trace-Enden verankert. Der Versatz zur echten Ecke ist nicht der
+//    Rückstand, sondern dessen DIFFERENZ — und die Trace-Schrittweite ist
+//    2 % der Überlappungs-AABB, wächst also mit dem Bauteil, während die
+//    Junction-Toleranz mit `0.5·δ` körpergrößen-blind war. Am um `f`
+//    skalierten Taschen-Fixture (δ = 2 mm fest):
+//
+//    | `f` | Schritt | vorher | nachher |
+//    |---|---|---|---|
+//    | 1 | 0.28 mm | 0 Fehler, ≤ 0.01 | unverändert |
+//    | 4 | 1.12 mm | 0 Fehler, ≤ 0.01 | unverändert |
+//    | 8 | 2.24 mm | **23 Fehler, worst 0.436 mm** bei ≤ 0.01 | **0**, ≤ 0.01 |
+//    | 16 | 4.48 mm | **35 Fehler, worst 0.436 mm** bei ≤ 0.01 | **0**, ≤ 0.01 |
+
+/// Obere Schranke für `dist(p, ∁(∪ Boxen))` (achsparallel) — Spiegel von
+/// [`dist_to_notch_complement`] ohne Rotation und für beliebig viele Boxen:
+/// je Richtung exakt (verschmolzene Slab-Intervalle ab `t = 0`), über eine
+/// dichte Fibonacci-Richtungsmenge minimiert. Eine OBERE Schranke genügt —
+/// sie kann einen Fehler nur unterschätzen, nie erfinden.
+fn dist_to_boxes_complement(boxes: &[([f64; 3], [f64; 3])], p: [f64; 3], ndir: usize) -> f64 {
+    let ga = std::f64::consts::PI * (3.0 - 5.0f64.sqrt());
+    let mut best = f64::INFINITY;
+    for i in 0..ndir {
+        let z = 1.0 - 2.0 * (i as f64 + 0.5) / ndir as f64;
+        let r = (1.0 - z * z).max(0.0).sqrt();
+        let th = ga * i as f64;
+        let d = [r * th.cos(), r * th.sin(), z];
+        let mut iv: Vec<(f64, f64)> = Vec::new();
+        for (lo, hi) in boxes {
+            let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
+            let mut hit = true;
+            for k in 0..3 {
+                if d[k].abs() < 1e-12 {
+                    if p[k] < lo[k] || p[k] > hi[k] {
+                        hit = false;
+                    }
+                } else {
+                    let a = (lo[k] - p[k]) / d[k];
+                    let b = (hi[k] - p[k]) / d[k];
+                    t0 = t0.max(a.min(b));
+                    t1 = t1.min(a.max(b));
+                }
+            }
+            if hit && t1 >= t0 && t1 > 0.0 {
+                iv.push((t0.max(0.0), t1));
+            }
+        }
+        if iv.is_empty() {
+            return 0.0;
+        }
+        iv.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        if iv[0].0 > 1e-12 {
+            return 0.0; // p liegt außerhalb des Körpers
+        }
+        let mut end = 0.0f64;
+        for (a, b) in iv {
+            if a <= end + 1e-9 {
+                end = end.max(b);
+            } else {
+                break;
+            }
+        }
+        best = best.min(end);
+    }
+    best
+}
+
+/// Drei Platten der Dicke `t` bilden eine konkave Ecke im Ursprung
+/// (Material lokal `{−t≤x≤0} ∪ {−t≤y≤0} ∪ {−t≤z≤0}`, Luft = +Oktant). Die
+/// acht Würfelecken von `[−t, 0]³` sind acht konkave Trieder — mit `t` lässt
+/// sich ihr Abstand exakt einstellen und damit die Exposition der
+/// Vertex-Kugeln durchfahren.
+fn thin_corner_node(t: f32, l: f32, delta: f32) -> CsgNode {
+    let plate = |fid: u32, c: [f32; 3], h: [f32; 3]| {
+        CsgNode::Transform(
+            Transform { translate: c, rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+            Box::new(leaf_box(fid, h)),
+        )
+    };
+    let h = 0.5 * t;
+    CsgNode::Offset(
+        Box::new(CsgNode::Union(
+            Box::new(CsgNode::Union(
+                Box::new(plate(1, [0.0, -h, 0.0], [l, h, l])),
+                Box::new(plate(2, [-h, 0.0, 0.0], [h, l, l])),
+            )),
+            Box::new(plate(3, [0.0, 0.0, -h], [l, l, h])),
+        )),
+        -delta,
+    )
+}
+
+fn thin_corner_boxes(t: f64, l: f64) -> Vec<([f64; 3], [f64; 3])> {
+    vec![
+        ([-l, -t, -l], [l, 0.0, l]),
+        ([-t, -l, -l], [0.0, l, l]),
+        ([-l, -l, -t], [l, l, 0.0]),
+    ]
+}
+
+/// Zahl der Punkte, die das Feld als IN der Erosion meldet, deren δ-Kugel
+/// aber nachweislich aus dem Körper ragt — plus der größte solche Nachweis.
+/// Das Gitter ist um einen irrationalen Bruchteil versetzt: ein
+/// achsen-ausgerichtetes Raster landet sonst genau auf den Kegel-Randebenen
+/// der Vertex-Kugeln, wo das Feld exakt 0 ist und das Vorzeichen Rauschen ist.
+fn erosion_zero_set_error(
+    field: &BoundedCsg,
+    boxes: &[([f64; 3], [f64; 3])],
+    delta: f32,
+    lo: [f64; 3],
+    hi: [f64; 3],
+    n: usize,
+    ndir: usize,
+) -> (usize, f64, [f64; 3]) {
+    let (mut miss, mut worst, mut at) = (0usize, 0.0f64, [0.0f64; 3]);
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let f = [
+                    (ix as f64 + 0.2113248654) / n as f64,
+                    (iy as f64 + 0.5773502692) / n as f64,
+                    (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let p = [
+                    lo[0] + (hi[0] - lo[0]) * f[0],
+                    lo[1] + (hi[1] - lo[1]) * f[1],
+                    lo[2] + (hi[2] - lo[2]) * f[2],
+                ];
+                if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
+                    continue; // „nicht in der Erosion" — nichts zu beweisen
+                }
+                let u = dist_to_boxes_complement(boxes, p, ndir);
+                let err = delta as f64 - u;
+                if err <= 1e-3 {
+                    continue;
+                }
+                miss += 1;
+                if err > worst {
+                    worst = err;
+                    at = p;
+                }
+            }
+        }
+    }
+    (miss, worst, at)
+}
+
+/// **Kern-Regression (§8g, Verdachtsfläche 1).** Solange die Schale dick
+/// genug ist, dass die Erosion überhaupt überlebt (`t ≥ 3·δ`), ist der
+/// Ecken-Stopp an der exakten Referenz messbar fehlerfrei — und sagt das
+/// auch zu. Vor der Nachbar-Kegel-Klemme gewann bei `t = 3·δ` die
+/// ÜBERNÄCHSTE Ecke den `min` und behauptete Material in wahrer Luft: 510
+/// Fehlklassifikationen, worst 0.523 mm, gemeldet ≤ 0.01 mm.
+#[test]
+fn erosion_thin_corner_vertex_sphere_is_exact_384() {
+    let delta = 2.0f32;
+    for tf in [3.0f32, 4.0, 4.4, 6.0] {
+        let t = tf * delta;
+        let (field, report) = compile_for(thin_corner_node(t, 40.0, delta));
+        let boxes = thin_corner_boxes(t as f64, 40.0);
+        let lo = -(t as f64 + delta as f64 + 1.0);
+        let (miss, worst, at) =
+            erosion_zero_set_error(&field, &boxes, delta, [lo; 3], [1.0; 3], 26, 200);
+        // Geprüft wird die ZUGESAGTE Schranke, nicht der Messboden: unter
+        // `channel_tol` liegt der Arc-Spline-Fit selbst (0.0013 mm bei
+        // t/δ = 4 — die Kurventoleranz, nicht die Ecken-Exposition).
+        assert!(
+            worst <= CHANNEL_TOL_RENDER as f64,
+            "Schale t/δ={tf}: {miss} Fehlklassifikationen, größte {worst:.4} mm bei {at:?} — \
+             die Vertex-Kugel darf über die Nachbar-Ecke hinaus nichts behaupten \
+             (vor §8g: 510 Stück bis 0.523 mm)"
+        );
+        assert_eq!(report.status(), CapabilityStatus::ToleranceBounded, "{:?}", report.reasons());
+        assert!(
+            !report.reasons().iter().any(|r| r.contains("NICHT auf die Bau-Toleranz")),
+            "Schale t/δ={tf}: der Fehler ist weg, also muss auch das Downgrade fallen: {:?}",
+            report.reasons()
+        );
+    }
+}
+
+/// Der Gegenpol: eine Schale unter `3·δ` erodiert zu (fast) nichts, die
+/// Ecken-Kegel überlappen einander vollständig, und dort sagt der Stopp
+/// EHRLICH nichts mehr zu. Vor §8g meldete er `tolerance_bounded` mit einer
+/// Schranke, die er selbst um 0.24 mm riss — der Randpunkt-Zeuge ging als
+/// Schranke durch, obwohl er nur eine Stichprobe ist und damit eine UNTERE
+/// Schranke des Fehlers.
+#[test]
+fn erosion_collapsing_shell_promises_nothing_384() {
+    let delta = 2.0f32;
+    for tf in [2.0f32, 2.5] {
+        let (_, report) = compile_for(thin_corner_node(tf * delta, 40.0, delta));
+        assert_eq!(
+            report.status(),
+            CapabilityStatus::Conservative,
+            "Schale t/δ={tf}: die Erosion kollabiert dort — eine Bau-Toleranz-Zusage wäre \
+             eine Lüge: {:?}",
+            report.reasons()
+        );
+        assert!(
+            report.reasons().iter().any(|r| r.contains("keine Schranke mehr belegbar")),
+            "Schale t/δ={tf}: der Grund muss benannt sein: {:?}",
+            report.reasons()
+        );
+    }
+}
+
+/// Taschen-Fixture wie [`pocket_dilation`], um `f` skaliert — δ bleibt bei
+/// 2 mm. Die Trace-Schrittweite ist 2 % der Überlappungs-AABB, mit `f`
+/// wächst also der Rückstand der Trace-Enden vor der Mündungs-Ecke.
+fn pocket_dilation_scaled(f: f32, s: f32, delta: f32) -> CsgNode {
+    let a = leaf_box(1, [10.0 * f, 10.0 * f, 10.0 * f]);
+    let b = CsgNode::Transform(
+        Transform {
+            translate: [0.0, 0.0, 5.0 * f + s],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+        },
+        Box::new(leaf_box(2, [7.0 * f, 7.0 * f, 5.0 * f])),
+    );
+    CsgNode::Offset(Box::new(CsgNode::Difference(Box::new(a), Box::new(b))), delta)
+}
+
+/// **Kern-Regression (§8g, Verdachtsfläche 2).** Der Voronoi-Bisektor an der
+/// Mündungs-Ecke muss unabhängig von der BAUTEILGRÖSSE sitzen. Vor §8g fiel
+/// ab `f = 8` die Junction-Erkennung aus (`0.5·δ` gegen einen Rückstand von
+/// 2.06 mm), der Bisektor wich der stumpferen δ-Endebene, und die Ecke riss
+/// 0.436 mm Nullmengen-Fehler auf — bei zugesagten 0.01 mm.
+#[test]
+fn dilation_junction_bisector_is_scale_invariant_384() {
+    let delta = 2.0f32;
+    for f in [1.0f32, 4.0, 16.0] {
+        let s = 3.0 * delta;
+        let (field, report) = compile_for(pocket_dilation_scaled(f, s, delta));
+        let a = (
+            [-10.0 * f as f64, -10.0 * f as f64, -10.0 * f as f64],
+            [10.0 * f as f64, 10.0 * f as f64, 10.0 * f as f64],
+        );
+        let b = (
+            [-7.0 * f as f64, -7.0 * f as f64, s as f64],
+            [7.0 * f as f64, 7.0 * f as f64, s as f64 + 10.0 * f as f64],
+        );
+        // Lokal um EINE Mündungs-Ecke — dort entscheidet der Bisektor.
+        let c = [7.0 * f as f64, 7.0 * f as f64, 10.0 * f as f64];
+        let r = 5.0 * delta as f64;
+        let n = 30;
+        let (mut miss, mut worst, mut at) = (0usize, 0.0f64, [0.0f64; 3]);
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let p = [
+                        c[0] - r + 2.0 * r * (ix as f64 + 0.2113248654) / n as f64,
+                        c[1] - r + 2.0 * r * (iy as f64 + 0.5773502692) / n as f64,
+                        c[2] - r + 2.0 * r * (iz as f64 + 0.7886751346) / n as f64,
+                    ];
+                    let d = dist_to_box_minus_box(p, a, b);
+                    let err = (d - delta as f64).abs();
+                    if err <= 1e-3 {
+                        continue;
+                    }
+                    let got = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+                    if (d <= delta as f64) != (got < 0.0) {
+                        miss += 1;
+                        if err > worst {
+                            worst = err;
+                            at = p;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            miss, 0,
+            "Skala f={f}: {miss} Nullmengen-Fehler an der Mündungs-Ecke, größter {worst:.4} mm \
+             bei {at:?} — der Bisektor muss unabhängig von der Bauteilgröße sitzen"
+        );
+        assert_eq!(report.status(), CapabilityStatus::ToleranceBounded, "{:?}", report.reasons());
+        assert!(
+            !report.reasons().iter().any(|r| r.contains("NICHT auf die Bau-Toleranz")),
+            "Skala f={f}: kein Fehler mehr, also auch kein Downgrade: {:?}",
+            report.reasons()
+        );
+    }
+}
+

@@ -599,6 +599,39 @@ für Shell.
   nicht — gemessen unverändert bis zu 2 Terme je Punkt und `2·G`
   Gesamt-Auslenkung, ohne dass an den Fixturen noch eine
   Fehlklassifikation entsteht. Herleitung + Messtabellen: §8f.
+* **Vertex-Kugel-Exposition und Junction-Anker — ERLEDIGT (#384 §8g,
+  2026-08-02).** §8f ließ beide Flächen ausdrücklich ungemessen; beide
+  brachen. (a) Die C4-Vertex-Kugel behauptet `dist(x,∁Ω) = |x−v|` im ganzen
+  Trieder-Kegel bis `K = (c_v+0.5)·δ`. Steht eine zweite konkave Ecke näher
+  als `K + δ`, gewinnt im konkaven `min` die FALSCHE, weiter entfernte Ecke —
+  an einer Schale aus drei Platten der Dicke `3·δ` sind das 510
+  Fehlklassifikationen mit 0.523 mm bei zugesagten 0.01 mm, und niemand
+  widersprach: der Randpunkt-Zeugen-Wächter lief nur um KANAL-Enden.
+  (b) Der Voronoi-Bisektor war im Mittelpunkt der Trace-Enden verankert; sein
+  Versatz zur echten Ecke ist `(g₁−g₂)·(1−cos θ)/(2·|t̂₁−t̂₂|)`, also die
+  DIFFERENZ der Rückstände — bei Standard-Skala ≤ 0.09 mm und messbar
+  folgenlos (Negativ-Befund), am 8- bis 16-fach skalierten Taschen-Fixture
+  aber 1.43 mm, weil die Trace-Schrittweite mit dem Bauteil wächst, die
+  Junction-Toleranz `0.5·δ` dagegen nicht: 23–35 Fehlklassifikationen mit
+  0.436 mm bei zugesagten 0.01 mm. (c) Nebenbefund: der Wächter meldete
+  `Fehler ≤ max(gate, viol)` — ein Zirkelschluss, denn `viol` ist eine
+  Stichprobe und damit eine UNTERE Schranke (gemessen 1.632 gemeldet gegen
+  1.869 real). Fix in FÜNF Synthese-Schritten, KEIN Opcode, kein Spiegel,
+  kein Wire-Format: Nachbar-Kegel-Klemme `K ← min(K, max(D−δ, δ))` gegen alle
+  gelösten Trieder-Punkte (auch verweigerte); `join = max(0.5·δ, 3·step)`
+  symmetrisch; Anker im echten Geraden-Schnittpunkt (`junction_anchor`);
+  Spine-Snapping an die Kanal↔Kanal-Junction ab `0.1·δ` Rückstand
+  (`snap_channel_ends_to_junctions`, terminales Segment wird verlängert statt
+  verdoppelt); Zeugen-Wächter sondiert auch Vertex-Kugel-Kegel und meldet
+  `conservative` statt einer Stichproben-Schranke, sobald ein Zeuge das
+  strukturelle `gate` übersteigt. Messbilanz: Schale `t/δ ∈ [3, 6]`
+  0.119–0.523 → **0.000 mm / 0 Fehler** mit enger Zusage; Tasche `f ∈ {8,16}`
+  0.436 → **0.000 mm / 0 Fehler**; Schale `t/δ ≤ 2.5` (die Erosion
+  kollabiert) ehrlich `conservative`. Golden: **35/35 byte-identisch** — die
+  Brüche saßen genau neben dem, was die Referenzszenen abdecken. Offen bleibt
+  Fremdgeometrie OHNE eigenen Trieder-Punkt (kein Kandidat für `D`; fällt nur
+  dem Zeugen auf) und der bekannte Kaskaden-Effekt. Herleitung +
+  Messtabellen: §8g.
 * **Interaktion mit Edge-Fillets/MaskedBlend- und smin-Stopps.** Der
   Pushdown stoppt an Blend-Knoten — dort gibt es keinen exakten Offset
   (Blendflächen sind keine Offset-abgeschlossene Klasse). Offset über

@@ -1254,6 +1254,61 @@ fn end_region_violation(
             }
         }
     }
+    // #384 §8g — **derselbe Zeugen-Test um die VERTEX-KUGELN.** Bis §8f sah
+    // die Sonde nur Kanal-Enden; die Punkt-Spine der Vertex-Kugel hat aber
+    // exakt dieselbe Exposition (der Term behauptet `|x−v|` als Distanz zum
+    // Komplement, auch wenn eine fremde Fläche oder eine Nachbar-Ecke näher
+    // liegt). An der dünnen Ecken-Schale war das eine STILLE Falschaussage:
+    // 510 Fehlklassifikationen, worst 0.523 mm, gemeldet ≤ 0.01 mm. Die
+    // Nachbar-Kegel-Klemme ([`clamp_vertex_trust`]) schließt den
+    // Ecke-gegen-Ecke-Anteil strukturell; alles Übrige (fremde Fläche,
+    // verweigerte Nachbar-Ecke) meldet ab jetzt dieser Zeuge.
+    for vs in verts {
+        let dabs = vs.delta;
+        if !(dabs > 0.0) || !(vs.trust > dabs) {
+            continue;
+        }
+        for dir in FIB_DIRS.iter() {
+            if vs.gates.iter().any(|g| dot(*dir, *g) <= 0.05) {
+                continue;
+            }
+            for k in 1..=10 {
+                let r = dabs + (vs.trust - dabs) * (k as f32 / 11.0);
+                let x = [
+                    vs.v[0] + dir[0] * r,
+                    vs.v[1] + dir[1] * r,
+                    vs.v[2] + dir[2] * r,
+                ];
+                let d = field(x) - delta_signed;
+                if !d.is_finite() {
+                    continue;
+                }
+                let corr = verts_apply(channels_apply(d, x, channels), x, verts);
+                let flipped = if delta_signed > 0.0 {
+                    d <= 0.0 && corr > 0.0
+                } else {
+                    d >= 0.0 && corr < 0.0
+                };
+                if !flipped {
+                    continue;
+                }
+                let Some(u) = boundary_witness(field, x, dabs - tol, vs.trust) else {
+                    continue;
+                };
+                if u >= dabs - tol {
+                    continue;
+                }
+                let viol = if delta_signed > 0.0 {
+                    corr + (dabs - u)
+                } else {
+                    (dabs - u) - corr
+                };
+                if viol > tol && worst.map_or(true, |(w, _, _)| viol > w) {
+                    worst = Some((viol, vs.gate, x));
+                }
+            }
+        }
+    }
     worst
 }
 
@@ -1305,7 +1360,7 @@ fn end_region_violation(
 /// Geschlossene Spines (Steinmetz) haben kein Ende: alle vier Halbräume
 /// bleiben der neutrale Sentinel, das Feld ist wertidentisch zu einem
 /// Kanal ohne drittes Gate.
-fn set_end_plane_gates(channels: &mut [OffsetChannel]) {
+fn set_end_plane_gates(channels: &mut [OffsetChannel], steps: &[f32]) {
     // Alle offenen Spine-Enden des Stopps mit ihrer Innen-Tangente sammeln.
     let mut ends: Vec<(usize, [f32; 3], [f32; 3])> = Vec::new();
     for (ci, ch) in channels.iter().enumerate() {
@@ -1327,17 +1382,33 @@ fn set_end_plane_gates(channels: &mut [OffsetChannel]) {
     for ch in channels.iter_mut() {
         ch.end_planes = [END_PLANE_NONE; 4];
     }
-    // Zwei Enden gelten als dieselbe Junction, wenn sie näher als 0.5·δ
-    // liegen: der Prädiktor-Korrektor-Trace stoppt am
+    // Zwei Enden gelten als dieselbe Junction, wenn sie dichter beieinander
+    // liegen als der Rückstand des Traces: der Prädiktor-Korrektor stoppt am
     // `on_composite_boundary`-Gate typisch einen Schritt VOR der Ecke, die
     // beiden Spine-Enden treffen sich also nicht exakt.
+    //
+    // #384 §8g — **die Toleranz muss mit dem SCHRITT skalieren, nicht mit δ.**
+    // Die Trace-Schrittweite ist 2 % der Überlappungs-AABB, wächst also mit
+    // dem Bauteil; `0.5·δ` war eine körpergrößen-blinde Konstante. An einem
+    // 16-fach skalierten Taschen-Fixture (Schritt 4.48 mm = 2.24·δ) fiel die
+    // Junction-Erkennung deshalb aus, der Bisektor wich der stumpferen
+    // δ-Endebene — und die riss an der Mündungs-Ecke 0.436 mm Nullmengen-
+    // Fehler bei zugesagten 0.01 mm auf (gemessen §8g). `3·step` ist
+    // derselbe Radius, mit dem `snap_channel_ends_to_vertices` schon immer
+    // an die Vertex-Kugeln snappt; das Maximum der beiden Kanal-Schritte
+    // hält die Relation symmetrisch (sonst sähe A den Nachbarn B, B aber
+    // nicht A, und die Zerlegung bekäme ein Loch).
+    let join_of: Vec<f32> = channels
+        .iter()
+        .enumerate()
+        .map(|(ci, ch)| (0.5 * ch.delta).max(3.0 * steps.get(ci).copied().unwrap_or(0.0)))
+        .collect();
     let mut slot = vec![0usize; channels.len()];
     for (k, (ci, e, t)) in ends.iter().enumerate() {
         let ch_delta = channels[*ci].delta;
-        let join = 0.5 * ch_delta;
         let mut planes: Vec<[f32; 4]> = Vec::new();
         for (m, (cj, e2, t2)) in ends.iter().enumerate() {
-            if m == k || cj == ci || norm(sub(*e, *e2)) > join {
+            if m == k || cj == ci || norm(sub(*e, *e2)) > join_of[*ci].max(join_of[*cj]) {
                 continue;
             }
             // Voronoi-Bisektor zur Nachbar-Naht: n̂ ∝ t̂ − t̂_nachbar.
@@ -1347,15 +1418,10 @@ fn set_end_plane_gates(channels: &mut [OffsetChannel]) {
                 continue; // gleiche Richtung — kein trennender Bisektor
             }
             let n = [n[0] / l, n[1] / l, n[2] / l];
-            // Verankert im MITTELPUNKT der beiden Trace-Enden: beide Nachbarn
-            // bekommen so exakt dieselbe Ebene mit entgegengesetzter Normale,
-            // die Zerlegung ist damit lückenlos und überschneidungsfrei.
-            let mid = [
-                0.5 * (e[0] + e2[0]),
-                0.5 * (e[1] + e2[1]),
-                0.5 * (e[2] + e2[2]),
-            ];
-            planes.push([n[0], n[1], n[2], dot(mid, n)]);
+            planes.push({
+                let a = junction_anchor(*e, *t, *e2, *t2);
+                [n[0], n[1], n[2], dot(a, n)]
+            });
         }
         if planes.len() > 2 {
             planes.clear(); // mehr als eine Triple-Junction — konservativ
@@ -1371,6 +1437,206 @@ fn set_end_plane_gates(channels: &mut [OffsetChannel]) {
                 *s += 1;
             }
         }
+    }
+}
+
+/// #384 §8g — **der Anker des Voronoi-Bisektors: die ECHTE Ecke, nicht die
+/// Mitte der Trace-Enden.**
+///
+/// §8f verankerte die Bisektor-Ebene im Mittelpunkt der beiden Trace-Enden,
+/// mit dem Argument, beide Nachbarn bekämen so dieselbe Ebene. Das stimmt —
+/// aber die Ebene sitzt dann nur dann richtig, wenn beide Traces GLEICH weit
+/// vor der Ecke stehengeblieben sind. Ausgerechnet:
+///
+/// ```text
+/// ⟨mid − E, n̂⟩ = (g₁ − g₂)·(1 − cos θ) / (2·|t̂₁ − t̂₂|)
+/// ```
+///
+/// (`g_i` = Rückstand des jeweiligen Trace-Endes, θ = Winkel der Tangenten).
+/// Der Versatz ist also NICHT der Rückstand, sondern dessen **Differenz** —
+/// und die ist nicht klein: der Prädiktor-Korrektor stoppt je nach Phasenlage
+/// irgendwo im letzten Schritt, `g₁ − g₂` streut über eine volle
+/// Schrittweite. Am 16-fach skalierten Taschen-Fixture (Schritt 4.48 mm)
+/// waren es gemessen 0.02 vs. 4.07 mm Rückstand ⇒ 1.43 mm Ebenen-Versatz
+/// und 11 Fehlklassifikationen mit 1.16 mm (§8g).
+///
+/// Die Ecke selbst ist billig zu haben: beide Nähte laufen dort zusammen,
+/// also ist sie der gemeinsame Punkt der beiden Spine-GERADEN
+/// `E_i − s·t̂_i` (die Tangenten zeigen ins Spine-Innere). Für windschiefe
+/// oder quasi-parallele Geraden — und wenn die Lösung weiter als der
+/// Suchradius entfernt liegt — fällt die Berechnung auf den Mittelpunkt
+/// zurück; beide Nachbarn rechnen dabei denselben Ausdruck mit vertauschten
+/// Rollen, die Ebene bleibt also für beide Seiten identisch.
+fn junction_anchor(e1: [f32; 3], t1: [f32; 3], e2: [f32; 3], t2: [f32; 3]) -> [f32; 3] {
+    let mid = [
+        0.5 * (e1[0] + e2[0]),
+        0.5 * (e1[1] + e2[1]),
+        0.5 * (e1[2] + e2[2]),
+    ];
+    let d1 = [-t1[0], -t1[1], -t1[2]];
+    let d2 = [-t2[0], -t2[1], -t2[2]];
+    let b = dot(d1, d2);
+    let den = 1.0 - b * b;
+    if den.abs() < 1e-6 {
+        return mid; // (anti)parallel — kein eindeutiger Schnitt
+    }
+    let w0 = sub(e1, e2);
+    let dd = dot(d1, w0);
+    let ee = dot(d2, w0);
+    let s = (b * ee - dd) / den;
+    let u = (ee - b * dd) / den;
+    let p = [
+        0.5 * ((e1[0] + d1[0] * s) + (e2[0] + d2[0] * u)),
+        0.5 * ((e1[1] + d1[1] * s) + (e2[1] + d2[1] * u)),
+        0.5 * ((e1[2] + d1[2] * s) + (e2[2] + d2[2] * u)),
+    ];
+    if !p.iter().all(|c| c.is_finite()) || norm(sub(p, mid)) > 2.0 * norm(sub(e1, e2)) + 1e-3 {
+        return mid; // Lösung außerhalb des Suchfensters — konservativ
+    }
+    p
+}
+
+/// #384 §8g — **Spine-Snapping an die Kanal↔Kanal-Junction.** Spiegel von
+/// [`snap_channel_ends_to_vertices`] für den Fall OHNE Vertex-Kugel: laufen
+/// zwei Nähte desselben Stopps in einer Ecke zusammen, endet jeder Trace am
+/// `on_composite_boundary`-Gate rund einen Schritt davor. Solange dieser
+/// Rückstand unter `δ` bleibt, deckt die Endpunkt-Ball-Kappe des Terms die
+/// Lücke ab. Wächst er darüber (der Schritt ist 2 % der Überlappungs-AABB,
+/// an einem 320-mm-Bauteil also 4.5 mm bei δ = 2), misst `de` in der
+/// Ecken-Umgebung die Distanz zu einem Spine-Ende statt zur Naht und
+/// behauptet zu viel — gemessen 11 Fehlklassifikationen mit 1.16 mm (§8g).
+///
+/// Beide Nähte werden deshalb per Segment bis zur gemeinsamen Ecke
+/// ([`junction_anchor`]) verlängert; die dualen Kegelvektoren des Endpunkts
+/// werden dabei konstant fortgeschrieben (wie beim Vertex-Snap). Danach
+/// treffen sich die Spine-Enden EXAKT, und der Bisektor aus
+/// [`set_end_plane_gates`] sitzt ohne Restversatz.
+fn snap_channel_ends_to_junctions(channels: &mut [OffsetChannel], steps: &[f32]) {
+    // (Kanal, at_start, Endpunkt, Innen-Tangente)
+    let mut ends: Vec<(usize, bool, [f32; 3], [f32; 3])> = Vec::new();
+    for (ci, ch) in channels.iter().enumerate() {
+        if ch.arcs.is_empty() {
+            continue;
+        }
+        let s = arc_point_at(&ch.arcs[0], 0.0);
+        let e = arc_point_at(ch.arcs.last().unwrap(), 1.0);
+        if norm(sub(s, e)) < 1e-4 {
+            continue; // geschlossene Kurve
+        }
+        if let Some(t) = arc_tangent_at(&ch.arcs[0], 0.0) {
+            ends.push((ci, true, s, t));
+        }
+        if let Some(t) = arc_tangent_at(ch.arcs.last().unwrap(), 1.0) {
+            ends.push((ci, false, e, [-t[0], -t[1], -t[2]]));
+        }
+    }
+    let join_of: Vec<f32> = channels
+        .iter()
+        .enumerate()
+        .map(|(ci, ch)| (0.5 * ch.delta).max(3.0 * steps.get(ci).copied().unwrap_or(0.0)))
+        .collect();
+    // Ziel-Ecke je Ende — erst sammeln, dann anwenden (die Enden dürfen sich
+    // während der Paarbildung nicht unter den Füßen wegbewegen).
+    let mut targets: Vec<Option<[f32; 3]>> = vec![None; ends.len()];
+    for k in 0..ends.len() {
+        let (ci, _, e, t) = ends[k];
+        let mut best: Option<(f32, [f32; 3])> = None;
+        for (m, &(cj, _, e2, t2)) in ends.iter().enumerate() {
+            if m == k || cj == ci {
+                continue;
+            }
+            let d = norm(sub(e, e2));
+            if d > join_of[ci].max(join_of[cj]) {
+                continue;
+            }
+            if best.map_or(true, |(bd, _)| d < bd) {
+                best = Some((d, junction_anchor(e, t, e2, t2)));
+            }
+        }
+        if let Some((_, a)) = best {
+            let reach = norm(sub(a, e));
+            // Nur verlängern (nicht kürzen), nur innerhalb des Fensters —
+            // und nur, wenn der Rückstand überhaupt etwas kostet. Die
+            // Untergrenze `0.1·δ` ist GEMESSEN, nicht geraten: darüber
+            // schließt der Snap in der §8g-Sonde jeden Ecken-Restfehler
+            // (Ecken-Schale `t/δ = 3.5 … 5`: 7–32 Fehlklassifikationen bis
+            // 0.448 mm ⇒ 0), darunter schließt er keinen mehr, verschiebt
+            // aber Tape und gewobene B-Rep — an der Zylinder∪Box-Fixture
+            // kostete ein 0.033-mm-Anbau (0.017·δ) die Weave eine ganze
+            // Mantelfläche und dem Kanal damit seine auflösbare Provenance.
+            if reach > 0.1 * channels[ci].delta
+                && reach <= join_of[ci]
+                && dot(sub(a, e), t) <= 0.0
+            {
+                targets[k] = Some(a);
+            }
+        }
+    }
+    for (k, (ci, at_start, e, _)) in ends.iter().enumerate() {
+        let Some(a) = targets[k] else { continue };
+        let ch = &mut channels[*ci];
+        // Ist der terminale Bogen bereits ein KOLLINEARES Segment (der
+        // Normalfall an geraden Nähten), wird er verlängert statt ein
+        // zweites Segment anzuhängen. Sonst wüchse die Bogenzahl — und mit
+        // ihr das Tape — für einen Zuwachs, der oft im Hundertstel-Bereich
+        // liegt; die gewobene B-Rep reagiert darauf empfindlicher als das
+        // Feld (an der Zylinder∪Box-Fixture verlor sie über einen
+        // 0.033-mm-Anbau eine ganze Fläche).
+        let idx = if *at_start { 0 } else { ch.arcs.len() - 1 };
+        let term = &ch.arcs[idx];
+        if term.sweep < 0.0 {
+            let dir = sub(a, *e);
+            let l = norm(dir);
+            let dir = [dir[0] / l, dir[1] / l, dir[2] / l];
+            let want = if *at_start {
+                [-term.u[0], -term.u[1], -term.u[2]]
+            } else {
+                term.u
+            };
+            if dot(dir, want) > 0.9999 {
+                let mut seg = term.clone();
+                seg.r += l;
+                if *at_start {
+                    seg.c = a;
+                }
+                ch.arcs[idx] = finish_arc(seg);
+                let mut br = ch.bound_r;
+                for arc in &ch.arcs {
+                    br = br.max(norm(sub(arc.bc, ch.bound_c)) + arc.br);
+                }
+                ch.bound_r = br;
+                continue;
+            }
+        }
+        let seg = if *at_start {
+            segment_arc(a, *e)
+        } else {
+            segment_arc(*e, a)
+        };
+        let Some(mut seg) = seg else { continue };
+        if *at_start {
+            let a0 = &ch.arcs[0];
+            seg.m1s = a0.m1s;
+            seg.m2s = a0.m2s;
+            seg.m1e = a0.m1s;
+            seg.m2e = a0.m2s;
+            let mut arcs = Vec::with_capacity(ch.arcs.len() + 1);
+            arcs.push(seg);
+            arcs.append(&mut ch.arcs.to_vec());
+            ch.arcs = arcs;
+        } else {
+            let al = ch.arcs.last().unwrap();
+            seg.m1s = al.m1e;
+            seg.m2s = al.m2e;
+            seg.m1e = al.m1e;
+            seg.m2e = al.m2e;
+            ch.arcs.push(seg);
+        }
+        let mut br = ch.bound_r;
+        for arc in &ch.arcs {
+            br = br.max(norm(sub(arc.bc, ch.bound_c)) + arc.br);
+        }
+        ch.bound_r = br;
     }
 }
 
@@ -1639,7 +1905,54 @@ fn synthesize_vertices(
             break;
         }
     }
+    clamp_vertex_trust(&mut verts, &solved, cluster_r, ctx.delta);
     verts
+}
+
+/// #384 §8g — **Nachbar-Kegel-Klemme; der Trust-Radius ist DATEN.**
+///
+/// Die Vertex-Kugel behauptet `dist(x, ∁Ω) = |x−v|` im GANZEN Kegel bis `K`.
+/// Exakt ist das, solange `v` wirklich der nächste Komplement-Punkt bleibt.
+/// Sitzt eine ZWEITE konkave Ecke in der Nähe, stimmt das nicht mehr: ihr
+/// Komplement-Oktant erreicht Punkte des Kegels früher als `v` selbst — und
+/// weil der konkave Term ein `min` bildet, GEWINNT die falsche, weiter
+/// entfernte Ecke. Das ist exakt die §8f-Fehlerklasse der Nahtenden, nur mit
+/// Punkt-Spine (gemessen an der dünnen Ecken-Schale, §8g: 510
+/// Fehlklassifikationen, worst 0.523 mm bei zugesagten 0.01 mm).
+///
+/// Die Schranke ist elementar: liegt der nächste FREMDE Komplement-Punkt `D`
+/// entfernt von `v`, so ist er von jedem Kegelpunkt mit `|x−v| = ρ`
+/// mindestens `D − ρ` entfernt. Eine Fehlklassifikation braucht
+/// `D − ρ < δ`, also `ρ > D − δ`. **`K ≤ D − δ` schließt sie strukturell
+/// aus** — ohne Opcode-Änderung, denn `trust` ist ein Datenfeld.
+///
+/// Als Kandidaten für `D` zählen ALLE gelösten Trieder-Punkte des Stopps,
+/// auch die VERWEIGERTEN: ein verweigerter Kegel bekommt zwar keinen Term,
+/// sein Komplement-Oktant konkurriert aber trotzdem. Cluster-Duplikate
+/// (derselbe Punkt aus mehreren Paar-Traces) fallen über `cluster_r` heraus.
+///
+/// Untergrenze `δ`: dort ist das materialaddierende Band `(δ, K)` leer, die
+/// march-sichere Luftseiten-Klemme für `ρ < δ` bleibt aber wortgleich. Die
+/// Klemme kann also nur WENIGER Material addieren, nie mehr — sie ist in
+/// beide Richtungen konservativ.
+fn clamp_vertex_trust(
+    verts: &mut [VertexSphere],
+    solved: &[([f32; 3], [usize; 3], bool)],
+    cluster_r: f32,
+    delta: f32,
+) {
+    for vs in verts.iter_mut() {
+        let mut d_near = f32::INFINITY;
+        for (sv, _, _) in solved {
+            let d = norm(sub(*sv, vs.v));
+            if d > cluster_r {
+                d_near = d_near.min(d);
+            }
+        }
+        if d_near.is_finite() {
+            vs.trust = vs.trust.min((d_near - delta).max(delta));
+        }
+    }
 }
 
 /// Baut aus einer getracten Naht-Kurve einen [`OffsetChannel`].
@@ -3996,6 +4309,11 @@ fn synthesize_stop(
     // Blockierte Enden je Kanal (Index in `channels`, Trace-Schrittweite,
     // Enden) — für das Spine-Snapping an die Vertex-Kugeln (C4).
     let mut chan_ends: Vec<(usize, f32, Vec<BlockedEnd>)> = Vec::new();
+    // #384 §8g: Trace-Schrittweite JE Kanal (Index-parallel zu `channels`) —
+    // sie bemisst, wie weit der Trace vor einer Junction stehen bleibt, und
+    // damit die Junction-Toleranz in `set_end_plane_gates`. Bereits vorhandene
+    // ∂P-Rim-Kanäle sind nicht getract und tragen 0.
+    let mut chan_step: Vec<f32> = vec![0.0; channels.len()];
     // ∂P-Rim-Kanäle (Stufe 2) zählen bereits gegen das Arc-Budget.
     let mut total_arcs: usize = channels.iter().map(|c| c.arcs.len()).sum();
     let mut claimed: Vec<[f32; 3]> = Vec::new(); // Punkte bereits getracter Kurven
@@ -4079,7 +4397,7 @@ fn synthesize_stop(
                                     &members, &triple_cands, &ctx, union_form,
                                     gate_eps, gscale, &min_feat, &mut channel_idx,
                                 );
-                                set_end_plane_gates(&mut channels);
+                                set_end_plane_gates(&mut channels, &chan_step);
                                 let capped = audit_channel_end_caps(
                                     &channels, &verts, inner, &prisms, delta, tol, report,
                                 );
@@ -4280,7 +4598,8 @@ fn synthesize_stop(
                                     snap_channel_ends_to_vertices(
                                         &mut channels, &chan_ends, &verts,
                                     );
-                                    set_end_plane_gates(&mut channels);
+                                    snap_channel_ends_to_junctions(&mut channels, &chan_step);
+                                    set_end_plane_gates(&mut channels, &chan_step);
                                     let capped = audit_channel_end_caps(
                                         &channels, &verts, inner, &prisms, delta, tol, report,
                                     );
@@ -4290,6 +4609,7 @@ fn synthesize_stop(
                                 if !blocked.is_empty() {
                                     chan_ends.push((channels.len(), step, blocked.clone()));
                                 }
+                                chan_step.push(step);
                                 channels.push(ch);
                             }
                         }
@@ -4303,7 +4623,8 @@ fn synthesize_stop(
         &mut channel_idx,
     );
     snap_channel_ends_to_vertices(&mut channels, &chan_ends, &verts);
-    set_end_plane_gates(&mut channels);
+    snap_channel_ends_to_junctions(&mut channels, &chan_step);
+    set_end_plane_gates(&mut channels, &chan_step);
     let capped = audit_channel_end_caps(&channels, &verts, inner, &prisms, delta, tol, report);
     (channels, verts, prisms, rims, capped)
 }
@@ -4321,9 +4642,19 @@ fn synthesize_stop(
 /// Opcode kann es nicht sehen (drittes Gate = Semantik-Änderung in sechs
 /// Evaluator-Spiegeln), die Synthese kann es nicht wegparametrieren — also
 /// wird es GEMELDET: der Stopp sagt dort nicht mehr die Bau-Toleranz zu,
-/// sondern die Gate-/B0-Schranke, mindestens aber den gemessenen Fehler.
-/// Das Feld bleibt unberührt (die Korrektur ist über die Naht hinweg
-/// weiterhin die beste verfügbare, s. §8e).
+/// sondern die Gate-/B0-Schranke. Das Feld bleibt unberührt (die Korrektur
+/// ist über die Naht hinweg weiterhin die beste verfügbare, s. §8e).
+///
+/// #384 §8g — **ein Zeuge ist keine Schranke.** Bis hierher meldete die
+/// Funktion `max(gate, viol)`, also im Zweifel den GEMESSENEN Zeugenwert als
+/// Schranke. Das war ein Zirkelschluss: der Zeuge ist eine Stichprobe (240
+/// Fibonacci-Richtungen × 10 Radien je Ende) und damit eine UNTERE Schranke
+/// des Fehlers, nie eine obere. Gemessen an der 2·δ-dünnen Ecken-Schale
+/// (§8g): Zeuge 1.632 mm gemeldet, echter Nullmengen-Fehler 1.869 mm — die
+/// Zusage war um 0.24 mm gelogen. Übersteigt der Zeuge die STRUKTURELLE
+/// Ein-Term-Schranke `gate`, ist der Term nachweislich außerhalb des
+/// Modells, unter dem `gate` hergeleitet wurde; dann gibt es keine
+/// belastbare Schranke mehr und der Stopp ist ehrlich `conservative`.
 ///
 /// Rückgabe: `true`, wenn die enge Zusage gefallen ist (der Aufrufer
 /// unterdrückt dann seine `tol`-Notiz).
@@ -4336,7 +4667,7 @@ fn audit_channel_end_caps(
     tol: f32,
     report: &mut crate::offset_capability::CapabilityReport,
 ) -> bool {
-    if channels.is_empty() {
+    if channels.is_empty() && verts.is_empty() {
         return false;
     }
     let field = |x: [f32; 3]| -> f32 {
@@ -4356,17 +4687,26 @@ fn audit_channel_end_caps(
     else {
         return false;
     };
-    // Schranke: die bewiesene Ein-Term-Auslenkung `(c−1)·δ + 4·tol` (= das
-    // Gate, zugleich die B0-Schranke der unkorrigierten Naht) — mindestens
-    // aber der GEMESSENE Fehler. Mehrere Terme an einem Punkt können sich
-    // addieren (das `gate = G + d` des nächsten Kanals sieht das bereits
-    // angehobene `d`), darum ist der Zeugenwert Teil der Schranke.
-    let bound = gate.max(viol);
+    // Schranke: die strukturell hergeleitete Ein-Term-Auslenkung
+    // `(c−1)·δ + 4·tol` (= das Gate, zugleich die B0-Schranke der
+    // unkorrigierten Naht). Sie gilt NUR, solange der Zeuge sie einhält —
+    // sonst wirkt der Term außerhalb des Modells, unter dem sie hergeleitet
+    // wurde, und es gibt gar keine Schranke mehr (§8g).
+    if viol > gate {
+        report.note_conservative(format!(
+            "Duale Boolean-Kante über Arc-Spline-Kanäle korrigiert — am Nahtende aber NICHT auf die \
+             Bau-Toleranz: der Term greift dort über Fremdgeometrie, und der Randpunkt-Zeuge bei \
+             [{:.2}, {:.2}, {:.2}] weist {viol:.3} mm Fehlklassifikation nach — MEHR als die \
+             strukturelle Gate-/B0-Schranke {gate:.3} mm. Damit ist keine Schranke mehr belegbar.",
+            at[0], at[1], at[2]
+        ));
+        return true;
+    }
     report.note_tolerance(format!(
         "Duale Boolean-Kante über Arc-Spline-Kanäle korrigiert — am Nahtende aber NICHT auf die \
          Bau-Toleranz: dort greift der Term über Fremdgeometrie (Randpunkt-Zeuge bei \
          [{:.2}, {:.2}, {:.2}], nachgewiesene Fehlklassifikation {viol:.3} mm). Fehler ≤ \
-         {bound:.3} mm (Gate-/B0-Schranke).",
+         {gate:.3} mm (Gate-/B0-Schranke).",
         at[0], at[1], at[2]
     ));
     true

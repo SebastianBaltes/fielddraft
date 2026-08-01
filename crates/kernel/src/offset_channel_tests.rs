@@ -2178,3 +2178,55 @@ fn channel_term_is_off_beyond_the_seam_end_384() {
     });
     assert!(seen > 0);
 }
+
+// ─── #384 §8g: der Anker des Voronoi-Bisektors ──────────────────────
+
+/// §8f verankerte den Bisektor im MITTELPUNKT der beiden Trace-Enden. Das
+/// ist exakt, solange beide Traces GLEICH weit vor der Ecke stehenbleiben —
+/// und schief, sobald sie es nicht tun: der Versatz ist
+/// `(g₁−g₂)·(1−cos θ)/(2·|t̂₁−t̂₂|)`, also die DIFFERENZ der Rückstände.
+/// [`junction_anchor`] rechnet stattdessen den gemeinsamen Punkt der beiden
+/// Spine-Geraden aus. Der Test fährt die Lage ab, die am 16-fach skalierten
+/// Taschen-Fixture gemessen wurde (Rückstände 0.02 mm und 4.07 mm ⇒ 1.43 mm
+/// Ebenen-Versatz) — und prüft, dass beide Nachbarn denselben Anker sehen.
+#[test]
+fn junction_anchor_hits_the_true_corner_384() {
+    let corner = [12.0f32, -7.0, 3.0];
+    // Zwei orthogonale Nähte, die in `corner` zusammenlaufen; `t` zeigt ins
+    // jeweilige Spine-Innere.
+    let t1 = [-1.0f32, 0.0, 0.0];
+    let t2 = [0.0f32, 1.0, 0.0];
+    for (g1, g2) in [(0.02f32, 4.07), (4.07, 0.02), (1.5, 1.5), (0.0, 2.3)] {
+        let e1 = [
+            corner[0] + t1[0] * g1,
+            corner[1] + t1[1] * g1,
+            corner[2] + t1[2] * g1,
+        ];
+        let e2 = [
+            corner[0] + t2[0] * g2,
+            corner[1] + t2[1] * g2,
+            corner[2] + t2[2] * g2,
+        ];
+        let a = junction_anchor(e1, t1, e2, t2);
+        assert!(
+            norm(sub(a, corner)) < 1e-4,
+            "Rückstände ({g1}, {g2}): Anker {a:?} statt Ecke {corner:?}"
+        );
+        // Symmetrie: beide Nachbarn MÜSSEN dieselbe Ebene aufspannen, sonst
+        // bekommt die Voronoi-Zerlegung ein Loch oder eine Überlappung.
+        let b = junction_anchor(e2, t2, e1, t1);
+        assert!(
+            norm(sub(a, b)) < 1e-4,
+            "Rückstände ({g1}, {g2}): Anker nicht symmetrisch ({a:?} vs {b:?})"
+        );
+    }
+    // Quasi-parallele Tangenten haben keinen eindeutigen Schnitt — dort
+    // fällt die Rechnung auf den Mittelpunkt zurück statt ins Unendliche.
+    let e1 = [0.0f32, 0.0, 0.0];
+    let e2 = [2.0f32, 0.0, 0.0];
+    let a = junction_anchor(e1, [1.0, 0.0, 0.0], e2, [1.0, 0.0, 0.0]);
+    assert!(
+        norm(sub(a, [1.0, 0.0, 0.0])) < 1e-4,
+        "parallele Tangenten müssen auf den Mittelpunkt zurückfallen: {a:?}"
+    );
+}
