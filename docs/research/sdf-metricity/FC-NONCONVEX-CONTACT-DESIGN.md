@@ -380,6 +380,80 @@ Für einen dualen Offset-Stopp mit koplanarem submergiertem Kontakt gilt:
 0.75·δ-Schranke (der `residual` des verweigerten Loops dominiert). Das war zuvor
 ein Bound-Over-Claim: der ehrliche Rest des verweigerten Loops blieb ungenannt.
 
+## 8c. Durchdringende Kontakte — signierte Kontaktlage (#384, 2026-08-01)
+
+Der Kontakt-Vertrag oben setzte stillschweigend voraus, dass ein Kontakt BÜNDIG
+ist: zwei Member-Facetten auf DERSELBEN Ebene Π. Der Detektor prüfte das mit
+einem **unsignierten** Fenster `|o_a + o_b| ≤ 0.5·δ` (Box) bzw. `0.02·δ`
+(Nicht-Box) und verankerte das Prisma an EINER der beiden Ebenen. Die signierte
+Größe
+
+    s := o_a + o_b        (fa.n = −fb.n; Member i auf n̂·x ≤ o_a, j auf n̂·x ≥ −o_b)
+
+ist aber die **Durchdringungstiefe**: `s = 0` bündig, `s > 0` die Member stecken
+um `s` ineinander, `s < 0` es klafft ein Luftspalt. Das alte Fenster vermengte
+alle drei Lagen und erzeugte drei Falschaussagen — jede unter dem Stempel
+`exact` (gemessen an zwei achsparallel gestapelten Boxen, δ = 2 mm):
+
+| Lage | alter Befund | Fehlergröße |
+|---|---|---|
+| `s < 0` (Luftspalt 0.1 mm) | Prisma **überbrückt die Luft** | 8 mm Phantom-Material, wo die wahre Erosion leer ist |
+| `0 < s ≤ 0.5·δ` | Prisma an EINER Ebene verankert, trägt j's volle Dicke ⇒ ragt um `s` über die Gegenseite | bis 1 mm Phantom-Material über der wahren Erosionsdecke |
+| `0.5·δ < s < 2·δ` | gar kein Prisma; `min(f_i) + δ` reißt einen **Phantom-Schlitz** der Dicke `2δ − s` | Nullmengenfehler bis 1.47 mm ≈ 0.735·δ |
+
+Der Fix ist **Synthese, kein Downgrade** — die Geometrie des durchdringenden
+Falls ist wohldefiniert und braucht keinen neuen Term:
+
+1. **Signierte Klassifikation** (`offset_channel::face_pair_penetration`):
+   `s < −round_tol` → echter Luftspalt, KEIN Kontakt; `s ≥ 2·δ` → die erodierten
+   Member überlappen noch, es entsteht gar kein Schlitz → keine Korrektur nötig;
+   sonst Kontakt mit `pen = max(s, 0)`. `round_tol` ist die bereits kalibrierte
+   f32-Rundungsklasse `0.02·δ` (#397) — jetzt für BEIDE Facettenklassen. Das
+   alte `0.5·δ` als Klemme war der Fehler: es faltete 1 mm echte Durchdringung
+   auf „bündig".
+2. **Korrekte Prisma-Ausdehnung:** das Prisma spannt von Member i's Rückseite
+   `o_a − depth_neg` bis Member j's Rückseite `(−o_b) + depth_pos`, d. h. die
+   effektive +n̂-Tiefe ist `depth_pos − pen`. Für `pen = 0` ist das
+   **bit-identisch** zum Bestandspfad (Golden byte-identisch verifiziert).
+   `S ⊆ U` gilt exakt: über P überdecken i's und j's Slab das Intervall
+   lückenlos, weil `−o_b ≤ o_a`.
+3. **SSI-Nähte nur am BÜNDIGEN Kontakt unterdrücken.** Am bündigen Kontakt sind
+   die Nähte des Paars koinzident/tangential degeneriert (der Grund der
+   Unterdrückung seit #395). Am DURCHDRINGENDEN Kontakt ist die Naht am
+   Kontaktrand eine echte transversale Dieder-Kante (Deckfläche × Seitenwand,
+   Normalen 90°) — die korrigieren die regulären `OP_ARC_CHANNEL`-Kanäle sauber;
+   sie zu unterdrücken nähme dem Stopp seine einzige ∂P-Korrektur.
+4. **Rim-Spiegel bleibt bündig-only.** `contact_clips` (die Quelle von
+   `offset_rim::RimBlock`) nimmt nur `|s| ≤ round_tol` auf: ein durchdringender
+   Kontakt hat keine gemeinsame Ebene Π, der Rim legte seine Spine sonst auf die
+   submergierte statt auf die exponierte Ebene. Statt dessen sagt die Capability
+   für ungleiche Querschnitte ehrlich die weitere B0-Schranke ≈0.75·δ zu
+   (`ContactResult::pen_unrimmed`) — kein Bound-Over-Claim durch die enge
+   `channel_tol` eines bündigen Nachbar-Kontakts am selben Stopp.
+5. **Fehlalarm-Widerlegung.** Das Carrier-Gate `coplanar_interface_present`
+   sieht durchdringende Kontakte nicht (es verlangt überlappende Facetten-AABBs)
+   → additiver Trigger `contact_face_scan().penetrating`. Umgekehrt meldete es
+   für einen 0.1-mm-Luftspalt einen Verdacht, den der Facetten-Scan widerlegt:
+   sind ALLE Member-Facetten analytisch bekannt und ist KEIN Paar in Kontakt,
+   entfällt die #394-Verdachtsmeldung (getrennte Körper erodieren unabhängig
+   und exakt).
+
+### Ergänzung zum Capability-Vertrag
+
+| Fall | Status | Zugesagte Schranke |
+|---|---|---|
+| Durchdringung `0 < s < 2·δ`, Gleich-Querschnitt (S = U) | `exact` | 0 (nur GT-Messboden) |
+| Durchdringung `0 < s < 2·δ`, ungleicher Querschnitt | `tolerance_bounded` | B0-Sliver am Kontaktrand ∂P ≤ 0.75·δ (Prisma-only; die SSI-Kanäle liegen faktisch darunter, werden aber nicht zugesagt) |
+| Überlappung `s ≥ 2·δ` | unverändert | kein Schlitz; die naive Erosion ist in Normalenrichtung zero-set-exakt, echte konkave Nähte gehören den Kanälen |
+| Luftspalt `s < −round_tol` | `exact` | getrennte Körper erodieren unabhängig exakt |
+
+**Nicht im Scope (offen):** der duale DILATIONS-Pfad
+(`synthesize_contact_prisms_dilation`) fährt weiter das symmetrische
+Koinzidenz-Fenster. Er sagt nie `exact` zu (¬box unbeschränkt), eine
+Fehl-Verankerung dort wäre also ein Bound-Over-Claim, keine Exakt-Lüge — und
+seine 0.5·δ-Kalibrierung ist per `thin_wall_shell_status_unchanged_397`
+eingefroren. Die signierte Behandlung dort ist ein eigener Schritt.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.

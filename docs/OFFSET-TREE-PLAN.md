@@ -482,6 +482,35 @@ für Shell.
     kennt dort nur Member-Feature-Ids, keine Branch-Ids) — sie melden
     `kind: "vertex"` mit leerer Eltern-Liste. Snapping nutzt die
     Referenzen noch nicht.
+* **Durchdringende Kontakte — GESCHLOSSEN (#384, v0.56.2, 2026-08-01).**
+  Der Kontakt-Prisma-Pfad prüfte die Lage zweier anti-paralleler Member-
+  Facetten mit einem UNSIGNIERTEN Fenster (`|o_a + o_b| ≤ 0.5·δ`) und
+  verankerte das Prisma an EINER der beiden Ebenen. Damit vermengte er drei
+  physikalisch verschiedene Lagen — Luftspalt, bündiger Kontakt und
+  Durchdringung — und log in allen dreien `exact` (gemessen an gestapelten
+  Boxen, δ = 2 mm): ein 0.1-mm-Luftspalt wurde vom Prisma **überbrückt**
+  (8 mm Phantom-Material), eine Durchdringung ≤ 0.5·δ ließ das Prisma um
+  genau `s` über die Gegenseite **hinausragen** (bis 1 mm Phantom-Material),
+  und eine Durchdringung zwischen 0.5·δ und 2·δ bekam GAR KEIN Prisma —
+  dort riss die naive Erosion `min(f_i) + δ` einen **Phantom-Schlitz** der
+  Dicke `2δ − s` (Nullmengenfehler bis 1.47 mm ≈ 0.735·δ), während die wahre
+  Erosion der Vereinigung an der Naht massiv ist.
+  Der Fix ist eine **Synthese**, kein Downgrade: `face_pair_penetration`
+  klassifiziert die signierte Durchdringungstiefe `s = o_a + o_b` (Luftspalt /
+  bündig innerhalb der f32-Rundungsklasse / Durchdringung bis 2·δ / kein
+  Schlitz ab 2·δ), und das Prisma spannt von Member i's bis zu Member j's
+  Rückseite (`depth_pos − pen`) statt zweimal von derselben Ebene aus. Für
+  `pen = 0` ist das bit-identisch zum Bestandspfad (Golden byte-identisch).
+  Am durchdringenden Kontakt bleibt die SSI-Naht-Synthese aktiv (die Naht am
+  Kontaktrand ist dort eine echte transversale Dieder-Kante, keine
+  degenerierte), der ∂P-Rand-Fillet dagegen bleibt bündig-only (er hat sonst
+  keine gemeinsame Ebene Π) — die Capability sagt dafür die weitere
+  B0-Schranke ≈0.75·δ zu statt der engen `channel_tol`.
+  SSOT der Herleitung + Vertragstabelle:
+  `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8c.
+  Offen bleibt der duale DILATIONS-Pfad (`synthesize_contact_prisms_dilation`),
+  der weiter das symmetrische Fenster fährt; er sagt nie `exact` zu, eine
+  Fehl-Verankerung wäre dort ein Bound-Over-Claim statt einer Exakt-Lüge.
 * **Interaktion mit Edge-Fillets/MaskedBlend- und smin-Stopps.** Der
   Pushdown stoppt an Blend-Knoten — dort gibt es keinen exakten Offset
   (Blendflächen sind keine Offset-abgeschlossene Klasse). Offset über

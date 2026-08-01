@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.56.2
+- fix(kernel) #384: Ein Offset nach innen reißt keinen Spalt mehr in eine Naht, an der zwei Körper einander durchdringen. Standen zwei Klötze nicht bündig aufeinander, sondern steckten ein bis vier Millimeter ineinander, dann zerfiel das Ergebnis in zwei getrennte Stücke mit Luft dazwischen — obwohl das Material an der Naht dicker ist als überall sonst. Umgekehrt wurde eine Fuge von einem Zehntelmillimeter kurzerhand zugeschmiert, und ein knapp überstehendes Prisma ließ Material stehen, wo längst keins mehr sein darf. Alle drei Fälle meldete das Werkzeug obendrein als „exakt“. Die Prüfung unterscheidet jetzt, ob sich zwei Flächen berühren, durchdringen oder ob Luft dazwischen liegt, und der Korrekturkörper endet dort, wo der zweite Körper endet. Wo eine Durchdringung bleibt, die nur näherungsweise geschlossen ist, sagt das Werkzeug die Abweichung ehrlich an, statt sie zu verschweigen.
+
 ## 0.56.1
 - fix(kernel) #404: Jede Bohrung eines Lochs lässt sich jetzt einzeln anklicken und messen. Bisher führte ein Loch mit zwei Positionen nur eine der beiden Bohrungswandungen als Fläche, und unter einer Senkung fehlte die Schaftwand darunter — das Volumen stimmte, aber die Fläche war nicht greifbar: kein Maß, keine Skizze darauf, keine Auswahl. Der Grund war ein gemeinsamer Name für alle Schneidkörper eines Lochs; jeder bekommt nun seinen eigenen. Ein Senkloch zeigt damit Sitz, Schaftwand und Grund gleichzeitig, und die zweite Bohrung trägt eine eigene Kennung.
 

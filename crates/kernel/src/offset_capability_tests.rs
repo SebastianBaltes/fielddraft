@@ -936,3 +936,272 @@ fn plain_offset_is_exact_end_to_end() {
     assert_eq!(cap.status, CapabilityStatus::Exact, "reasons: {:?}", cap.reasons);
 }
 
+// ─── #384 Penetrations-Befund: der Phantom-Schlitz an durchdringenden Membern ─
+//
+// Zwei achsparallel gestapelte Boxen, die sich um `s` DURCHDRINGEN (statt sich
+// bündig zu berühren), unter Erosion `−δ`. Der Kontakt-Prisma-Pfad testete die
+// zwei anti-parallelen Kontaktebenen vor #384 mit einem UNSIGNIERTEN Fenster
+// (`|o_a + o_b| ≤ 0.5·δ`) und verankerte das Prisma an EINER der beiden Ebenen.
+// Damit vermengte er drei physikalisch verschiedene Lagen und log in allen
+// dreien `exact` (gemessen bei δ = 2 mm):
+//
+//   * `s < 0` (Luftspalt 0.1 mm): das Prisma überbrückte die LUFT → 8 mm
+//     Phantom-Material, wo die wahre Erosion leer ist;
+//   * `0 < s ≤ 0.5·δ`: das Prisma ragte um genau `s` über die Gegenseite
+//     hinaus → bis 1 mm Phantom-Material über der wahren Erosionsfläche;
+//   * `0.5·δ < s < 2·δ`: gar kein Prisma → die naive Erosion `min(f_i) + δ`
+//     riss einen Phantom-Schlitz der Dicke `2δ − s`, Nullmengenfehler bis
+//     1.47 mm (≈0.735·δ).
+//
+// Seit #384 trennt `face_pair_penetration` die drei Fälle signiert und das
+// Prisma spannt von Member i's bis zu Member j's Rückseite.
+
+/// Baut den Stapel: Box A (he 10³, Ursprung) + Box B (he `[hx,hy,10]`), deren
+/// Unterseite `overlap` mm UNTER A's Oberseite liegt (negativ = Luftspalt),
+/// unter Erosion `−delta`.
+fn stacked_pair(overlap: f32, hx: f32, hy: f32, delta: f32) -> (CsgNode, CsgNode, CsgNode) {
+    let b1 = leaf_box(1, [10.0, 10.0, 10.0]);
+    let b2 = CsgNode::Transform(
+        Transform {
+            translate: [0.0, 0.0, 20.0 - overlap],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+        },
+        Box::new(leaf_box(2, [hx, hy, 10.0])),
+    );
+    let node = CsgNode::Offset(
+        Box::new(CsgNode::Union(Box::new(b1.clone()), Box::new(b2.clone()))),
+        -delta,
+    );
+    (b1, b2, node)
+}
+
+/// **Kern-Regression.** Überlappung `s` mit `0 < s < 2·δ` (δ = 2 mm): die naiv
+/// erodierten Kinder sind DISJUNKT (A↓δ endet bei z = 8, B↓δ beginnt bei
+/// z = 12 − s), die wahre Erosion der Vereinigung ist an der Naht massiv. Vor
+/// #384 stand dort ein `2δ − s` mm dicker Phantom-Schlitz — mit dem Stempel
+/// `exact`. Der Sweep überstreicht die ganze Bandbreite, insbesondere das Band
+/// oberhalb der alten `0.5·δ`-Klemme (dort fehlte das Prisma vollständig) UND
+/// deren Rand (dort stand ein überschießendes Prisma).
+#[test]
+fn penetrating_stack_erosion_has_no_phantom_slit_384() {
+    for overlap in [0.5f32, 1.0, 1.05, 1.5, 2.0, 3.0, 3.9] {
+        let (b1, b2, node) = stacked_pair(overlap, 10.0, 10.0, 2.0);
+        let (field, report) = compile_for(node);
+
+        // Testaufbau-Beweis: das NAIVE Feld `min(f_A,f_B) + δ` reißt den Schlitz
+        // (Dicke 2δ − s, Nullmengenfehler (2δ − s)/2 in der Naht-Mitte).
+        let seam = [0.0f32, 0.0, 10.0 - overlap / 2.0];
+        let naive = b1_b2_min(&b1, &b2, seam) + 2.0;
+        assert!(
+            (naive - (4.0 - overlap) / 2.0).abs() < 1e-3,
+            "Testaufbau (Überlappung {overlap}): naive Erosion soll um \
+             {} klaffen, war {naive}",
+            (4.0 - overlap) / 2.0
+        );
+
+        // Wahre Erosion: U = Box x,y ∈ [−10,10], z ∈ [−10, 30−s] ⇒ U⊖2 hat
+        // x,y ∈ [−8,8], z ∈ [−8, 28−s]. An der Naht ist sie 8 mm tief.
+        let f = field.sdf(seam, EvalMode::Visual);
+        assert!(
+            f < -7.5,
+            "Überlappung {overlap}: Phantom-Schlitz an der Naht, f{seam:?} = {f} (soll ≈ −8)"
+        );
+
+        // Der ganze naive Schlitz-Bereich muss massiv sein.
+        let mut z = 8.0f32;
+        while z <= 12.0 - overlap {
+            let v = field.sdf([0.0, 0.0, z], EvalMode::Visual);
+            assert!(v < 0.0, "Überlappung {overlap}: Schlitz-Rest bei z = {z}: f = {v}");
+            z += 0.05;
+        }
+
+        // Gleicher Querschnitt ⇒ das Prisma IST die Union (S = U) ⇒ exakt.
+        assert_eq!(
+            report.status(),
+            CapabilityStatus::Exact,
+            "Überlappung {overlap}: Gleich-Querschnitt ist S = U ⇒ exakt — reasons: {:?}",
+            report.reasons()
+        );
+    }
+}
+
+/// Das Prisma darf am durchdringenden Kontakt NICHT über die Gegenseite
+/// hinausragen. Vor #384 war es an Member i's Ebene verankert und trug Member
+/// j's volle Dicke → bei Überlappung `s` lag seine Rückseite `s` mm zu hoch,
+/// und die Erosion meldete dort Material, wo die wahre Erosion Luft hat.
+/// (Der frühere Fehler saß im Band `0 < s ≤ 0.5·δ`, das die alte Klemme als
+/// „bündig" behandelte.)
+#[test]
+fn penetrating_stack_prism_does_not_overshoot_384() {
+    for overlap in [0.1f32, 0.5, 1.0, 1.5, 3.0] {
+        let (_, _, node) = stacked_pair(overlap, 10.0, 10.0, 2.0);
+        let (field, _) = compile_for(node);
+        // Wahre Union-Oberkante: z = 30 − overlap; wahre Erosionsdecke 2 mm
+        // darunter. 0.05 mm darüber MUSS das Feld außen sein.
+        let top = 30.0 - overlap - 2.0;
+        let f = field.sdf([0.0, 0.0, top + 0.05], EvalMode::Visual);
+        assert!(
+            f > 0.0,
+            "Überlappung {overlap}: Prisma ragt über die wahre Erosionsdecke \
+             (f(0,0,{}) = {f}, soll > 0)",
+            top + 0.05
+        );
+        // Und 0.05 mm darunter innen (die Decke sitzt wirklich dort).
+        let g = field.sdf([0.0, 0.0, top - 0.05], EvalMode::Visual);
+        assert!(g < 0.0, "Überlappung {overlap}: Erosionsdecke fehlt (f = {g})");
+    }
+}
+
+/// Gegenprobe LUFTSPALT: zwei Boxen mit 0.1 mm Abstand berühren sich NICHT.
+/// Ihre Erosionen sind unabhängig und exakt — das Kontakt-Prisma darf den
+/// Spalt nicht überbrücken. Vor #384 tat es genau das (der unsignierte
+/// 0.5·δ-Test sah den Spalt als Kontakt) und erfand 8 mm Material.
+#[test]
+fn air_gap_stack_erosion_is_not_bridged_384() {
+    for gap in [0.1f32, 0.5, 1.0] {
+        let (_, _, node) = stacked_pair(-gap, 10.0, 10.0, 2.0);
+        let (field, report) = compile_for(node);
+        // Mitte des (2δ + gap) dicken Zwischenraums: muss AUSSEN sein.
+        let f = field.sdf([0.0, 0.0, 10.0 + gap / 2.0], EvalMode::Visual);
+        assert!(
+            f > 0.0,
+            "Luftspalt {gap} mm überbrückt: f = {f} (soll > 0 — getrennte Körper)"
+        );
+        // Getrennte Körper erodieren exakt; kein Verdachts-Downgrade.
+        assert_eq!(
+            report.status(),
+            CapabilityStatus::Exact,
+            "Luftspalt {gap} mm: getrennte Körper erodieren exakt — reasons: {:?}",
+            report.reasons()
+        );
+    }
+}
+
+/// Pin: der BÜNDIGE Fall (Überlappung exakt 0) läuft unverändert über die
+/// Prisma-Synthese — gleicher Querschnitt `exact`, schmalerer Aufsatz
+/// `tolerance_bounded` mit dem ∂P-Rand-Fillet auf Bau-Toleranz. Diese
+/// Kalibrierung darf sich durch #384 NICHT bewegen.
+#[test]
+fn flush_stack_erosion_unchanged_384() {
+    let (_, _, equal) = stacked_pair(0.0, 10.0, 10.0, 2.0);
+    let (field, report) = compile_for(equal);
+    assert_eq!(
+        report.status(),
+        CapabilityStatus::Exact,
+        "bündig + gleicher Querschnitt bleibt exakt — reasons: {:?}",
+        report.reasons()
+    );
+    assert!(field.sdf([0.0, 0.0, 10.0], EvalMode::Visual) < -7.5, "bündige Naht muss massiv sein");
+
+    let (_, _, narrow) = stacked_pair(0.0, 7.0, 7.0, 2.0);
+    let (_, report) = compile_for(narrow);
+    assert_eq!(
+        report.status(),
+        CapabilityStatus::ToleranceBounded,
+        "bündig + schmaler Aufsatz bleibt toleranzbeschränkt — reasons: {:?}",
+        report.reasons()
+    );
+    assert!(
+        report.reasons().iter().any(|r| r.contains("Rand-Fillet")),
+        "der bündige Kontakt muss weiter über Prisma + ∂P-Rand-Fillet laufen: {:?}",
+        report.reasons()
+    );
+}
+
+/// Pin: ab Überlappung ≥ 2·δ überlappen sich schon die erodierten Kinder —
+/// es entsteht gar kein Schlitz, `min(f_i) + δ` ist dort zero-set-exakt und
+/// die Synthese lässt den Stopp bewusst in Ruhe.
+#[test]
+fn deep_overlap_stack_erosion_stays_exact_384() {
+    for overlap in [4.0f32, 6.0, 10.0] {
+        let (_, _, node) = stacked_pair(overlap, 10.0, 10.0, 2.0);
+        let (field, report) = compile_for(node);
+        assert_eq!(
+            report.status(),
+            CapabilityStatus::Exact,
+            "Überlappung {overlap} ≥ 2δ: kein Schlitz, kein Downgrade — reasons: {:?}",
+            report.reasons()
+        );
+        let top = 30.0 - overlap - 2.0;
+        assert!(field.sdf([0.0, 0.0, top - 0.05], EvalMode::Visual) < 0.0);
+        assert!(field.sdf([0.0, 0.0, top + 0.05], EvalMode::Visual) > 0.0);
+        assert!(field.sdf([0.0, 0.0, 9.0], EvalMode::Visual) < 0.0, "Naht muss massiv sein");
+    }
+}
+
+/// Durchdringung mit UNGLEICHEM Querschnitt: das Prisma tilgt den flächigen
+/// Schlitz, am Kontaktrand ∂P steht eine echte transversale Dieder-Naht. Die
+/// darf NICHT (wie am bündigen Kontakt) unterdrückt werden — die SSI-Kanäle
+/// sind dort die richtige Korrektur —, und die Capability muss die weitere
+/// B0-Schranke nennen statt der engen `channel_tol` eines Rand-Fillets, den
+/// es an dieser Geometrie nicht gibt.
+#[test]
+fn penetrating_stack_unequal_cross_section_is_honestly_bounded_384() {
+    let (_, _, node) = stacked_pair(1.0, 7.0, 7.0, 2.0);
+    let (field, report) = compile_for(node);
+    assert_eq!(
+        report.status(),
+        CapabilityStatus::ToleranceBounded,
+        "reasons: {:?}",
+        report.reasons()
+    );
+    assert!(
+        report.reasons().iter().any(|r| r.contains("Durchdringender Kontakt")),
+        "die Durchdringung muss benannt sein: {:?}",
+        report.reasons()
+    );
+    assert!(
+        !report.reasons().iter().any(|r| r.contains("unbeschränkt")),
+        "der Rest darf nicht unbeschränkt sein: {:?}",
+        report.reasons()
+    );
+    // Der flächige Schlitz ist weg: über dem schmalen Aufsatz massiv.
+    let f = field.sdf([0.0, 0.0, 9.5], EvalMode::Visual);
+    assert!(f < -4.5, "Phantom-Schlitz unter dem schmalen Aufsatz: f = {f}");
+    // Und nichts ragt über die wahre Erosionsdecke (z = 27) hinaus.
+    assert!(field.sdf([0.0, 0.0, 27.05], EvalMode::Visual) > 0.0);
+}
+
+/// Ende-zu-Ende über die echte API-Kette (Dokument → Features → kompiliertes
+/// Feld via `body_sdf_eval`): der Befund und sein Fix am Produkt, nicht nur an
+/// der internen Pass-Kette.
+#[test]
+fn penetrating_stack_erosion_end_to_end_384() {
+    let mut k = crate::Kernel::new();
+    k.document.feature_calls = vec![
+        FeatureCall::new("box", id(1), json!({ "half_extents": [10.0, 10.0, 10.0] })),
+        // 1 mm Durchdringung: B's Unterseite bei z = 9, A's Oberseite bei z = 10.
+        FeatureCall::new(
+            "box",
+            id(2),
+            json!({
+                "half_extents": [10.0, 10.0, 10.0],
+                "translate": [0.0, 0.0, 19.0],
+                "op": "add",
+                "targets": "qCreatedBy(1)"
+            }),
+        ),
+        FeatureCall::new(
+            "offset",
+            id(3),
+            json!({ "targets": "qCreatedBy(1)", "delta": { "value": -2.0, "unit": "mm" } }),
+        ),
+    ];
+    k.bootstrap_features_from_calls().unwrap();
+    k.rebuild_mesh_internal();
+    assert!(!k.feature_errors.contains_key(&id(3)), "offset darf nicht fehlern");
+
+    // U = Box z ∈ [−10,29] ⇒ U⊖2: z ∈ [−8,27], x,y ∈ [−8,8].
+    let d_seam = k.body_sdf_eval(0, 0.0, 0.0, 9.5);
+    assert!(d_seam < -7.5, "Phantom-Schlitz an der Naht: d(0,0,9.5) = {d_seam}");
+    let d_below_top = k.body_sdf_eval(0, 0.0, 0.0, 26.5);
+    assert!(d_below_top < 0.0, "unter der Erosionsdecke muss Material sein: {d_below_top}");
+    let d_above_top = k.body_sdf_eval(0, 0.0, 0.0, 27.5);
+    assert!(d_above_top > 0.0, "über der Erosionsdecke darf kein Material sein: {d_above_top}");
+
+    // Kein `exact`-Lug und kein Fehlalarm: gleicher Querschnitt ⇒ S = U ⇒ exakt,
+    // und das Feld oben ist nachweislich korrekt.
+    let cap = k.feature_capabilities.get(&id(3)).expect("offset capability present");
+    assert_eq!(cap.status, CapabilityStatus::Exact, "reasons: {:?}", cap.reasons);
+}

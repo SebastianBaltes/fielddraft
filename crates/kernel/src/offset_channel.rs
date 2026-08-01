@@ -2234,8 +2234,128 @@ struct ContactResult {
     /// nicht-exakten Prismen — die ehrliche Toleranz von Stufe 1 (Stufe 2 offen).
     rim_bound: f32,
     /// Member-Paare (i,j) mit einem Kontakt-Prisma — für sie unterdrückt die
-    /// SSI-Naht-Synthese ihre (degenerierten) Kanäle.
+    /// SSI-Naht-Synthese ihre (degenerierten) Kanäle. Enthält **nur bündige**
+    /// Kontakte: an einem DURCHDRINGENDEN Kontakt ist die Naht am Kontaktrand
+    /// eine echte transversale Dieder-Kante (kein degenerierter koinzidenter
+    /// Carrier), die die SSI-Kanäle korrekt korrigieren — sie darf nicht
+    /// unterdrückt werden (#384-Penetrations-Befund).
     pairs: Vec<(usize, usize)>,
+    /// Mindestens ein Prisma stammt aus einem DURCHDRINGENDEN Kontakt (s > 0)
+    /// mit ungleichem Querschnitt. `contact_clips` (die Rim-Spiegel-Quelle)
+    /// nimmt nur bündige Kontakte auf, also schließt kein ∂P-Rand-Fillet
+    /// dessen Saum → die Toleranzzusage muss die weitere B0-Schranke nennen
+    /// statt der engen `channel_tol` eines bündigen Nachbar-Kontakts.
+    pen_unrimmed: bool,
+}
+
+/// Signierte Lage zweier anti-paralleler Member-Facetten zueinander (#384,
+/// Penetrations-Befund).
+///
+/// `fa.n = −fb.n =: n̂`. Member i liegt auf `n̂·x ≤ o_a`, Member j auf
+/// `n̂·x ≥ −o_b`. Damit ist
+///
+/// ```text
+///     s := o_a + o_b
+/// ```
+///
+/// die **signierte Durchdringungstiefe**: `s = 0` bündiger Kontakt, `s > 0`
+/// die zwei Member durchdringen sich um `s`, `s < 0` es klafft ein Luftspalt
+/// der Weite `−s`. Vor #384 testete die Synthese nur `|s| ≤ 0.5·δ` — ein
+/// **unsignierter** Fenstertest, der alle drei Fälle vermengte und dabei drei
+/// Falschaussagen erzeugte (jeweils unter dem Stempel `exact`):
+///
+/// * `s < 0` (Luftspalt bis 0.5·δ): das Prisma **überbrückte die Luft** und
+///   erfand Material, wo die wahre Erosion leer ist (gemessen: Spalt 0.1 mm
+///   bei δ=2 ⇒ 8 mm Phantom-Material).
+/// * `0 < s ≤ 0.5·δ`: das Prisma war an EINER Ebene (`o_a`) verankert und
+///   ragte darum um genau `s` über die Gegenseite hinaus (gemessen: 1 mm
+///   Phantom-Material über der wahren Erosionsfläche).
+/// * `0.5·δ < s < 2·δ`: gar kein Prisma — die naive Erosion
+///   `min(f_i) + δ` riss einen **Phantom-Schlitz** der Dicke `2δ − s`
+///   (gemessen bis 1.47 mm Nullmengenfehler bei δ=2, ≈0.735·δ).
+///
+/// Diese Funktion trennt die Fälle. Rückgabe:
+///
+/// * `None` — kein Kontakt: echter Luftspalt (`s < −round_tol`) ODER
+///   `s ≥ 2·δ` (die erodierten Member überlappen noch, es entsteht gar kein
+///   Schlitz → keine Korrektur nötig, das naive Feld ist dort zero-set-exakt).
+/// * `Some(pen)` — Kontakt mit Durchdringung `pen ≥ 0`; `pen == 0` ist der
+///   bündige Fall (bit-identisch zum Vor-#384-Pfad).
+///
+/// `round_tol` ist die f32-Rundungsklasse (ein ECHT bündiger Kontakt hat
+/// |s| ~1e-4; genutzt wird das bereits kalibrierte `0.02·δ`-Fenster aus der
+/// #397-Dünnwand-Abgrenzung). NUR innerhalb dieser Klasse wird `pen` auf 0
+/// geklemmt — damit bleiben echte bündige Kontakte byte-identisch, während
+/// jede messbare Durchdringung ihre wahre Tiefe behält. Das vorherige
+/// Box-Fenster `0.5·δ` als Klemme wäre falsch: es klemmte auch eine
+/// Durchdringung von 1 mm auf „bündig" und erzeugte genau den zweiten Befund
+/// oben.
+fn face_pair_penetration(s: f64, delta: f64, round_tol: f64) -> Option<f64> {
+    if s < -round_tol {
+        return None; // echter Luftspalt → die Member berühren sich nicht
+    }
+    if s >= 2.0 * delta {
+        return None; // kein Phantom-Schlitz → keine Korrektur nötig
+    }
+    if s <= round_tol {
+        return Some(0.0); // bündig (Rundungsklasse) — Bestandspfad
+    }
+    Some(s)
+}
+
+/// Ergebnis des reinen Facetten-Scans eines Stopps (#384) — die analytische
+/// Vorab-Antwort auf „gibt es hier überhaupt einen Kontakt?".
+struct ContactScan {
+    /// Mindestens ein Facetten-Paar ist ein Kontakt-Kandidat (bündig ODER
+    /// durchdringend, `face_pair_penetration` liefert `Some`).
+    candidate: bool,
+    /// Mindestens ein Kandidat ist DURCHDRINGEND (`pen > 0`).
+    penetrating: bool,
+    /// Für JEDEN Member sind die planaren Facetten analytisch bekannt. Nur dann
+    /// ist `!candidate` ein BEWEIS für „kein koplanarer Kontakt" (sonst fehlen
+    /// dem Scan schlicht Flächen — gekrümmte Member, Revolve/Sweep/Mesh).
+    complete: bool,
+}
+
+/// Scannt die planaren Member-Facetten eines Stopps mit exakt dem Kriterium der
+/// Prisma-Synthese (`face_pair_penetration`). Zwei Verwendungen in
+/// `synthesize_stop`:
+///
+/// * `penetrating` ist der ADDITIVE Trigger für den Prisma-Pfad — das
+///   Carrier-basierte `coplanar_interface_present`-Gate sieht durchdringende
+///   Kontakte nicht (es verlangt überlappende Facetten-AABBs, und bei
+///   Durchdringung liegen die zwei Ebenen um `s` auseinander).
+/// * `complete && !candidate` WIDERLEGT das Gate: alle Facetten sind bekannt
+///   und kein Paar ist in Kontakt (jedes hat einen echten Luftspalt oder
+///   überlappt tiefer als 2·δ) → die #394-Verdachtsmeldung wäre ein Fehlalarm.
+fn contact_face_scan(members: &[Member], delta: f64) -> ContactScan {
+    let round_tol = (0.02 * delta).max(1e-3);
+    let faces: Vec<Option<Vec<ContactFace>>> =
+        members.iter().map(|m| member_contact_faces(m.node)).collect();
+    let mut scan = ContactScan {
+        candidate: false,
+        penetrating: false,
+        complete: faces.iter().all(|f| f.is_some()),
+    };
+    for i in 0..members.len() {
+        for j in (i + 1)..members.len() {
+            let (Some(fi), Some(fj)) = (&faces[i], &faces[j]) else {
+                continue;
+            };
+            for fa in fi {
+                for fb in fj {
+                    if fdot(fa.n, fb.n) > -0.9995 {
+                        continue;
+                    }
+                    if let Some(pen) = face_pair_penetration(fa.o + fb.o, delta, round_tol) {
+                        scan.candidate = true;
+                        scan.penetrating |= pen > 0.0;
+                    }
+                }
+            }
+        }
+    }
+    scan
 }
 
 /// Baut die Kontakt-Prismen für die koplanaren Kontaktflächen zweier Union-
@@ -2255,17 +2375,15 @@ fn synthesize_contact_prisms(
         refused: false,
         rim_bound: 0.0,
         pairs: Vec::new(),
+        pen_unrimmed: false,
     };
     let delta = ctx.delta as f64;
-    let coincide_tol = (0.5 * delta).max(1e-3);
-    // #397-Dünnwand-Abgrenzung: für NICHT-Box-Facetten (Extrude-Cap/-Mantel) die
-    // ENGE Koinzidenz-Toleranz — ein echter submergierter Flush-Kontakt ist bis
-    // auf f32-Rundung koinzident (~1e-4), eine bündig gestapelte Wand der Stärke
-    // w unterscheidet sich um genau w. Die lockere 0.5·δ (Box-Fast-Path,
-    // status-erhaltend) würde jede Extrude-Wand w < 0.5·δ fälschlich als Kontakt
-    // sehen und ein Prisma synthetisieren (Dünnwand-Shell-Regression). Box-Box
-    // bleibt bei 0.5·δ — dessen Kalibrierung ist gegen die Goldens/Statustests
-    // gefroren.
+    // #397-Dünnwand-Abgrenzung / #384-Rundungsklasse: ein echter submergierter
+    // Flush-Kontakt ist bis auf f32-Rundung koinzident (~1e-4), eine bündig
+    // gestapelte Wand der Stärke w unterscheidet sich um genau w. Seit #384 ist
+    // das für BEIDE Facettenklassen (Box wie Extrude) die Klemme auf „bündig" —
+    // jede messbare Abweichung wird signiert als Durchdringung (s>0) bzw.
+    // Luftspalt (s<0) behandelt, statt sie in ein 0.5·δ-Fenster zu falten.
     let coincide_eff = (0.02 * delta).max(1e-3);
     let overlap_min = (0.5 * delta).max(1e-3);
     let clip_tol = (1e-3 * delta).max(1e-4);
@@ -2286,20 +2404,17 @@ fn synthesize_contact_prisms(
             };
             for fa in fi {
                 for fb in fj {
-                    // Anti-parallel + koinzident (koplanarer Kontakt). Box-Box:
-                    // lockere 0.5·δ (status-erhaltend); Nicht-Box: enge 0.02·δ
-                    // (Dünnwand-Abgrenzung, s. o.).
+                    // Anti-parallel + signierte Lage (#384): bündig, durch-
+                    // dringend oder Luftspalt — `face_pair_penetration` trennt
+                    // die drei Fälle. Bündig heißt jetzt „innerhalb der
+                    // f32-Rundungsklasse `coincide_eff`" (nicht mehr „innerhalb
+                    // 0.5·δ"), Durchdringung bis 2·δ trägt ihre wahre Tiefe.
                     if fdot(fa.n, fb.n) > -0.9995 {
                         continue;
                     }
-                    let coincide = if fa.box_rect && fb.box_rect {
-                        coincide_tol
-                    } else {
-                        coincide_eff
-                    };
-                    if (fa.o + fb.o).abs() > coincide {
+                    let Some(pen) = face_pair_penetration(fa.o + fb.o, delta, coincide_eff) else {
                         continue;
-                    }
+                    };
                     let n = fnrm(fa.n); // Member i liegt auf −n, Member j auf +n.
                     let (e1, e2, _) = plane_frame(n);
                     // Der Verschnitt: Box∩Box exakt via SH, sonst cavalier boolean(And)
@@ -2318,10 +2433,21 @@ fn synthesize_contact_prisms(
                     // synthetische Prisma-Feature-Id ein (Owner-tragendes Band,
                     // s. `encode_prism_feat`).
                     let owner = min_feat[i].min(min_feat[j]);
+                    // Prisma-Ausdehnung entlang n̂: von Member i's Rückseite
+                    // (`o − depth_neg`) bis zu Member j's Rückseite. Die liegt
+                    // bei `(−o_b) + depth_pos = o − pen + depth_pos`, ALSO ist
+                    // die effektive +n̂-Tiefe `depth_pos − pen` (#384). Bei
+                    // bündigem Kontakt (`pen == 0`) ist das bit-identisch zum
+                    // Bestandspfad; bei Durchdringung endet das Prisma jetzt
+                    // exakt an der Gegenseite statt um `pen` darüber hinaus.
+                    // Wird j vollständig von i's Slab verschluckt
+                    // (`depth_pos ≤ pen`), bleibt das Prisma i's Slab über P —
+                    // immer noch S ⊆ U, nur ohne Korrekturwirkung.
+                    let depth_pos = (fb.depth - pen).max(0.0);
                     for comp in &comps {
                         let feat = encode_prism_feat(owner, *prism_idx);
                         let Some(prism) =
-                            build_prism_component(comp, e1, e2, n, o, fa.depth, fb.depth, feat)
+                            build_prism_component(comp, e1, e2, n, o, fa.depth, depth_pos, feat)
                         else {
                             // Bogen-Kontur (P3) → nicht als Polygon baubar → ehrlich
                             // conservative (der flächige Rest bliebe sonst still).
@@ -2344,7 +2470,15 @@ fn synthesize_contact_prisms(
                         // zur Verweigerung zwangen (koinzidente/tangentiale
                         // Carrier). Sie wird für das Paar unterdrückt (Design §3.4:
                         // der Kontakt gehört dem Prisma + ∂P-Rim, nicht der SSI).
-                        if !res.pairs.contains(&(i, j)) {
+                        //
+                        // NUR für BÜNDIGE Kontakte (#384): durchdringen sich die
+                        // Member, ist die Naht am Kontaktrand eine echte,
+                        // transversale Dieder-Kante (Deckfläche des einen ×
+                        // Seitenwand des anderen, Normalen 90° statt koinzident).
+                        // Die korrigiert die SSI-Kanal-Synthese sauber — sie hier
+                        // zu unterdrücken nähme dem Stopp seine einzige
+                        // ∂P-Korrektur (der ∂P-Rim spiegelt nur bündige Kontakte).
+                        if pen <= 0.0 && !res.pairs.contains(&(i, j)) {
                             res.pairs.push((i, j));
                         }
 
@@ -2360,6 +2494,13 @@ fn synthesize_contact_prisms(
                             && (ap - area_b).abs() < 1e-3 * area_b.max(1.0);
                         if !exact_pair {
                             res.exact = false;
+                            if pen > 0.0 {
+                                // Durchdringender Kontakt mit ungleichem
+                                // Querschnitt: `contact_clips` (Rim-Quelle)
+                                // nimmt nur bündige Kontakte auf, hier schließt
+                                // also kein ∂P-Rand-Fillet den Saum.
+                                res.pen_unrimmed = true;
+                            }
                             // Der verbleibende Fehler ist AUSSCHLIESSLICH der
                             // konkave B0-Sliver am Kontaktrand ∂P (Kanten
                             // δ·(1/sin(α/2)−1) ≈ 0.41·δ bei 90°-Stufen, Ecken
@@ -2766,6 +2907,9 @@ fn synthesize_contact_prisms_dilation(
         refused: false,
         rim_bound: 0.0,
         pairs: Vec::new(),
+        // Der Dilations-Pfad bleibt beim symmetrischen Koinzidenz-Fenster
+        // (#384 behandelt den Erosions-Stopp); er sagt ohnehin nie `exact` zu.
+        pen_unrimmed: false,
     };
     let delta = ctx.delta as f64;
     let coincide_tol = (0.5 * delta).max(1e-3);
@@ -3011,7 +3155,16 @@ pub(crate) fn contact_clips(inner: &BoundedCsg, delta_signed: f64) -> Vec<Contac
                         if fdot(fa.n, fb.n) > -0.9995 {
                             continue;
                         }
-                        if (fa.o + fb.o).abs() > coincide {
+                        // #384: NUR bündige Kontakte spiegeln (Faithful Mirror
+                        // von `synthesize_contact_prisms`, dessen `pen == 0`-
+                        // Zweig). Ein Luftspalt (s < −Rundungsklasse) ist gar
+                        // kein Kontakt; ein DURCHDRINGENDER Kontakt (s > 0) hat
+                        // keine gemeinsame Ebene Π — der Rim legte seine Spine
+                        // sonst auf die falsche (submergierte) Ebene. Dort
+                        // korrigieren stattdessen die regulären SSI-Kanäle den
+                        // ∂P-Saum, und die Capability sagt die weitere
+                        // B0-Schranke zu.
+                        if (fa.o + fb.o).abs() > coincide_eff {
                             continue;
                         }
                         fnrm(fa.n)
@@ -3224,7 +3377,11 @@ fn synthesize_stop(
         let nonbox_present = members
             .iter()
             .any(|m| !matches!(m.node, BoundedCsg::Leaf { primitive: Primitive::Box { .. }, .. }));
-        if box_gate || nonbox_present {
+        // #384: Facetten-Scan mit dem Kriterium der Synthese. `penetrating` ist
+        // der additive Trigger (das Carrier-Gate sieht Durchdringungen nicht);
+        // `complete && !candidate` widerlegt das Carrier-Gate (reiner Luftspalt).
+        let scan = contact_face_scan(&members, ctx.delta as f64);
+        if box_gate || nonbox_present || scan.penetrating {
             let mut prism_idx = 0u32;
             let contact = synthesize_contact_prisms(&members, &ctx, &min_feat, &mut prism_idx);
             if !contact.prisms.is_empty() {
@@ -3235,6 +3392,21 @@ fn synthesize_stop(
                         "Koplanare Kontaktfläche nur teilweise korrigierbar (ein Kontakt-Partner \
                          nicht analytisch fassbar) — Rest bleibt Näherung f−δ.",
                     );
+                } else if contact.pen_unrimmed {
+                    // #384: DURCHDRINGENDER Kontakt (Überlappung < 2·δ) mit
+                    // ungleichem Querschnitt. Das Prisma tilgt den flächigen
+                    // Phantom-Schlitz; am Kontaktrand ∂P steht eine echte
+                    // transversale Dieder-Naht, die die SSI-Kanäle korrigieren
+                    // (für durchdringende Paare NICHT unterdrückt). Der ∂P-Rim
+                    // spiegelt nur bündige Kontakte, also wird hier die weitere
+                    // B0-Schranke zugesagt statt der engen `channel_tol` —
+                    // ehrlich statt Bound-Over-Claim (Phase-4-Multi-Clip-Regel).
+                    report.note_tolerance(format!(
+                        "Durchdringender Kontakt zweier Union-Member (Überlappung < 2·δ) per \
+                         Kontakt-Prisma korrigiert; Restfehler = konkaver B0-Sliver am \
+                         Kontaktrand ∂P ≤ {:.3} mm (≈0.75·δ).",
+                        contact.rim_bound
+                    ));
                 } else if rim_closes {
                     // Stufe 1 (Prisma) tilgt den flächigen Innenfehler; Stufe 2
                     // (∂P-Rand-Fillet, OP_RIM_FILLET) rundet den verbleibenden
@@ -3279,8 +3451,13 @@ fn synthesize_stop(
                     "Koplanarer Kontakt nicht (vollständig) als Prisma fassbar (Bogen-Kontur \
                      oder Nicht-Box-Partner ohne planare Facetten) — Rest bleibt Näherung f−δ.",
                 );
-            } else if box_gate {
+            } else if box_gate && !(scan.complete && !scan.candidate) {
                 // Box-Kontakt erkannt, aber kein Prisma baubar (degeneriert) → #394.
+                // Ausnahme (#384): der Facetten-Scan hat ALLE Flächen gesehen und
+                // KEIN Paar in Kontakt gefunden — das Carrier-Gate hat dann bloß
+                // zwei nahe, aber durch einen echten Luftspalt getrennte Flächen
+                // gesehen. Getrennte Körper erodieren unabhängig und exakt; eine
+                // Verdachtsmeldung wäre hier ein Fehlalarm.
                 report.note_conservative(
                     "Koplanarer/tangentialer Kontakt zweier Boolescher Kinder ohne exakt \
                      bestimmbares Kontaktpolygon (Nicht-Box-Member/gekrümmt/degeneriert) — \
