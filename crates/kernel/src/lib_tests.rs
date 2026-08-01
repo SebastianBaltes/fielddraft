@@ -5005,6 +5005,426 @@ fn hole_countersink_rejects_degenerate_geometry() {
     assert_eq!(e, "", "a valid countersink must not error");
 }
 
+// ─── #404 P5: end conditions (up-to-next / up-to-entity) & start modes ────
+
+/// One free sketch point at the origin — every P5 fixture drills through it.
+const HOLE_POINT_AT_ORIGIN: &str =
+    r#"[{ "type": "sketch_point", "id": "100", "params": { "at": [0.0, 0.0] } }]"#;
+
+/// Bisect body `b`'s compiled field down the vertical ray through `(x, y)`
+/// between an OPEN `z_open` and a SOLID `z_solid`, returning the crossing as a
+/// positive depth below `z = 0`.
+///
+/// Same instrument as the P3/P4 gates, with the bracket handed in: a P5 bore
+/// need not start at the sketch plane, so its floor can sit anywhere along the
+/// axis rather than always directly under `z = 0`.
+fn hole_floor_in(k: &Kernel, b: usize, x: f32, y: f32, z_open: f32, z_solid: f32) -> f32 {
+    let (mut open, mut solid) = (z_open, z_solid);
+    assert!(
+        k.body_sdf_eval(b, x, y, open) > 0.0,
+        "body {b} must be OPEN at z={open}"
+    );
+    assert!(
+        k.body_sdf_eval(b, x, y, solid) < 0.0,
+        "body {b} must be SOLID at z={solid}"
+    );
+    for _ in 0..48 {
+        let mid = 0.5 * (open + solid);
+        if k.body_sdf_eval(b, x, y, mid) > 0.0 {
+            open = mid;
+        } else {
+            solid = mid;
+        }
+    }
+    -0.5 * (open + solid)
+}
+
+/// Is ANY body solid at this world point? P5 spans several bodies: up-to-next
+/// stops at the first slab, and what lies behind it has to stay whole.
+fn hole_material_at(k: &Kernel, x: f32, y: f32, z: f32) -> bool {
+    (0..k.body_count()).any(|b| k.body_sdf_eval(b, x, y, z) < 0.0)
+}
+
+/// The index of the body that owns a given world point (fixtures build more
+/// than one body, and the partition order is not part of the contract).
+fn hole_body_at(k: &Kernel, x: f32, y: f32, z: f32) -> usize {
+    (0..k.body_count())
+        .find(|&b| k.body_sdf_eval(b, x, y, z) < 0.0)
+        .unwrap_or_else(|| panic!("no body is solid at ({x}, {y}, {z})"))
+}
+
+/// The `query` string the weave publishes for the first face of body `b` whose
+/// LOCAL normal points along `axis` — how the dialog's picker names a face.
+fn hole_face_query(k: &mut Kernel, b: usize, axis: [f64; 3]) -> String {
+    let faces: serde_json::Value = serde_json::from_str(&k.body_brep_faces(b)).unwrap();
+    faces
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| {
+            let n = f["normalLocal"].as_array().unwrap();
+            (0..3).all(|i| (n[i].as_f64().unwrap() - axis[i]).abs() < 1e-3)
+        })
+        .unwrap_or_else(|| panic!("body {b} has no face with local normal {axis:?}"))
+            ["query"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// **P5 gate — up-to-entity.** The bore ends at a NAMED face, shifted by a
+/// signed `end_offset`, measured on the geometry through the real API chain
+/// (`add_feature_call("hole", …)` → `body_sdf_eval`).
+///
+/// A 20 mm block (z ∈ [−20, 0]) bored from its top face down to its BOTTOM
+/// face — addressed exactly the way the picker addresses it, by the `query`
+/// string the weave publishes. Three offsets, one geometry each. `depth` is
+/// left at an absurd 999 mm throughout: an up-to bore must ignore it entirely.
+#[test]
+fn hole_up_to_entity_ends_at_the_named_face_plus_offset() {
+    let bored = |offset_mm: f32| -> Kernel {
+        let mut k = Kernel::new();
+        let box_id = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, -10.0, 10.0, 10.0, 10.0)
+            .unwrap();
+        let bottom_q = hole_face_query(&mut k, 0, [0.0, 0.0, -1.0]);
+        let sketch_id = k
+            .add_sketch("qCreatedBy(origin_plane_xy)", HOLE_POINT_AT_ORIGIN)
+            .unwrap();
+        let params = format!(
+            r#"{{
+                "style": "simple", "hole_type": "drilled", "standard_size": "M6",
+                "end_type": "up_to_entity",
+                "up_to_entity": "{bottom_q}",
+                "end_offset": {{ "value": {offset_mm}, "unit": "mm" }},
+                "depth": {{ "value": 999.0, "unit": "mm" }},
+                "locations": "qSketchPoint({sketch_id}, 1)",
+                "targets": "qCreatedBy({box_id})"
+            }}"#
+        );
+        let hole_id = k.add_feature_call("hole", &params).unwrap();
+        assert_eq!(
+            k.feature_errors.get(&FeatureId::from_u32(hole_id)),
+            None,
+            "up-to-entity hole must resolve the face query (offset {offset_mm})"
+        );
+        k
+    };
+
+    // −5 mm stops 5 mm short of the far face → a 15 mm deep bore, and a FLAT
+    // floor: `tip` is left at its 118° default, and only a BLIND bore gets a
+    // drill point. A cone here would put the floor at 16.803 mm.
+    let k = bored(-5.0);
+    let floor = hole_floor_in(&k, 0, 0.0, 0.0, -1e-3, -19.0);
+    assert!(
+        (floor - 15.0).abs() < 2e-3,
+        "offset −5 mm: floor at {floor:.4} mm, expected 15.000 (flat, no drill point)"
+    );
+
+    // Same face, different offset — only the number moved.
+    let k = bored(-2.0);
+    let floor = hole_floor_in(&k, 0, 0.0, 0.0, -1e-3, -19.0);
+    assert!(
+        (floor - 18.0).abs() < 2e-3,
+        "offset −2 mm: floor at {floor:.4} mm, expected 18.000"
+    );
+
+    // Zero offset reaches the face itself, so the bore breaks through.
+    let k = bored(0.0);
+    assert!(
+        k.body_sdf_eval(0, 0.0, 0.0, -19.99) > 0.0,
+        "a zero offset must carry the bore all the way to the named face"
+    );
+}
+
+/// **P5 gate — up-to-next.** The bore stops at the next material boundary in
+/// the drilling direction, found on the live field rather than on a number.
+///
+/// A 5 mm plate (z ∈ [−5, 0]) with a second block far below it
+/// (z ∈ [−30, −20]). BOTH are in the hole's merge scope, so the only thing
+/// that can keep the lower block whole is the end condition — and the
+/// through-all control proves the scope really does reach it.
+#[test]
+fn hole_up_to_next_stops_at_the_far_wall_of_the_first_slab() {
+    let build = |end_type: &str, offset_mm: f32| -> Kernel {
+        let mut k = Kernel::new();
+        let plate = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, -2.5, 10.0, 10.0, 2.5)
+            .unwrap();
+        let lower = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, -25.0, 10.0, 10.0, 5.0)
+            .unwrap();
+        let sketch_id = k
+            .add_sketch("qCreatedBy(origin_plane_xy)", HOLE_POINT_AT_ORIGIN)
+            .unwrap();
+        let params = format!(
+            r#"{{
+                "style": "simple", "hole_type": "drilled", "standard_size": "M6",
+                "end_type": "{end_type}",
+                "end_offset": {{ "value": {offset_mm}, "unit": "mm" }},
+                "depth": {{ "value": 999.0, "unit": "mm" }},
+                "locations": "qSketchPoint({sketch_id}, 1)",
+                "targets": "qCreatedBy({plate}), qCreatedBy({lower})"
+            }}"#
+        );
+        let hole_id = k.add_feature_call("hole", &params).unwrap();
+        assert_eq!(
+            k.feature_errors.get(&FeatureId::from_u32(hole_id)),
+            None,
+            "{end_type} hole must regenerate cleanly"
+        );
+        assert_eq!(k.body_count(), 2, "plate + lower block stay two bodies");
+        k
+    };
+
+    // Up-to-next: through the plate, and NOT one micron further.
+    let k = build("up_to_next", 0.0);
+    assert!(!hole_material_at(&k, 0.0, 0.0, -2.5), "the plate is bored through");
+    assert!(
+        hole_material_at(&k, 0.0, 0.0, -25.0),
+        "up-to-next must leave the block behind the plate whole"
+    );
+
+    // Control: the very same scope with through-all DOES reach the lower
+    // block — so the assertion above measures the end condition, not a scope
+    // accident.
+    let k = build("through_all", 0.0);
+    assert!(
+        !hole_material_at(&k, 0.0, 0.0, -25.0),
+        "through-all must drill the lower block (scope sanity check)"
+    );
+
+    // A negative offset stops short of the found wall: 1 mm of plate is left
+    // standing under the bore, so the plate's floor sits at exactly 4 mm.
+    let k = build("up_to_next", -1.0);
+    let plate_body = hole_body_at(&k, 9.0, 9.0, -2.5);
+    let floor = hole_floor_in(&k, plate_body, 0.0, 0.0, -1e-3, -4.9);
+    assert!(
+        (floor - 4.0).abs() < 2e-3,
+        "up-to-next −1 mm: floor at {floor:.4} mm, expected 4.000"
+    );
+    assert!(
+        hole_material_at(&k, 0.0, 0.0, -25.0),
+        "the offset bore still stops inside the plate"
+    );
+}
+
+/// **P5 gate — start from the part surface.** `depth` is measured from where
+/// the axis first meets material, not from the sketch plane.
+///
+/// The block sits 10 mm BELOW the sketch plane (z ∈ [−30, −10]), so a
+/// sketch-plane-relative 6 mm bore is entirely in mid-air and cuts nothing —
+/// the same feature with `start_mode = part` bores z = −10 … −16.
+#[test]
+fn hole_start_from_part_measures_the_depth_from_the_first_face_it_meets() {
+    let build = |start_mode: &str| -> Kernel {
+        let mut k = Kernel::new();
+        let box_id = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, -20.0, 10.0, 10.0, 10.0)
+            .unwrap();
+        let sketch_id = k
+            .add_sketch("qCreatedBy(origin_plane_xy)", HOLE_POINT_AT_ORIGIN)
+            .unwrap();
+        let params = format!(
+            r#"{{
+                "style": "simple", "hole_type": "drilled", "standard_size": "M6",
+                "start_mode": "{start_mode}",
+                "end_type": "blind", "tip": "flat",
+                "depth": {{ "value": 6.0, "unit": "mm" }},
+                "locations": "qSketchPoint({sketch_id}, 1)",
+                "targets": "qCreatedBy({box_id})"
+            }}"#
+        );
+        let hole_id = k.add_feature_call("hole", &params).unwrap();
+        assert_eq!(
+            k.feature_errors.get(&FeatureId::from_u32(hole_id)),
+            None,
+            "start_mode = {start_mode} must regenerate cleanly"
+        );
+        k
+    };
+
+    // Sketch-plane relative (P1–P4 behaviour): the cutter never reaches the
+    // block, which stays untouched.
+    let k = build("sketch_plane");
+    assert!(
+        hole_material_at(&k, 0.0, 0.0, -11.0),
+        "a sketch-plane bore 10 mm above the block cuts nothing"
+    );
+
+    // Part relative: the bore starts at the block's top face (z = −10) and is
+    // exactly 6 mm deep from THERE — 16 mm below the sketch plane.
+    let k = build("part");
+    assert!(
+        !hole_material_at(&k, 0.0, 0.0, -11.0),
+        "start-from-part opens the bore at the block's top face"
+    );
+    let floor = hole_floor_in(&k, 0, 0.0, 0.0, -10.001, -29.0);
+    assert!(
+        (floor - 16.0).abs() < 2e-3,
+        "start-from-part: floor at {floor:.4} mm below the sketch plane, expected 16.000 \
+         (= the 10 mm stand-off plus the 6 mm depth)"
+    );
+}
+
+/// **P5 gate — start from a selected plane.** The bore begins at a face the
+/// user names, even when that face belongs to a body the hole does not cut.
+///
+/// Plate A (z ∈ [−10, 0]) hovers over block B (z ∈ [−30, −15]) with a 5 mm
+/// gap. Only B is in the merge scope. Starting from A's BOTTOM face the 12 mm
+/// bore runs z = −10 … −22 and takes 7 mm out of B; starting from the sketch
+/// plane it ends at z = −12, inside the gap, and B stays whole.
+#[test]
+fn hole_start_from_selected_plane_begins_at_that_plane() {
+    let build = |start_mode: &str| -> Kernel {
+        let mut k = Kernel::new();
+        let _plate = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, -5.0, 10.0, 10.0, 5.0)
+            .unwrap();
+        let lower = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_NEW,
+                0.0,
+                0.0,
+                -22.5,
+                10.0,
+                10.0,
+                7.5,
+            )
+            .unwrap();
+        let plate_body = hole_body_at(&k, 0.0, 0.0, -5.0);
+        let plate_bottom_q = hole_face_query(&mut k, plate_body, [0.0, 0.0, -1.0]);
+        let sketch_id = k
+            .add_sketch("qCreatedBy(origin_plane_xy)", HOLE_POINT_AT_ORIGIN)
+            .unwrap();
+        let params = format!(
+            r#"{{
+                "style": "simple", "hole_type": "drilled", "standard_size": "M6",
+                "start_mode": "{start_mode}",
+                "start_plane": "{plate_bottom_q}",
+                "end_type": "blind", "tip": "flat",
+                "depth": {{ "value": 12.0, "unit": "mm" }},
+                "locations": "qSketchPoint({sketch_id}, 1)",
+                "targets": "qCreatedBy({lower})"
+            }}"#
+        );
+        let hole_id = k.add_feature_call("hole", &params).unwrap();
+        assert_eq!(
+            k.feature_errors.get(&FeatureId::from_u32(hole_id)),
+            None,
+            "start_mode = {start_mode} must resolve the start plane"
+        );
+        k
+    };
+
+    // Sketch-plane relative: the bore ends in the gap, B is untouched.
+    let k = build("sketch_plane");
+    assert!(
+        hole_material_at(&k, 0.0, 0.0, -16.0),
+        "a sketch-plane bore ends in the gap and never reaches the lower block"
+    );
+
+    // Selected-plane relative: the bore starts at z = −10 and reaches z = −22.
+    let k = build("selected_plane");
+    let lower_body = hole_body_at(&k, 9.0, 9.0, -22.5);
+    assert!(
+        !hole_material_at(&k, 0.0, 0.0, -16.0),
+        "the selected-plane bore opens the lower block's top"
+    );
+    let floor = hole_floor_in(&k, lower_body, 0.0, 0.0, -15.001, -29.0);
+    assert!(
+        (floor - 22.0).abs() < 2e-3,
+        "selected-plane start: floor at {floor:.4} mm, expected 22.000 \
+         (= the plane at 10 mm plus the 12 mm depth)"
+    );
+}
+
+/// A P5 end condition that cannot be evaluated fails with a NAMED parameter
+/// error the dialog can point at — it never falls back to a silently invented
+/// depth. (The regen loop is error-tolerant, so the failure lands in
+/// `feature_errors`.)
+#[test]
+fn hole_p5_planes_are_rejected_by_name_when_unusable() {
+    // `extra` is built from the finished kernel so a case can name a face of
+    // the very document it is about to break (a `qFace` hash from a DIFFERENT
+    // kernel would land on some other face and prove nothing).
+    let bad = |extra: &dyn Fn(&mut Kernel) -> String| -> String {
+        let mut k = Kernel::new();
+        let box_id = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, -10.0, 10.0, 10.0, 10.0)
+            .unwrap();
+        // A second, cylindrical body so a CURVED face is available to pick.
+        k.add_primitive(Primitive::KIND_CYLINDER, BoolOp::TAG_NEW, 40.0, 0.0, 0.0, 5.0, 10.0, 0.0)
+            .unwrap();
+        let extra = extra(&mut k);
+        let sketch_id = k
+            .add_sketch("qCreatedBy(origin_plane_xy)", HOLE_POINT_AT_ORIGIN)
+            .unwrap();
+        let params = format!(
+            r#"{{
+                "style": "simple", "hole_type": "drilled", "standard_size": "M6",
+                "depth": {{ "value": 5.0, "unit": "mm" }},
+                {extra}
+                "locations": "qSketchPoint({sketch_id}, 1)",
+                "targets": "qCreatedBy({box_id})"
+            }}"#
+        );
+        let hole_id = k.add_feature_call("hole", &params).unwrap();
+        k.feature_errors
+            .get(&FeatureId::from_u32(hole_id))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let fixed = |s: &'static str| move |_: &mut Kernel| s.to_string();
+
+    // up-to-entity without a target.
+    let e = bad(&fixed(r#""end_type": "up_to_entity","#));
+    assert!(e.contains("up_to_entity"), "expected an up_to_entity error, got {e:?}");
+
+    // A plane the −Z bore axis runs parallel to never meets it.
+    let e = bad(&fixed(
+        r#""end_type": "up_to_entity",
+           "up_to_entity": "qCreatedBy(origin_plane_yz)","#,
+    ));
+    assert!(
+        e.contains("up_to_entity") && e.contains("PARALLEL"),
+        "expected a parallel-plane error, got {e:?}"
+    );
+
+    // A start plane that is parallel is refused the same way.
+    let e = bad(&fixed(
+        r#""start_mode": "selected_plane",
+           "start_plane": "qCreatedBy(origin_plane_xz)","#,
+    ));
+    assert!(
+        e.contains("start_plane") && e.contains("PARALLEL"),
+        "expected a parallel start-plane error, got {e:?}"
+    );
+
+    // A CURVED face is not a plane: refused rather than reduced to its
+    // centroid + an invented normal.
+    let e = bad(&|k: &mut Kernel| {
+        let cyl_body = hole_body_at(k, 40.0, 0.0, 0.0);
+        let faces: serde_json::Value =
+            serde_json::from_str(&k.body_brep_faces(cyl_body)).unwrap();
+        let curved = faces
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["surfaceKind"] == "cylinder")
+            .expect("the cylinder body has a curved face")["query"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        format!(r#""end_type": "up_to_entity", "up_to_entity": "{curved}","#)
+    });
+    assert!(
+        e.contains("up_to_entity") && e.contains("PLANAR"),
+        "expected a non-planar-face error, got {e:?}"
+    );
+}
+
 /// #414 P1 — the edge chamfer through the REAL wasm API chain: the
 /// `addChamferEdge` SETTER (not a hand-written feature call), the compiled
 /// opcode stream via `bodySdfEval`, a document save/load round-trip, and an

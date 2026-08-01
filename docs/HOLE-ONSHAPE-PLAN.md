@@ -461,6 +461,83 @@ Körper (der ungescopte Cutter-Stapel ist Schaft **plus** Spitze); die P3-Gates 
 `tip: "flat"`, damit sie genau eine Sache prüfen (und weil der zuletzt gepushte Cutter wegen des
 Branch-Folds die `cone`-Fläche im Weave stellt — s. P3-Nebenbefund).
 
+### P5 — Umgesetzt (v0.55.0)
+
+**Ein gemeinsames Achsen-Koordinatensystem.** Alle vier Endbedingungen und alle drei
+Start-Modi reduzieren sich auf zwei Zahlen pro Location: `t_start` (wo die Bohrung beginnt)
+und `t_end` (wo sie aufhört), gemessen in mm entlang der Bohrrichtung ab dem Anker. Jedes
+Cutter-Teil läuft weiterhin durch `axial_span`; neu ist nur, dass Schaft, Senkung und
+Kegelsenkung ihren Nullpunkt bei `t_start` statt hart bei 0 haben. Bei
+`start_mode = sketch_plane` (Default) ist `t_start = 0` — die P1–P4-Geometrie ist damit
+unverändert, was die bestehenden Gates bestätigen.
+
+**Neue Felder:** `start_mode` (`sketch_plane` · `part` · `selected_plane`, Default
+`sketch_plane`), `start_plane: Query` (entity_filter FACE), `up_to_entity: Query`
+(entity_filter FACE) und `end_offset: Length` (0 mm, **vorzeichenbehaftet**: positiv = tiefer
+in Bohrrichtung, negativ = kurz vor der gefundenen Fläche). `end_type` hatte die Varianten
+`up_to_next`/`up_to_entity` seit P1 in der Liste — bis hierher verhielten sie sich still wie
+`blind`. Jetzt tun sie, was sie heißen.
+
+**Ebenen-Auflösung — keine neue Maschinerie.** `Context::resolve_plane_frame` gab es schon
+(Datum-Ebene → Mate Connector → B-Rep-Fläche, in genau dieser Reihenfolge und aus genau den in
+#409 dokumentierten Gründen). Für eine Endbedingung ist die Fläche-Sprosse aber zu weich:
+`face_plane_frame` beantwortet auch eine GEKRÜMMTE Fläche — mit deren Schwerpunkt und lokalem
++Z. Für einen Sketch ist das ein brauchbarer Notnagel, für „die Bohrung endet an DIESER Fläche"
+ist es eine erfundene Ebene. Deshalb neu: `Context::resolve_planar_frame` — dieselbe Leiter,
+aber die B-Rep-Sprosse zählt nur für `SurfaceGeometry::Analytic { HalfSpace::Plane }`. Die
+gemeinsamen Datum-/Connector-Sprossen sind in `datum_or_connector_frame` herausgezogen, damit
+beide Varianten dieselbe Reihenfolge benutzen statt sie zweimal zu behaupten.
+
+**`up_to_next` und `start_mode = part` lesen das Feld, nicht die Absicht.** Beide brauchen eine
+Materialgrenze, die in keinem Parameter steht. Gelesen wird sie auf dem lebenden Feld von allem
+bisher Modellierten — `CsgNode::from_decoded(&ctx.features)`, dasselbe Muster, das der
+Chamfer-Dieder-Test schon fährt — und zwar **vor** dem ersten gepushten Cutter, sodass eine
+Bohrung niemals an sich selbst oder an ihrer Geschwister-Bohrung endet. Der Marsch
+(`first_boundary`) ist ein Sphere-Trace: die Schrittweite ist der Feldwert selbst, kann also
+per SDF-Eigenschaft keine Wand überspringen, mit einem Boden von 0.01 mm (sonst bliebe der
+Lauf an einer Fläche stehen) und einem harten Budget von 40 000 Schritten gegen streifende
+Achsen. Der gefundene Vorzeichenwechsel wird auf 1e-4 mm einbisektiert — deshalb landet
+`up_to_next` **auf** der Fläche und nicht innerhalb eines Sampling-Rasters daneben.
+
+**Bohrspitze nur noch bei `blind`.** Bisher galt „alles außer through_all bekommt eine Spitze".
+Das ist für `up_to_next`/`up_to_entity` falsch: beide enden auf einer Fläche, die der Nutzer
+benannt hat, und ein Kegel dort stößt genau durch sie hindurch. Onshape zeigt den Anschliff
+ebenfalls nur bei Blind (§2.2). Ein unbekannter `end_type` aus einem neueren Dokument liest
+sich als `blind` — die einzige Lesart, die nicht mehr wegschneiden kann als die eingetragene
+Zahl.
+
+**Bewusste Abweichung: `through_all` ignoriert den Start.** Der Durchgangs-Cutter spannt
+weiterhin die volle Körper-Ausdehnung in BEIDE Richtungen ab dem Anker (P1-Verhalten). Der
+Start-Modus verschiebt nur, wovon Tiefen gemessen werden — und `through_all` misst keine. Die
+Senkungen wandern trotzdem mit `t_start` mit, denn die haben eine Tiefe.
+
+**Gates gemessen** (alle über `add_feature_call("hole", …)` → `body_sdf_eval`, Bisektion auf
+der Achse, Toleranz 2e-3 mm):
+
+- *up_to_entity:* 20-mm-Block, von oben auf die per `query`-String gepickte **Bodenfläche**
+  gebohrt. `end_offset = −5` → Grund bei **15.000 mm**, `−2` → **18.000 mm**, `0` → die Bohrung
+  bricht durch (bei z = −19.99 offen). `depth` steht dabei durchgehend auf absurden 999 mm und
+  wird nachweislich ignoriert. Der Grund ist bei Default-`tip = a118` **flach** — ein Kegel
+  hätte ihn auf 16.803 gelegt.
+- *up_to_next:* 5-mm-Platte (z ∈ [−5, 0]) über einem Block (z ∈ [−30, −20]), **beide im
+  Scope**. Die Bohrung durchdringt die Platte und lässt den Block ganz; dieselbe Datei mit
+  `through_all` bohrt den Block sehr wohl (Kontrollprobe, dass die Aussage die Endbedingung
+  misst und nicht einen Scope-Zufall). Mit `end_offset = −1` bleibt exakt **4.000 mm** Platte
+  über dem Bohrgrund stehen.
+- *start_mode = part:* Block 10 mm UNTER der Skizzenebene (z ∈ [−30, −10]), blind 6 mm.
+  `sketch_plane` schneidet nichts (der Cutter hängt in der Luft), `part` öffnet die Bohrung an
+  der Deckfläche und legt den Grund auf **16.000 mm** unter der Skizzenebene (= 10 mm Abstand
+  + 6 mm Tiefe).
+- *start_mode = selected_plane:* Platte A (z ∈ [−10, 0]) über Block B (z ∈ [−30, −15]) mit
+  5 mm Luft, **nur B im Scope**. Von A's Bodenfläche aus gestartet läuft die 12-mm-Bohrung bis
+  **22.000 mm** und nimmt 7 mm aus B; von der Skizzenebene aus endet sie bei 12 mm in der Luft
+  und B bleibt unberührt.
+- *Fehlerfälle, benannt statt still:* leeres `up_to_entity`, eine zur Bohrachse **parallele**
+  Ebene (`qCreatedBy(origin_plane_yz)` bzw. `_xz` als Startebene) und eine **gekrümmte** Fläche
+  liefern je einen `InvalidParameter`-Fehler mit dem Feldnamen darin.
+
+Testzahlen: Kernel 1508 → **1513** grün (5 neue), Web 2072 unverändert, `tsc -b` sauber.
+
 ## 7. Offene Fragen / Risiken
 
 1. **Sketch-Punkt-Referenzierung (größtes Risiko, blockiert P1-Zielselektion):** Taucht ein

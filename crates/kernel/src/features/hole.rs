@@ -1,8 +1,10 @@
 //! `hole` — Onshape-style bore feature (#404).
 //!
-//! Scope so far: `style = simple`, types `drilled` / `clearance` / `tapped`
-//! (P2 — the ISO tables in [`hole_iso`](super::hole_iso) pick the bore Ø),
-//! end conditions `blind` (exact depth) and `through_all`.
+//! Scope so far: styles `simple` / `counterbore` / `countersink` (P3), types
+//! `drilled` / `clearance` / `tapped` (P2 — the ISO tables in
+//! [`hole_iso`](super::hole_iso) pick the bore Ø), a drill point at the blind
+//! floor (P4), all four end conditions `blind` / `through_all` / `up_to_next` /
+//! `up_to_entity` and the three start modes (P5).
 //! A hole targets **one or more locations**
 //! — sketch points (`qSketchPoint`), mate connectors (`qCreatedBy(<mc>)`) or
 //! B-Rep vertices/faces — and drills an identical cutter at each, along that
@@ -79,9 +81,44 @@ pub struct HoleDef {
     #[param(name = "Diameter", default = ::fielddraft_protocol::Length::mm(6.0))]
     pub diameter: ::fielddraft_protocol::Length,
 
-    /// End condition. P1 ships `blind` (exact `depth`) and `through_all`
-    /// (spans the target body's extent along the bore axis). `up_to_next` /
-    /// `up_to_entity` are reserved for P5.
+    /// Where the bore BEGINS — Onshape's "Start" block (P5). The bore always
+    /// travels along the same axis; this only moves `t = 0`, i.e. the point
+    /// [`depth`](HoleDef::depth) and the counterbore / countersink seat are
+    /// measured from.
+    ///
+    /// * `sketch_plane` (default) — the anchor's own plane: the sketch plane a
+    ///   `qSketchPoint` lives on, a mate connector's origin, a vertex. P1–P4
+    ///   behaviour, so an existing document is unchanged.
+    /// * `part` — the first surface of the model the axis enters. Lets a sketch
+    ///   float above the part and still drill "6 mm into the material" rather
+    ///   than "6 mm below a plane that is 20 mm up in the air".
+    /// * `selected_plane` — [`start_plane`](HoleDef::start_plane).
+    #[param(
+        name = "Start",
+        default = ::std::string::String::from("sketch_plane"),
+        variants = "sketch_plane=Sketch plane,part=Part surface,selected_plane=Selected plane"
+    )]
+    pub start_mode: String,
+
+    /// The plane the bore starts at — only read for
+    /// `start_mode = selected_plane`. A planar B-Rep face, an origin datum
+    /// plane or a mate connector; the bore axis is intersected with it.
+    #[param(name = "Start plane", default = ::fielddraft_protocol::Query::new(""), entity_filter = "FACE")]
+    pub start_plane: ::fielddraft_protocol::Query,
+
+    /// End condition (Onshape's "Termination"):
+    ///
+    /// * `blind` — exactly [`depth`](HoleDef::depth) past the start.
+    /// * `through_all` — spans the target body's whole extent along the axis.
+    /// * `up_to_next` — stops at the next material boundary in the drilling
+    ///   direction: the far wall of the first slab the axis passes through
+    ///   (P5, found on the live field of everything modelled so far).
+    /// * `up_to_entity` — stops at the plane named by
+    ///   [`up_to_entity`](HoleDef::up_to_entity) (P5).
+    ///
+    /// The last two are shifted by [`end_offset`](HoleDef::end_offset). Only
+    /// `blind` gets a drill point — the other three end at a surface the bore
+    /// breaks through or is told to meet, and a cone there would poke past it.
     #[param(
         name = "End",
         default = ::std::string::String::from("blind"),
@@ -89,10 +126,26 @@ pub struct HoleDef {
     )]
     pub end_type: String,
 
-    /// Bore depth measured from the anchor into the body — only used for
+    /// Bore depth measured from the START (see
+    /// [`start_mode`](HoleDef::start_mode)) into the body — only used for
     /// `end_type = blind`.
     #[param(name = "Depth", default = ::fielddraft_protocol::Length::mm(10.0))]
     pub depth: ::fielddraft_protocol::Length,
+
+    /// The face/plane the bore ends at — only read for
+    /// `end_type = up_to_entity`. Same three kinds as
+    /// [`start_plane`](HoleDef::start_plane): a **planar** B-Rep face, an origin
+    /// datum plane, or a mate connector. A curved face is rejected with a named
+    /// error instead of being reduced to its centroid.
+    #[param(name = "Up to entity", default = ::fielddraft_protocol::Query::new(""), entity_filter = "FACE")]
+    pub up_to_entity: ::fielddraft_protocol::Query,
+
+    /// Onshape's "Offset from end", read for `up_to_next` / `up_to_entity`:
+    /// how far past the found surface the bore ends. **Positive is deeper**
+    /// (further along the drilling direction), negative stops short of it —
+    /// so `−2 mm` on a bore up-to the far wall leaves a 2 mm floor.
+    #[param(name = "Offset from end", default = ::fielddraft_protocol::Length::mm(0.0))]
+    pub end_offset: ::fielddraft_protocol::Length,
 
     /// Counterbore diameter — the wide flat seat at the mouth that swallows a
     /// cap-screw head. Only read for `style = counterbore`. Clamped to at
@@ -266,6 +319,140 @@ fn axial_span(origin: [f32; 3], dir: [f32; 3], t_lo: f32, t_hi: f32) -> (f32, Tr
     )
 }
 
+/// Resolve a P5 start/end plane query to `(origin, unit normal)` in world
+/// space, failing with a **named** parameter error so the dialog can point at
+/// the field that is wrong rather than at the feature.
+///
+/// Accepts the same three plane kinds a sketch may stand on
+/// ([`Context::resolve_planar_frame`]): a planar B-Rep face, an origin datum
+/// plane, a mate connector. A CURVED face is refused here instead of being
+/// reduced to its centroid — an end condition is a statement about a plane.
+fn resolve_hole_plane(
+    ctx: &mut Context<'_>,
+    query: &str,
+    name: &'static str,
+) -> Result<([f32; 3], [f32; 3]), FeatureError> {
+    let bad = |message: String| FeatureError::InvalidParameter {
+        feature: HoleDef::TYPE_NAME,
+        name,
+        message,
+    };
+    let q = query.trim();
+    if q.is_empty() {
+        return Err(bad(
+            "pick a planar face, an origin datum plane or a mate connector".to_string(),
+        ));
+    }
+    let expr = crate::queries::parse_query(q)
+        .map_err(|e| bad(format!("could not parse the query {q:?}: {e}")))?;
+    let frame = ctx.resolve_planar_frame(&expr).ok_or_else(|| {
+        bad(format!(
+            "{q} does not resolve to a PLANAR face, an origin datum plane or a mate connector"
+        ))
+    })?;
+    Ok((frame.origin, normalize3(frame.normal)))
+}
+
+/// Parameter `t` (mm along `dir` from `origin`) where the bore axis meets the
+/// plane `(plane_origin, plane_normal)`, or `None` when the axis runs parallel
+/// to it (no intersection, or all of them).
+fn ray_plane_t(
+    origin: [f32; 3],
+    dir: [f32; 3],
+    plane_origin: [f32; 3],
+    plane_normal: [f32; 3],
+) -> Option<f32> {
+    let denom = dir[0] * plane_normal[0] + dir[1] * plane_normal[1] + dir[2] * plane_normal[2];
+    if denom.abs() < 1e-6 {
+        return None;
+    }
+    let num = (plane_origin[0] - origin[0]) * plane_normal[0]
+        + (plane_origin[1] - origin[1]) * plane_normal[1]
+        + (plane_origin[2] - origin[2]) * plane_normal[2];
+    let t = num / denom;
+    t.is_finite().then_some(t)
+}
+
+/// Step floor for the axis march. The step is normally the field's own
+/// distance — which by the SDF property can never carry the walk THROUGH a
+/// wall — but that distance goes to zero at a surface, so a floor is what makes
+/// the walk terminate (and it bounds how thin a wall may be before it is
+/// missed: 0.01 mm, well under any real one).
+const MARCH_MIN_STEP: f32 = 0.01;
+/// Bisection tolerance for a located boundary crossing (mm).
+const MARCH_TOL: f32 = 1e-4;
+/// Hard budget so a bore axis that GRAZES a surface (distance ~0 for a long
+/// stretch, hence `MARCH_MIN_STEP` all the way) cannot hang regeneration.
+const MARCH_MAX_STEPS: u32 = 40_000;
+
+/// What [`first_boundary`] is looking for along the bore axis.
+#[derive(Clone, Copy, PartialEq)]
+enum Boundary {
+    /// Material → air: the far wall of the slab the axis is inside — Onshape's
+    /// "next" face.
+    Exit,
+    /// Air → material: the first surface of the part the axis runs into.
+    Entry,
+}
+
+/// March the live field of everything modelled so far along the bore axis and
+/// return the first `t > t_from` at which it crosses the requested boundary
+/// (#404 P5).
+///
+/// Sphere-traced: each step is `|f|`, so no wall can be stepped over, floored
+/// by [`MARCH_MIN_STEP`] so the walk still advances on a surface. The bracketing
+/// sign flip is then bisected to [`MARCH_TOL`], which is what makes
+/// `up_to_next` land ON the face rather than within a sampling grid of it.
+fn first_boundary(
+    field: &crate::csg::CsgNode,
+    origin: [f32; 3],
+    dir: [f32; 3],
+    t_from: f32,
+    t_max: f32,
+    want: Boundary,
+) -> Option<f32> {
+    use crate::csg::EvalMode;
+    let at = |t: f32| {
+        field.sdf(
+            [
+                origin[0] + dir[0] * t,
+                origin[1] + dir[1] * t,
+                origin[2] + dir[2] * t,
+            ],
+            EvalMode::Visual,
+        )
+    };
+    let mut t = t_from;
+    let mut d = at(t);
+    for _ in 0..MARCH_MAX_STEPS {
+        if t >= t_max {
+            return None;
+        }
+        let t_next = (t + d.abs().max(MARCH_MIN_STEP)).min(t_max);
+        let d_next = at(t_next);
+        let crossed = match want {
+            Boundary::Exit => d < 0.0 && d_next >= 0.0,
+            Boundary::Entry => d > 0.0 && d_next <= 0.0,
+        };
+        if crossed {
+            let (mut lo, mut hi) = (t, t_next);
+            let inside_lo = d < 0.0;
+            while hi - lo > MARCH_TOL {
+                let mid = 0.5 * (lo + hi);
+                if (at(mid) < 0.0) == inside_lo {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            return Some(0.5 * (lo + hi));
+        }
+        t = t_next;
+        d = d_next;
+    }
+    None
+}
+
 /// The counterbore / countersink geometry the chosen `style` stacks on top of
 /// the plain shaft, already reduced to numbers (#404 P3).
 #[derive(Clone, Copy)]
@@ -387,11 +574,22 @@ impl FeatureKind for HoleFeature {
         positive_f32(diameter_mm, HoleDef::TYPE_NAME, "diameter")?;
         let radius = diameter_mm / 2.0;
 
-        let through_all = d.end_type == "through_all";
+        // End condition. Anything a later phase adds to the variant list reads
+        // as `blind` — the one interpretation that cannot silently cut further
+        // than the number in the dialog.
+        let end = d.end_type.as_str();
+        let through_all = end == "through_all";
+        let up_to_next = end == "up_to_next";
+        let up_to_entity = end == "up_to_entity";
+        let blind = !(through_all || up_to_next || up_to_entity);
         let depth_mm = d.depth.to_mm();
-        if !through_all {
+        if blind {
             positive_f32(depth_mm, HoleDef::TYPE_NAME, "depth")?;
         }
+        // Signed on purpose: a negative offset stops SHORT of the found face.
+        let end_offset_mm = d.end_offset.to_mm();
+        let start_from_part = d.start_mode == "part";
+        let start_from_plane = d.start_mode == "selected_plane";
 
         // Resolve every location query to an (origin, axis) frame. Unresolvable
         // or axis-less anchors are skipped (Onshape drills what it can); a
@@ -431,10 +629,25 @@ impl FeatureKind for HoleFeature {
             ctx.warn_feature(id, w);
         }
 
-        // Through-all needs the body extent along each bore axis. Compute the
+        // P5 start/end planes. Resolved ONCE — they are the same for every
+        // location — and before the field probe below, which borrows
+        // `ctx.features` immutably while these need `ctx` mutably.
+        let start_plane = if start_from_plane {
+            Some(resolve_hole_plane(ctx, d.start_plane.as_str(), "start_plane")?)
+        } else {
+            None
+        };
+        let end_plane = if up_to_entity {
+            Some(resolve_hole_plane(ctx, d.up_to_entity.as_str(), "up_to_entity")?)
+        } else {
+            None
+        };
+
+        // Through-all needs the body extent along each bore axis; `up_to_next`
+        // and `start_mode = part` need it as the march budget. Compute the
         // world-space vertex span of the woven bodies once; per location we
         // project onto that location's own axis.
-        let woven_pts: Vec<[f32; 3]> = if through_all {
+        let woven_pts: Vec<[f32; 3]> = if through_all || up_to_next || start_from_part {
             let woven = ctx.brep_cache.ensure(&ctx.features);
             let mut pts = Vec::new();
             for (brep, placement) in woven {
@@ -465,36 +678,24 @@ impl FeatureKind for HoleFeature {
         // OUTSIDE the material, so the blind depth into the body is unaffected.
         const MOUTH_EPS: f32 = 0.1;
 
-        // P3 style stack + P4 drill point, resolved once — identical at every
-        // location. A through-all bore has no floor, so it has no tip.
-        let stack = style_stack(&d, radius)?;
-        let tip_height = if through_all { None } else { tip_cone_height(&d, radius)? };
+        // The live field of everything modelled SO FAR — the instrument
+        // `up_to_next` and `start_mode = part` read the material boundaries off.
+        // Built here, BEFORE the first cutter is pushed, so a hole can never
+        // terminate on its own bore (or on its neighbour's).
+        let field = (up_to_next || start_from_part)
+            .then(|| crate::csg::CsgNode::from_decoded(&ctx.features));
 
-        // P4 depth semantics. `shaft_end` is where the full-diameter part
-        // stops; `tip_span` is the cone below it, if any.
-        //
-        // - `depth_to_tip = false` (default): `depth` reaches the SHOULDER and
-        //   the cone hangs below it — the bore ends up `tip_height` deeper
-        //   than the number, exactly like a real drill.
-        // - `depth_to_tip = true`: `depth` reaches the TIP, so the
-        //   full-diameter part stops `tip_height` earlier.
-        let (shaft_end, tip_span) = match tip_height {
-            None => (depth_mm, None),
-            Some(h) if d.depth_to_tip => {
-                let shoulder = depth_mm - h;
-                if shoulder <= 0.0 {
-                    return Err(FeatureError::InvalidParameter {
-                        feature: HoleDef::TYPE_NAME,
-                        name: "depth",
-                        message: format!(
-                            "depth-to-tip {depth_mm:.3} mm is shorter than the {h:.3} mm drill \
-                             point — the bore never reaches full diameter"
-                        ),
-                    });
-                }
-                (shoulder, Some((shoulder, depth_mm)))
-            }
-            Some(h) => (depth_mm, Some((depth_mm, depth_mm + h))),
+        // P3 style stack + P4 drill point, resolved once — identical at every
+        // location. Only a BLIND bore has a floor to cone: through-all breaks
+        // out the far side, and up-to-next / up-to-entity end ON a surface the
+        // user named, which a drill point would poke straight through.
+        let stack = style_stack(&d, radius)?;
+        let tip_height = if blind { tip_cone_height(&d, radius)? } else { None };
+
+        let bad = |name: &'static str, message: String| FeatureError::InvalidParameter {
+            feature: HoleDef::TYPE_NAME,
+            name,
+            message,
         };
 
         for (i, (origin, axis)) in frames.iter().enumerate() {
@@ -506,22 +707,130 @@ impl FeatureKind for HoleFeature {
                 [-axis[0], -axis[1], -axis[2]]
             };
 
-            // Bore extent along `dir`, measured from the anchor origin:
-            // [t_lo, t_hi]. Blind → [-eps, depth]; through-all → span the body.
-            let (t_lo, t_hi) = if through_all {
-                let mut lo = -MOUTH_EPS;
-                let mut hi = MOUTH_EPS;
-                for p in &woven_pts {
-                    let t = (p[0] - origin[0]) * dir[0]
-                        + (p[1] - origin[1]) * dir[1]
-                        + (p[2] - origin[2]) * dir[2];
-                    lo = lo.min(t);
-                    hi = hi.max(t);
+            // Everything modelled so far, projected onto THIS location's axis:
+            // the through-all span, and the budget the field march may walk.
+            let (mut span_lo, mut span_hi) = (-MOUTH_EPS, MOUTH_EPS);
+            for p in &woven_pts {
+                let t = (p[0] - origin[0]) * dir[0]
+                    + (p[1] - origin[1]) * dir[1]
+                    + (p[2] - origin[2]) * dir[2];
+                span_lo = span_lo.min(t);
+                span_hi = span_hi.max(t);
+            }
+            let t_far = span_hi + 1.0;
+
+            // ── P5: where the bore BEGINS (`t = 0` for every measured depth) ──
+            let t_start = match (start_plane, start_from_part) {
+                (Some((p0, n)), _) => ray_plane_t(*origin, dir, p0, n).ok_or_else(|| {
+                    bad(
+                        "start_plane",
+                        "the bore axis runs PARALLEL to the chosen start plane — \
+                         it never meets it"
+                            .to_string(),
+                    )
+                })?,
+                (None, true) => {
+                    let f = field.as_ref().expect("start_mode = part builds the field");
+                    if f.sdf(*origin, crate::csg::EvalMode::Visual) <= 0.0 {
+                        // The anchor already sits IN the material: the part
+                        // surface it would start from is the anchor itself.
+                        0.0
+                    } else {
+                        first_boundary(f, *origin, dir, 0.0, t_far, Boundary::Entry).ok_or_else(
+                            || {
+                                bad(
+                                    "start_mode",
+                                    "start-from-part found no material along the bore axis — \
+                                     the axis misses every body"
+                                        .to_string(),
+                                )
+                            },
+                        )?
+                    }
                 }
-                // Pad both ends so the cutter clears the body surface cleanly.
-                (lo - 1.0, hi + 1.0)
+                _ => 0.0,
+            };
+
+            // ── P5: where it ENDS ──
+            let t_end = if through_all {
+                t_far
+            } else if up_to_next {
+                let f = field.as_ref().expect("up_to_next builds the field");
+                let hit = first_boundary(
+                    f,
+                    *origin,
+                    dir,
+                    t_start + MARCH_MIN_STEP,
+                    t_far,
+                    Boundary::Exit,
+                )
+                .ok_or_else(|| {
+                    bad(
+                        "end_type",
+                        "up-to-next found no next face — the bore axis never leaves material \
+                         again in the drilling direction"
+                            .to_string(),
+                    )
+                })?;
+                hit + end_offset_mm
+            } else if let Some((p0, n)) = end_plane {
+                ray_plane_t(*origin, dir, p0, n).ok_or_else(|| {
+                    bad(
+                        "up_to_entity",
+                        "the bore axis runs PARALLEL to the chosen end plane — \
+                         it never meets it"
+                            .to_string(),
+                    )
+                })? + end_offset_mm
             } else {
-                (-MOUTH_EPS, shaft_end)
+                t_start + depth_mm
+            };
+            if !through_all && t_end <= t_start {
+                return Err(bad(
+                    if blind { "depth" } else { "end_offset" },
+                    format!(
+                        "the bore would end {:.3} mm BEFORE it starts — nothing to drill",
+                        t_start - t_end
+                    ),
+                ));
+            }
+
+            // P4 depth semantics. `shaft_end` is where the full-diameter part
+            // stops; `tip_span` is the cone below it, if any.
+            //
+            // - `depth_to_tip = false` (default): `depth` reaches the SHOULDER
+            //   and the cone hangs below it — the bore ends up `tip_height`
+            //   deeper than the number, exactly like a real drill.
+            // - `depth_to_tip = true`: `depth` reaches the TIP, so the
+            //   full-diameter part stops `tip_height` earlier.
+            let (shaft_end, tip_span) = match tip_height {
+                None => (t_end, None),
+                Some(h) if d.depth_to_tip => {
+                    let shoulder = t_end - h;
+                    if shoulder <= t_start {
+                        return Err(bad(
+                            "depth",
+                            format!(
+                                "depth-to-tip {depth_mm:.3} mm is shorter than the {h:.3} mm \
+                                 drill point — the bore never reaches full diameter"
+                            ),
+                        ));
+                    }
+                    (shoulder, Some((shoulder, t_end)))
+                }
+                Some(h) => (t_end, Some((t_end, t_end + h))),
+            };
+
+            // Bore extent along `dir`, measured from the anchor origin:
+            // [t_lo, t_hi]. Through-all spans the whole body (both ways from the
+            // anchor — a start plane only moves what the DEPTHS are measured
+            // from, and through-all measures none); everything else runs from
+            // the start plane to the resolved end.
+            let (t_lo, t_hi) = if through_all {
+                // Pad both ends so the cutter clears the body surface cleanly.
+                (span_lo - 1.0, span_hi + 1.0)
+            } else {
+                (t_start - MOUTH_EPS, shaft_end)
             };
 
             // This location's cutter stack as
@@ -541,8 +850,10 @@ impl FeatureKind for HoleFeature {
                 StyleStack::None => {}
                 StyleStack::Counterbore { radius: cbore_r, depth: cbore_d } => {
                     // A flat-bottomed wide cylinder from the mouth down. The
-                    // seat therefore sits exactly at `t = cbore_depth`.
-                    let (hh, xf) = axial_span(*origin, dir, -MOUTH_EPS, cbore_d);
+                    // seat therefore sits exactly `cbore_depth` below the START
+                    // plane — the same origin `depth` is measured from.
+                    let (hh, xf) =
+                        axial_span(*origin, dir, t_start - MOUTH_EPS, t_start + cbore_d);
                     parts.push((
                         format!("{i}c"),
                         " counterbore",
@@ -555,12 +866,13 @@ impl FeatureKind for HoleFeature {
                     ));
                 }
                 StyleStack::Countersink { radius: csink_r, depth: csink_d, slope } => {
-                    // A frustum whose radius is EXACTLY `csink_r` at the anchor
-                    // face (`t = 0`) and the bore radius at `t = csink_d`. The
-                    // mouth overshoot extends it further out along its own wall
+                    // A frustum whose radius is EXACTLY `csink_r` at the START
+                    // plane and the bore radius `csink_d` below it. The mouth
+                    // overshoot extends it further out along its own wall
                     // (hence the `+ MOUTH_EPS * slope`), so the circle the user
                     // sees on the face keeps the entered diameter.
-                    let (hh, xf) = axial_span(*origin, dir, -MOUTH_EPS, csink_d);
+                    let (hh, xf) =
+                        axial_span(*origin, dir, t_start - MOUTH_EPS, t_start + csink_d);
                     parts.push((
                         format!("{i}s"),
                         " countersink",

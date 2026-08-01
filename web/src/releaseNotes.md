@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.55.0
+- feat(kernel) #404: Ein Loch muss nicht mehr raten, wo es anfängt und aufhört. „Up to next“ bohrt bis zur nächsten Materialgrenze in Bohrrichtung — durch die erste Platte hindurch, aber nicht in das, was dahinter liegt. „Up to entity“ endet an einer Fläche, die man anklickt, und „Offset from end“ verschiebt den Grund davon weg oder darüber hinaus: minus 5 mm lässt 5 mm stehen, null bricht durch. Dazu die Onshape-Startmodi: „Part surface“ misst die Tiefe ab der ersten Fläche, die die Achse trifft, statt ab einer Skizzenebene, die 20 mm darüber in der Luft hängt, und „Selected plane“ ab einer beliebig gewählten Ebene. Eine gekrümmte Fläche oder eine Ebene parallel zur Bohrachse wird mit einer Meldung abgelehnt, die das schuldige Feld nennt, statt sich eine Tiefe auszudenken.
+
 ## 0.54.0
 - feat(kernel) #404: Ein Sackloch endet jetzt so, wie ein Bohrer es hinterlässt: mit einer Kegelspitze statt eines Frässtempels. 118° ist voreingestellt (der Allzweck-Anschliff), 135° für harte Werkstoffe, „Flat“ für den alten flachen Grund, „Custom“ für alles andere. Dazu die Frage, die auf jeder Zeichnung steht: misst die eingetragene Tiefe bis zur Spitze oder bis zur letzten vollen Stelle? „Depth to tip“ schaltet zwischen beiden um — aus, wie bisher gewohnt, meint die Schulter, und die Spitze steht darunter. Eine Tiefe, die kürzer wäre als die Spitze selbst, wird abgelehnt statt still zu einem Kegelstumpf zu verkommen. Durchgangslöcher haben keinen Grund und bekommen folgerichtig auch keine Spitze.
 

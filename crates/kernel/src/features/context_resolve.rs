@@ -865,22 +865,64 @@ impl<'a> Context<'a> {
         &mut self,
         expr: &crate::queries::QueryExpr,
     ) -> Option<crate::sketch::SketchFrame> {
-        if let crate::queries::QueryExpr::CreatedBy(d) = expr {
-            if let Some(datum) = crate::sketch::datum_plane_frame(d) {
-                return Some(datum);
-            }
-            let target = d.as_u32_or_root();
-            if let Some(mc) = self
-                .mate_connectors
-                .iter()
-                .find(|mc| mc.id.as_u32_or_root() == target)
-            {
-                return Some(crate::sketch::SketchFrame::from_csys(
-                    mc.origin, mc.normal, mc.x_axis,
-                ));
-            }
+        if let Some(frame) = self.datum_or_connector_frame(expr) {
+            return Some(frame);
         }
         self.resolve_face_frame(expr)
+    }
+
+    /// The GEOMETRY-FREE rungs of the plane ladder: an origin datum plane or a
+    /// placed mate connector. Split out of [`Self::resolve_plane_frame`] so the
+    /// strict variant below reuses the exact same order (and the exact same
+    /// reason for it) instead of re-deriving it.
+    fn datum_or_connector_frame(
+        &self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Option<crate::sketch::SketchFrame> {
+        let crate::queries::QueryExpr::CreatedBy(d) = expr else {
+            return None;
+        };
+        if let Some(datum) = crate::sketch::datum_plane_frame(d) {
+            return Some(datum);
+        }
+        let target = d.as_u32_or_root();
+        self.mate_connectors
+            .iter()
+            .find(|mc| mc.id.as_u32_or_root() == target)
+            .map(|mc| crate::sketch::SketchFrame::from_csys(mc.origin, mc.normal, mc.x_axis))
+    }
+
+    /// [`Self::resolve_plane_frame`] with the B-Rep rung narrowed to faces that
+    /// really ARE planes (#404 P5).
+    ///
+    /// [`crate::sketch::face_plane_frame`] answers for a curved face too — it
+    /// falls back to the face's local `+Z`, which is a plausible frame in an
+    /// implausible place. A sketch can live with that (it needs *some* 2D
+    /// coordinate system); an end condition cannot: "the bore stops at THIS
+    /// face" is a statement about a plane, and a cylinder's centroid + `+Z` is
+    /// not that plane. Callers that mean a real plane use this and surface the
+    /// `None` as a named parameter error, rather than drilling to a silently
+    /// invented depth.
+    pub fn resolve_planar_frame(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Option<crate::sketch::SketchFrame> {
+        if let Some(frame) = self.datum_or_connector_frame(expr) {
+            return Some(frame);
+        }
+        let (bi, fid) = self.locate_plane_face(expr)?;
+        let woven = self.brep_cache.ensure(&self.features);
+        let (brep, placement) = &woven[bi];
+        if !matches!(
+            &brep.face(fid).surface,
+            crate::brep::SurfaceGeometry::Analytic {
+                surface: ::fielddraft_protocol::HalfSpace::Plane { .. },
+                ..
+            }
+        ) {
+            return None;
+        }
+        Some(crate::sketch::face_plane_frame(brep, fid, placement))
     }
 
     /// DL-61: resolve an edge-yielding query into per-edge fillet inputs
