@@ -165,7 +165,7 @@ describe("parseFeatureSchema", () => {
               name: "Extrude direction",
               type: "query",
               required: false,
-              visible_when: { param: "use_direction", equals: true },
+              visible_when: [{ param: "use_direction", equals: true }],
             },
           ],
         },
@@ -174,7 +174,7 @@ describe("parseFeatureSchema", () => {
     expect(schema.params[1].widget).toBe("group");
     expect(schema.params[1].drivingParam).toBe("use_direction");
     const child = schema.params[1].children?.[0];
-    expect(child?.visibleWhen).toEqual({ param: "use_direction", equals: true });
+    expect(child?.visibleWhen).toEqual([{ param: "use_direction", equals: true }]);
   });
 });
 
@@ -367,10 +367,83 @@ describe("isVisible", () => {
       widget: "length",
       required: true,
       rawType: "length",
-      visibleWhen: { param: "end_condition", equals: "blind" },
+      visibleWhen: [{ param: "end_condition", equals: "blind" }],
     };
     expect(isVisible(param, { end_condition: "blind" })).toBe(true);
     expect(isVisible(param, { end_condition: "through_all" })).toBe(false);
+  });
+
+  // #404 P6: the Hole dialog needs "offset applies to up-to-next OR
+  // up-to-entity" and "the custom tip angle applies to blind AND custom".
+  it("an array of values matches ANY of them", () => {
+    const param: FeatureParamDescriptor = {
+      key: "end_offset",
+      label: "Offset",
+      widget: "length",
+      required: false,
+      rawType: "length",
+      visibleWhen: [
+        { param: "end_type", equals: ["up_to_next", "up_to_entity"] },
+      ],
+    };
+    expect(isVisible(param, { end_type: "up_to_next" })).toBe(true);
+    expect(isVisible(param, { end_type: "up_to_entity" })).toBe(true);
+    expect(isVisible(param, { end_type: "blind" })).toBe(false);
+    expect(isVisible(param, {})).toBe(false);
+  });
+
+  it("several conditions must ALL hold", () => {
+    const param: FeatureParamDescriptor = {
+      key: "tip_custom",
+      label: "Tip angle (custom)",
+      widget: "angle",
+      required: false,
+      rawType: "angle",
+      visibleWhen: [
+        { param: "end_type", equals: "blind" },
+        { param: "tip", equals: "custom" },
+      ],
+    };
+    expect(isVisible(param, { end_type: "blind", tip: "custom" })).toBe(true);
+    expect(isVisible(param, { end_type: "blind", tip: "a118" })).toBe(false);
+    expect(isVisible(param, { end_type: "through_all", tip: "custom" })).toBe(
+      false,
+    );
+  });
+});
+
+describe("parseFeatureSchema — visible_when", () => {
+  const wrap = (visible_when: unknown) => ({
+    type: "t",
+    params: [
+      { key: "driver", name: "Driver", type: "string", required: false },
+      { key: "k", name: "K", type: "f32", required: false, visible_when },
+    ],
+  });
+
+  it("parses a list of conditions, scalar and array `equals` alike", () => {
+    const schema = parseFeatureSchema(
+      wrap([
+        { param: "driver", equals: "a" },
+        { param: "driver", equals: ["b", "c"] },
+      ]),
+    );
+    expect(schema.params[1].visibleWhen).toEqual([
+      { param: "driver", equals: "a" },
+      { param: "driver", equals: ["b", "c"] },
+    ]);
+  });
+
+  it("rejects the bare-object form — visible_when is always a list", () => {
+    expect(() => parseFeatureSchema(wrap({ param: "driver", equals: "a" }))).toThrow(
+      /array of conditions/,
+    );
+  });
+
+  it("rejects an empty value list", () => {
+    expect(() =>
+      parseFeatureSchema(wrap([{ param: "driver", equals: [] }])),
+    ).toThrow(/must list a value/);
   });
 });
 

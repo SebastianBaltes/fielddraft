@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.56.0
+- feat(web) #404: Der Loch-Dialog zeigt nur noch, was zur Sache gehört. Die Passung erscheint bei einem Durchgangsloch, das freie Maß bei „Custom“, die Senkmaße beim Senken, die Tiefe beim Sackloch — und der Anschliff-Block verschwindet ganz, sobald das Loch durchgeht. Statt zwanzig Feldern, von denen die Hälfte ins Leere zeigt, stehen dort die sieben bis elf, die etwas bewirken. Dazu heißt ein Loch jetzt nach dem, was es bohrt: „M6 tapped ×3“ oder „M8 clearance counterbore ×2“ im Baum statt „Hole 7“ — ein selbst vergebener Name gewinnt weiterhin. Und die Bohrpunkte lassen sich endlich sehen und einsammeln: der Punkt unter dem Cursor leuchtet auf, solange das Positionsfeld scharf ist, und ein aufgezogenes Rechteck übernimmt alle Punkte darin auf einmal statt acht Löcher einzeln anzuklicken.
+
 ## 0.55.0
 - feat(kernel) #404: Ein Loch muss nicht mehr raten, wo es anfängt und aufhört. „Up to next“ bohrt bis zur nächsten Materialgrenze in Bohrrichtung — durch die erste Platte hindurch, aber nicht in das, was dahinter liegt. „Up to entity“ endet an einer Fläche, die man anklickt, und „Offset from end“ verschiebt den Grund davon weg oder darüber hinaus: minus 5 mm lässt 5 mm stehen, null bricht durch. Dazu die Onshape-Startmodi: „Part surface“ misst die Tiefe ab der ersten Fläche, die die Achse trifft, statt ab einer Skizzenebene, die 20 mm darüber in der Luft hängt, und „Selected plane“ ab einer beliebig gewählten Ebene. Eine gekrümmte Fläche oder eine Ebene parallel zur Bohrachse wird mit einer Meldung abgelehnt, die das schuldige Feld nennt, statt sich eine Tiefe auszudenken.
 

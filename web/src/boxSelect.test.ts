@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   bodiesInRect,
   elementsInRect,
+  sketchPointsInRect,
   type BoxSelectKernel,
   type NdcRect,
   type ProjectFn,
@@ -103,5 +104,46 @@ describe("boxSelect", () => {
     expect(bodiesInRect(k, projectXY, RECT, "window")).toEqual([0]);
     // crossing also catches the half-covered sphere
     expect(bodiesInRect(k, projectXY, RECT, "crossing")).toEqual([0, 1]);
+  });
+});
+
+// #404 P6: the Hole `locations` field collects sketch points by rectangle.
+describe("sketchPointsInRect", () => {
+  // A trivial orthographic-ish projection: x/y map straight to NDC, and
+  // anything with z > 0 counts as behind the camera.
+  const project: ProjectFn = (x, y, z) =>
+    z > 0 ? null : { x: x / 100, y: y / 100 };
+  const rect = { minX: -0.5, maxX: 0.5, minY: -0.5, maxY: 0.5 };
+  const points = [
+    {
+      sketchId: 4,
+      points: [
+        { pointId: 1, p: [0, 0, 0] as [number, number, number] }, // inside
+        { pointId: 2, p: [40, -30, 0] as [number, number, number] }, // inside
+        { pointId: 3, p: [80, 0, 0] as [number, number, number] }, // outside
+        { pointId: 4, p: [0, 0, 5] as [number, number, number] }, // behind
+      ],
+    },
+    { sketchId: 9, points: [{ pointId: 1, p: [-10, 10, 0] as [number, number, number] }] },
+  ];
+
+  it("returns the qSketchPoint query of every point inside the rectangle", () => {
+    expect(sketchPointsInRect(points, project, rect)).toEqual([
+      "qSketchPoint(4, 1)",
+      "qSketchPoint(4, 2)",
+      "qSketchPoint(9, 1)",
+    ]);
+  });
+
+  it("skips points outside, behind the camera, and an empty set", () => {
+    expect(
+      sketchPointsInRect(points, project, {
+        minX: 0.7,
+        maxX: 0.9,
+        minY: -0.1,
+        maxY: 0.1,
+      }),
+    ).toEqual(["qSketchPoint(4, 3)"]);
+    expect(sketchPointsInRect([], project, rect)).toEqual([]);
   });
 });

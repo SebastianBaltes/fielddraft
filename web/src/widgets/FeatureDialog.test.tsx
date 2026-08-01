@@ -76,7 +76,7 @@ const extrudeDialogRaw = {
       name: "Depth",
       type: "length",
       required: true,
-      visible_when: { param: "end_condition", equals: "blind" },
+      visible_when: [{ param: "end_condition", equals: "blind" }],
     },
     {
       key: "flip_depth",
@@ -84,14 +84,14 @@ const extrudeDialogRaw = {
       type: "bool",
       required: false,
       ui_hint: "opposite_direction",
-      visible_when: { param: "end_condition", equals: "blind" },
+      visible_when: [{ param: "end_condition", equals: "blind" }],
     },
     {
       key: "up_to_face_target",
       name: "Up-to face target",
       type: "query",
       required: true,
-      visible_when: { param: "end_condition", equals: "up_to_face" },
+      visible_when: [{ param: "end_condition", equals: "up_to_face" }],
     },
     {
       key: "use_direction",

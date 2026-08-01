@@ -154,3 +154,32 @@ export function bodiesInRect(
   }
   return out;
 }
+
+/**
+ * Every published sketch POINT inside the rectangle, as the
+ * `qSketchPoint(sketch, entity)` queries the Hole `locations` field wants
+ * (#404 P6).
+ *
+ * No window/crossing distinction: a point has no extent, so "completely
+ * inside" and "touching" are the same question. Points behind the camera
+ * project to `null` and are skipped, exactly like every other entity here.
+ *
+ * `points` is injected rather than read off the bridge singleton so this stays
+ * pure and testable, like the rest of the module.
+ */
+export function sketchPointsInRect(
+  points: { sketchId: number; points: { pointId: number; p: [number, number, number] }[] }[],
+  project: ProjectFn,
+  rect: NdcRect,
+): string[] {
+  const out: string[] = [];
+  for (const sketch of points) {
+    for (const pt of sketch.points) {
+      const ndc = project(pt.p[0], pt.p[1], pt.p[2]);
+      if (ndc && inside(rect, ndc)) {
+        out.push(`qSketchPoint(${sketch.sketchId}, ${pt.pointId})`);
+      }
+    }
+  }
+  return out;
+}

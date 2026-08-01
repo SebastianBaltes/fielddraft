@@ -59,9 +59,15 @@
 //!     widgets on it: `horizontal_enum` selects a segmented-tab
 //!     enum, `opposite_direction` turns a boolean into an inline
 //!     ±-flip button, `slider` turns an `f32` into a range slider.
-//!     The `bounds` / `visible_when` / `filter` keys from the §4.6
-//!     vocabulary are still emitted on the schema side but come
-//!     from hand-written fixtures rather than the derive for now.
+//!   * `visible_when = "style=counterbore"` — conditional
+//!     visibility (#404 P6). Conditions separated by `,` are
+//!     ANDed, values inside one separated by `|` are ORed, so
+//!     `"end_type=blind, tip=custom"` and
+//!     `"end_type=up_to_next|up_to_entity"` both work. Emitted as
+//!     the schema's `visible_when` LIST, which the TS dialog has
+//!     understood since K6a.1; the spec is validated at compile
+//!     time, so a typo is a build error rather than a field that
+//!     quietly never appears.
 //! * **No `impl FeatureKind`.** The derive only emits schema /
 //!   parse helpers. Callers still write `FeatureKind` by hand,
 //!   just shorter — the execute body opens with
@@ -298,6 +304,63 @@ struct ParamInfo {
     /// `ui_hint = "horizontal_enum"`); the wire value stays the plain
     /// key string.
     variants: Option<String>,
+    /// Optional `#[param(visible_when = "style=counterbore")]` guard: the
+    /// dialog only renders this field while the named SIBLING param holds one
+    /// of the listed values (#404 P6).
+    ///
+    /// Grammar — conditions separated by `,` are **ANDed**, values inside one
+    /// condition separated by `|` are **ORed**:
+    ///
+    /// * `"style=counterbore"` — one value.
+    /// * `"end_type=up_to_next|up_to_entity"` — either.
+    /// * `"end_type=blind, tip=custom"` — both must hold.
+    ///
+    /// `true` / `false` lower to JSON booleans, everything else to a string,
+    /// which is what the wire values of a `variants=` enum are anyway.
+    ///
+    /// Validated here, at compile time: a malformed spec is a build error, not
+    /// a field that quietly never shows up.
+    visible_when: Option<Vec<(String, Vec<String>)>>,
+}
+
+/// Parse a `#[param(visible_when = "…")]` spec into `(param, values)` pairs.
+fn parse_visible_when(spec: &str, span: proc_macro2::Span) -> syn::Result<Vec<(String, Vec<String>)>> {
+    let mut out = Vec::new();
+    for clause in spec.split(',') {
+        let clause = clause.trim();
+        if clause.is_empty() {
+            continue;
+        }
+        let Some((param, values)) = clause.split_once('=') else {
+            return Err(syn::Error::new(
+                span,
+                format!("visible_when clause {clause:?} must read `param=value[|value…]`"),
+            ));
+        };
+        let param = param.trim().to_string();
+        if param.is_empty() {
+            return Err(syn::Error::new(
+                span,
+                format!("visible_when clause {clause:?} names no parameter"),
+            ));
+        }
+        let values: Vec<String> = values
+            .split('|')
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .collect();
+        if values.is_empty() {
+            return Err(syn::Error::new(
+                span,
+                format!("visible_when clause {clause:?} lists no value"),
+            ));
+        }
+        out.push((param, values));
+    }
+    if out.is_empty() {
+        return Err(syn::Error::new(span, "visible_when is empty"));
+    }
+    Ok(out)
 }
 
 impl ParamInfo {
@@ -313,6 +376,7 @@ impl ParamInfo {
         let mut unit: Option<String> = None;
         let mut entity_filter: Option<String> = None;
         let mut variants: Option<String> = None;
+        let mut visible_when: Option<Vec<(String, Vec<String>)>> = None;
 
         for attr in &field.attrs {
             if !attr.path().is_ident("param") {
@@ -349,10 +413,15 @@ impl ParamInfo {
                     let lit: syn::LitStr = value.parse()?;
                     variants = Some(lit.value());
                     Ok(())
+                } else if meta.path.is_ident("visible_when") {
+                    let value = meta.value()?;
+                    let lit: syn::LitStr = value.parse()?;
+                    visible_when = Some(parse_visible_when(&lit.value(), lit.span())?);
+                    Ok(())
                 } else {
                     Err(meta.error(
-                        "unknown #[param(...)] key \
-                         (supported: name, default, ui_hint, unit, entity_filter, variants)",
+                        "unknown #[param(...)] key (supported: name, default, ui_hint, unit, \
+                         entity_filter, variants, visible_when)",
                     ))
                 }
             })?;
@@ -369,6 +438,7 @@ impl ParamInfo {
             unit,
             entity_filter,
             variants,
+            visible_when,
         })
     }
 
@@ -428,6 +498,36 @@ impl ParamInfo {
             None => quote! {},
         };
 
+        // Conditional visibility: always a LIST of ANDed conditions, so the
+        // TS parser has one shape to read (`widgets/schema.ts`). A condition's
+        // `equals` is a bare value when it lists one, an array when it lists
+        // alternatives.
+        let visible_when_entry = match &self.visible_when {
+            Some(clauses) => {
+                let entries: Vec<TokenStream2> = clauses
+                    .iter()
+                    .map(|(param, values)| {
+                        let lowered: Vec<TokenStream2> = values
+                            .iter()
+                            .map(|v| match v.as_str() {
+                                "true" => quote! { true },
+                                "false" => quote! { false },
+                                other => quote! { #other },
+                            })
+                            .collect();
+                        let equals = if let [single] = lowered.as_slice() {
+                            quote! { #single }
+                        } else {
+                            quote! { [ #(#lowered),* ] }
+                        };
+                        quote! { { "param": #param, "equals": #equals } }
+                    })
+                    .collect();
+                quote! { "visible_when": ::serde_json::json!([ #(#entries),* ]), }
+            }
+            None => quote! {},
+        };
+
         // Defaults are emitted into the schema for every Serialize-able
         // param type so the TS dialog can seed its fields with the same
         // values the Rust parse fallback uses (BoolOp lowers to its
@@ -460,6 +560,7 @@ impl ParamInfo {
                 #variants_entry
                 #unit_entry
                 #entity_filter_entry
+                #visible_when_entry
             })
         }
     }

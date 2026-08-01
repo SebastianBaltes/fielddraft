@@ -160,7 +160,7 @@ describe("FieldSkript param DSL — containers", () => {
 
   it("visibleWhen wraps a param with a visible_when predicate", () => {
     const p = visibleWhen("flip", true, length("offset", { default: 0 }));
-    expect(p.visible_when).toEqual({ param: "flip", equals: true });
+    expect(p.visible_when).toEqual([{ param: "flip", equals: true }]);
     expect(p.type).toBe("length");
   });
 });

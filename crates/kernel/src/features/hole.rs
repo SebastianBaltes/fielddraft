@@ -62,7 +62,8 @@ pub struct HoleDef {
     #[param(
         name = "Fit",
         default = ::std::string::String::from("normal"),
-        variants = "close=Close,normal=Normal,loose=Loose"
+        variants = "close=Close,normal=Normal,loose=Loose",
+        visible_when = "hole_type=clearance"
     )]
     pub fit: String,
 
@@ -78,7 +79,11 @@ pub struct HoleDef {
     pub standard_size: String,
 
     /// Free bore diameter — used only when `standard_size = custom`.
-    #[param(name = "Diameter", default = ::fielddraft_protocol::Length::mm(6.0))]
+    #[param(
+        name = "Diameter",
+        default = ::fielddraft_protocol::Length::mm(6.0),
+        visible_when = "standard_size=custom"
+    )]
     pub diameter: ::fielddraft_protocol::Length,
 
     /// Where the bore BEGINS — Onshape's "Start" block (P5). The bore always
@@ -103,7 +108,12 @@ pub struct HoleDef {
     /// The plane the bore starts at — only read for
     /// `start_mode = selected_plane`. A planar B-Rep face, an origin datum
     /// plane or a mate connector; the bore axis is intersected with it.
-    #[param(name = "Start plane", default = ::fielddraft_protocol::Query::new(""), entity_filter = "FACE")]
+    #[param(
+        name = "Start plane",
+        default = ::fielddraft_protocol::Query::new(""),
+        entity_filter = "FACE",
+        visible_when = "start_mode=selected_plane"
+    )]
     pub start_plane: ::fielddraft_protocol::Query,
 
     /// End condition (Onshape's "Termination"):
@@ -129,7 +139,11 @@ pub struct HoleDef {
     /// Bore depth measured from the START (see
     /// [`start_mode`](HoleDef::start_mode)) into the body — only used for
     /// `end_type = blind`.
-    #[param(name = "Depth", default = ::fielddraft_protocol::Length::mm(10.0))]
+    #[param(
+        name = "Depth",
+        default = ::fielddraft_protocol::Length::mm(10.0),
+        visible_when = "end_type=blind"
+    )]
     pub depth: ::fielddraft_protocol::Length,
 
     /// The face/plane the bore ends at — only read for
@@ -137,38 +151,63 @@ pub struct HoleDef {
     /// [`start_plane`](HoleDef::start_plane): a **planar** B-Rep face, an origin
     /// datum plane, or a mate connector. A curved face is rejected with a named
     /// error instead of being reduced to its centroid.
-    #[param(name = "Up to entity", default = ::fielddraft_protocol::Query::new(""), entity_filter = "FACE")]
+    #[param(
+        name = "Up to entity",
+        default = ::fielddraft_protocol::Query::new(""),
+        entity_filter = "FACE",
+        visible_when = "end_type=up_to_entity"
+    )]
     pub up_to_entity: ::fielddraft_protocol::Query,
 
     /// Onshape's "Offset from end", read for `up_to_next` / `up_to_entity`:
     /// how far past the found surface the bore ends. **Positive is deeper**
     /// (further along the drilling direction), negative stops short of it —
     /// so `−2 mm` on a bore up-to the far wall leaves a 2 mm floor.
-    #[param(name = "Offset from end", default = ::fielddraft_protocol::Length::mm(0.0))]
+    #[param(
+        name = "Offset from end",
+        default = ::fielddraft_protocol::Length::mm(0.0),
+        visible_when = "end_type=up_to_next|up_to_entity"
+    )]
     pub end_offset: ::fielddraft_protocol::Length,
 
     /// Counterbore diameter — the wide flat seat at the mouth that swallows a
     /// cap-screw head. Only read for `style = counterbore`. Clamped to at
     /// least the bore Ø: a counterbore narrower than its own shaft would
     /// carve nothing and just confuse the preview.
-    #[param(name = "Counterbore Ø", default = ::fielddraft_protocol::Length::mm(11.0))]
+    #[param(
+        name = "Counterbore Ø",
+        default = ::fielddraft_protocol::Length::mm(11.0),
+        visible_when = "style=counterbore"
+    )]
     pub cbore_diameter: ::fielddraft_protocol::Length,
 
     /// Counterbore depth, measured from the anchor face down to the flat
     /// seat. Only read for `style = counterbore`.
-    #[param(name = "Counterbore depth", default = ::fielddraft_protocol::Length::mm(6.0))]
+    #[param(
+        name = "Counterbore depth",
+        default = ::fielddraft_protocol::Length::mm(6.0),
+        visible_when = "style=counterbore"
+    )]
     pub cbore_depth: ::fielddraft_protocol::Length,
 
     /// Countersink diameter **at the anchor face** — the wide end of the
     /// cone. Only read for `style = countersink`; must exceed the bore Ø.
-    #[param(name = "Countersink Ø", default = ::fielddraft_protocol::Length::mm(12.0))]
+    #[param(
+        name = "Countersink Ø",
+        default = ::fielddraft_protocol::Length::mm(12.0),
+        visible_when = "style=countersink"
+    )]
     pub csink_diameter: ::fielddraft_protocol::Length,
 
     /// Countersink **included** cone angle (the full apex angle, not the
     /// half-angle): 90° metric, 82° UNC, 100°/120° sheet metal. The cone
     /// depth follows from it and the two diameters — it is never entered
     /// directly, exactly like Onshape. Only read for `style = countersink`.
-    #[param(name = "Countersink angle", default = ::fielddraft_protocol::Angle::deg(90.0))]
+    #[param(
+        name = "Countersink angle",
+        default = ::fielddraft_protocol::Angle::deg(90.0),
+        visible_when = "style=countersink"
+    )]
     pub csink_angle: ::fielddraft_protocol::Angle,
 
     /// Flip the bore direction (Onshape's opposite-direction arrow). By
@@ -191,12 +230,17 @@ pub struct HoleDef {
     #[param(
         name = "Tip angle",
         default = ::std::string::String::from("a118"),
-        variants = "a118=118°,a135=135°,flat=Flat,custom=Custom"
+        variants = "a118=118°,a135=135°,flat=Flat,custom=Custom",
+        visible_when = "end_type=blind"
     )]
     pub tip: String,
 
     /// Free drill-point included angle — used only when `tip = custom`.
-    #[param(name = "Tip angle (custom)", default = ::fielddraft_protocol::Angle::deg(118.0))]
+    #[param(
+        name = "Tip angle (custom)",
+        default = ::fielddraft_protocol::Angle::deg(118.0),
+        visible_when = "end_type=blind, tip=custom"
+    )]
     pub tip_custom: ::fielddraft_protocol::Angle,
 
     /// What `depth` measures on a blind bore with a drill point (P4):
@@ -205,7 +249,11 @@ pub struct HoleDef {
     /// `true` = down to the cone's **tip**, so the full-diameter part ends
     /// `R / tan(angle/2)` earlier. Irrelevant for `tip = flat`, where both
     /// readings coincide.
-    #[param(name = "Depth to tip", default = false)]
+    #[param(
+        name = "Depth to tip",
+        default = false,
+        visible_when = "end_type=blind"
+    )]
     pub depth_to_tip: bool,
 
     /// Bore locations: comma-separated point/anchor queries — sketch points
@@ -247,6 +295,51 @@ fn effective_diameter_mm(d: &HoleDef) -> f32 {
         // `drilled` and anything a future variant adds: the nominal bore.
         _ => t.nominal_mm,
     }
+}
+
+/// A millimetre value with its trailing zeros trimmed: `6.00 → "6"`,
+/// `7.70 → "7.7"`, `3.25 → "3.25"`. For NAMES only — never for geometry.
+fn trim_mm(v: f32) -> String {
+    let s = format!("{v:.2}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() { "0".to_string() } else { s.to_string() }
+}
+
+/// The auto-name of ONE bore: what the settings add up to, in the words a
+/// machinist reads off a drawing — `M6 tapped`, `Ø7.7 drilled counterbore`
+/// (#404 P6).
+///
+/// Deliberately built from the SIZE, the TYPE and the STYLE and nothing else:
+/// those three are what distinguishes two holes in a tree at a glance. The end
+/// condition and the drill point are settings you look up, not identity.
+fn auto_name_base(d: &HoleDef) -> String {
+    // Mirrors `effective_diameter_mm`'s decision so the name can never claim a
+    // norm the geometry did not use.
+    let size = match super::hole_iso::metric_by_key(&d.standard_size) {
+        Some(t) => t.key.to_string(),
+        None => format!("Ø{}", trim_mm(d.diameter.to_mm())),
+    };
+    let mut name = format!("{size} {}", d.hole_type);
+    match d.style.as_str() {
+        "counterbore" => name.push_str(" counterbore"),
+        "countersink" => name.push_str(" countersink"),
+        _ => {}
+    }
+    name
+}
+
+/// The auto-generated DISPLAY NAME of a whole `hole` feature call (#404 P6):
+/// [`auto_name_base`] plus `×N` when it drills more than one bore — the
+/// outliner's `M6 tapped ×3` instead of `Hole 7`.
+///
+/// `None` when the params do not parse as a hole at all, so the caller keeps
+/// its generic fallback rather than inventing a name for a broken definition.
+/// A user-set `name` is honoured by the caller and never reaches here.
+pub fn auto_name(params: &Value) -> Option<String> {
+    let d = HoleDef::parse(params).ok()?;
+    let base = auto_name_base(&d);
+    let bores = d.locations.queries().iter().filter(|q| !q.trim().is_empty()).count();
+    Some(if bores > 1 { format!("{base} ×{bores}") } else { base })
 }
 
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
@@ -672,7 +765,11 @@ impl FeatureKind for HoleFeature {
             Vec::new()
         };
 
-        let name = optional_display_name(def, || format!("Hole {id}"));
+        // The cutters inherit the feature's name, so a renamed hole renames its
+        // geometry too; without a user name they get the auto-name WITHOUT the
+        // `×N` suffix (each cutter is one bore, and the per-location `#i` below
+        // already counts them).
+        let name = optional_display_name(def, || auto_name_base(&d));
         // Small mouth overshoot so the cutter fully breaks the surface at the
         // anchor (avoids a coincident-face sliver at the bore opening). It sits
         // OUTSIDE the material, so the blind depth into the body is unaffected.

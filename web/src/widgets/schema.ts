@@ -65,7 +65,7 @@ export interface RawFeatureParam {
   ui_hint?: string;
   unit?: string;
   variants?: RawEnumVariant[];
-  visible_when?: { param: string; equals: unknown };
+  visible_when?: { param: string; equals: unknown }[];
   min?: number;
   max?: number;
   step?: number;
@@ -121,9 +121,19 @@ export interface EnumVariant {
   label: string;
 }
 
+/** A scalar a `visible_when` condition can compare against. */
+export type VisibleWhenValue = string | number | boolean;
+
+/**
+ * One conditional-visibility clause: the param is shown while `param` holds
+ * `equals` — or, when `equals` is an array, ANY of its entries.
+ *
+ * A param carries a LIST of these and is shown only when they ALL hold, so
+ * "blind AND custom tip angle" is expressible without a second vocabulary.
+ */
 export interface VisibleWhen {
   param: string;
-  equals: string | number | boolean;
+  equals: VisibleWhenValue | VisibleWhenValue[];
 }
 
 export interface FeatureParamDescriptor {
@@ -134,7 +144,8 @@ export interface FeatureParamDescriptor {
   rawType: string;
   uiHint?: UiHint;
   variants?: EnumVariant[];
-  visibleWhen?: VisibleWhen;
+  /** Conditions that must ALL hold for the dialog to render this param. */
+  visibleWhen?: VisibleWhen[];
   /** Slider bounds — only set when `widget === "slider"`. */
   min?: number;
   max?: number;
@@ -433,7 +444,7 @@ function parseParam(raw: unknown, where: string): FeatureParamDescriptor {
   }
 
   if (p.visible_when !== undefined) {
-    descriptor.visibleWhen = parseVisibleWhen(
+    descriptor.visibleWhen = parseVisibleWhenList(
       p.visible_when,
       `${where}.visible_when`,
     );
@@ -488,23 +499,40 @@ function parseUiHint(value: unknown, where: string): UiHint | undefined {
   return undefined;
 }
 
+function parseVisibleWhenList(value: unknown, where: string): VisibleWhen[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`parseFeatureSchema: ${where} must be an array of conditions`);
+  }
+  return value.map((c, i) => parseVisibleWhen(c, `${where}[${i}]`));
+}
+
 function parseVisibleWhen(value: unknown, where: string): VisibleWhen {
   if (!value || typeof value !== "object") {
     throw new Error(`parseFeatureSchema: ${where} must be an object`);
   }
   const obj = value as Record<string, unknown>;
   const param = asString(obj.param, `${where}.param`);
-  const equals = obj.equals;
-  if (
-    typeof equals !== "string" &&
-    typeof equals !== "number" &&
-    typeof equals !== "boolean"
-  ) {
-    throw new Error(
-      `parseFeatureSchema: ${where}.equals must be a string, number, or boolean`,
-    );
+  const raw = obj.equals;
+  const equals = Array.isArray(raw)
+    ? raw.map((v, i) => asVisibleWhenValue(v, `${where}.equals[${i}]`))
+    : asVisibleWhenValue(raw, `${where}.equals`);
+  if (Array.isArray(equals) && equals.length === 0) {
+    throw new Error(`parseFeatureSchema: ${where}.equals must list a value`);
   }
   return { param, equals };
+}
+
+function asVisibleWhenValue(value: unknown, where: string): VisibleWhenValue {
+  if (
+    typeof value !== "string" &&
+    typeof value !== "number" &&
+    typeof value !== "boolean"
+  ) {
+    throw new Error(
+      `parseFeatureSchema: ${where} must be a string, number, or boolean`,
+    );
+  }
+  return value;
 }
 
 /**
@@ -673,21 +701,23 @@ export function readParam(
 // ─── visibility evaluation ──────────────────────────────────────
 
 /**
- * Evaluate a param's `visible_when` expression against the
- * current definition. Params without `visible_when` are always
- * visible. Groups are additionally hidden when their
- * `drivingParam` is `false` — that's the Onshape "Direction
+ * Evaluate a param's `visible_when` conditions against the current
+ * definition. Params without `visible_when` are always visible; a param that
+ * has them is shown only while EVERY condition holds (and a condition whose
+ * `equals` is an array holds for any of its entries). Groups are additionally
+ * hidden when their `drivingParam` is `false` — that's the Onshape "Direction
  * checkbox collapses the group" pattern.
  */
 export function isVisible(
   param: FeatureParamDescriptor,
   def: Record<string, unknown>,
 ): boolean {
-  if (param.visibleWhen) {
-    const actual = def[param.visibleWhen.param];
-    if (actual !== param.visibleWhen.equals) return false;
-  }
-  return true;
+  return (param.visibleWhen ?? []).every((cond) => {
+    const actual = def[cond.param];
+    return Array.isArray(cond.equals)
+      ? cond.equals.some((v) => v === actual)
+      : actual === cond.equals;
+  });
 }
 
 /**

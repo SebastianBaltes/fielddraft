@@ -182,6 +182,48 @@ export function getSketchPointPickables(): SketchPointPickables[] {
   return pointPickables;
 }
 
+// ─── sketch-point hover highlight (#404 P6) ─────────────────────────
+// Exactly the fs23 sketch-LINE affordance, one entity kind over: while the
+// Hole `locations` field is armed, the Viewport's pointer-move publishes the
+// sketch point under the cursor and the committed-sketch overlay draws it in
+// the selected colour. Without it a bore point is an invisible 8-pixel target
+// and the only feedback is a bore appearing (or not).
+
+let hoveredPoint: { sketchId: number; pointId: number } | null = null;
+const pointHoverListeners = new Set<() => void>();
+
+/** The sketch point currently hovered as a query target, or `null`. */
+export function getHoveredSketchPoint(): {
+  sketchId: number;
+  pointId: number;
+} | null {
+  return hoveredPoint;
+}
+
+/** Publish (or clear with `null`) the hovered sketch point. No-op — and no
+ *  notify — when unchanged, so pointer-move doesn't thrash React. */
+export function setHoveredSketchPoint(
+  next: { sketchId: number; pointId: number } | null,
+): void {
+  const same =
+    (next === null && hoveredPoint === null) ||
+    (next !== null &&
+      hoveredPoint !== null &&
+      next.sketchId === hoveredPoint.sketchId &&
+      next.pointId === hoveredPoint.pointId);
+  if (same) return;
+  hoveredPoint = next;
+  for (const l of pointHoverListeners) l();
+}
+
+/** Subscribe to hovered-sketch-point changes. Returns unsubscribe. */
+export function subscribeHoveredSketchPoint(listener: () => void): () => void {
+  pointHoverListeners.add(listener);
+  return () => {
+    pointHoverListeners.delete(listener);
+  };
+}
+
 /**
  * Nearest sketch point the ray passes within a screen-constant tolerance of,
  * as `{ sketchId, pointId }`, or `null`. Closest hit along the ray wins.

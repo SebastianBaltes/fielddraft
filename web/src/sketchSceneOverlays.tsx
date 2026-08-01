@@ -69,6 +69,8 @@ import {
   clearSketchPointPickables,
   getHoveredSketchLine,
   subscribeHoveredSketchLine,
+  getHoveredSketchPoint,
+  subscribeHoveredSketchPoint,
 } from "./sketchLinePickBridge";
 
 // ── Sketch scene overlays ────────────────────────────────────────────
@@ -342,6 +344,29 @@ export function SketchOverlay3D() {
     return g;
   }, [isWebGPU, hoverSeg]);
 
+  // #404 P6: the sketch POINT under the cursor while the Hole `locations`
+  // picker is armed — same bridge, same "potential target" reading as the
+  // hovered line above, drawn as one fatter dot in the selected colour on top
+  // of the ordinary committed dot. One mesh path, so both backends agree.
+  const hoveredPoint = useSyncExternalStore(
+    subscribeHoveredSketchPoint,
+    getHoveredSketchPoint,
+    () => null,
+  );
+  const hoverDot = useMemo<SketchDots | null>(() => {
+    if (!hoveredPoint) return null;
+    const sk = sketches.find((s) => s.id === hoveredPoint.sketchId);
+    const pt = sk?.pointPick.find((p) => p.pointId === hoveredPoint.pointId);
+    if (!pt) return null;
+    // 999: above the base dots (998), like the hovered line.
+    return makeSketchDots(
+      [...pt.p],
+      SKETCH_SELECTED_COLOR,
+      SKETCH_POINT_SIZE * 1.6,
+      999,
+    );
+  }, [hoveredPoint, sketches]);
+
   // Ticket o6hx / fg9o: these geometries may still be referenced by an
   // in-flight GPU submit when their memo recomputes and tears the previous set
   // down. Destroying them synchronously mid-submit triggers "[Buffer] used in
@@ -380,6 +405,10 @@ export function SketchOverlay3D() {
     if (!hoverClassic) return;
     return () => disposeAfterGpuIdle(gl, () => hoverClassic.dispose());
   }, [gl, hoverClassic]);
+  useEffect(() => {
+    if (!hoverDot) return;
+    return () => disposeAfterGpuIdle(gl, () => hoverDot.dispose());
+  }, [gl, hoverDot]);
 
   // Publish the world-space pick geometry per visible committed sketch so a
   // plain click in the viewport can select the sketch — taking priority over
@@ -514,6 +543,8 @@ export function SketchOverlay3D() {
               />
             </lineSegments>
           )}
+      {/* #404 P6: the hovered query-target sketch point, on top of its dot. */}
+      {hoverDot && <primitive object={hoverDot.mesh} dispose={null} />}
     </group>
   );
 }

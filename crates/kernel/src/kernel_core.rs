@@ -621,6 +621,14 @@ impl Kernel {
                 return name.to_string();
             }
         }
+        // #404 P6: a hole names itself after what it DRILLS — "M6 tapped ×3"
+        // instead of "Hole 7". The rule lives next to the schema that produces
+        // it (`features::hole`), so the two can never drift apart.
+        if call.type_name == "hole" {
+            if let Some(name) = crate::features::hole::auto_name(&call.params) {
+                return name;
+            }
+        }
         let label = match call.type_name.as_str() {
             "sketch" => "Sketch",
             "revolve" => "Revolve",

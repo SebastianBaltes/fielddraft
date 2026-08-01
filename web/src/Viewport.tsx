@@ -108,7 +108,9 @@ import { pickSketchAtRay } from "./sketchPickBridge";
 import {
   pickSketchLineAtRay,
   pickSketchPointAtRay,
+  getSketchPointPickables,
   setHoveredSketchLine,
+  setHoveredSketchPoint,
 } from "./sketchLinePickBridge";
 import {
   mapPickToQuery,
@@ -129,6 +131,7 @@ import { setGpuInfo, type GpuInfo } from "./telemetry";
 import {
   bodiesInRect,
   elementsInRect,
+  sketchPointsInRect,
   type NdcRect,
   type ProjectFn,
 } from "./boxSelect";
@@ -1106,6 +1109,27 @@ export function Viewport({
       setHoveredSketchLine(null);
     }
 
+    // #404 P6: the same affordance for sketch POINTS — the Hole `locations`
+    // field's targets. A bore point is an 8-pixel target with nothing under
+    // the cursor to confirm the aim, so highlight the one that would be picked.
+    if (picker && filterAllowsSketchPoint(picker.entityFilter)) {
+      const hov = getHoveredElement();
+      const brepWins =
+        hov !== null && filterAllows(hov.kind, picker.entityFilter);
+      const ray = brepWins
+        ? null
+        : rayAtMouse(
+            event as unknown as React.MouseEvent<HTMLDivElement>,
+            host,
+          );
+      const camera = getPublishedPickCamera();
+      setHoveredSketchPoint(
+        ray ? pickSketchPointAtRay(ray, camera ?? undefined, rect.height) : null,
+      );
+    } else {
+      setHoveredSketchPoint(null);
+    }
+
     const drag = boxDragRef.current;
     if (drag) {
       const px = event.clientX - rect.left;
@@ -1129,6 +1153,7 @@ export function Viewport({
     setNdc((prev) => ({ ...prev, active: false }));
     setPickResult(null);
     setHoveredSketchLine(null); // fs23: drop the sketch-line hover highlight
+    setHoveredSketchPoint(null); // #404 P6: … and the sketch-point one
   };
 
   const handlePointerDown = (
@@ -1240,6 +1265,24 @@ export function Viewport({
       if (!ndcZVisible(camera, v.z)) return null;
       return { x: v.x, y: v.y };
     };
+    // #404 P6: while a picker that accepts sketch points is armed (the Hole
+    // `locations` field), the box COLLECTS points into that field instead of
+    // changing the selection — placing eight bores one careful click at a time
+    // is exactly the tedium a rectangle exists to remove. The MultiQuery
+    // picker accumulates, so one `onPick` per point is all it takes.
+    const armed = getActiveQueryPicker();
+    if (armed && filterAllowsSketchPoint(armed.entityFilter)) {
+      for (const q of sketchPointsInRect(
+        getSketchPointPickables(),
+        project,
+        ndcRect,
+      )) {
+        armed.onPick(q);
+      }
+      invalidateCanvas();
+      return;
+    }
+
     // Onshape's implicit multi-select accumulates box selections too; the
     // other presets replace unless their additive modifier is held.
     const additive =

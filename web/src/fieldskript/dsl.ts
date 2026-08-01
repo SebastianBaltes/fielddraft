@@ -324,16 +324,16 @@ export function group(
 /**
  * Wrap a param so it is only shown when another param equals a value
  * — exactly the dialog's `visible_when` semantics (static, no script
- * run for layout).
+ * run for layout). `equals` may be an array to mean "any of these".
  */
 export function visibleWhen<T>(
   paramName: string,
-  equals: string | number | boolean,
+  equals: string | number | boolean | (string | number | boolean)[],
   wrapped: Param<T>,
 ): Param<T> {
   return param<T>({
     ...(wrapped as RawFeatureParam),
-    visible_when: { param: paramName, equals },
+    visible_when: [{ param: paramName, equals }],
   });
 }
 

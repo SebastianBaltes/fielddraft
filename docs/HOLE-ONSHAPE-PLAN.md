@@ -538,6 +538,96 @@ der Achse, Toleranz 2e-3 mm):
 
 Testzahlen: Kernel 1508 → **1513** grün (5 neue), Web 2072 unverändert, `tsc -b` sauber.
 
+### P6 — Umgesetzt (v0.56.0)
+
+**Konditionale Sichtbarkeit: Derive-Attribut, weil die Web-Seite es längst konnte.** §7.3 fragte,
+ob das Schema ein `visible_if` kennt. Sondiert statt vermutet — und die Antwort war überraschend:
+`web/src/widgets/schema.ts` liest `visible_when: {param, equals}` **seit K6a.1**, `isVisible` ist
+implementiert, und `FeatureDialog.tsx:298` filtert damit. Es gab nur keinen Produzenten: der
+Derive konnte das Feld nicht emittieren, also kam es ausschließlich aus handgeschriebenen
+Fixtures. Gewählt wurde deshalb **das additive Derive-Attribut** (nicht Web-seitiges Ausblenden
+per Typ-Enum): Ein `if (featureType === "hole" && key === "cbore_depth")` im Web wäre eine zweite
+Wahrheit über das Schema, die bei jedem neuen Feld nachgezogen werden müsste; das Attribut steht
+dort, wo das Feld steht.
+
+    #[param(name = "Counterbore Ø", …, visible_when = "style=counterbore")]
+
+Grammatik: Bedingungen per `,` sind **UND**-verknüpft, Werte per `|` innerhalb einer Bedingung
+**ODER**. `"end_type=up_to_next|up_to_entity"` und `"end_type=blind, tip=custom"` sind beide nötig
+— ohne UND hinge das freie Spitzenmaß am `through_all`-Loch weiter im Dialog. Der Spec-String wird
+**zur Compile-Zeit** geprüft (Tippfehler = Build-Fehler, nicht ein Feld, das still nie erscheint).
+Wire-Form ist konsequent eine **Liste** von Bedingungen; die alte Ein-Objekt-Form ist ersatzlos
+weg (kein Compat-Shim, CLAUDE.md), `equals` akzeptiert Skalar oder Array.
+
+Annotiert sind 13 Felder: `fit` (nur clearance), `diameter` (nur custom-Größe), `start_plane`
+(nur selected_plane), `depth` · `tip` · `depth_to_tip` (nur blind), `tip_custom` (blind UND
+custom), `up_to_entity` (nur up_to_entity), `end_offset` (up_to_next ODER up_to_entity), die
+beiden `cbore_*` (nur counterbore) und die beiden `csink_*` (nur countersink).
+
+*Gate gemessen* (`hole_dialog_shows_only_the_fields_that_apply`): der Test wertet die Regel in
+Rust **auf dem echten `schema_json()`** aus, mit derselben Semantik wie `isVisible` in TS, und
+vergleicht die Schlüsselmenge exakt — plus die Gegenprobe, dass jede Bedingung einen Parameter
+nennt, den es auch gibt. Fünf Konfigurationen: Default-M6-blind zeigt 11 Felder (kein fit, kein
+freies Ø, keine Senkmaße, kein Up-to-Ziel); clearance+custom+through_all zeigt `fit` und
+`diameter`, aber **weder `depth` noch den Anschliff**; counterbore+up_to_next zeigt `end_offset`
+und die zwei Senkmaße, keine Tiefe und keine Startebene; countersink+selected_plane+up_to_entity
+zeigt `start_plane`, `up_to_entity`, `end_offset` und das Kegelpaar; und die UND-Probe:
+`blind + tip=custom` zeigt `tip_custom`, `through_all + tip=custom` blendet den **ganzen**
+Spitzen-Block aus. Web-seitig prüfen drei neue `isVisible`-Tests Array-ODER, Mehrfach-UND und
+das Zurückweisen der alten Objektform.
+
+**Auto-Name.** Ein Loch heißt jetzt nach dem, was es bohrt: `M6 tapped`, `M8 clearance
+counterbore ×2`, `Ø7.7 drilled countersink` — statt `Hole 7`. Die Regel (`hole::auto_name`) steht
+neben dem Schema, das sie erzeugt, und `synth_name_for_call` fragt sie; ein vom Nutzer gesetzter
+Name gewinnt weiterhin. Bewusst nur Größe + Typ + Stil (+ `×N` ab zwei Bohrungen): das sind die
+Merkmale, an denen man zwei Löcher im Baum unterscheidet — Endbedingung und Anschliff schlägt man
+nach, sie sind keine Identität. Die Größe folgt derselben Entscheidung wie
+`effective_diameter_mm`, kann also nie eine Norm behaupten, die die Geometrie nicht benutzt hat.
+*Gate:* `hole_names_itself_after_what_it_drills` über `add_feature_call` → `list_features`.
+
+**Sketch-Punkt-Picker-UX.** Hover-Highlight und Box-Select, beide auf vorhandenen Mustern:
+
+- *Hover:* exakt die fs23-Brücke für Sketch-LINIEN, eine Entitätsart weiter
+  (`setHoveredSketchPoint`/`subscribe…` neben `setHoveredSketchLine`). Der Viewport publiziert bei
+  Pointer-Move den Punkt unter dem Cursor, sobald ein Picker mit `SKETCHPOINT`-Filter scharf ist;
+  das Overlay zeichnet ihn als 1.6-fach großen Punkt in der Auswahlfarbe über den normalen
+  (`makeSketchDots`, RenderOrder 999 wie die gehoverte Linie). Ohne das ist ein Bohrpunkt ein
+  8-Pixel-Ziel ohne jede Rückmeldung.
+- *Box-Select:* kein neues Selektions-Framework — die vorhandene Rechteck-Geste liefert `project`
+  und `ndcRect` bereits fertig; neu ist die reine Funktion `sketchPointsInRect` in `boxSelect.ts`
+  neben `elementsInRect`/`bodiesInRect` und ein Zweig in `handlePointerUp`, der bei scharfem
+  Punkt-Picker die gefundenen `qSketchPoint(…)` einzeln an `picker.onPick` gibt statt die Auswahl
+  zu ändern. Der `MultiQueryWidget`-Picker akkumuliert synchron und deaktiviert sich nicht nach
+  einem Pick, also reicht ein Aufruf je Punkt. Fenster/Kreuzen fallen zusammen — ein Punkt hat
+  keine Ausdehnung.
+
+**Senkmaß-Vorbelegung nach Norm: NICHT ausgeliefert — die Quellen widersprechen sich.** Der
+Auftrag war explizit an eine 1:1-Transkription gebunden. Recherchiert wurden vier Quellen:
+
+| M | AmesWeb (Ø/Tiefe) | EngineersBible DIN 912 | neue-physik DIN 974-1 | schraube-mutter DIN 974 |
+|---|---|---|---|---|
+| M3 | 6.50 / 3.00 | 6.5 / 3.5 | 6.5 / 3.4 | 6.00 / 2.40 |
+| M6 | 11.25 / 6.00 | 11.0 / 6.8 | 11.0 / 6.4 | 11.00 / 4.70 |
+| M8 | 14.25 / 8.00 | 15.0 / 8.8 | 15.0 / 8.6 | 15.00 / 6.00 |
+| M12 | 19.25 / 12.00 | 20.0 / 12.8 | 20.0 / 12.6 | 20.00 / 8.00 |
+| M24 | 37.50 / 24.00 | 40.0 / 25.0 | 40.0 / 24.8 | 40.00 / 13.80 |
+
+Der **Durchmesser** ist gut belegt: zwei Quellen sind auf der DIN-974-1-Reihe-1 zeilenweise
+deckungsgleich, eine dritte in 9 von 10 Zeilen (M3 6.0 statt 6.5 — vermutlich Reihe 1 vs. 2).
+AmesWeb fährt eine ganz andere (ASME-nahe) Reihe und ist wie bei ISO 273 in P2 nicht verwendbar.
+Die **Tiefe** dagegen liefert vier Quellen mit vier Werten pro Zeile, weil sie von der
+Schraubenkopfhöhe der jeweiligen Norm abhängt (DIN 912 vs. ISO 4762 vs. „Kopfhöhe + Zugabe"). Beim
+Countersink ist es schlimmer: ISO 15065 (Dc M6 = 12.60–12.85) und DIN 74 (d2 M6 = 13.7) sind
+verschiedene Reihen für verschiedene Kopfformen, und die ISO-Zahlen ließen sich nur aus einem
+Suchtreffer greifen, nicht aus dem Normtext.
+
+Ein halber Auto-Fill — richtiger Ø, erfundene Tiefe — wäre schlechter als ein ehrlicher fester
+Default: er sieht normkonform aus. Die Senkmaße bleiben daher bei den P3-Vorgaben (11 / 6 mm bzw.
+12 mm / 90°) und **manuell**. Nachzuholen, sobald der DIN-974-1- bzw. ISO-15065-Normtext selbst
+vorliegt — dann mit Transkriptions-Guard wie bei `hole_iso`.
+
+Testzahlen: Kernel 1513 → **1515** grün, Web 2072 → **2082** grün, `tsc -b` sauber.
+
 ## 7. Offene Fragen / Risiken
 
 1. **Sketch-Punkt-Referenzierung (größtes Risiko, blockiert P1-Zielselektion):** Taucht ein
@@ -549,9 +639,11 @@ Testzahlen: Kernel 1508 → **1513** grün (5 neue), Web 2072 unverändert, `tsc
 2. **Tapped kosmetisch vs. real:** Empfehlung wie Onshape — kosmetisch (Kernloch-Volumen,
    Gewinde nur als Callout/Annotation). Echtes Wendel-Gewinde ist teuer und für die
    Fertigungs-Semantik unnötig. Callout-Annotation (Measure-Overlay?) ist optional/spät.
-3. **Konditionale Feld-Sichtbarkeit im Schema:** Kennt das Schema/`widgets/schema.ts` schon ein
-   `visible_if`/`enabled_if`? Falls nein, entweder Derive-Attribut ergänzen oder Web-seitig per
-   Typ-Enum ausblenden. Zu prüfen vor P6.
+3. ~~**Konditionale Feld-Sichtbarkeit im Schema:**~~ **Geklärt (P6):** die TS-Seite konnte
+   `visible_when` schon seit K6a.1 (Parser + `isVisible` + Dialog-Filter), es fehlte nur der
+   Produzent. Gelöst mit dem additiven Derive-Attribut `#[param(visible_when = "…")]`, UND/ODER
+   fähig und compile-zeit-geprüft — nicht Web-seitig per Typ-Enum, das wäre eine zweite Wahrheit
+   über das Schema gewesen.
 4. **Bohrachsen-Vorzeichen:** Konvention +Z_local des Ziel-Frames „in den Body hinein"; bei
    Vertex/MC muss die Face-Normale konsistent nach außen zeigen, sonst bohrt das Loch vom
    Material weg. `opposite_direction` als Nutzer-Override; ggf. Auto-Sign über Body-Innentest.
@@ -561,7 +653,9 @@ Testzahlen: Kernel 1508 → **1513** grün (5 neue), Web 2072 unverändert, `tsc
    offen halten, aber keine ANSI-Tabellen in P1–P6.
 7. **Norm-Daten-Korrektheit:** Die const-Tabellen müssen 1:1 aus ISO 261/273 transkribiert
    werden (Transkriptions-Guard-Test `tap≈nominal−pitch`), nicht aus Web-Snippets geraten — die
-   §4.2-Werte sind Richtwerte zur Größenordnung.
+   §4.2-Werte sind Richtwerte zur Größenordnung. **Offen geblieben (P6):** die Senkungs-Tabellen
+   (DIN 974-1 / ISO 15065) haben diese Hürde NICHT genommen — vier Quellen, vier Tiefen pro Zeile,
+   zwei unvereinbare Countersink-Reihen. Die Senkmaße bleiben manuell, s. den P6-Abschnitt.
 
 ### Quellen
 

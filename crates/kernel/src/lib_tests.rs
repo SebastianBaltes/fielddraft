@@ -5340,6 +5340,229 @@ fn hole_start_from_selected_plane_begins_at_that_plane() {
     );
 }
 
+// ─── #404 P6: conditional field visibility & the auto-name ───────────────
+
+/// The dialog's visibility rule, evaluated in Rust exactly as
+/// `web/src/widgets/schema.ts::isVisible` evaluates it: a param is shown while
+/// EVERY `visible_when` condition holds, and a condition whose `equals` is an
+/// array holds for ANY of its entries.
+///
+/// This is the P6 gate instrument. It reads the SCHEMA the dialog is handed —
+/// not a mirror of it in the test — so a field that stops being conditional,
+/// or grows a condition on a param that does not exist, shows up here.
+fn hole_visible_keys(def: &serde_json::Value) -> Vec<String> {
+    use crate::features::hole::HoleDef;
+    use crate::features::FeatureSchema;
+    let schema = HoleDef::schema_json();
+    let mut out = Vec::new();
+    for p in schema["params"].as_array().expect("params array") {
+        let key = p["key"].as_str().unwrap().to_string();
+        let visible = match p.get("visible_when") {
+            None => true,
+            Some(conds) => conds
+                .as_array()
+                .expect("visible_when must be a LIST of conditions")
+                .iter()
+                .all(|c| {
+                    let name = c["param"].as_str().expect("condition names a param");
+                    assert!(
+                        schema["params"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|q| q["key"] == name),
+                        "{key}: visible_when names `{name}`, which is not a param of `hole`"
+                    );
+                    let actual = def.get(name).unwrap_or(&serde_json::Value::Null);
+                    match &c["equals"] {
+                        serde_json::Value::Array(vs) => vs.iter().any(|v| v == actual),
+                        v => v == actual,
+                    }
+                }),
+        };
+        if visible {
+            out.push(key);
+        }
+    }
+    out
+}
+
+/// **P6 gate — conditional visibility.** The dialog shows exactly the fields
+/// that matter for the chosen style / type / size / start / end, and no others.
+#[test]
+fn hole_dialog_shows_only_the_fields_that_apply() {
+    // Always present, whatever is chosen: the four selectors plus the two
+    // query lists. Everything else has to earn its place.
+    let always = [
+        "style",
+        "hole_type",
+        "standard_size",
+        "start_mode",
+        "end_type",
+        "opposite_direction",
+        "locations",
+        "targets",
+    ];
+    let expect = |def: serde_json::Value, extra: &[&str], what: &str| {
+        let mut want: Vec<String> = Vec::new();
+        for p in ["style", "hole_type", "fit", "standard_size", "diameter",
+                  "start_mode", "start_plane", "end_type", "depth", "up_to_entity",
+                  "end_offset", "cbore_diameter", "cbore_depth", "csink_diameter",
+                  "csink_angle", "opposite_direction", "tip", "tip_custom",
+                  "depth_to_tip", "locations", "targets"] {
+            if always.contains(&p) || extra.contains(&p) {
+                want.push(p.to_string());
+            }
+        }
+        assert_eq!(hole_visible_keys(&def), want, "{what}");
+    };
+
+    // The default hole: a simple drilled M6, blind. No fit (not a clearance
+    // hole), no free Ø (a norm size is chosen), no seat, no up-to target.
+    expect(
+        serde_json::json!({
+            "style": "simple", "hole_type": "drilled", "standard_size": "M6",
+            "start_mode": "sketch_plane", "end_type": "blind", "tip": "a118"
+        }),
+        &["depth", "tip", "depth_to_tip"],
+        "simple drilled M6 blind",
+    );
+
+    // Clearance reveals the fit column; `custom` reveals the free diameter.
+    expect(
+        serde_json::json!({
+            "style": "simple", "hole_type": "clearance", "standard_size": "custom",
+            "start_mode": "sketch_plane", "end_type": "through_all", "tip": "a118"
+        }),
+        &["fit", "diameter"],
+        "clearance + custom Ø + through-all (no depth, no drill point)",
+    );
+
+    // Counterbore reveals its two measurements — and only its own.
+    expect(
+        serde_json::json!({
+            "style": "counterbore", "hole_type": "drilled", "standard_size": "M6",
+            "start_mode": "part", "end_type": "up_to_next", "tip": "a118"
+        }),
+        &["end_offset", "cbore_diameter", "cbore_depth"],
+        "counterbore + up-to-next (offset, no depth, no start plane)",
+    );
+
+    // Countersink reveals the cone pair; up-to-entity reveals its target AND
+    // the offset; the selected start plane reveals its picker.
+    expect(
+        serde_json::json!({
+            "style": "countersink", "hole_type": "tapped", "standard_size": "M8",
+            "start_mode": "selected_plane", "end_type": "up_to_entity", "tip": "flat"
+        }),
+        &["start_plane", "up_to_entity", "end_offset", "csink_diameter", "csink_angle"],
+        "countersink + selected start plane + up-to-entity",
+    );
+
+    // The one ANDed condition: the custom tip angle needs a blind hole AND a
+    // custom grind. Either alone is not enough.
+    expect(
+        serde_json::json!({
+            "style": "simple", "hole_type": "drilled", "standard_size": "M6",
+            "start_mode": "sketch_plane", "end_type": "blind", "tip": "custom"
+        }),
+        &["depth", "tip", "tip_custom", "depth_to_tip"],
+        "blind + custom tip angle",
+    );
+    expect(
+        serde_json::json!({
+            "style": "simple", "hole_type": "drilled", "standard_size": "M6",
+            "start_mode": "sketch_plane", "end_type": "through_all", "tip": "custom"
+        }),
+        &[],
+        "through-all + custom tip: the tip block stays hidden entirely",
+    );
+}
+
+/// **P6 gate — auto-name.** A hole is called what it drills, through the real
+/// API chain (`add_feature_call` → `feature_list`), and a user-set name wins.
+#[test]
+fn hole_names_itself_after_what_it_drills() {
+    let named = |extra: &str, locations: usize| -> String {
+        let mut k = Kernel::new();
+        let box_id = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, -10.0, 10.0, 10.0, 10.0)
+            .unwrap();
+        let sub: Vec<String> = (0..locations)
+            .map(|i| {
+                format!(
+                    r#"{{ "type": "sketch_point", "id": "{}", "params": {{ "at": [{}.0, 0.0] }} }}"#,
+                    100 + i,
+                    i as i32 * 2 - 4
+                )
+            })
+            .collect();
+        let sketch_id = k
+            .add_sketch("qCreatedBy(origin_plane_xy)", &format!("[{}]", sub.join(",")))
+            .unwrap();
+        let locs: Vec<String> = (1..=locations)
+            .map(|e| format!("qSketchPoint({sketch_id}, {e})"))
+            .collect();
+        let params = format!(
+            r#"{{
+                {extra}
+                "end_type": "blind", "depth": {{ "value": 5.0, "unit": "mm" }},
+                "locations": "{}",
+                "targets": "qCreatedBy({box_id})"
+            }}"#,
+            locs.join(", ")
+        );
+        let hole_id = k.add_feature_call("hole", &params).unwrap();
+        let features: serde_json::Value = serde_json::from_str(&k.list_features().unwrap()).unwrap();
+        features
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["id"] == hole_id.to_string() || f["id"] == hole_id)
+            .unwrap_or_else(|| panic!("hole {hole_id} missing from the feature list"))["name"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    // Size + type, the two things that tell two holes apart at a glance.
+    assert_eq!(
+        named(r#""style": "simple", "hole_type": "tapped", "standard_size": "M6","#, 1),
+        "M6 tapped"
+    );
+    // More than one bore: the count is part of the name.
+    assert_eq!(
+        named(r#""style": "simple", "hole_type": "tapped", "standard_size": "M6","#, 3),
+        "M6 tapped ×3"
+    );
+    // The style is named too, and a custom size reads as a diameter with its
+    // trailing zeros trimmed.
+    assert_eq!(
+        named(
+            r#""style": "counterbore", "hole_type": "clearance", "standard_size": "M8","#,
+            2
+        ),
+        "M8 clearance counterbore ×2"
+    );
+    assert_eq!(
+        named(
+            r#""style": "countersink", "hole_type": "drilled", "standard_size": "custom",
+               "diameter": { "value": 7.7, "unit": "mm" },"#,
+            1
+        ),
+        "Ø7.7 drilled countersink"
+    );
+    // A name the user typed always wins.
+    assert_eq!(
+        named(
+            r#""style": "simple", "hole_type": "tapped", "standard_size": "M6",
+               "name": "Ölablass","#,
+            3
+        ),
+        "Ölablass"
+    );
+}
+
 /// A P5 end condition that cannot be evaluated fails with a NAMED parameter
 /// error the dialog can point at — it never falls back to a silently invented
 /// depth. (The regen loop is error-tolerant, so the failure lands in

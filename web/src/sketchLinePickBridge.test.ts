@@ -10,6 +10,9 @@ import {
   getHoveredSketchLine,
   setHoveredSketchLine,
   subscribeHoveredSketchLine,
+  getHoveredSketchPoint,
+  setHoveredSketchPoint,
+  subscribeHoveredSketchPoint,
 } from "./sketchLinePickBridge";
 
 // ticket fs23: the Revolve axis picker rays a committed sketch line. The pick
@@ -131,5 +134,43 @@ describe("hovered-sketch-line bridge (fs23)", () => {
     unsub();
     setHoveredSketchLine({ sketchId: 2, lineId: 1 });
     expect(n).toBe(3);
+  });
+});
+
+// #404 P6: the same "potential target" affordance for sketch POINTS — the
+// Hole `locations` field. A bore point is an 8-pixel target, so the overlay
+// needs to say which one the click would take.
+describe("hovered-sketch-point bridge (#404 P6)", () => {
+  beforeEach(() => setHoveredSketchPoint(null));
+
+  it("stores and clears the hovered point", () => {
+    expect(getHoveredSketchPoint()).toBeNull();
+    setHoveredSketchPoint({ sketchId: 3, pointId: 2 });
+    expect(getHoveredSketchPoint()).toEqual({ sketchId: 3, pointId: 2 });
+    setHoveredSketchPoint(null);
+    expect(getHoveredSketchPoint()).toBeNull();
+  });
+
+  it("notifies subscribers only on an actual change", () => {
+    let n = 0;
+    const unsub = subscribeHoveredSketchPoint(() => n++);
+    setHoveredSketchPoint({ sketchId: 3, pointId: 2 });
+    expect(n).toBe(1);
+    setHoveredSketchPoint({ sketchId: 3, pointId: 2 });
+    expect(n).toBe(1);
+    setHoveredSketchPoint({ sketchId: 3, pointId: 5 });
+    expect(n).toBe(2);
+    setHoveredSketchPoint(null);
+    expect(n).toBe(3);
+    unsub();
+    setHoveredSketchPoint({ sketchId: 9, pointId: 1 });
+    expect(n).toBe(3);
+  });
+
+  it("is independent of the sketch-LINE hover", () => {
+    setHoveredSketchLine({ sketchId: 1, lineId: 1 });
+    setHoveredSketchPoint({ sketchId: 1, pointId: 1 });
+    setHoveredSketchLine(null);
+    expect(getHoveredSketchPoint()).toEqual({ sketchId: 1, pointId: 1 });
   });
 });
