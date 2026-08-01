@@ -662,6 +662,8 @@ export class KernelStore {
    *  target body. `standardSize` is an ISO key (`"M6"`, …) or `"custom"` (uses
    *  `diameterMm`); `endType` is `"blind"` or `"through_all"`. */
   addHole(
+    holeType = "drilled",
+    fit = "normal",
     standardSize = "M6",
     diameterMm = 6,
     endType = "blind",
@@ -673,6 +675,8 @@ export class KernelStore {
     let id: number;
     try {
       id = this.kernel.addHole(
+        holeType,
+        fit,
         standardSize,
         diameterMm,
         endType,

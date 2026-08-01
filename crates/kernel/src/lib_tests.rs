@@ -1046,6 +1046,8 @@ fn remove_feature_deletes_hole_and_its_hierarchical_child_spine() {
         .unwrap();
     let hole_id = k
         .add_hole(
+            "drilled".to_string(),
+            "normal".to_string(),
             "M6".to_string(),
             6.0,
             "through_all".to_string(),
@@ -2950,6 +2952,8 @@ fn hole_without_scope_warns_and_drills_nothing() {
         )
         .unwrap();
     k.add_hole(
+        "drilled".to_string(),
+        "normal".to_string(),
         "custom".to_string(),
         10.0,
         "blind".to_string(),
@@ -4455,6 +4459,126 @@ fn hole_size_variants_match_iso_table() {
     let mut expected = vec!["custom".to_string()];
     expected.extend(ISO_METRIC.iter().map(|t| t.key.to_string()));
     assert_eq!(keys, expected, "hole size dropdown drifted from ISO_METRIC");
+}
+
+// ─── #404 P2: hole types & ISO norms (drilled / clearance / tapped) ───────
+
+/// Measure the bore radius of a body-0 hole whose axis passes through
+/// `(px, py)` at height `z`, by bisecting the compiled SDF outward along +x
+/// for the open→solid crossing. Exact to ~1e-5 mm: the crossing IS the bore
+/// wall, whatever monotone scaling the tape applies to the field value.
+///
+/// This is the P2/P3/P4 gate instrument — it reads the geometry the user
+/// actually gets out of `body_sdf_eval`, not the resolver's intent.
+fn hole_bore_radius_at(k: &Kernel, px: f32, py: f32, z: f32) -> f32 {
+    assert!(
+        k.body_sdf_eval(0, px, py, z) > 0.0,
+        "bore axis must be open at z={z}"
+    );
+    let (mut lo, mut hi) = (0.0f32, 9.5f32);
+    assert!(
+        k.body_sdf_eval(0, px + hi, py, z) < 0.0,
+        "material must be solid {hi} mm off the bore axis"
+    );
+    for _ in 0..48 {
+        let mid = 0.5 * (lo + hi);
+        if k.body_sdf_eval(0, px + mid, py, z) > 0.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// Drill one through-all hole straight down the −Z axis of a 20 mm cube from
+/// a sketch point at the origin, using the EXACT wire form the `addHole`
+/// setter writes (`Length {value, unit}`), and return the finished kernel.
+fn hole_bored_cube(hole_type: &str, fit: &str, size: &str, diameter_mm: f32) -> Kernel {
+    let mut k = Kernel::new();
+    let box_id = k
+        .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+        .unwrap();
+    let sub_calls = r#"[
+        { "type": "sketch_point", "id": "100", "params": { "at": [0.0, 0.0] } }
+    ]"#;
+    let sketch_id = k.add_sketch("qCreatedBy(origin_plane_xy)", sub_calls).unwrap();
+    let params = format!(
+        r#"{{
+            "style": "simple",
+            "hole_type": "{hole_type}",
+            "fit": "{fit}",
+            "standard_size": "{size}",
+            "diameter": {{ "value": {diameter_mm}, "unit": "mm" }},
+            "end_type": "through_all",
+            "depth": {{ "value": 5.0, "unit": "mm" }},
+            "locations": "qSketchPoint({sketch_id}, 1)",
+            "targets": "qCreatedBy({box_id})"
+        }}"#
+    );
+    let hole_id = k.add_feature_call("hole", &params).unwrap();
+    assert_eq!(
+        k.feature_errors.get(&FeatureId::from_u32(hole_id)),
+        None,
+        "hole must parse ({hole_type}/{fit}/{size})"
+    );
+    k
+}
+
+/// **P2 gate.** The hole *type* selects the ISO column that drives the bore
+/// diameter, measured end-to-end through the real API chain
+/// (`add_feature_call("hole", …)` → `body_sdf_eval`), not on the resolver.
+///
+/// M6: drilled → Ø6.0 (nominal, ISO 261) · clearance close/normal/loose →
+/// Ø6.4 / 6.6 / 7.0 (ISO 273) · tapped → Ø5.0 (tap drill = nominal − pitch,
+/// the cosmetic-thread core hole). `custom` ignores type and fit entirely.
+#[test]
+fn hole_type_and_fit_select_the_iso_bore_diameter() {
+    let cases: &[(&str, &str, &str, f32, f32)] = &[
+        // hole_type, fit, size, free Ø, expected bore Ø
+        ("drilled", "normal", "M6", 6.0, 6.0),
+        ("clearance", "close", "M6", 6.0, 6.4),
+        ("clearance", "normal", "M6", 6.0, 6.6),
+        ("clearance", "loose", "M6", 6.0, 7.0),
+        ("tapped", "normal", "M6", 6.0, 5.0),
+        // Other rows of the widened M1.6…M24 table.
+        ("tapped", "normal", "M3", 6.0, 2.5),
+        ("clearance", "loose", "M12", 6.0, 14.5),
+        ("drilled", "normal", "M16", 6.0, 16.0),
+        // `custom` always wins — the type/fit columns are not consulted.
+        ("clearance", "loose", "custom", 7.7, 7.7),
+        ("tapped", "close", "custom", 3.3, 3.3),
+    ];
+    for (hole_type, fit, size, free_dia, expect_dia) in cases {
+        let k = hole_bored_cube(hole_type, fit, size, *free_dia);
+        assert_eq!(k.body_count(), 1, "one bored body ({hole_type}/{fit}/{size})");
+        let r = hole_bore_radius_at(&k, 0.0, 0.0, -5.0);
+        assert!(
+            (2.0 * r - expect_dia).abs() < 2e-3,
+            "{hole_type}/{fit}/{size}: bore Ø {:.4} mm, expected {expect_dia} mm",
+            2.0 * r
+        );
+    }
+}
+
+/// The bore is a true cylinder of the ISO diameter, not just "open on the
+/// axis": `body_brep_faces` must carry a cylindrical surface whose analytic
+/// radius equals the ISO 273 M6-normal half-diameter (3.3 mm).
+#[test]
+fn hole_clearance_bore_is_a_cylinder_face_of_the_iso_radius() {
+    let mut k = hole_bored_cube("clearance", "normal", "M6", 6.0);
+    let faces: serde_json::Value = serde_json::from_str(&k.body_brep_faces(0)).unwrap();
+    let radii: Vec<f64> = faces
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["surfaceKind"] == "cylinder")
+        .filter_map(|f| f["surfaceParams"]["radius"].as_f64())
+        .collect();
+    assert!(
+        radii.iter().any(|r| (r - 3.3).abs() < 1e-3),
+        "M6 clearance-normal bore must weave a Ø6.6 cylinder face; got {radii:?}"
+    );
 }
 
 /// #414 P1 — the edge chamfer through the REAL wasm API chain: the

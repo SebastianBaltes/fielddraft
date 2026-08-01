@@ -1088,11 +1088,15 @@ export class Kernel {
     return this.inner.addMirror(sourceId, plane);
   }
 
-  /** #404 P1: append an Onshape-style hole feature. Drills one identical cutter
-   *  per location. `standardSize` is an ISO key (`"M6"`) or `"custom"`;
+  /** #404: append an Onshape-style hole feature. Drills one identical cutter
+   *  per location. `holeType` is `"drilled" | "clearance" | "tapped"` and
+   *  `fit` (`"close" | "normal" | "loose"`) picks the ISO 273 row for
+   *  clearance bores; `standardSize` is an ISO key (`"M6"`) or `"custom"`;
    *  `endType` is `"blind"` or `"through_all"`. `locations`/`targets` are
    *  comma-separated MultiQuery strings; diameter/depth are `Length`-typed. */
   addHole(
+    holeType: string,
+    fit: string,
     standardSize: string,
     diameterMm: number,
     endType: string,
@@ -1101,6 +1105,8 @@ export class Kernel {
     targets: string,
   ): number {
     return this.inner.addHole(
+      holeType,
+      fit,
       standardSize,
       diameterMm,
       endType,

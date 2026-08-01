@@ -324,6 +324,45 @@ up_to_next/up_to_entity, Start-Modi, konditionale Feld-Sichtbarkeit, Sketch-Punk
 Highlight + Box-Select. `diameter_override` ist in P1 als `diameter` (aktiv nur bei
 `standard_size=custom`) umgesetzt; die getrennte Override-über-Norm-Semantik kommt mit P2.
 
+### P2 — Umgesetzt (v0.52.0)
+
+**Normtabelle.** `hole_iso.rs` von 9 auf **17 Zeilen** erweitert: M1.6 · M2 · M2.5 · M3 · M3.5 ·
+M4 · M5 · M6 · M8 · M10 · M12 · M14 · M16 · M18 · M20 · M22 · M24. Spalten wie geplant
+(Nenn-Ø, ISO-261-Regelsteigung, Kernloch, ISO-273 close/normal/loose). Die Werte wurden
+gegen drei unabhängige Quellen abgeglichen, weil sie sich widersprachen: eine populäre
+Tabelle (Fractory) weicht in mehreren Zeilen von ISO 273 ab (M6 normal 6.5 statt 6.6,
+M12 13.5/14.5 → 14.0/15.0, M24 25/26/28 → 26/28/30). Übernommen wurde die
+ISO-273-/ASME-B18.2.8-Reihe (AmesWeb + engineeringhardware, beide deckungsgleich mit den
+bereits in P1 transkribierten M2…M12-Zeilen — die blieben also unverändert). M18 = 19/20/21
+und M22 = 23/24/26 sind die neu belegten Zeilen.
+
+**Guard-Tests** (`hole_iso::tests`, 6 statt 3): der bestehende `tap ≈ nenn − steigung`
+(±0.1 mm) plus neu — Zeilen streng aufsteigend **und** Key == Nenn-Ø (Copy-Paste-Schutz),
+`tap < nenn < clearance_close` (die Invariante, die die drei Typen überhaupt unterscheidbar
+macht), und ein Fit-Spalten-Lookup inkl. Fallback.
+
+**Ø-Ableitung.** `effective_diameter_mm` dispatcht jetzt auf `hole_type`:
+`drilled`→Nenn-Ø, `clearance`→`clearance_mm(fit)`, `tapped`→Kernloch. `standard_size=custom`
+(oder ein unbekannter Key aus einem alten Dokument) nimmt weiterhin die freie `diameter` —
+und zwar **vor** dem Typ-Dispatch, damit ein Custom-Maß nie von einer Norm überschrieben wird.
+
+**Schema.** Neues Feld `fit: String` (`close|normal|loose`, Default `normal`), direkt nach
+`hole_type`. `standard_size`-Variantenliste auf 17+custom erweitert. Beides sind additive
+`variants=`-Erweiterungen — kein Wire-Bruch. Der Dialog ist schema-getrieben: beide Dropdowns
+erscheinen automatisch, ohne Web-Änderung. Die wasm-`addHole`-Signatur bekam
+`hole_type` + `fit` vorangestellt (`store.addHole()` ruft weiterhin argumentlos mit Defaults).
+
+**Gate gemessen** (`hole_type_and_fit_select_the_iso_bore_diameter`, über
+`add_feature_call("hole", …)` → `body_sdf_eval`): Der Bohrungsradius wird per Bisektion des
+kompilierten SDF-Tapes quer zur Achse bestimmt (48 Schritte, ~1e-5 mm) — gemessen wird also
+die Geometrie, die der Nutzer bekommt, nicht die Absicht des Resolvers. Ergebnis, alle
+innerhalb 2e-3 mm: M6 drilled **Ø6.000**, clearance close/normal/loose **Ø6.400 / 6.600 /
+7.000**, tapped **Ø5.000**; M3 tapped Ø2.500, M12 clearance-loose Ø14.500, M16 drilled Ø16.000;
+`custom` liefert 7.7 bzw. 3.3 unabhängig von Typ und Passung. Zusätzlich
+`hole_clearance_bore_is_a_cylinder_face_of_the_iso_radius`: `body_brep_faces` webt für das
+M6-Clearance-Loch eine `surfaceKind = "cylinder"`-Fläche mit `radius = 3.3` — die Bohrung ist
+ein echter Zylinder, nicht nur ein Loch im Feld.
+
 ## 7. Offene Fragen / Risiken
 
 1. **Sketch-Punkt-Referenzierung (größtes Risiko, blockiert P1-Zielselektion):** Taucht ein

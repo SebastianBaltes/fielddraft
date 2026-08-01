@@ -1,7 +1,9 @@
 //! `hole` — Onshape-style bore feature (#404).
 //!
-//! P1 scope: `style = simple`, `type = drilled`, end conditions `blind`
-//! (exact depth) and `through_all`. A hole targets **one or more locations**
+//! Scope so far: `style = simple`, types `drilled` / `clearance` / `tapped`
+//! (P2 — the ISO tables in [`hole_iso`](super::hole_iso) pick the bore Ø),
+//! end conditions `blind` (exact depth) and `through_all`.
+//! A hole targets **one or more locations**
 //! — sketch points (`qSketchPoint`), mate connectors (`qCreatedBy(<mc>)`) or
 //! B-Rep vertices/faces — and drills an identical cutter at each, along that
 //! anchor's axis (the sketch-plane normal / connector +Z / face normal). The
@@ -37,8 +39,11 @@ pub struct HoleDef {
     )]
     pub style: String,
 
-    /// Hole type (purpose). P1 ships `drilled` (nominal-diameter bore);
-    /// `clearance` / `tapped` are reserved for P2 (ISO fit / tap-drill Ø).
+    /// Hole type (purpose) — picks which ISO column drives the bore Ø:
+    /// `drilled` = nominal, `clearance` = ISO 273 for the chosen [`fit`],
+    /// `tapped` = the coarse-pitch tap drill (core hole).
+    ///
+    /// [`fit`]: HoleDef::fit
     #[param(
         name = "Type",
         default = ::std::string::String::from("drilled"),
@@ -46,14 +51,23 @@ pub struct HoleDef {
     )]
     pub hole_type: String,
 
+    /// Clearance-hole fit (ISO 273 fine / medium / coarse rows). Only read
+    /// for `hole_type = clearance`; ignored otherwise.
+    #[param(
+        name = "Fit",
+        default = ::std::string::String::from("normal"),
+        variants = "close=Close,normal=Normal,loose=Loose"
+    )]
+    pub fit: String,
+
     /// Metric standard size (drives the bore diameter). `custom` switches to
     /// the free `diameter` field below. Variants mirror
     /// [`crate::features::hole_iso::ISO_METRIC`] (guarded by a schema/table
-    /// drift test).
+    /// drift test — the derive needs a literal, so the list is spelled out).
     #[param(
         name = "Size",
         default = ::std::string::String::from("M6"),
-        variants = "custom=Custom (Ø),M2=M2,M2.5=M2.5,M3=M3,M4=M4,M5=M5,M6=M6,M8=M8,M10=M10,M12=M12"
+        variants = "custom=Custom (Ø),M1.6=M1.6,M2=M2,M2.5=M2.5,M3=M3,M3.5=M3.5,M4=M4,M5=M5,M6=M6,M8=M8,M10=M10,M12=M12,M14=M14,M16=M16,M18=M18,M20=M20,M22=M22,M24=M24"
     )]
     pub standard_size: String,
 
@@ -97,17 +111,29 @@ pub struct HoleDef {
     pub targets: ::fielddraft_protocol::MultiQuery,
 }
 
-/// The effective bore diameter (mm) for the chosen size/type. P1: drilled /
-/// simple use the nominal diameter (or the free `diameter` for `custom`).
+/// The effective bore diameter (mm) for the chosen size **and type** (#404 P2).
+///
+/// `standard_size = custom` (or an unknown key from a stale document — never
+/// silently drill a 0-Ø hole) always takes the free `diameter`. Otherwise the
+/// hole type picks the ISO column:
+///
+/// | type | column | M6 |
+/// |---|---|---|
+/// | `drilled` | nominal Ø (ISO 261) | 6.0 |
+/// | `clearance` | ISO 273 close/normal/loose per [`HoleDef::fit`] | 6.4 / 6.6 / 7.0 |
+/// | `tapped` | coarse-pitch tap drill = nominal − pitch | 5.0 |
+///
+/// Tapped is **cosmetic** (Onshape semantics): the volume removed is the core
+/// hole, the thread is annotation — no helix is ever swept.
 fn effective_diameter_mm(d: &HoleDef) -> f32 {
-    if d.standard_size == "custom" {
-        d.diameter.to_mm()
-    } else if let Some(t) = super::hole_iso::metric_by_key(&d.standard_size) {
-        t.nominal_mm
-    } else {
-        // Unknown size key → fall back to the free diameter so a stale
-        // document never silently drills a 0-Ø hole.
-        d.diameter.to_mm()
+    let Some(t) = super::hole_iso::metric_by_key(&d.standard_size) else {
+        return d.diameter.to_mm();
+    };
+    match d.hole_type.as_str() {
+        "clearance" => t.clearance_mm(&d.fit),
+        "tapped" => t.tap_drill_mm,
+        // `drilled` and anything a future variant adds: the nominal bore.
+        _ => t.nominal_mm,
     }
 }
 

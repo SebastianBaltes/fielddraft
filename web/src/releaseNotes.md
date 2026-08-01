@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.52.0
+- feat(kernel) #404: Ein Loch weiß jetzt, wozu es da ist. Neben der Größe (die Norm-Liste reicht von M1.6 bis M24 statt nur bis M12) wählt man jetzt die Art: „Drilled" bohrt auf Nenndurchmesser, „Clearance" auf das Durchgangsmaß nach ISO 273 — mit der Passung „Close", „Normal" oder „Loose" —, „Tapped" auf das Kernloch der Regelsteigung. Ein M6 wird damit auf Knopfdruck zu Ø6,0 · Ø6,4/6,6/7,0 · Ø5,0, ohne dass man eine Tabelle nachschlagen muss. Das Gewinde selbst bleibt wie in Onshape kosmetisch: entfernt wird das Kernloch, keine gefräste Wendel.
+
 ## 0.51.0
 - feat(kernel) #384: Flächen, die Offset und Shell selbst erzeugen — die Rundung an einer Boolean-Naht, das Füllstück an einer bündigen Kontaktfläche —, sagen jetzt, woher sie stammen. Ein Klick auf so ein Füllstück wählte bisher gar nichts aus: es trug eine Kennung, die zu keinem Feature im Dokument gehört. Jetzt landet die Auswahl auf dem Feature, dem der Körper gehört. Und eine Naht-Rundung nennt jetzt BEIDE Flächen, zwischen denen sie sitzt, statt nur einer: das Messwerkzeug greift auf einer solchen Rundung auf diese beiden Flächen durch, statt den Klick zu verschlucken.
 
