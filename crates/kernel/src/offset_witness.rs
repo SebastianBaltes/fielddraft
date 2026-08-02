@@ -135,9 +135,22 @@ fn f32p3(v: [f32; 3]) -> [Iv; 3] {
 /// | alles andere | **nicht bewiesen** ⇒ `false` (fail-closed) |
 ///
 /// Jede Vergleichsschranke wird nach aussen gerundet, und verlangt wird eine
-/// **strikte** Trennung um mindestens `margin > 0`: eine Berührung ist kein
-/// Beweis für „ausserhalb".
+/// **strikte** Trennung um mindestens `margin`: eine Berührung ist kein Beweis
+/// für „ausserhalb".
+///
+/// **`margin` muss endlich und `≥ 0` sein** (§8x-Korrektur, achtes Review).
+/// Eine negative Marge würde die Strenge aufheben und einen Randpunkt als
+/// „aussen" durchgehen lassen — und das ist ein real erreichbarer API-Pfad,
+/// kein blosser Mutationstest. Ungültige Margen liefern deshalb `false`:
+/// fail-closed, nicht „der Aufrufer wird schon wissen was er tut".
 pub fn box_outside_omega(node: &BoundedCsg, b: [Iv; 3], margin: f64) -> bool {
+    if !(margin.is_finite() && margin >= 0.0) {
+        return false;
+    }
+    box_outside_inner(node, b, margin)
+}
+
+fn box_outside_inner(node: &BoundedCsg, b: [Iv; 3], margin: f64) -> bool {
     let sep = |v: Option<Iv>| -> bool { matches!(v, Some(s) if s.lo > margin) };
     match node {
         BoundedCsg::Empty => true,
@@ -167,21 +180,21 @@ pub fn box_outside_omega(node: &BoundedCsg, b: [Iv; 3], margin: f64) -> bool {
             }
         }
         BoundedCsg::Union { left, right, .. } => {
-            box_outside_omega(left, b, margin) && box_outside_omega(right, b, margin)
+            box_outside_inner(left, b, margin) && box_outside_inner(right, b, margin)
         }
         BoundedCsg::Intersection { left, right, .. } => {
-            box_outside_omega(left, b, margin) || box_outside_omega(right, b, margin)
+            box_outside_inner(left, b, margin) || box_outside_inner(right, b, margin)
         }
         // Die rechte Seite kann nur Material WEGNEHMEN; wer links draussen ist,
         // ist auch im Ergebnis draussen.
-        BoundedCsg::Difference { left, .. } => box_outside_omega(left, b, margin),
+        BoundedCsg::Difference { left, .. } => box_outside_inner(left, b, margin),
         // `δ ≤ 0`: der Offset-Körper ist `{sdf ≤ δ} ⊆ {sdf ≤ 0}` = das Kind.
         // Für `δ > 0` ist er GRÖSSER, und die Schlussrichtung dreht sich um —
         // dann ist hier nichts bewiesen.
         BoundedCsg::Offset { inner, delta, .. } => {
-            *delta <= 0.0 && box_outside_omega(inner, b, margin)
+            *delta <= 0.0 && box_outside_inner(inner, b, margin)
         }
-        BoundedCsg::InnerWall { inner, .. } => box_outside_omega(inner, b, margin),
+        BoundedCsg::InnerWall { inner, .. } => box_outside_inner(inner, b, margin),
         _ => false,
     }
 }
@@ -258,50 +271,53 @@ pub fn box_point_dist_bounds(lo: [f64; 3], hi: [f64; 3], y: [f64; 3]) -> (f64, f
 // Die Zeugen-Konstruktion
 // ════════════════════════════════════════════════════════════════════════════
 
-/// **Das η-Budget, nach Quellen getrennt.**
+/// **Das geometrische η — ein geschützter Beweiswert.**
 ///
-/// Die Doktrin verlangt, dass `η` seine Bestandteile BENENNT statt sie in eine
-/// Fixture-Zahl zu falten. Vier Posten:
+/// `dist(q, ∁Ω) ≤ mm()` für JEDEN Punkt `q` der abgedeckten Naht. Der Wert
+/// entsteht ausschliesslich in [`cover_channel`] aus einer vollständigen,
+/// lückenlosen Abdeckung; er ist von aussen nicht konstruierbar.
+///
+/// **Warum die Felder privat sind** (§8x-Korrektur, achtes Review): die erste
+/// Fassung war ein `struct` mit öffentlichen Feldern und einer Methode
+/// `total_for_clamp()`, die `None` lieferte, solange die f32-Brücke unbelegt
+/// war. Die Doku behauptete daraufhin „kein Aufrufer bekommt eine Zahl, die er
+/// noch nicht verwenden darf" — technisch falsch: jeder konnte
+/// `dist_bridge: Some(0.0)` hinschreiben und die Klemme freischalten. Ein
+/// Beweiswert, den der Aufrufer selbst zusammensetzen kann, ist kein
+/// Beweiswert.
+///
+/// Deshalb: `GeometricEta` ist **opak**, und einen `ClampEta` gibt es hier gar
+/// nicht. Ihn zu bilden ist P5b vorbehalten — aus DIESEM Wert plus einer dort
+/// herzuleitenden f32-Brücke `de_real → de_f32`, und auf keinem anderen Weg.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EtaBudget {
-    /// **Zeugen-Versatz.** Der Abstand, um den die Abbildung `y(q)` von der
-    /// Naht weg zeigt: `|q − y(q)| = t`. Der dominierende, gemessene Posten.
-    pub offset: f64,
-    /// **Abdeckungs-Fehler.** Bei dieser Konstruktion **exakt null**, und das
-    /// ist eine Aussage, kein Glück: die Zeugen sind keine Punkte, sondern eine
-    /// ABBILDUNG `y(q) = q + t·d` über einem ganzen Naht-Stück. Jedes `q` des
-    /// Stücks hat damit seinen eigenen Zeugen in derselben nachgewiesenen
-    /// Aussen-Box. Eine Familie von Zeugen-PUNKTEN hätte hier
-    /// `≥ Stücklänge/2` stehen — daran wäre die Konstruktion gescheitert.
-    pub cover: f64,
-    /// **Koordinaten-Rundung.** Die f64-Rundung beim Aufbau der Stück-Box und
-    /// der Verschiebung. Wird durch die Aussen-Rundung der Intervalle
-    /// aufgefangen und ist deshalb bereits in `offset` enthalten; hier steht
-    /// sie separat, damit sie nicht vergessen wird.
-    pub coord: f64,
-    /// **Die f32-Brücke `de_real → de_f32`** — der Posten, den die η-Klemme
-    /// zusätzlich braucht, weil `channel_limit` mit dem f32-Wert von `de`
-    /// rechnet und nicht mit der reellen Distanz.
-    ///
-    /// **P5a belegt ihn NICHT.** `None` heisst: dieser Summand ist offen, und
-    /// jede Verwendung als Klemme muss ihn erst herleiten (P5b). Genau deshalb
-    /// gibt [`Self::total_for_clamp`] hier `None` zurück — die geometrische
-    /// Aussage steht trotzdem ([`Self::total_geometric`]).
-    pub dist_bridge: Option<f64>,
+pub struct GeometricEta {
+    offset: f64,
+    cover: f64,
+    coord: f64,
 }
 
-impl EtaBudget {
-    /// Das **geometrische** η: `dist(q, ∁Ω) ≤ η` für jeden Naht-Punkt `q`.
-    /// Vollständig — es braucht die f32-Brücke nicht.
-    pub fn total_geometric(&self) -> f64 {
+impl GeometricEta {
+    /// `η` in mm — die Zusage `dist(q, ∁Ω) ≤ η`.
+    pub fn mm(&self) -> f64 {
         next_up(next_up(self.offset + self.cover) + self.coord)
     }
-
-    /// Das η für die **Klemme** `δ − de − η`. `None`, solange die f32-Brücke
-    /// nicht hergeleitet ist. Fail-closed: kein Aufrufer bekommt hier eine
-    /// Zahl, die er noch nicht verwenden darf.
-    pub fn total_for_clamp(&self) -> Option<f64> {
-        Some(next_up(self.total_geometric() + self.dist_bridge?))
+    /// Der Zeugen-Versatz-Anteil (Berichterstattung).
+    pub fn offset_mm(&self) -> f64 {
+        self.offset
+    }
+    /// Der Abdeckungs-Anteil — bei dieser Konstruktion **exakt null**, und das
+    /// ist eine Aussage, kein Glück: die Zeugen sind keine Punkte, sondern eine
+    /// ABBILDUNG über einem ganzen Naht-Stück. Jedes `q` des Stücks hat seinen
+    /// eigenen Zeugen in derselben nachgewiesenen Aussen-Box. Eine Familie von
+    /// Zeugen-PUNKTEN hätte hier `≥ Stücklänge/2` stehen.
+    pub fn cover_mm(&self) -> f64 {
+        self.cover
+    }
+    /// Die f64-Rundung des Stück-Box-Aufbaus — von der Aussen-Rundung der
+    /// Intervalle aufgefangen und deshalb bereits in `offset` enthalten; hier
+    /// separat, damit sie nicht vergessen wird.
+    pub fn coord_mm(&self) -> f64 {
+        self.coord
     }
 }
 
@@ -311,9 +327,19 @@ pub struct CoveredPiece {
     pub arc: usize,
     pub t0: f64,
     pub t1: f64,
-    /// Die Richtung, in die `y(q) = q + t·d` zeigt (Einheitsvektor).
-    pub dir: [f64; 3],
-    /// `t` — der bewiesene Versatz.
+    /// **Der tatsächlich geprüfte Verschiebungsvektor**, komponentenweise in
+    /// f64. Die Abbildung ist `y(q) = q + shift` — buchstäblich mit DIESEN
+    /// Zahlen, denn genau aus ihnen wurde die Aussen-Box gebaut.
+    ///
+    /// §8x-Korrektur (achtes Review): vorher standen hier eine Richtung `d`
+    /// und ein Skalar `off = next_up(t·|d|)`, und der Konsument rekonstruierte
+    /// `q + off·d` — einen ANDEREN Punkt als den bewiesenen `q + t·d`. Über
+    /// einer nichtkonvexen Union folgt aus der Aussenlage bei `t·d` NICHT die
+    /// Aussenlage ein Stück weiter in derselben Richtung; es gab kein Lemma,
+    /// das die beiden verbindet. Jetzt sind Beweis, Auslieferung und Budget
+    /// **dieselben Daten**.
+    pub shift: [f64; 3],
+    /// Eine OBERE Schranke von `|shift|` — das, was ins η-Budget eingeht.
     pub offset: f64,
 }
 
@@ -327,7 +353,7 @@ pub struct WitnessCover {
     pub uncovered_len: f64,
     /// `None`, sobald auch nur ein Stück ohne Zeugen bleibt — eine Zusage über
     /// „die Naht" ist nur so viel wert wie ihr schlechtestes Stück.
-    pub eta: Option<EtaBudget>,
+    pub eta: Option<GeometricEta>,
     pub covered_pieces: Vec<CoveredPiece>,
 }
 
@@ -343,6 +369,40 @@ pub struct WitnessCfg {
     pub steps: usize,
     /// Verlangte strikte Trennung im Aussen-Beweis (mm).
     pub margin: f64,
+}
+
+impl WitnessCfg {
+    /// **Ist diese Konfiguration überhaupt verwendbar?** (§8x-Korrektur,
+    /// achtes Review.)
+    ///
+    /// Die erste Fassung prüfte gar nichts, und das war nicht bloss unsauber:
+    /// bei einem NEGATIVEN `min_offset` konnte die Suche einen echten Zeugen
+    /// finden, `|shift|` wäre positiv, aber ein negativ gerechneter Versatz
+    /// hätte `worst_offset.max(off)` bei `0` gelassen — `η = 0` trotz
+    /// positiven Abstands. Eine Zusage, die aus einer kaputten Eingabe
+    /// entsteht, ist schlimmer als keine.
+    pub fn valid(&self) -> bool {
+        self.pieces_per_arc > 0
+            && self.steps > 0
+            && self.min_offset.is_finite()
+            && self.max_offset.is_finite()
+            && self.margin.is_finite()
+            && self.min_offset > 0.0
+            && self.min_offset <= self.max_offset
+            && self.margin >= 0.0
+    }
+}
+
+/// Ein Bogen, den die Konstruktion überhaupt anfassen darf: gerades Segment,
+/// endliche Koeffizienten, nicht entartet.
+fn arc_usable(arc: &ChannelArc) -> bool {
+    arc.sweep < 0.0
+        && arc.r.is_finite()
+        && arc.r as f64 >= 1.0e-9
+        && arc.c.iter().all(|v| v.is_finite())
+        && arc.u.iter().all(|v| v.is_finite())
+        && arc.bc.iter().all(|v| v.is_finite())
+        && arc.br.is_finite()
 }
 
 impl Default for WitnessCfg {
@@ -434,13 +494,21 @@ pub fn cover_channel(omega: &BoundedCsg, ch: &OffsetChannel, cfg: WitnessCfg) ->
         eta: None,
         covered_pieces: Vec::new(),
     };
+    // Ungültige Konfiguration ⇒ vollständig ungedeckt, `eta = None`. Kein
+    // Rechnen auf kaputten Parametern.
+    if !cfg.valid() {
+        cover.pieces = ch.arcs.len().max(1);
+        cover.seam_len = ch.arcs.iter().map(|a| a.r as f64).filter(|v| v.is_finite()).sum();
+        cover.uncovered_len = cover.seam_len;
+        return cover;
+    }
     let mut worst_offset = 0.0f64;
     let mut all_ok = !ch.arcs.is_empty();
     for (ai, arc) in ch.arcs.iter().enumerate() {
-        let len = arc.r as f64;
+        let len = if arc.r.is_finite() { arc.r as f64 } else { 0.0 };
         cover.seam_len += len;
-        if !(arc.sweep < 0.0) {
-            // Gekrümmt: P4. Ehrlich als ungedeckt zählen.
+        if !arc_usable(arc) {
+            // Gekrümmt (P4) oder entartet. Ehrlich als ungedeckt zählen.
             cover.pieces += cfg.pieces_per_arc;
             cover.uncovered_len += len;
             all_ok = false;
@@ -457,16 +525,22 @@ pub fn cover_channel(omega: &BoundedCsg, ch: &OffsetChannel, cfg: WitnessCfg) ->
                 continue;
             };
             let dirs = directions(arc, 0.5 * (t0 + t1));
-            let mut found: Option<(f64, [f64; 3])> = None;
+            let mut found: Option<([f64; 3], f64)> = None;
             'ladder: for s in 0..cfg.steps {
                 let frac = s as f64 / (cfg.steps - 1).max(1) as f64;
-                let t = cfg.min_offset
-                    * (cfg.max_offset / cfg.min_offset).powf(frac);
+                let t = cfg.min_offset * (cfg.max_offset / cfg.min_offset).powf(frac);
                 for d in &dirs {
+                    // Der Verschiebungsvektor, EINMAL berechnet — und genau er
+                    // geht sowohl in die geprüfte Box als auch in die
+                    // Auslieferung und ins Budget.
+                    let shift = [t * d[0], t * d[1], t * d[2]];
+                    if !shift.iter().all(|v| v.is_finite()) {
+                        continue;
+                    }
                     let mut wb = [pt(0.0); 3];
                     let mut ok = true;
                     for k in 0..3 {
-                        match radd(pb[k], pt(t * d[k])) {
+                        match radd(pb[k], pt(shift[k])) {
                             Some(v) => wb[k] = v,
                             None => {
                                 ok = false;
@@ -475,25 +549,24 @@ pub fn cover_channel(omega: &BoundedCsg, ch: &OffsetChannel, cfg: WitnessCfg) ->
                         }
                     }
                     if ok && box_outside_omega(omega, wb, cfg.margin) {
-                        // Der tatsächliche Versatz ist `|t·d|`; `d` ist auf
-                        // Einheitslänge gebaut, aber die Normierung selbst
-                        // rundet — deshalb nach oben abschätzen.
-                        let nd = next_up(
-                            next_up(
-                                next_up(d[0] * d[0]) + next_up(d[1] * d[1]),
-                            ) + next_up(d[2] * d[2]),
-                        )
-                        .sqrt();
-                        found = Some((next_up(t * next_up(nd)), *d));
+                        // `|shift|` nach OBEN — und zwar aus demselben Vektor,
+                        // nicht aus `t` und einer nominellen Einheitslänge.
+                        let Some(nrm) = rnorm([pt(shift[0]), pt(shift[1]), pt(shift[2])]) else {
+                            continue;
+                        };
+                        if !nrm.hi.is_finite() {
+                            continue;
+                        }
+                        found = Some((shift, nrm.hi));
                         break 'ladder;
                     }
                 }
             }
             match found {
-                Some((off, dir)) => {
+                Some((shift, off)) => {
                     cover.covered += 1;
                     worst_offset = worst_offset.max(off);
-                    cover.covered_pieces.push(CoveredPiece { arc: ai, t0, t1, dir, offset: off });
+                    cover.covered_pieces.push(CoveredPiece { arc: ai, t0, t1, shift, offset: off });
                 }
                 None => {
                     cover.uncovered_len += plen;
@@ -502,13 +575,8 @@ pub fn cover_channel(omega: &BoundedCsg, ch: &OffsetChannel, cfg: WitnessCfg) ->
             }
         }
     }
-    if all_ok && cover.covered == cover.pieces && cover.pieces > 0 {
-        cover.eta = Some(EtaBudget {
-            offset: worst_offset,
-            cover: 0.0,
-            coord: 0.0,
-            dist_bridge: None,
-        });
+    if all_ok && cover.covered == cover.pieces && cover.pieces > 0 && worst_offset.is_finite() {
+        cover.eta = Some(GeometricEta { offset: worst_offset, cover: 0.0, coord: 0.0 });
     }
     cover
 }

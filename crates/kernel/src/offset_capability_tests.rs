@@ -10776,7 +10776,7 @@ fn probe_384_witness_cover() {
                 nch += 1;
                 match c.eta {
                     Some(e) => {
-                        let g = e.total_geometric();
+                        let g = e.mm();
                         worst = Some(worst.map_or(g, |w: f64| w.max(g)));
                     }
                     None => any_open = true,
@@ -10911,12 +10911,20 @@ fn witness_outside_membership_is_geometric_384() {
         !wit::box_outside_omega(&om, straddle, m),
         "eine den Rand überspannende Box wird als ganz aussen bewiesen"
     );
-    // Rückdreh: mit negativer Marge rutscht der Randpunkt durch.
-    assert!(
-        wit::box_outside_omega(&om, ivp([10.0, 0.0, 10.0]), -1.0),
-        "die Gegenprobe blieb still: ohne strikte Marge MUSS der Randpunkt durchrutschen — \
-         sonst belegt der Pin die Strenge nicht"
-    );
+    // Die Marge ist FAIL-CLOSED (§8x-Korrektur): eine negative oder nicht
+    // endliche Marge hebt die Strenge nicht auf, sie verweigert. Vorher liess
+    // sie einen Randpunkt durch — ein real erreichbarer API-Pfad, kein blosser
+    // Mutationstest.
+    for bad in [-1.0f64, -1e-18, f64::NAN, f64::INFINITY] {
+        assert!(
+            !wit::box_outside_omega(&om, ivp([10.0, 10.0, 0.0]), bad),
+            "Marge {bad} wird akzeptiert — die Konfiguration ist nicht fail-closed"
+        );
+    }
+    // Dass die STRENGE trägt, zeigt der Vergleich Randpunkt gegen einen Punkt
+    // ein Stück daneben: beide legal (Marge 0), nur einer bewiesen.
+    assert!(!wit::box_outside_omega(&om, ivp([10.0, 0.0, 10.0]), 0.0));
+    assert!(wit::box_outside_omega(&om, ivp([10.0, 1e-6, 10.0]), 0.0));
     assert!(outs >= 5 && ins >= 4, "nur {outs}/{ins} Fälle geprüft");
 }
 
@@ -10978,7 +10986,8 @@ fn witness_cover_is_a_map_not_a_sample_384() {
             let c = wit::cover_channel(om, ch, cfg);
             let Some(eta) = c.eta else { continue };
             chans += 1;
-            let g = eta.total_geometric();
+            let g = eta.mm();
+            assert_eq!(eta.cover_mm(), 0.0, "der Abdeckungs-Anteil ist nicht null");
             // Die Kachelung je Bogen ist lückenlos.
             for ai in 0..ch.arcs.len() {
                 let mut ts: Vec<(f64, f64)> = c
@@ -11009,14 +11018,24 @@ fn witness_cover_is_a_map_not_a_sample_384() {
                         .iter()
                         .find(|p| p.arc == ai && s >= p.t0 && s <= p.t1)
                         .unwrap_or_else(|| panic!("Naht-Punkt s={s} ohne Stück"));
+                    // **Dieselben Daten wie im Beweis**: `y(q) = q + shift`.
                     let y = [
-                        q[0] + piece.offset * piece.dir[0],
-                        q[1] + piece.offset * piece.dir[1],
-                        q[2] + piece.offset * piece.dir[2],
+                        q[0] + piece.shift[0],
+                        q[1] + piece.shift[1],
+                        q[2] + piece.shift[2],
                     ];
+                    // **Unabhängiges Aussen-Orakel** (§8x-Korrektur): NICHT
+                    // wieder `box_outside_omega` — sonst prüfte der Pin
+                    // dieselbe Logik, die schon die Stück-Box akzeptiert hat.
+                    // `Ω` besteht hier aus konvexen Primitiven mit EXAKTER SDF,
+                    // deshalb ist `sdf(y) > 0` ⟺ `y ∉ Ω`. (Das ist eine
+                    // Test-Annahme über diese Fixture, kein allgemeiner Satz —
+                    // der Beweis selbst benutzt sie nirgends.)
+                    let orac = om.sdf([y[0] as f32, y[1] as f32, y[2] as f32], EvalMode::Visual);
                     assert!(
-                        wit::box_outside_omega(om, ivp(y), 0.0),
-                        "der Zeuge {y:?} zu q={q:?} ist nicht einzeln als aussen belegt"
+                        orac > 0.0,
+                        "der Zeuge {y:?} zu q={q:?} liegt laut unabhängigem Orakel IN Ω \
+                         (sdf = {orac})"
                     );
                     let d = ((y[0] - q[0]).powi(2) + (y[1] - q[1]).powi(2) + (y[2] - q[2]).powi(2))
                         .sqrt();
@@ -11024,7 +11043,7 @@ fn witness_cover_is_a_map_not_a_sample_384() {
                     checked += 1;
                 }
             }
-            // Rückdreh: ein gestrichenes Stück lässt Naht-Punkte ohne Zeugen.
+            // Rückdreh 1: ein gestrichenes Stück lässt Naht-Punkte ohne Zeugen.
             let mut gapped = c.covered_pieces.clone();
             let removed = gapped.remove(gapped.len() / 2);
             let mid = 0.5 * (removed.t0 + removed.t1);
@@ -11032,6 +11051,34 @@ fn witness_cover_is_a_map_not_a_sample_384() {
                 !gapped.iter().any(|p| p.arc == removed.arc && mid >= p.t0 && mid <= p.t1),
                 "die Gegenprobe blieb still: nach dem Streichen eines Stücks MUSS der Punkt \
                  s={mid} unbedeckt sein — sonst prüft die Kachelung nichts"
+            );
+            // Rückdreh 2 (§8x-Korrektur): **den gespeicherten `shift` mutieren.**
+            // Ein anderer Verschiebungsvektor ist eine andere Behauptung — wer
+            // den Beweis für `t·d` führt und `off·d` ausliefert, hat nichts
+            // bewiesen. Der um den Faktor −3 gedrehte Zeuge muss in `Ω` landen.
+            let mut broke = 0usize;
+            for piece in &c.covered_pieces {
+                let arc = &ch.arcs[piece.arc];
+                let sm = 0.5 * (piece.t0 + piece.t1);
+                let q = [
+                    arc.c[0] as f64 + arc.u[0] as f64 * (sm * arc.r as f64),
+                    arc.c[1] as f64 + arc.u[1] as f64 * (sm * arc.r as f64),
+                    arc.c[2] as f64 + arc.u[2] as f64 * (sm * arc.r as f64),
+                ];
+                let y = [
+                    q[0] - 3.0 * piece.shift[0],
+                    q[1] - 3.0 * piece.shift[1],
+                    q[2] - 3.0 * piece.shift[2],
+                ];
+                if om.sdf([y[0] as f32, y[1] as f32, y[2] as f32], EvalMode::Visual) <= 0.0 {
+                    broke += 1;
+                }
+            }
+            assert!(
+                broke > 0,
+                "die Gegenprobe blieb still: ein mutierter Verschiebungsvektor MUSS bei \
+                 mindestens einem Stück in Ω landen — sonst belegt der Pin nicht, dass \
+                 Beweis und Auslieferung DIESELBEN Daten sind"
             );
         }
     }
@@ -11084,4 +11131,172 @@ fn witness_box_ball_lemma_384() {
         cases += 1;
     }
     assert_eq!(cases, 5);
+}
+
+/// **§8x-Pin 5: die öffentliche Konfiguration ist fail-closed.**
+///
+/// Blocker 2 des achten Reviews. `WitnessCfg` war ungeprüft — und das war
+/// nicht bloss unsauber: bei einem NEGATIVEN `min_offset` konnte die Suche
+/// einen echten Zeugen finden, während `worst_offset.max(off)` bei `0` blieb.
+/// Ergebnis wäre `η = 0` **trotz positiven Abstands** gewesen: eine Zusage aus
+/// einer kaputten Eingabe, und die ist schlimmer als keine.
+#[test]
+fn witness_config_is_fail_closed_384() {
+    let delta = 2.0f32;
+    let (field, _) = compile_for(notch_union_node(90.0, delta as f64));
+    let (om, chans) = {
+        let v = omega_and_channels(&field);
+        let (o, c) = v.into_iter().next().expect("kein Ω");
+        (o, c.clone())
+    };
+    let ch = chans.first().expect("kein Kanal");
+    let good = wit::WitnessCfg::default();
+    assert!(good.valid());
+    assert!(
+        wit::cover_channel(om, ch, good).eta.is_some(),
+        "die gültige Konfiguration liefert kein η — dann prüft der Pin nur Ablehnungen"
+    );
+    let bad: Vec<(&str, wit::WitnessCfg)> = vec![
+        ("min_offset negativ", wit::WitnessCfg { min_offset: -1e-4, ..good }),
+        ("min_offset null", wit::WitnessCfg { min_offset: 0.0, ..good }),
+        ("min > max", wit::WitnessCfg { min_offset: 9.0, max_offset: 1.0, ..good }),
+        ("max_offset NaN", wit::WitnessCfg { max_offset: f64::NAN, ..good }),
+        ("min_offset inf", wit::WitnessCfg { min_offset: f64::INFINITY, ..good }),
+        ("margin negativ", wit::WitnessCfg { margin: -1.0, ..good }),
+        ("margin NaN", wit::WitnessCfg { margin: f64::NAN, ..good }),
+        ("pieces null", wit::WitnessCfg { pieces_per_arc: 0, ..good }),
+        ("steps null", wit::WitnessCfg { steps: 0, ..good }),
+    ];
+    for (tag, cfg) in bad {
+        assert!(!cfg.valid(), "{tag}: `valid()` sagt ja");
+        let c = wit::cover_channel(om, ch, cfg);
+        assert!(c.eta.is_none(), "{tag}: liefert trotzdem ein η");
+        assert_eq!(c.covered, 0, "{tag}: meldet {} gedeckte Stücke", c.covered);
+        assert!(c.uncovered_len > 0.0, "{tag}: meldet nichts als ungedeckt");
+    }
+    // Entartete Bögen werden ebenfalls verweigert, nicht „gedeckt".
+    let mut degen = ch.clone();
+    degen.arcs[0].r = 0.0;
+    assert!(wit::cover_channel(om, &degen, good).eta.is_none(), "entarteter Bogen liefert η");
+    let mut nan_arc = ch.clone();
+    nan_arc.arcs[0].u[0] = f32::NAN;
+    assert!(wit::cover_channel(om, &nan_arc, good).eta.is_none(), "NaN-Bogen liefert η");
+}
+
+/// **§8x-Pin 6: die Aussen-Regeln über Primitive und CSG-Verschachtelung.**
+///
+/// Ergänzung aus dem achten Review: die erste Fassung prüfte nur eine Union
+/// achsenparalleler Boxen. Hier kommen die Fälle dazu, in denen die
+/// Richtungslogik wirklich kippen könnte — gedrehte und stark skalierte Box,
+/// Sphere, Zylinder radial UND axial, `Intersection`, `Difference` im
+/// `Difference`, und beide Offset-Vorzeichen.
+///
+/// Gegenprobe je Fall: ein Punkt INNEN darf nie als aussen durchgehen. Und der
+/// `Offset(δ > 0)`-Fall MUSS verweigern, obwohl das Kind aussen ist — dort
+/// dreht sich die Schlussrichtung um.
+#[test]
+fn witness_outside_rules_cover_primitives_and_nesting_384() {
+    let m = 1.0e-9;
+    let t_rot = |deg: f64, sc: f32| Transform {
+        translate: [3.0, -1.0, 2.0],
+        rotation: {
+            let h = 0.5 * deg.to_radians();
+            [0.0, 0.0, h.sin() as f32, h.cos() as f32]
+        },
+        scale: [sc; 3],
+    };
+    let leaf = |prim: Primitive, tr: Transform| BoundedCsg::Leaf {
+        id: id(1),
+        primitive: prim,
+        world_transform: tr,
+        aabb: crate::csg::Aabb::EMPTY,
+    };
+    let ident = Transform { translate: [0.0; 3], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] };
+    // (name, Knoten, aussen-Punkte, innen-Punkte)
+    let cases: Vec<(&str, BoundedCsg, Vec<[f64; 3]>, Vec<[f64; 3]>)> = vec![
+        (
+            "gedrehte + skalierte Box",
+            leaf(Primitive::Box { center: [0.0; 3], half_extents: [2.0, 1.0, 3.0] }, t_rot(37.0, 2.5)),
+            vec![[3.0, -1.0, 2.0 + 9.0], [3.0 + 12.0, -1.0, 2.0], [3.0, -1.0 - 8.0, 2.0]],
+            vec![[3.0, -1.0, 2.0], [3.0, -1.0, 2.0 + 5.0]],
+        ),
+        (
+            "Sphere",
+            leaf(Primitive::Sphere { center: [1.0, 2.0, 3.0], radius: 4.0 }, ident),
+            vec![[1.0, 2.0, 8.0], [-4.5, 2.0, 3.0]],
+            vec![[1.0, 2.0, 3.0], [1.0, 2.0, 6.5]],
+        ),
+        (
+            "Zylinder radial und axial",
+            leaf(
+                Primitive::Cylinder { center: [0.0; 3], radius: 2.0, half_height: 5.0 },
+                ident,
+            ),
+            vec![[3.0, 0.0, 0.0], [0.0, 6.0, 0.0], [0.0, -6.0, 0.0], [0.0, 0.0, 2.5]],
+            vec![[0.0, 0.0, 0.0], [1.5, 4.0, 0.0], [0.0, -4.9, 1.9]],
+        ),
+    ];
+    let mut checked = 0usize;
+    for (name, node, outs, ins) in cases {
+        for y in &outs {
+            assert!(wit::box_outside_omega(&node, ivp(*y), m), "{name}: {y:?} nicht aussen belegt");
+            checked += 1;
+        }
+        for y in &ins {
+            assert!(
+                !wit::box_outside_omega(&node, ivp(*y), m),
+                "{name}: {y:?} liegt INNEN, wird aber als aussen belegt"
+            );
+            checked += 1;
+        }
+    }
+    // Verschachtelung.
+    let b = |c: [f32; 3], h: [f32; 3]| BoundedCsg::from_csg(&box_at(1, c, h));
+    let big = b([0.0; 3], [10.0; 3]);
+    let small = b([0.0; 3], [3.0; 3]);
+    let inter = BoundedCsg::Intersection {
+        left: Box::new(big.clone()),
+        right: Box::new(small.clone()),
+        aabb: crate::csg::Aabb::EMPTY,
+    };
+    // Aussen vom KLEINEN genügt für den Schnitt.
+    assert!(wit::box_outside_omega(&inter, ivp([5.0, 0.0, 0.0]), m));
+    assert!(!wit::box_outside_omega(&inter, ivp([1.0, 1.0, 1.0]), m));
+    checked += 2;
+    // Difference im Difference: links aussen genügt, egal was rechts steht.
+    let dd = BoundedCsg::Difference {
+        left: Box::new(BoundedCsg::Difference {
+            left: Box::new(small.clone()),
+            right: Box::new(b([2.0, 0.0, 0.0], [1.0; 3])),
+            aabb: crate::csg::Aabb::EMPTY,
+        }),
+        right: Box::new(b([-2.0, 0.0, 0.0], [1.0; 3])),
+        aabb: crate::csg::Aabb::EMPTY,
+    };
+    assert!(wit::box_outside_omega(&dd, ivp([9.0, 0.0, 0.0]), m));
+    assert!(!wit::box_outside_omega(&dd, ivp([0.0, 0.0, 0.0]), m));
+    checked += 2;
+    // Offset: δ ≤ 0 erbt die Aussenlage, δ > 0 MUSS verweigern.
+    let neg = BoundedCsg::Offset {
+        inner: Box::new(small.clone()),
+        delta: -1.0,
+        aabb: crate::csg::Aabb::EMPTY,
+    };
+    let pos = BoundedCsg::Offset {
+        inner: Box::new(small),
+        delta: 1.0,
+        aabb: crate::csg::Aabb::EMPTY,
+    };
+    let just_out = ivp([3.5, 0.0, 0.0]);
+    assert!(
+        wit::box_outside_omega(&neg, just_out, m),
+        "Offset(δ<0) erbt die Aussenlage des Kindes nicht"
+    );
+    assert!(
+        !wit::box_outside_omega(&pos, just_out, m),
+        "Offset(δ>0) behauptet Aussenlage, obwohl der Körper GRÖSSER ist als sein Kind — \
+         dort dreht sich die Schlussrichtung um"
+    );
+    checked += 2;
+    assert!(checked >= 20, "nur {checked} Fälle geprüft");
 }

@@ -5804,14 +5804,13 @@ Liegt `y ∈ ∁Ω`, so ist `dist(x, ∁Ω) ≤ |x − y|` für jedes `x` (das I
 
 ### Beweispflicht 3 — η, nach Quellen getrennt
 
-`EtaBudget` benennt vier Posten statt einer Fixture-Zahl:
+`GeometricEta` benennt die Posten statt einer Fixture-Zahl:
 
 | Posten | Wert | Begründung |
 |---|---|---|
-| `offset` | gemessen, 10⁻⁴ … 2.3·10⁻³ mm | der Versatz `t` der Abbildung `y(q) = q + t·d` |
+| `offset` | gemessen, 10⁻⁴ … 2.3·10⁻³ mm | eine OBERE Schranke von `\|shift\|`, dem tatsächlich geprüften Verschiebungsvektor |
 | `cover` | **exakt 0** | s. u. — eine Aussage, kein Glück |
 | `coord` | 0 (in `offset` enthalten) | die f64-Rundung der Stück-Box wird von der Aussen-Rundung aufgefangen |
-| `dist_bridge` | **`None` — unbelegt** | die f32-Brücke `de_real → de_f32`; P5b |
 
 **Warum `cover` exakt null ist.** Die Zeugen sind **keine Punkte**, sondern eine
 ABBILDUNG über einem ganzen Naht-Stück: bewiesen wird, dass die **ganze**
@@ -5823,10 +5822,14 @@ Zeugen-PUNKTEN hätte hier `≥ Stücklänge/2` stehen müssen; bei 900 mm Naht 
 wertlos gewesen. Der Unterschied zwischen „Cover aus Bällen" und „Abbildung"
 ist hier der ganze Gewinn.
 
-**`total_for_clamp()` gibt `None` zurück**, solange `dist_bridge` unbelegt ist —
-fail-closed: kein Aufrufer bekommt eine Zahl, die er noch nicht verwenden darf.
-`total_geometric()` steht dagegen vollständig; die geometrische Aussage braucht
-die f32-Brücke nicht.
+**Einen Klemm-Wert gibt es hier gar nicht.** `GeometricEta` ist **opak**; die
+f32-Brücke `de_real → de_f32` ist P5b, und dort entsteht auch erst der Typ, der
+sie mit diesem `η` verbindet. Die erste §8x-Fassung hatte statt dessen ein
+`struct` mit öffentlichen Feldern und einer Methode `total_for_clamp()`, die
+`None` lieferte, solange `dist_bridge` unbelegt war — und die Doku behauptete,
+„kein Aufrufer bekommt eine Zahl, die er noch nicht verwenden darf". Technisch
+falsch: jeder konnte `dist_bridge: Some(0.0)` hinschreiben. **Ein Beweiswert,
+den der Aufrufer selbst zusammensetzen kann, ist kein Beweiswert.**
 
 ### Beweispflicht 4 — das Box-Ball-Lemma (Baustein für P6a)
 
@@ -5871,11 +5874,16 @@ Annahmen**: die Gültigkeit hängt ausschliesslich am geometrischen Beweis.
 | notch α = 90° | 1 | 24 | **24 (100 %)** | 98.4 | 0 | **0.00010** | — |
 | notch α = 60° | 2 | 48 | **48 (100 %)** | 196.8 | 0 | **0.00019** | — |
 
-**Zehn von dreizehn Fixturen sind zu 100 % gedeckt, mit `η_geo ≤ 2.3 µm`** über
-zusammen rund 6.7 Metern Naht. Für diese Fixturen ist die §8j-Annahme damit
-kein Postulat mehr, sondern ein Satz mit beziffertem Fehler.
+**Elf von dreizehn Fixturen sind zu 100 % gedeckt, mit `η_geo ≤ 2.3 µm`** über
+zusammen **7.589 m** Naht (904.0 + 901.6 + 897.3 + 893.1 + 890.0 + 880.2 +
+853.2 + 805.7 + 268.6 + 98.4 + 196.8 mm). Für diese Fixturen ist die
+§8j-Annahme damit kein Postulat mehr, sondern ein Satz mit beziffertem Fehler.
 
-Die drei offenen Fälle sind **strukturell und benannt**, nicht diffus: die
+*(Die erste §8x-Fassung schrieb „zehn von dreizehn" und „6.7 Meter" — beides
+schlicht falsch addiert; korrigiert nach dem achten Review. Die Einzelwerte und
+η-Maxima stimmten.)*
+
+Die **zwei** offenen Fälle sind **strukturell und benannt**, nicht diffus: die
 Stufen-Nabe hat gekrümmte Nähte (P4), und der Rippen-Kamm 4×1.5/0.8 hat
 `Extrude`-Blätter in `Ω`, für die es keinen trennenden Halbraum-Test gibt.
 Beide Gründe stehen schon in §8u/§8v auf der Liste.
@@ -5918,11 +5926,81 @@ in der §8r/§8s die Unter-Claims fanden; `η` misst sie jetzt.
   `cargo test --workspace` **1600** (Baseline 1596).
 * **`OFFSET_FUZZ_ITERS=200 … offset_fuzz --release`**: 5/5.
 
+### §8x-Korrektur: das achte Mathe-Review (v0.60.1)
+
+Bestätigt hat es die Architektur ausdrücklich: die Abbildungs-Entscheidung ist
+„mathematisch stark und grundsätzlich sound" (das AABB-Prädikat ist eine
+STÄRKERE hinreichende Bedingung — konservativ und erwünscht), die f32-Trennung
+sauber begründet (die quantisierten Parameter heben verlustfrei nach f64; das
+sind die exakten Konstanten der kodierten Geometrie, kein fehlender
+Rundungsschritt), die CSG-Aussenregeln richtungsrichtig inklusive
+`Offset(δ>0)`-Verweigerung, und das Box-Ball-Lemma ohne Richtungsfehler.
+**Zwei Blocker blieben.**
+
+#### B1 — bewiesene und ausgelieferte Zeugenabbildung waren nicht dieselben Daten
+
+Die Aussen-Box wurde aus den gerundeten Komponenten `t·d[k]` gebaut, gespeichert
+wurde aber ein Skalar `off = next_up(t·|d|)`, und der Konsument rekonstruierte
+`q + off·d` — einen **anderen Punkt** als den bewiesenen `q + t·d`. Über einer
+nichtkonvexen Union folgt aus der Aussenlage bei `t·d` **nicht** die Aussenlage
+minimal weiter in derselben Richtung; die Marge rettet das ohne
+Konditionslemma nicht. Zusätzlich war undefiniert, ob die Abbildung den exakten
+reellen Vektor oder den komponentenweise gerundeten meint.
+
+Gefixt so, dass die Frage gar nicht mehr entsteht: `CoveredPiece` speichert den
+**tatsächlich geprüften Verschiebungsvektor** `shift: [f64; 3]`, die Aussen-Box
+wird exakt aus ihm gebaut, die Abbildung ist `y(q) = q + shift` (buchstäblich
+diese Zahlen), und ins Budget geht `|shift|` — nach oben begrenzt aus demselben
+Vektor, nicht aus `t` und einer nominellen Einheitslänge. **Beweis,
+Auslieferung und Budget sind jetzt dieselben Daten.**
+
+*Ein Falsifikator, der NICHT baubar war, und warum:* das Review schlug eine
+Familie „zweites, sehr nahes Union-Member, in das `q + off·d` fällt, aber
+`q + t·d` nicht" vor. Der Unterschied zwischen beiden Punkten stammt allein aus
+der Normierungs-Rundung von `d` und liegt relativ bei `≈ 10⁻¹⁶`, bei `t = 10⁻⁴`
+also absolut bei `≈ 10⁻²⁰ mm`. Ein Member-Rand in diesem Fenster ist mit
+**f32-quantisierten** Box-Koordinaten nicht darstellbar — die Familie ist an
+dieser Geometrie nicht konstruierbar. Der Befund bleibt trotzdem ein echter
+Beweis-Fehler (es gab kein Lemma, das die beiden Punkte verbindet), und die
+Gegenprobe greift ihn dort an, wo sie es kann: sie **mutiert den gespeicherten
+`shift`** (Faktor −3) und weist nach, dass der so verschobene Zeuge in `Ω`
+landet. Ein anderer Verschiebungsvektor ist eine andere Behauptung.
+
+#### B2 — die öffentliche Konfiguration war nicht fail-closed
+
+`box_outside_omega` akzeptierte **jede** Marge; eine negative liess einen
+Randpunkt als „aussen" durchgehen, und das ist ein real erreichbarer API-Pfad,
+kein blosser Mutationstest. Schwerer noch: `cover_channel` prüfte `WitnessCfg`
+gar nicht — bei negativem `min_offset` konnte die Suche einen echten Zeugen
+finden, während `worst_offset.max(off)` bei `0` blieb: **`η = 0` trotz
+positiven Abstands.**
+
+Gefixt: `box_outside_omega` verweigert nicht-endliche und negative Margen;
+`WitnessCfg::valid()` prüft Endlichkeit, `pieces_per_arc > 0`, `steps > 0`,
+`0 < min_offset ≤ max_offset`, `margin ≥ 0`; `arc_usable` verlangt ein gerades
+Segment mit endlichen Koeffizienten und `r ≥ 10⁻⁹`. Ungültig ⇒ vollständig
+ungedeckt, `eta = None`.
+
+#### Drei Sollte-Punkte
+
+* **`GeometricEta` ist jetzt opak** (s. o.) — der Klemm-Typ entsteht in P5b.
+* **Die Falsifikatoren sind entzirkelt und breiter.** Der Map-Pin prüfte die
+  Zeugen mit demselben `box_outside_omega`, das schon die Stück-Box akzeptiert
+  hatte — kein unabhängiges Orakel. Er benutzt jetzt die exakte Primitiv-SDF
+  von `Ω` als **unabhängiges** Aussen-Orakel (zulässig, weil diese Fixture aus
+  konvexen Primitiven mit exakter SDF besteht — eine Test-Annahme, die im
+  Beweis nirgends vorkommt). Dazu ein neuer Pin über gedrehte + stark
+  skalierte Box, Sphere, Zylinder radial UND axial, `Intersection`,
+  `Difference`-im-`Difference` und beide Offset-Vorzeichen.
+* **Die Messungs-Zusammenfassung war falsch addiert** — 11 von 13 und 7.589 m
+  statt 10 von 13 und 6.7 m. Korrigiert oben und in der Release-Note.
+
 ### Was OFFEN bleibt
 
 * **P5b — die η-Klemme.** `δ − de − η` im Feld, plus die f32-Brücke
-  `de_real → de_f32` (`EtaBudget::dist_bridge`). Erst damit wird `η` wirksam;
-  P5a liefert nur die Zahl und den Beweis dahinter.
+  `de_real → de_f32`. Erst damit wird `η` wirksam; P5a liefert nur den
+  geometrischen Wert und den Beweis dahinter. Der Klemm-Typ entsteht dort und
+  nirgends sonst.
 * **P4 — Kreisbögen.** Der algebraische Rewrite ohne libm-Trig (A0), dann A1.
   Er schaltet die Stufen-Nabe frei.
 * **P6a — das gekoppelte Zell-Cover** gegen die 4285 Vorzeichenwechsel-Zellen
