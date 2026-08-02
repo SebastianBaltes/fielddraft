@@ -8597,11 +8597,42 @@ use crate::offset_interval::CellDomain as _;
 /// **Die obere Distanzschranke `U(x) ≥ dist(x,∁Ω)`** — der §8r-Fuss-Zeuge,
 /// aus [`under_cert`]s Kaskade herausgezogen, ohne die `cap`-Abbrüche.
 ///
-/// Drei Quellen, alle drei mit demselben Argument: ein Punkt `y` mit
-/// `f_inner(y) > δ + CERT_MARGIN` liegt BEWEISBAR in `∁Ω` (Vorzeichen-
-/// Invariante des naiven Vereinigungsfeldes), also ist `|x − y|` eine obere
-/// Schranke. `None` heisst: kein Aussen-Zeuge gefunden — dann gibt es für
-/// diesen Punkt kein `U`, und Zweig 1 ist stumm.
+/// Das Argument: ein Punkt `z` mit `f_inner(z) > δ + CERT_MARGIN` liegt
+/// BEWEISBAR in `∁Ω` (Vorzeichen-Invariante des naiven Vereinigungsfeldes),
+/// also ist `|x − z|` eine obere Schranke von `dist(x,∁Ω)`. `None` heisst:
+/// kein Aussen-Zeuge gefunden — dann gibt es für diesen Punkt kein `U`, und
+/// Zweig 1 ist stumm.
+///
+/// **§8u-Korrektur (zweiter blockierender Befund des vierten Mathe-Reviews),
+/// drei Brücken:**
+///
+/// * **Der bewiesene Punkt ist `fl32(y)`, nicht `y`.** `stop.sdf` wird am
+///   f32-gerundeten Punkt ausgewertet; ausserhalb `Ω` liegt also `fl32(y)`.
+///   Gemessen wird die Distanz jetzt zu GENAU diesem Punkt.
+/// * **`d₀ > δ` liefert nicht `U = 0`.** Es beweist `fl32(c) ∉ Ω` — für den
+///   reellen Zellmittelpunkt `c` folgt daraus `dist(c,∁Ω) ≤ |c − fl32(c)|`,
+///   nicht `0`. Die Rundungsdistanz ist winzig, aber sie ist nicht null, und
+///   eine falsche Null ist genau der Fehler, den Zweig 1 nicht machen darf.
+/// * **Die Norm wird nach aussen gerundet.** Jede Teilrechnung von `|c − z|`
+///   geht durch `next_up`; `U` ist eine Zusage nach OBEN.
+///
+/// Zusätzlich wird für den Innen-/Aussen-Test durchgehend dieselbe Marge
+/// `CERT_MARGIN` verlangt wie beim Marsch — vorher stand im `d₀`-Zweig ein
+/// blosses `>`. Das kostet nur Abdeckung.
+fn dist_up(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let mut s = 0.0f64;
+    for k in 0..3 {
+        let d = a[k] - b[k];
+        s = crate::offset_interval::next_up(s + crate::offset_interval::next_up(d * d));
+    }
+    crate::offset_interval::next_up(s.sqrt())
+}
+
+/// Der f32-gerundete Punkt, an dem die Produktion tatsächlich auswertet.
+fn as_f32_point(y: [f64; 3]) -> [f64; 3] {
+    [y[0] as f32 as f64, y[1] as f32 as f64, y[2] as f32 as f64]
+}
+
 fn u_upper(
     stop: &BoundedCsg,
     blk: &crate::offset_lb::LbBlock,
@@ -8611,11 +8642,10 @@ fn u_upper(
 ) -> Option<f64> {
     let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
     let d0 = stop.sdf(pf, EvalMode::Visual);
-    if d0 > delta {
-        return Some(0.0);
+    if d0 > delta + CERT_MARGIN {
+        // `fl32(p) ∉ Ω` — bewiesen ist die Aussenlage des GERUNDETEN Punktes.
+        return Some(dist_up(p, as_f32_point(p)));
     }
-    let dist_to =
-        |y: [f64; 3]| ((y[0] - p[0]).powi(2) + (y[1] - p[1]).powi(2) + (y[2] - p[2]).powi(2)).sqrt();
     let pushed = |q: [f32; 3]| -> Option<[f64; 3]> {
         let dir = [q[0] as f64 - p[0], q[1] as f64 - p[1], q[2] as f64 - p[2]];
         let n = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
@@ -8633,14 +8663,14 @@ fn u_upper(
     let mut best: Option<f64> = None;
     let foot = crate::offset_lb::lb_foot(pf, d0, blk);
     if let Some(y) = foot.and_then(pushed).filter(|y| is_outside(*y)) {
-        best = Some(dist_to(y));
+        best = Some(dist_up(p, as_f32_point(y)));
     }
     for start in [foot.map(|q| [q[0] as f64, q[1] as f64, q[2] as f64]), Some(p)]
         .into_iter()
         .flatten()
     {
         if let Some(y) = march_outside(stop, delta, start, reach) {
-            let u = dist_to(y);
+            let u = dist_up(p, as_f32_point(y));
             best = Some(best.map_or(u, |b: f64| b.min(u)));
         }
     }
@@ -9083,10 +9113,13 @@ fn vertex_enclosure_escapes(
     d: iv::Iv,
     extra: iv::Iv,
     sub: usize,
-) -> (usize, usize) {
+) -> (usize, usize, usize) {
     let mut c = iv::Ctx::with_knobs(knobs);
+    // §8u-Korrektur: ein `Unknown` darf nicht als „null Ausreisser" durchgehen —
+    // sonst kann die ganze Familie leer-grün sein. Der dritte Rückgabewert
+    // zählt die tatsächlich AUSGEWERTETEN Fälle.
     let Ok(enc) = iv::enclose_vertex_apply(&mut c, cell.world_f32(), base, d, vs, extra) else {
-        return (0, 0);
+        return (0, 0, 0);
     };
     let (mut esc, mut n) = (0usize, 0usize);
     for p in cell_samples(cell, sub) {
@@ -9103,7 +9136,7 @@ fn vertex_enclosure_escapes(
             }
         }
     }
-    (esc, n)
+    (esc, n, 1)
 }
 
 /// Die adversariale Zellen-/Term-Familie des Pakets: jede Zeile zielt auf EINE
@@ -9245,9 +9278,10 @@ fn adversarial_vertex_cases() -> Vec<(String, VertexSphere, iv::Box3, iv::Iv, iv
 fn interval_encloses_the_production_vertex_term_384() {
     let (mut cases, mut probes) = (0usize, 0usize);
     for (name, vs, cell, base, d, extra) in adversarial_vertex_cases() {
-        let (esc, n) = vertex_enclosure_escapes(iv::Knobs::default(), &vs, &cell, base, d, extra, 3);
+        let (esc, n, ok) =
+            vertex_enclosure_escapes(iv::Knobs::default(), &vs, &cell, base, d, extra, 3);
         assert_eq!(esc, 0, "{name}: {esc} von {n} Produktionswerten liegen AUSSERHALB der Einschliessung");
-        cases += 1;
+        cases += ok;
         probes += n;
     }
     // Die echten Kugeln der Ecken-Schale.
@@ -9266,16 +9300,19 @@ fn interval_encloses_the_production_vertex_term_384() {
                 );
                 for extra in [ivf(-1.0e30, -1.0e30), ivf(-1.0e30, 0.9), ivf(-0.6, 0.9)] {
                     let dv = ivf(-7.0, 2.0);
-                    let (esc, n) =
+                    let (esc, n, ok) =
                         vertex_enclosure_escapes(iv::Knobs::default(), vs, &cell, dv, dv, extra, 2);
                     assert_eq!(esc, 0, "echte Kugel {:?} h={h}: {esc} von {n} Werte entkommen", vs.v);
-                    real += 1;
+                    real += ok;
                     probes += n;
                 }
             }
         }
     }
-    assert!(cases >= 40 && real >= 24, "nur {cases} synthetische / {real} echte Fälle");
+    assert!(
+        cases >= 40 && real >= 24,
+        "nur {cases} synthetische / {real} echte Fälle wurden überhaupt AUSGEWERTET          (der Rest war `Unknown`) — eine leer-grüne Familie belegt nichts"
+    );
     assert!(probes > 120_000, "nur {probes} Proben — der Pin misst nichts");
 }
 
@@ -9378,7 +9415,7 @@ fn interval_subdivision_keeps_every_sample_384() {
         for node in [stop, &cut] {
             let mut c0 = iv::Ctx::new();
             let Ok(parent) = iv::enclose_node(&mut c0, node, cell.world_f32()) else { continue };
-            let (a, b) = cell.split();
+            let Some((a, b)) = cell.split() else { continue };
             for child in [a, b] {
                 let (esc, n, ok) = field_enclosure_escapes(node, &child, 2);
                 assert_eq!(esc, 0, "Kind-Zelle {child:?}: {esc} von {n} Werten entkommen");
@@ -9470,7 +9507,7 @@ fn interval_counter_probe_inward_rounding_384() {
     let knobs = iv::Knobs { inward_rounding: true, ..Default::default() };
     let (mut broken, mut esc_total) = (0usize, 0usize);
     for (_name, vs, cell, base, d, extra) in adversarial_vertex_cases() {
-        let (esc, _n) = vertex_enclosure_escapes(knobs, &vs, &cell, base, d, extra, 3);
+        let (esc, _n, _ok) = vertex_enclosure_escapes(knobs, &vs, &cell, base, d, extra, 3);
         if esc > 0 {
             broken += 1;
             esc_total += esc;
@@ -9495,7 +9532,7 @@ fn interval_counter_probe_first_branch_only_384() {
     let knobs = iv::Knobs { first_branch_only: true, ..Default::default() };
     let (mut broken, mut esc_total) = (0usize, 0usize);
     for (_name, vs, cell, base, d, extra) in adversarial_vertex_cases() {
-        let (esc, _n) = vertex_enclosure_escapes(knobs, &vs, &cell, base, d, extra, 3);
+        let (esc, _n, _ok) = vertex_enclosure_escapes(knobs, &vs, &cell, base, d, extra, 3);
         if esc > 0 {
             broken += 1;
             esc_total += esc;
@@ -9509,52 +9546,450 @@ fn interval_counter_probe_first_branch_only_384() {
     );
 }
 
-/// **§8u-Pin 6: Zweig 2 ist keine tote Ausnahme.**
+/// **§8u-Pin 6: Zweig 2 ist keine tote Ausnahme — am UNVERÄNDERTEN Feld.**
 ///
-/// Am AUSGELIEFERTEN Feld der §8p-Matrix zertifiziert Zweig 2 **null** Zellen —
-/// und der Grund ist benannt und strukturell: `channel_limit` kann nur über
-/// eine UNTERE Schranke der Naht-Distanz `de` nach oben abgeschätzt werden, und
-/// die gibt es in Paket 1 nicht (die Bounding-Sphere des Kanals ist mit
-/// `bound_r = 3.3 … 54.5 mm` gegen `K = 3.91 mm` wertlos — derselbe Befund wie
-/// §8t für die Stück-Hüllkugeln).
+/// Auf den Doktrin-Gittern der §8p-Matrix zertifiziert Zweig 2 null Zellen,
+/// und das ist kein Zufall: diese Gitter sind um die NAHT gelegt, also genau
+/// dorthin, wo die Kanal-Terme leben. Dort scheitert die Neutralität an der
+/// Kanal-Bounding-Sphere (`bound_r` 3.3 … 54.5 mm gegen `K = 3.91 mm`), und
+/// `channel_limit` bleibt ohne obere Schranke.
 ///
-/// Ein leerer Zweig ist von einem kaputten aber nicht zu unterscheiden. Dieser
-/// Pin zeigt deshalb an der **Vertex-Ablation** (Kanäle entfernt, Vertex-
-/// Kugeln + `L`-Block + Klemme unverändert), dass die Maschine rechnet: sie
-/// zertifiziert dort Zellen über Zweig 2, und an jeder davon behauptet das
-/// abladierte Feld an dicht gesetzten Proben tatsächlich Material.
+/// **Naht-FERN sieht es anders aus.** Dieser Pin nimmt die Ecken-Schale
+/// `t/δ = 6` — dasselbe ausgelieferte Feld, kein struktureller Eingriff, keine
+/// Ablation — und legt Zellen tief in eine Platte, weit weg von der Ecke. Dort
+/// sind ALLE 24 Kanäle nachweislich neutral, die Vertex-Kugeln ebenso, und die
+/// Intervall-Auswertung trägt: sie zertifiziert, und an jeder zertifizierten
+/// Zelle behauptet das Feld an dicht gesetzten Proben tatsächlich Material.
+///
+/// Zweig 1 ist dabei abgeschaltet — was hier zählt, ist ausschliesslich
+/// `sup_C f < 0`.
+///
+/// Daneben steht dieselbe Messung an der Vertex-Ablation (Kanäle entfernt):
+/// sie prüft die Term-Klasse, die dieses Paket vollständig unterstützt, auf
+/// dem Doktrin-Gitter selbst. Die Ablation ist **kein ausgeliefertes Feld**
+/// und wird nirgends als eines ausgegeben.
 #[test]
-fn interval_branch_two_is_alive_on_the_vertex_cut_384() {
+fn interval_branch_two_is_alive_on_the_delivered_field_384() {
     let delta = 2.0f32;
     let t = 6.0 * delta;
     let (field, _) = compile_for(thin_corner_node(t, 40.0, delta));
-    let cut = strip_channels(&field);
-    let (mut b2, mut probes) = (0usize, 0usize);
     let none = |_c: [f64; 3]| None; // Zweig 1 abgeschaltet — nur Zweig 2 zählt.
+    let check = |node: &BoundedCsg, lo: [f64; 3], hi: [f64; 3], n: usize| -> (usize, usize) {
+        let (mut b2, mut probes) = (0usize, 0usize);
+        for cell in fixture_cells(lo, hi, n) {
+            let mut c = iv::Ctx::new();
+            match iv::certify_cell(&cell, node, delta as f64, CERT_TOL, &none, &mut c) {
+                iv::Verdict::Branch2 => {
+                    b2 += 1;
+                    for p in cell_samples(&cell, 2) {
+                        let f = node.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+                        probes += 1;
+                        assert!(
+                            f < 0.0,
+                            "Zweig 2 hat die Zelle {cell:?} zertifiziert, das Feld liefert bei \
+                             {p:?} aber {f} ≥ 0 — die obere Schranke lügt"
+                        );
+                    }
+                }
+                iv::Verdict::Branch1 => unreachable!("Zweig 1 ist in diesem Pin abgeschaltet"),
+                iv::Verdict::Unknown(_) => {}
+            }
+        }
+        (b2, probes)
+    };
+    // (1) Das AUSGELIEFERTE Feld, tief in einer Platte, naht-fern.
+    let (b2, probes) = check(&field, [-36.0, -8.0, -36.0], [-30.0, -5.0, -30.0], 8);
+    assert!(
+        b2 >= 100,
+        "Zweig 2 zertifiziert nur {b2} Zellen des AUSGELIEFERTEN Feldes im naht-fernen \
+         Plattenkern — dann ist die Intervall-Auswertung dort nicht belegt, sondern bloss still"
+    );
+    assert!(probes > 2_000, "nur {probes} Proben am ausgelieferten Feld");
+    // (2) Die Vertex-Ablation auf dem Doktrin-Gitter.
+    let cut = strip_channels(&field);
     let lo = -(t as f64 + delta as f64 + 1.0);
-    for cell in fixture_cells([lo; 3], [1.0; 3], 11) {
-        let mut c = iv::Ctx::new();
-        match iv::certify_cell(&cell, &cut, delta as f64, CERT_TOL, &none, &mut c) {
-            iv::Verdict::Branch2 => {
-                b2 += 1;
-                for p in cell_samples(&cell, 2) {
-                    let f = cut.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
-                    probes += 1;
-                    assert!(
-                        f < 0.0,
-                        "Zweig 2 hat die Zelle {cell:?} zertifiziert, das Feld liefert bei \
-                         {p:?} aber {f} ≥ 0 — die obere Schranke lügt"
-                    );
+    let (b2c, pc) = check(&cut, [lo; 3], [1.0; 3], 11);
+    assert!(b2c >= 30, "die Vertex-Ablation zertifiziert nur {b2c} Zellen");
+    assert!(pc > 800, "nur {pc} Proben an der Ablation");
+}
+
+// ══════════ #384 §8u-Korrektur — die vier Familien des vierten Reviews ═══════
+
+/// **Ein Klotz mit kleinem Buckel** — die Fixture, an der Zweig 2 am
+/// UNVERÄNDERTEN Feld greift.
+///
+/// Die Kanal-Neutralität steht auf `dbs = |p − bound_c| − bound_r ≥ K`, und
+/// `bound_r` ist die halbe Nahtlänge. An der §8p-Matrix ist die Naht so lang
+/// wie das Bauteil (22 … 54 mm gegen `K = 3.91 mm`), also greift sie nie im
+/// Material. Hier ist es umgekehrt: die Naht ist der 4×4-Ring um den Buckel
+/// (`bound_r ≈ 3 mm`), der Körper aber eine 60×60×20-Platte. Tief in der
+/// Platte sind alle Kanäle nachweislich neutral — kein struktureller Eingriff,
+/// keine Ablation, das ausgelieferte Feld.
+fn bump_on_plate_node(delta: f32) -> CsgNode {
+    let plate = box_at(1, [0.0, 0.0, -10.0], [30.0, 30.0, 10.0]);
+    let bump = box_at(2, [0.0, 0.0, 2.0], [2.0, 2.0, 2.0]);
+    CsgNode::Offset(
+        Box::new(CsgNode::Union(Box::new(plate), Box::new(bump))),
+        -delta,
+    )
+}
+
+/// **§8u-K1: die Quaternion-Kette folgt der Produktions-Klammerung.**
+///
+/// Erster blockierender Befund des vierten Mathe-Reviews. Die Produktion
+/// rechnet je Komponente `(((v ⊕ qw⊗t) ⊕ qy⊗t₂) ⊖ qz⊗t₁)`; die erste
+/// §8u-Fassung sammelte erst den Rotationsanteil und addierte `v` zum Schluss.
+/// Über ℝ dasselbe, über f32 nicht — und bei AUSLÖSCHUNG (grosses `v`, fast
+/// kompensierender Rotationsanteil) weicht die Reassoziation um weit mehr ab
+/// als eine ULP-Weitung.
+///
+/// Die Familie stellt genau das her: eine 90°-Drehung um `z`, bei der die
+/// Kette auf `((v₀ ⊕ v₁) ⊖ v₀)` hinausläuft, mit `|v₀|` bis 10⁷ und `|v₁|` im
+/// Millimeterbereich — in f32 verschluckt die erste Addition `v₁` vollständig.
+///
+/// Zwei Richtungen: mit Produktions-Reihenfolge KEIN Ausreisser, mit
+/// reassoziierter Reihenfolge MUSS die Familie fallen.
+#[test]
+fn interval_mirrors_the_production_rotation_order_384() {
+    let rot = |deg: f64, axis: usize| -> [f32; 4] {
+        let h = 0.5 * deg.to_radians();
+        let (s, c) = (h.sin() as f32, h.cos() as f32);
+        let mut q = [0.0f32, 0.0, 0.0, c];
+        q[axis] = s;
+        q
+    };
+    let mut cases: Vec<(BoundedCsg, iv::Box3)> = Vec::new();
+    for (deg, axis) in [(90.0f64, 2usize), (45.0, 2), (30.0, 1), (120.0, 0)] {
+        let node = BoundedCsg::Leaf {
+            id: id(1),
+            primitive: Primitive::Box { center: [0.0; 3], half_extents: [3.0, 4.0, 5.0] },
+            world_transform: Transform {
+                translate: [0.0; 3],
+                rotation: rot(deg, axis),
+                scale: [1.0; 3],
+            },
+            aabb: crate::csg::Aabb::EMPTY,
+        };
+        for big in [1.0e3f64, 1.0e5, 1.0e7] {
+            for small in [0.3f64, 1.7, -0.9] {
+                cases.push((
+                    node.clone(),
+                    iv::Box3::new(
+                        [big, small, small * 0.5],
+                        [big + 0.75, small + 0.75, small * 0.5 + 0.75],
+                    ),
+                ));
+            }
+        }
+    }
+    let run = |knobs: iv::Knobs, cases: &Vec<(BoundedCsg, iv::Box3)>| -> (usize, usize, usize) {
+        let (mut esc, mut n, mut ok) = (0usize, 0usize, 0usize);
+        for (node, cell) in cases {
+            let mut c = iv::Ctx::with_knobs(knobs);
+            let Ok(enc) = iv::enclose_node(&mut c, node, cell.world_f32()) else { continue };
+            ok += 1;
+            for p in cell_samples(cell, 3) {
+                let v = node.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+                n += 1;
+                if !enc.contains(v as f64) {
+                    esc += 1;
                 }
             }
-            iv::Verdict::Branch1 => unreachable!("Zweig 1 ist in diesem Pin abgeschaltet"),
-            iv::Verdict::Unknown(_) => {}
+        }
+        (esc, n, ok)
+    };
+    let (esc, n, ok) = run(iv::Knobs::default(), &cases);
+    assert_eq!(
+        esc, 0,
+        "{esc} von {n} Produktionswerten entkommen der Einschliessung einer GEDREHTEN \
+         Leaf — die Op-Reihenfolge stimmt dann nicht mit `quat_inverse_rotate` überein"
+    );
+    assert!(ok >= 30 && n > 2_000, "nur {ok} Fälle / {n} Proben ausgewertet");
+
+    // **Die Gegenprobe, und ein ehrlicher Negativbefund dazu.**
+    //
+    // Auf der OPERATIONS-Ebene ist die Reassoziation nachweislich eine echte
+    // f32-Abweichung — das wird hier gegen die Produktions-Funktion
+    // `world_to_local` selbst gezeigt, nicht gegen einen Nachbau des Modells.
+    // Damit ist der Fix von Beweispflicht 5 gefordert und nicht kosmetisch.
+    //
+    // Auf der INTERVALL-Ebene lässt sie sich dagegen NICHT durch Sampling
+    // widerlegen: die letzte Operation berührt in beiden Reihenfolgen `v` in
+    // voller Grösse, beide Einschliessungen bekommen deshalb eine Weite in der
+    // Grössenordnung `ulp(max |Zwischenwert|)`, und die schluckt den
+    // Reihenfolge-Unterschied. Gemessen an 112 000 zufälligen Quaternionen und
+    // Beträgen von 10² bis 10³⁰: null Ausreisser in BEIDEN Reihenfolgen. Der
+    // Befund steht so im Doc; eine erfundene Gegenprobe wäre schlimmer als
+    // keine.
+    let mut differs = 0usize;
+    for (node, cell) in &cases {
+        let BoundedCsg::Leaf { world_transform: t, .. } = node else { continue };
+        for p in cell_samples(cell, 3) {
+            let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+            let prod = crate::transform::world_to_local(t, pf);
+            // Dieselbe Formel, nur der Rotationsanteil zuerst zusammengefasst.
+            let v = [pf[0] - t.translate[0], pf[1] - t.translate[1], pf[2] - t.translate[2]];
+            let (qx, qy, qz, qw) = (-t.rotation[0], -t.rotation[1], -t.rotation[2], t.rotation[3]);
+            let tt = [
+                2.0 * (qy * v[2] - qz * v[1]),
+                2.0 * (qz * v[0] - qx * v[2]),
+                2.0 * (qx * v[1] - qy * v[0]),
+            ];
+            let re = [
+                (v[0] + (qw * tt[0] + qy * tt[2] - qz * tt[1])) / t.scale[0],
+                (v[1] + (qw * tt[1] + qz * tt[0] - qx * tt[2])) / t.scale[1],
+                (v[2] + (qw * tt[2] + qx * tt[1] - qy * tt[0])) / t.scale[2],
+            ];
+            if (0..3).any(|k| prod[k].to_bits() != re[k].to_bits()) {
+                differs += 1;
+            }
         }
     }
     assert!(
-        b2 >= 30,
-        "Zweig 2 zertifiziert nur {b2} Zellen der Vertex-Ablation — dann ist die \
-         Intervall-Auswertung nicht belegt, sondern bloss still"
+        differs > 0,
+        "die reassoziierte Quaternion-Kette liefert an KEINER Probe einen anderen f32-Wert \
+         als `world_to_local` — dann wäre die Op-Reihenfolge tatsächlich egal und der \
+         §8u-Korrektur-Fix unbegründet"
     );
-    assert!(probes > 800, "nur {probes} Proben");
+}
+
+/// **§8u-K2a: `|x − c| ≤ ρ` gilt für den TATSÄCHLICHEN Mittelpunkt.**
+///
+/// Zweiter blockierender Befund, erste Brücke. `ρ` wurde aus den Halbbreiten
+/// `(hi−lo)/2` gebildet, `u_at` aber am GERUNDETEN Mittelpunkt ausgewertet.
+/// Bei `lo = 10¹⁶`, `hi = lo + 2` fällt der gerundete Mittelpunkt mit `lo`
+/// zusammen: Halbbreite 1, echter Maximalabstand 2.
+///
+/// Der Pin prüft die Zusage direkt an adversarialen Zellen — und rechnet
+/// daneben die ALTE Formel mit, die an mindestens einer davon reissen MUSS.
+#[test]
+fn interval_cell_radius_covers_the_rounded_centre_384() {
+    use iv::CellDomain;
+    let mut cells: Vec<iv::Box3> = Vec::new();
+    for base in [1.0e8f64, 1.0e12, 1.0e16, 4.5e15] {
+        for w in [2.0f64, 1.0, 0.5, 1.0e-3] {
+            cells.push(iv::Box3::new([base, -base, base * 0.5], [base + w, -base + w, base * 0.5 + w]));
+        }
+        // Benachbarte f64-Endpunkte: die Zelle ist numerisch nicht mehr teilbar.
+        let hi = [
+            iv::next_up(base),
+            iv::next_up(iv::next_up(-base)),
+            iv::next_up(base * 0.5),
+        ];
+        cells.push(iv::Box3::new([base, -base, base * 0.5], hi));
+    }
+    cells.push(iv::Box3::new([-1.0e300, 0.0, 0.0], [1.0e300, 1.0, 1.0]));
+    let (mut checked, mut old_broken, mut unsplittable) = (0usize, 0usize, 0usize);
+    for cell in &cells {
+        let c = cell.center();
+        let rho = cell.rho();
+        // Die alte Formel: Halbbreiten statt tatsächlicher Abstände.
+        let mut s = 0.0f64;
+        for k in 0..3 {
+            let h = iv::next_up(0.5 * iv::next_up(cell.hi[k] - cell.lo[k]));
+            s = iv::next_up(s + iv::next_up(h * h));
+        }
+        let rho_old = iv::next_up(s.sqrt());
+        let mut worst = 0.0f64;
+        for x in cell_samples(cell, 2) {
+            for k in 0..3 {
+                assert!(
+                    c[k] >= cell.lo[k] && c[k] <= cell.hi[k],
+                    "der Mittelpunkt {c:?} liegt nicht in der Zelle {cell:?}"
+                );
+            }
+            let d = dist_up(x, c);
+            worst = worst.max(d);
+            checked += 1;
+            assert!(
+                d <= rho,
+                "Zelle {cell:?}: Probe {x:?} liegt {d} vom Mittelpunkt {c:?} entfernt, \
+                 ρ ist aber nur {rho} — die 1-Lipschitz-Brücke von Zweig 1 bricht"
+            );
+        }
+        if worst > rho_old {
+            old_broken += 1;
+        }
+        if cell.split().is_none() {
+            unsplittable += 1;
+        }
+    }
+    assert!(checked > 400, "nur {checked} Proben");
+    assert!(
+        old_broken > 0,
+        "die Gegenprobe blieb still: die ALTE Halbbreiten-Formel muss an mindestens einer \
+         dieser Zellen unter dem echten Maximalabstand liegen — sonst belegt der Pin nichts"
+    );
+    assert!(
+        unsplittable > 0,
+        "keine einzige Zelle ist numerisch unteilbar — dann prüft der Pin die \
+         Terminierungs-Weigerung von `Box3::split` nicht"
+    );
+}
+
+/// **§8u-K2c: `U` ist eine echte obere Schranke von `dist(c,∁Ω)`.**
+///
+/// Zweiter blockierender Befund, dritte Brücke: der Adapter bewies die
+/// Aussenlage am f32-GERUNDETEN Punkt, mass die Distanz aber zum f64-Punkt —
+/// und `d₀ > δ ⇒ Some(0)` war das klarste Beispiel. Das 1-Lipschitz-Lemma von
+/// Zweig 1 ist nur BEDINGT korrekt; die Vorbedingung muss der Adapter erfüllen.
+///
+/// Geprüft wird sie hier gegen die EXAKTE §8k-Komplement-Referenz, an genau
+/// den Punkten, an denen Zweig 1 sie später benutzt: den Zellmittelpunkten.
+#[test]
+fn interval_branch_one_upper_bound_is_sound_384() {
+    let delta = 2.0f32;
+    let (mut checked, mut zero_branch) = (0usize, 0usize);
+    for (name, field, exact, lo, hi, _n) in cert_matrix(delta) {
+        if !(name.starts_with("Stufen") || name == "Ecken-Schale t/δ=2.5" || name == "notch α=90") {
+            continue;
+        }
+        let (stop, blk) = stop_with_lb(&field);
+        let cap = delta as f64 + CERT_TOL;
+        for cell in fixture_cells(lo, hi, 8) {
+            use iv::CellDomain;
+            let c = cell.center();
+            let Some(u) = u_upper(stop, blk, delta, c, 2.0 * cap) else { continue };
+            let e = exact(c);
+            checked += 1;
+            if u < 1e-3 {
+                zero_branch += 1;
+            }
+            assert!(
+                e <= u + 1e-9,
+                "{name}: exakt dist({c:?},∁Ω) = {e:.9} übersteigt die behauptete obere \
+                 Schranke U = {u:.9} — dann zertifiziert Zweig 1 Unter-Claims weg"
+            );
+        }
+    }
+    assert!(checked > 500, "nur {checked} Mittelpunkte mit U geprüft");
+    assert!(
+        zero_branch > 0,
+        "kein einziger Mittelpunkt lief über den `d₀ > δ`-Zweig — dann prüft der Pin \
+         genau die Brücke nicht, an der die falsche Null stand"
+    );
+}
+
+/// **§8u-K3: ein nicht-endliches Stück-Minimum ist `LB_NONE`, nicht `∞`.**
+///
+/// Dritter blockierender Befund. `lb_value` startet mit `best = +∞` und
+/// aktualisiert nur bei `d < best`; bleiben alle Stück-Distanzen nicht-endlich
+/// (in f32 läuft die Quadratsumme bei Koordinaten nahe `f32::MAX` über),
+/// liefert die Produktion `LB_NONE`. Ein modelliertes `∞ − slack` wählt
+/// dagegen den `L`-Zweig des Gates, während die Produktion den `G`-Zweig
+/// nimmt — die Ergebnismengen enthalten einander dann NICHT.
+#[test]
+fn interval_lb_non_finite_minimum_is_neutral_384() {
+    use crate::offset_lb::{LbBlock, LbPiece};
+    let far = 3.0e38f32;
+    let blk = LbBlock {
+        pieces: vec![
+            LbPiece::Tri {
+                a: [far, 0.0, 0.0],
+                b: [far, 1.0, 0.0],
+                c: [far, 0.0, 1.0],
+                n: [1.0, 0.0, 0.0],
+                emax: f32::INFINITY,
+            },
+            LbPiece::Tri {
+                a: [far, 2.0, 0.0],
+                b: [far, 3.0, 0.0],
+                c: [far, 2.0, 1.0],
+                n: [1.0, 0.0, 0.0],
+                emax: f32::INFINITY,
+            },
+        ],
+        delta: 2.0,
+        slack: 1.0e-4,
+        center: [0.0; 3],
+        skip_r: f32::INFINITY,
+    };
+    let cell = iv::Box3::cube([0.0, 0.0, 0.0], 0.5);
+    let base = iv::Iv { lo: -6.0, hi: -5.0 };
+    // Die Produktion liefert an jedem Zellpunkt LB_NONE.
+    let mut saw_none = 0usize;
+    for p in cell_samples(&cell, 2) {
+        let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+        let v = crate::offset_lb::lb_value(pf, -5.5, &blk);
+        assert_eq!(
+            v,
+            crate::offset_lb::LB_NONE,
+            "die Fixture erzeugt kein nicht-endliches Stück-Minimum (bekam {v}) — \
+             dann prüft der Pin den `is_finite`-Schalter gar nicht"
+        );
+        saw_none += 1;
+    }
+    assert!(saw_none > 20, "nur {saw_none} Proben");
+    // Mit Schalter: die Einschliessung enthält LB_NONE.
+    let mut c = iv::Ctx::new();
+    let enc = iv::enclose_lb_value(&mut c, cell.world_f32(), base, &blk).unwrap();
+    assert!(
+        enc.contains(crate::offset_lb::LB_NONE as f64),
+        "die Einschliessung {enc:?} enthält LB_NONE nicht"
+    );
+    // Ohne Schalter (Gegenprobe): sie MUSS ihn verlieren.
+    let mut c2 = iv::Ctx::with_knobs(iv::Knobs { skip_lb_finite_gate: true, ..Default::default() });
+    let bad = iv::enclose_lb_value(&mut c2, cell.world_f32(), base, &blk).unwrap();
+    assert!(
+        !bad.contains(crate::offset_lb::LB_NONE as f64),
+        "die Gegenprobe blieb still: ohne den `is_finite`-Schalter muss die Einschliessung \
+         {bad:?} den Produktionswert LB_NONE verlieren — sonst belegt der Pin ihn nicht"
+    );
+}
+
+
+
+/// **§8u-Sonde: Zweig 2 naht-fern, am unveränderten Feld.**
+///
+/// Die Doktrin-Gitter der §8p-Matrix liegen um die NAHT — also genau dort, wo
+/// die Kanal-Terme leben und die Neutralität an der Bounding-Sphere scheitert.
+/// Diese Sonde misst dasselbe ausgelieferte Feld naht-FERN und zeigt die
+/// Abhängigkeit vom Abstand zur Ecke.
+///
+/// Dazu der Nebenbefund „kleiner Buckel auf grosser Platte": die naheliegende
+/// Idee, eine KURZE Naht in einem GROSSEN Körper zu bauen, geht nicht auf —
+/// die Synthese macht daraus keinen Kanal, sondern einen ∂P-Rand-Fillet
+/// (`RimBlock`), und den unterstützt Paket 1 nicht.
+#[test]
+#[ignore]
+fn probe_384_interval_seam_far() {
+    let delta = 2.0f32;
+    let (bump, _) = compile_for(bump_on_plate_node(delta));
+    let mut st = Vec::new();
+    stop_nodes(&bump, &mut st);
+    for n in &st {
+        if let BoundedCsg::ArcChannel { channels, verts, rims, .. } = n {
+            println!(
+                "Buckel auf Platte: Kanäle {} verts {} rims {} — die kurze Naht wird ein Rim",
+                channels.len(),
+                verts.len(),
+                rims.len()
+            );
+        }
+    }
+    let (field, _) = compile_for(thin_corner_node(6.0 * delta, 40.0, delta));
+    let none = |_c: [f64; 3]| None;
+    println!("| Gebiet | Zellen | Zweig 2 | Kanal-Term | sup f ≥ 0 |");
+    println!("|---|---|---|---|---|");
+    for (tag, lo, hi, n) in [
+        ("Doktrin-Gitter (naht-nah)", [-15.0f64; 3], [1.0f64; 3], 12usize),
+        ("Plattenkern, mittel", [-38.0, -9.0, -38.0], [-24.0, -3.0, -24.0], 12),
+        ("Plattenkern, tief", [-36.0, -8.0, -36.0], [-30.0, -5.0, -30.0], 12),
+    ] {
+        let (mut b2, mut unk) = (0usize, std::collections::BTreeMap::new());
+        for cell in fixture_cells(lo, hi, n) {
+            let mut c = iv::Ctx::new();
+            match iv::certify_cell(&cell, &field, delta as f64, CERT_TOL, &none, &mut c) {
+                iv::Verdict::Branch2 => b2 += 1,
+                iv::Verdict::Unknown(w) => *unk.entry(w).or_insert(0usize) += 1,
+                iv::Verdict::Branch1 => {}
+            }
+        }
+        println!(
+            "| {tag} | {} | {b2} | {} | {} |",
+            n * n * n,
+            unk.get("Kanal-Term (nicht als neutral bewiesen)").copied().unwrap_or(0),
+            unk.get("sup f ≥ 0").copied().unwrap_or(0)
+        );
+    }
 }

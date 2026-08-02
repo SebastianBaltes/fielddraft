@@ -4907,13 +4907,19 @@ zählt nur als zertifiziert, wenn JEDE Teilzelle es ist.
 | Ecken-Schale `t/δ = 2.25` | 1728 | 722 | 0 | 1006 | Kanal-Term | 830 | 898 | 35 |
 | Ecken-Schale `t/δ = 2.4` | 1728 | 700 | 0 | 1028 | Kanal-Term | 700 | 1028 | 41 |
 | Ecken-Schale `t/δ = 2.5` | 1728 | 658 | 0 | 1070 | Kanal-Term | 668 | 1060 | 38 |
-| Ecken-Schale `t/δ = 3` | 1728 | 450 | 0 | 1278 | Kanal-Term | 480 | 1248 | 26 |
-| Ecken-Schale `t/δ = 4` | 1728 | 216 | 0 | 1512 | Kanal-Term | 216 | 1512 | 8 |
-| Ecken-Schale `t/δ = 6` | 1728 | 64 | 0 | 1664 | Kanal-Term | 91 | 1637 | 125 |
+| Ecken-Schale `t/δ = 3` | 1728 | 450 | 0 | 1278 | Kanal-Term | 480 | 1248 | 422 |
+| Ecken-Schale `t/δ = 4` | 1728 | 216 | 0 | 1512 | Kanal-Term | 216 | 1512 | 728 |
+| Ecken-Schale `t/δ = 6` | 1728 | 64 | 0 | 1664 | Kanal-Term | 91 | 1637 | 1385 |
 | Rippen-Kamm 4×1.5/0.8 | 1728 | 432 | 0 | 1296 | **Operator** | 576 | 1152 | 0 |
-| Rippen-Kamm 4×2/1 | 1728 | 432 | 0 | 1296 | Kanal-Term | 528 | 1200 | 0 |
-| notch α = 90° | 1728 | **972** | 0 | 756 | Kanal-Term | 1056 | 672 | 60 |
-| notch α = 60° | 1728 | 916 | 0 | 812 | Kanal-Term | 965 | 763 | 10 |
+| Rippen-Kamm 4×2/1 | 1728 | 432 | 0 | 1296 | Kanal-Term | 528 | 1200 | 1008 |
+| notch α = 90° | 1728 | **972** | 0 | 756 | Kanal-Term | 1056 | 672 | 360 |
+| notch α = 60° | 1728 | 916 | 0 | 812 | Kanal-Term | 965 | 763 | 395 |
+
+Die Zweig-1-Zahlen sind die der KORRIGIERTEN Brücken (s. §8u-Korrektur unten);
+sie haben sich gegenüber der ersten Fassung nicht bewegt. Die
+Vertex-Ablations-Spalte hat sich dagegen deutlich gehoben (`t/δ = 6`:
+125 → 1385, Rippen-Kamm 4×2/1: 0 → 1008) — Grund ist der exakte
+Null-Kurzschluss in `enc_dist_aabb`, ebenfalls unten.
 
 Drei Ablesungen:
 
@@ -4946,14 +4952,31 @@ Nur die Ecken-Schale hat überhaupt Vertex-Kugeln, und nur die Stufen-Nabe hat
 `Rev`-Stücke — die beiden Mengen sind disjunkt. Deshalb kostet die fehlende
 `Rev`-Unterstützung gemessen nichts.
 
-**Ein leerer Zweig ist von einem kaputten nicht zu unterscheiden.** Deshalb
-misst der Pin `interval_branch_two_is_alive_on_the_vertex_cut_384` Zweig 2 an
-der **Vertex-Ablation** (derselbe Baum, Kanäle entfernt, Vertex-Kugeln +
-`L`-Block + Grenzwert-Klemme unverändert): dort zertifiziert er, mit
-abgeschaltetem Zweig 1, Zellen — und an jeder behauptet das abladierte Feld an
-dicht gesetzten Proben tatsächlich Material. Die Ablation ist **kein
-ausgeliefertes Feld** und wird auch nirgends als eines ausgegeben; sie ist der
-Nachweis, dass die Maschine rechnet.
+**Die Null in der Zweig-2-Spalte ist eine Aussage über das GITTER, nicht über
+die Maschine.** Die Doktrin-Gitter der §8p-Matrix liegen um die NAHT — genau
+dorthin, wo die Kanal-Terme leben. Naht-FERN sieht dasselbe ausgelieferte Feld
+anders aus (Sonde `probe_384_interval_seam_far`, Ecken-Schale `t/δ = 6`, keine
+Ablation, kein struktureller Eingriff):
+
+| Gebiet | Zellen | Zweig 2 | Kanal-Term | `sup f ≥ 0` |
+|---|---|---|---|---|
+| Doktrin-Gitter (naht-nah) | 1728 | 0 | 1728 | 0 |
+| Plattenkern, mittel | 1728 | **238** | 1348 | 142 |
+| Plattenkern, tief | 1728 | **1037** | 691 | 0 |
+
+Tief im Plattenkern sind alle 24 Kanäle nachweislich neutral, die acht
+Vertex-Kugeln ebenso, und die Intervall-Auswertung trägt. Das nagelt der Pin
+`interval_branch_two_is_alive_on_the_delivered_field_384` fest — am
+AUSGELIEFERTEN Feld, mit abgeschaltetem Zweig 1, und an jeder zertifizierten
+Zelle wird gegengeprüft, dass das Feld an dicht gesetzten Proben tatsächlich
+Material behauptet. Daneben steht dieselbe Messung an der **Vertex-Ablation**
+(Kanäle entfernt) auf dem Doktrin-Gitter selbst; sie ist **kein ausgeliefertes
+Feld** und wird nirgends als eines ausgegeben.
+
+Ein naheliegender Ausweg wurde probiert und ist gescheitert: eine KURZE Naht in
+einem GROSSEN Körper (kleiner Buckel auf grosser Platte) würde die
+Bounding-Sphere klein machen — die Synthese macht daraus aber keinen Kanal,
+sondern einen ∂P-Rand-Fillet (`RimBlock`), und den unterstützt Paket 1 nicht.
 
 ### Die adversarialen Familien
 
@@ -5022,13 +5045,19 @@ Beide Schalter sitzen in `Knobs` und werden von der Zertifizierung nie gesetzt
 * `interval_counter_probe_inward_rounding_384` und
   `interval_counter_probe_first_branch_only_384` — die beiden Rückdreh-
   Gegenproben.
-* `interval_branch_two_is_alive_on_the_vertex_cut_384` — Zweig 2 ist keine
-  tote Ausnahme.
+* `interval_branch_two_is_alive_on_the_delivered_field_384` — Zweig 2 ist
+  keine tote Ausnahme: am ausgelieferten Feld im naht-fernen Plattenkern, und
+  an der Vertex-Ablation auf dem Doktrin-Gitter.
+* `interval_mirrors_the_production_rotation_order_384`,
+  `interval_cell_radius_covers_the_rounded_centre_384`,
+  `interval_branch_one_upper_bound_is_sound_384`,
+  `interval_lb_non_finite_minimum_is_neutral_384` — die vier Familien der
+  §8u-Korrektur (s. u.).
 * Sonden (`#[ignore]`): `probe_384_interval_cell_certification` (die grosse
   Tabelle), `probe_384_interval_stop_inventory` (der Term-Bestand),
   `probe_384_interval_node_kinds` (welcher Knoten das `Unknown("Operator")`
   auslöst), `probe_384_interval_channel_reach` (die Radien-Tabelle des
-  Kanal-Blockers).
+  Kanal-Blockers), `probe_384_interval_seam_far` (Zweig 2 naht-fern).
 
 **Keine bestehende Pin-Zeile bewegt sich**; insbesondere stehen
 `FEHLENDES Material`, `Stück-Schranke L` und `≤ 0.01 mm` unverändert im
@@ -5044,6 +5073,131 @@ Zusagen-Text.
 * **Keine Domänen-Adapter jenseits `Box3`.** Die Trait-Grenze
   (`CellDomain → [Iv; 3]`) ist so geschnitten, dass `LineParam` und `ArcParam`
   andocken können, ohne die Algebra anzufassen — gebaut sind sie nicht.
+
+### §8u-Korrektur: das vierte Mathe-Review (v0.57.1)
+
+Das externe Review (GPT-5.6, viertes der Kette) hat §8u geprüft. Gehalten haben
+das f32-Modell, `Ctx::seal`, die Schalter-Hüllen, `safe_sqrt`, die sequenzielle
+Vertex-Kette und die adversarialen Familien; auch die `L`-Frage fiel zugunsten
+der direkten Auswertung aus (der op-weise `tri_dist`-Spiegel ist sauber, ein
+`min` über gerundete f32-Werte braucht keine Extra-Fehlerrechnung, und der
+§8t-Prune darf wegen seiner bewiesenen Bit-Gleichheit ausgelassen werden).
+**Drei blockierende Befunde blieben.**
+
+#### B1 — die Quaternion-Kette war reassoziiert
+
+Die Produktion rechnet je Komponente `(((v ⊕ qw⊗t) ⊕ qy⊗t₂) ⊖ qz⊗t₁)`; das
+Modell sammelte erst den Rotationsanteil und addierte `v` zum Schluss. Über ℝ
+identisch, über f32 nicht — damit trug **Beweispflicht 5** (Einschluss der
+ECHTEN Op-Kette) für gedrehte Blätter nicht. Der Doc-Hinweis
+„Dependency-Breite der Rotation" beschrieb nur Überschätzung, nicht diese
+Abweichung.
+
+Gefixt: die vier Produktions-Operationen je Komponente in exakt derselben
+Klammerung.
+
+**Und ein ehrlicher Negativbefund dazu.** Die Gegenprobe ist auf der
+OPERATIONS-Ebene erbracht — gegen `crate::transform::world_to_local` selbst
+liefert die reassoziierte Kette nachweislich andere f32-Bits, der Fix ist also
+gefordert und nicht kosmetisch. Auf der INTERVALL-Ebene liess sie sich
+**nicht** widerlegen: 112 000 zufällige Quaternionen bei Beträgen von 10² bis
+10³⁰ ergaben in BEIDEN Reihenfolgen null Ausreisser. Der Grund ist strukturell
+— die letzte Operation berührt in beiden Reihenfolgen `v` in voller Grösse,
+beide Einschliessungen bekommen deshalb eine Weite der Ordnung
+`ulp(max |Zwischenwert|)`, und die schluckt den Reihenfolge-Unterschied. Eine
+erfundene Gegenprobe wäre schlimmer als keine.
+
+#### B2 — Zweig 1 hatte drei offene Rundungsbrücken
+
+*(a) Mittelpunkt gegen `ρ`.* `ρ` kam aus den Halbbreiten `(hi−lo)/2`, `u_at`
+lief aber am GERUNDETEN Mittelpunkt. Gegenbeispiel-Familie: `lo = 10¹⁶`,
+`hi = lo + 2` — der gerundete Mittelpunkt fällt mit `lo` zusammen, die
+Halbbreite ist `1`, der andere Endpunkt aber `2` entfernt. `|x − c| ≤ ρ` galt
+dann nicht. Gefixt: erst den Mittelpunkt bilden (und in die Zelle klemmen),
+dann `ρ_k = max(c_k − lo_k, hi_k − c_k)` je Achse, jede Differenz nach aussen
+gerundet.
+
+*(b) Der Vergleich rundete nur links.* `next_up(u + ρ) ≤ δ + tol` — rundet die
+RECHTE Seite in f64 nach oben, akzeptiert die Prüfung knapp OBERHALB der
+Schwelle. Gefixt: `next_up(u + ρ) ≤ next_down(δ + tol)`.
+
+*(c) Der `U`-Adapter mass zum falschen Punkt.* Er bewies die Aussenlage am
+f32-GERUNDETEN Punkt (`stop.sdf` wertet an `fl32(y)` aus), mass die Distanz
+aber zum ursprünglichen f64-Punkt; `d₀ > δ ⇒ U = 0` war das klarste Beispiel —
+bewiesen ist dort `fl32(c) ∉ Ω`, also `dist(c,∁Ω) ≤ |c − fl32(c)|` und eben
+nicht `0`. Gefixt: `U` wird stets zum tatsächlich bewiesenen f32-Zeugen
+gemessen, die ganze Norm nach oben eingeschlossen, und der Innen-/Aussen-Test
+verlangt durchgehend dieselbe Marge `CERT_MARGIN`.
+
+**Das 1-Lipschitz-Lemma von Zweig 1 ist damit ausdrücklich ein BEDINGTES**: es
+gilt nur, wenn `u_at(c)` eine reelle obere Schranke von `dist(c,∁Ω)` ist, und
+diese Vorbedingung muss der Adapter beweisbar erfüllen. Der Pin
+`interval_branch_one_upper_bound_is_sound_384` prüft sie gegen die EXAKTE
+§8k-Komplement-Referenz an genau den Punkten, an denen Zweig 1 sie benutzt.
+
+*Nebenbefund, benannt statt behoben:* §8r's eigener `under_cert` hat dieselbe
+f64/f32-Brücke in seinem `U`. Dort ist sie durch den §8r-Abdeckungs-Pin gegen
+die exakte Referenz gemessen und damit nicht still falsch — angefasst wurde sie
+hier nicht, weil das einen fremden Pin bewegt hätte.
+
+#### B3 — `best.is_finite()` fehlte im `lb_value`-Modell
+
+`lb_value` liefert `LB_NONE` bei leerem ODER ausschliesslich nicht-endlichem
+Stück-Minimum; das Modell behandelte nur den leeren Block so, `Some(+∞)` wurde
+zu `∞ − slack`. Das ist **kein bloss breiteres Intervall**: `extra > LB_AVAIL`
+entscheidet danach zwischen `L`- und `G`-Gate, ein modelliertes `+∞` wählt den
+`L`-Zweig, während die Produktion den `G`-Zweig nimmt — die Ergebnismengen
+enthalten einander dann nicht. Gefixt als Produktions-Schalter: sicher endlich
+⇒ Subtraktion, sicher nicht-endlich ⇒ `LB_NONE`, gemischt ⇒ Hülle. Die
+Gegenprobe (`Knobs::skip_lb_finite_gate`) reisst wie verlangt.
+
+Damit fällt auch die zu weit gefasste Zusage „jeder Überlauf endet in
+`Unknown`": ein Überlauf nach `±∞` wird korrekt ABGEBILDET (so rechnet der
+f32-Auswerter auch), und nur ein daraus entstehendes `NaN` bricht ab.
+
+#### Vier Sollte-Punkte, alle mitgenommen
+
+* **Die f64-No-op-Behauptung war für die Addition falsch.** `24 + 24 ≤ 53` gilt
+  fürs PRODUKT (48 Bit); eine Summe mit grossem Exponentenabstand ist in f64
+  nicht exakt. Die Implementierung war durch `next_down`/`next_up` immer sound
+  — Kommentar, Herleitung und die Begründung der Gegenprobe sind korrigiert.
+  „Keine Fehlerkonstante" bleibt haltbar und ist jetzt sauber formuliert:
+  `seal` sind **gerichtete Repräsentierbarkeits-Klammern**, keine
+  Schätzkonstante.
+* **`vertex_enclosure_escapes` zählte `Unknown` als null Ausreisser UND null
+  Proben** — eine leer-grüne Familie war möglich. Jetzt wird die Zahl der
+  tatsächlich AUSGEWERTETEN Fälle mitgezählt und eine Mindestzahl verlangt.
+* **Zweig-2-Lebendigkeit am unveränderten Baum.** S. o.: statt der Ablation
+  jetzt das ausgelieferte Feld im naht-fernen Plattenkern.
+* **Terminierung und Budget.** „Jede Ebene halbiert" gilt numerisch nicht: bei
+  benachbarten oder sehr grossen f64-Endpunkten fällt der Mittelpunkt mit einem
+  Endpunkt zusammen. `Box3::split` verweigert solche Zellen jetzt explizit
+  (`Option`), und die Terminierung steht auf Maximaltiefe + dieser Weigerung +
+  dem Budget. Das Operations-Budget ist ausserdem ein GEMEINSAMES
+  Traversal-Budget, nicht eines je Zelle — beides ist im Code und hier
+  richtiggestellt.
+
+#### Der Fund, der nebenbei abfiel: `enc_dist_aabb` machte Zweig 2 blind
+
+Beim Bau der naht-fernen Messung fiel eine reine Schärfe-Schwäche auf, die
+gravierender war als sie klingt. `distance_point_to_aabb` liefert für einen
+Punkt INNERHALB der AABB exakt `0.0`. Die Einschliessung rundete diese Null
+nach aussen zu einem winzigen POSITIVEN Intervall — und daran hing die
+Prune-Fallunterscheidung der `Union` (`second_bound > 0.0`). Der Prune-Fall
+wurde zugelassen, `min(d_first, bnd)` kollabierte auf `~0`, und die obere
+Schranke einer Vereinigung **tief im Material** sprang von `−4` auf `0`.
+
+Keine Unsoundness — zu WEIT ist die sichere Richtung —, aber Zweig 2 war damit
+im ganzen Material-Inneren blind. Der Fix ist ein beweisbarer Kurzschluss:
+liegt die ganze Zelle in der AABB, ist `(min−p).max(0).max(p−max)` je Achse
+exakt `0.0` (beide Differenzen sind `≤ 0`, und `max` rechnet nicht, es wählt),
+also sind Quadratsumme und Wurzel exakt null. Danach zertifiziert Zweig 2 im
+tiefen Plattenkern 1037 von 1728 Zellen statt null.
+
+**Die Lehre ist die von §8t, eine Ebene höher:** eine zu grosszügige Schranke
+kostet keine Korrektheit, aber sie kann ein ganzes Kriterium unbrauchbar
+machen — und das sieht man erst, wenn man es an einer Stelle misst, an der es
+eigentlich greifen müsste.
 
 ### Was OFFEN bleibt
 

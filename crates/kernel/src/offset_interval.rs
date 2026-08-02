@@ -24,8 +24,16 @@
 //! ausgewertet**, sondern höchstens als über der GANZEN Zelle *neutral*
 //! bewiesen (Fernfeld-Skip, s. [`channel_is_neutral`]). Alles andere — ein
 //! nicht bewiesener Kanal, ein Rim-Block, ein nicht unterstützter Operator,
-//! eine Entartung, NaN, Überlauf, Budget — endet in [`Unknown`]. Kein halber
-//! Beweis.
+//! eine Entartung, NaN, ein entarteter Nenner, ein Budget-Ende — endet in
+//! [`Unknown`]. Kein halber Beweis.
+//!
+//! **Ein Überlauf nach `±∞` ist ausdrücklich KEIN `Unknown`** (§8u-Korrektur):
+//! `f32_up`/`f32_down` bilden ihn korrekt ab — genau so rechnet der
+//! f32-Auswerter auch —, und Unendlichkeiten sind gültige Intervall-Schranken.
+//! Erst wo aus ihnen ein `NaN` entsteht (`∞ − ∞`, `0 · ∞`, `∞/∞`), wird
+//! abgebrochen. Die Produktions-Schalter, die selbst auf Endlichkeit prüfen —
+//! `best.is_finite()` in `lb_value` —, sind als Schalter modelliert und nicht
+//! als Rundungsfrage.
 //!
 //! **Die Naht-Zertifizierung ist NICHT Teil dieses Pakets.** `channel_limit`
 //! steht auf dem §8j-Satz „jeder Naht-Punkt liegt auf `∂Ω`"; dieser Satz ist
@@ -39,22 +47,29 @@
 //! Nichts in diesem Modul darf so gelesen werden, als sei diese Lücke
 //! geschlossen.
 //!
-//! ## Das f32-Modell — warum hier keine Fehlerkonstante steht
+//! ## Das f32-Modell — warum hier keine geschätzte Fehlerkonstante steht
 //!
 //! Eingeschlossen wird **nicht** der reelle Wert des idealen Feldes, sondern
 //! der Wert, den der f32-Auswerter an einem beliebigen Punkt der Zelle
-//! LIEFERT. Das ist der Wert, über den die Zusage spricht, und es macht jede
-//! Rundungs-Konstante überflüssig: jede Produktions-Operation wird als
+//! LIEFERT. Das ist der Wert, über den die Zusage spricht, und es macht jedes
+//! geschätzte Rundungs-Budget überflüssig: jede Produktions-Operation wird als
 //! „exakte reelle Operation, danach Rundung nach f32" modelliert
 //! ([`Ctx::fadd`] & Co.). Die exakte reelle Operation wird in f64 mit
 //! Aussen-Rundung ([`next_down`]/[`next_up`]) eingeschlossen, die f32-Rundung
 //! danach mit **gerichteter** Rundung auf das f32-Gitter ([`f32_down`]/
-//! [`f32_up`]) — beides exakt darstellbar, weil jedes f32 ein f64 ist.
+//! [`f32_up`]).
 //!
-//! Für Summen und Produkte von f32-Punktwerten ist der f64-Schritt sogar
-//! FEHLERFREI (24 + 24 ≤ 53 Mantissenbits), das Modell also scharf: bei einer
-//! Punkt-Zelle liefert die Einschliessung exakt den Produktionswert. Getestet
-//! wird genau das (`interval_encloses_the_production_vertex_term_384`).
+//! Beide Schritte sind **gerichtete Repräsentierbarkeits-Klammern**, keine
+//! Fehlerschätzungen: sie sagen „das nächste darstellbare nach aussen", nicht
+//! „so gross wird der Fehler schon nicht werden". Genau darin liegt der
+//! Unterschied zu einem `emax`-Budget (§8t) — es gibt hier nichts zu
+//! kalibrieren und nichts, das zu knapp gerechnet sein könnte.
+//!
+//! Für das PRODUKT zweier f32-Punktwerte ist der f64-Schritt exakt
+//! (24 + 24 = 48 ≤ 53 Mantissenbits), das Modell dort also scharf. Für Summen
+//! gilt das NICHT allgemein — bei grossem Exponentenabstand rundet auch f64
+//! (§8u-Korrektur; die erste Fassung behauptete es fälschlich für `+ − ×`).
+//! Die Aussen-Rundung ist deshalb überall tragend.
 //!
 //! ## Warum keine Fremd-Crate
 //!
@@ -335,13 +350,17 @@ pub fn hull_enc(a: Enc, b: Enc) -> Enc {
 /// die Sicherung ziehen können. Die Zertifizierung baut den Kontext immer mit
 /// [`Default`] (beide Schalter aus); nur
 /// `interval_counter_probe_*_384` setzt sie.
-/// **Warum „Rundung weglassen" als Gegenprobe NICHT reicht.** Nach jedem
-/// [`Ctx::seal`] liegen beide Schranken auf dem f32-Gitter. Für `+`, `−` und
-/// `×` rechnet f64 mit solchen Operanden **exakt** (24 + 24 ≤ 53
-/// Mantissenbits), die f64-Aussen-Rundung ist dort also nachweislich
-/// wirkungslos und durch kein Sampling zu widerlegen. Falsifizierbar wird die
-/// Sicherung erst, wenn man sie — wie schon `emax = −0.05` in §8t — **zu
-/// scharf** stellt: ein ulp nach INNEN.
+/// **Warum „Rundung weglassen" als Gegenprobe nicht taugt.** Die
+/// f64-Aussen-Rundung ist überall tragend — die erste §8u-Fassung behauptete
+/// hier, sie sei für `+ − ×` an f32-Endpunkten ein No-op, und das war für die
+/// ADDITION falsch (§8u-Korrektur): exakt ist in f64 nur das PRODUKT zweier
+/// f32 (24 + 24 = 48 ≤ 53 Mantissenbits); eine Summe mit grossem
+/// Exponentenabstand ist es nicht. Sie bleibt trotzdem schwer zu
+/// falsifizieren, weil der nachfolgende f32-Schritt viel gröber ist und die
+/// f64-Unschärfe fast immer verschluckt — das ist eine Aussage über das
+/// Sampling, nicht über die Notwendigkeit. Falsifizierbar wird die Sicherung
+/// erst, wenn man sie — wie schon `emax = −0.05` in §8t — **zu scharf**
+/// stellt: ein ulp nach INNEN.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Knobs {
     /// Ein ulp nach INNEN statt nach aussen runden. Damit ist keine einzige
@@ -350,6 +369,15 @@ pub struct Knobs {
     /// Statt der Hülle den ERSTEN erreichbaren Zweig nehmen — der klassische
     /// „das wird schon der richtige sein"-Fehler.
     pub first_branch_only: bool,
+    /// Die Quaternion-Auswertung **reassoziieren** (`v + (qw·t + qy·t₂ − qz·t₁)`
+    /// statt der Produktions-Klammerung `((v + qw·t) + qy·t₂) − qz·t₁`). Über
+    /// ℝ identisch, über f32 nicht — das war der erste blockierende Befund des
+    /// vierten Mathe-Reviews.
+    pub reassociate_rotation: bool,
+    /// Den `best.is_finite()`-Schalter in `lb_value` **weglassen**. Genau der
+    /// fehlte in der ersten §8u-Fassung; ein modelliertes `+∞` wählt dann den
+    /// `L`-Zweig, während die Produktion den `G`-Zweig nimmt.
+    pub skip_lb_finite_gate: bool,
 }
 
 /// Auswertungs-Kontext: Rundungs-Politik und Terminierungs-Budget.
@@ -361,9 +389,13 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    /// Ein Kontext mit dem üblichen Budget (eine Million Operationen je
-    /// Zelle — genug für einen `L`-Block mit 512 Stücken, endlich genug für
-    /// die Terminierung).
+    /// Ein Kontext mit dem üblichen Budget.
+    ///
+    /// **Es ist ein GEMEINSAMES Traversal-Budget, kein Budget je Zelle**
+    /// (§8u-Korrektur): derselbe `Ctx` wird durch die adaptive Rekursion
+    /// gereicht, die 4·10⁶ Operationen gelten also für den ganzen Aufruf. Das
+    /// ist die konservative Richtung — ein erschöpftes Budget endet in
+    /// `Unknown`, nie in einer Zertifizierung.
     pub fn new() -> Ctx {
         Ctx { knobs: Knobs::default(), ops: 0, max_ops: 4_000_000 }
     }
@@ -392,9 +424,9 @@ impl Ctx {
     ///
     /// 1. **f64-Aussen-Rundung.** Die reelle Reichweite der Operation über den
     ///    Operanden-Intervallen wird in f64 gerechnet; `next_down`/`next_up`
-    ///    fangen die f64-Rundung ab. (Für `+`, `−`, `×` mit f32-Endpunkten ist
-    ///    der f64-Schritt exakt und dieser Teil ein No-op; für `÷` und `√`
-    ///    ist er es nicht.)
+    ///    fangen die f64-Rundung ab. (Exakt ist der f64-Schritt nur beim
+    ///    PRODUKT zweier f32 — 24 + 24 = 48 ≤ 53 Mantissenbits. Bei `+`/`−`
+    ///    mit grossem Exponentenabstand und bei `÷`/`√` ist er es nicht.)
     /// 2. **Gerichtete f32-Rundung.** OHNE diesen Schritt wäre das Modell
     ///    **unsound**: der Produktionswert ist `fl32(reell)`, und `fl32`
     ///    rundet zur nächsten Zahl — also unter Umständen ÜBER die reelle
@@ -574,7 +606,14 @@ impl Box3 {
     }
 
     /// Halbieren entlang der längsten Achse (adaptive Unterteilung).
-    pub fn split(&self) -> (Box3, Box3) {
+    ///
+    /// **`None`, wenn die Zelle numerisch nicht mehr teilbar ist** (§8u-Korrektur):
+    /// bei benachbarten oder sehr grossen f64-Endpunkten fällt `0.5·(lo+hi)` mit
+    /// einem Endpunkt zusammen, und die „Unterteilung" liefert dann die
+    /// Elternzelle zurück — eine Endlosrekursion, kein Fortschritt. Die
+    /// Terminierung steht also nicht auf „jede Ebene halbiert", sondern auf
+    /// dieser expliziten Weigerung plus der Maximaltiefe.
+    pub fn split(&self) -> Option<(Box3, Box3)> {
         let mut k = 0;
         for j in 1..3 {
             if self.hi[j] - self.lo[j] > self.hi[k] - self.lo[k] {
@@ -582,11 +621,14 @@ impl Box3 {
             }
         }
         let m = 0.5 * (self.lo[k] + self.hi[k]);
+        if !m.is_finite() || m <= self.lo[k] || m >= self.hi[k] {
+            return None;
+        }
         let mut a = *self;
         let mut b = *self;
         a.hi[k] = m;
         b.lo[k] = m;
-        (a, b)
+        Some((a, b))
     }
 }
 
@@ -603,21 +645,40 @@ impl CellDomain for Box3 {
         ]
     }
 
+    /// Der Mittelpunkt — **so, wie er tatsächlich herauskommt**, inklusive
+    /// seiner f64-Rundung, und in die Zelle geklemmt.
+    ///
+    /// Die Klemme ist nicht Kosmetik (§8u-Korrektur): `0.5·(lo+hi)` kann bei
+    /// grossen Beträgen runden oder überlaufen. `ρ` wird gegen GENAU diesen
+    /// Punkt gerechnet, also muss er nachweislich in der Zelle liegen.
     fn center(&self) -> [f64; 3] {
-        [
-            0.5 * (self.lo[0] + self.hi[0]),
-            0.5 * (self.lo[1] + self.hi[1]),
-            0.5 * (self.lo[2] + self.hi[2]),
-        ]
+        let mut c = [0.0f64; 3];
+        for k in 0..3 {
+            let m = 0.5 * (self.lo[k] + self.hi[k]);
+            c[k] = if m.is_finite() { m.clamp(self.lo[k], self.hi[k]) } else { self.lo[k] };
+        }
+        c
     }
 
+    /// Die Halbdiagonale **relativ zum tatsächlichen [`Self::center`]**.
+    ///
+    /// §8u-Korrektur (Befund des vierten Mathe-Reviews): vorher wurde `ρ` aus
+    /// den Halbbreiten `(hi−lo)/2` gebildet, `u_at` aber am GERUNDETEN
+    /// Mittelpunkt ausgewertet. Bei `lo = 10¹⁶`, `hi = lo + 2` fällt der
+    /// gerundete Mittelpunkt mit `lo` zusammen, die Halbbreite ist `1`, der
+    /// andere Endpunkt aber `2` entfernt — `|x − c| ≤ ρ` galt dann nicht.
+    /// Jetzt ist `ρ_k = max(c_k − lo_k, hi_k − c_k)`, jede Differenz nach
+    /// oben gerundet: für `c ∈ [lo,hi]` (garantiert durch die Klemme) folgt
+    /// `|x_k − c_k| ≤ ρ_k` für jedes `x_k ∈ [lo_k, hi_k]`, und damit
+    /// `|x − c| ≤ √(Σ ρ_k²) ≤ ρ`.
+    ///
+    /// Aufgerundet in JEDEM Schritt — `ρ` ist eine Zusage („weiter kann kein
+    /// Zellpunkt vom Mittelpunkt weg sein"), also darf sie nie zu klein sein.
     fn rho(&self) -> f64 {
-        // Aufgerundet in jedem Schritt — `ρ` ist eine ZUSAGE („weiter kann
-        // kein Zellpunkt vom Mittelpunkt weg sein"), also darf sie nie zu
-        // klein sein.
+        let c = self.center();
         let mut s = 0.0f64;
         for k in 0..3 {
-            let h = next_up(0.5 * next_up(self.hi[k] - self.lo[k]));
+            let h = next_up(c[k] - self.lo[k]).max(next_up(self.hi[k] - c[k])).max(0.0);
             s = next_up(s + next_up(h * h));
         }
         next_up(s.sqrt())
@@ -809,11 +870,31 @@ pub fn enclose_lb_value(c: &mut Ctx, p: [Iv; 3], base: Iv, blk: &LbBlock) -> Enc
                 None => d,
             });
         }
-        match best {
-            // Leerer Block: `best` bleibt `∞`, `is_finite` ist falsch ⇒ neutral.
-            None => Ok(none),
-            Some(b) => c.fsub(b, Iv::f32p(blk.slack)),
+        // **Der `is_finite`-Schalter** (§8u-Korrektur, dritter blockierender
+        // Befund). Die Produktion startet mit `best = +∞` und aktualisiert nur
+        // bei `d < best`; bleibt `best` nicht-endlich — leerer Block ODER
+        // ausschliesslich nicht-endliche Stück-Distanzen (Überlauf der
+        // Quadratsumme in f32) —, liefert sie `LB_NONE` und NICHT `∞ − slack`.
+        //
+        // Das ist kein bloss breiteres Intervall: `extra > LB_AVAIL`
+        // entscheidet danach zwischen `L`- und `G`-Gate. Ein modelliertes `+∞`
+        // wählt den `L`-Zweig, während die Produktion den `G`-Zweig nimmt — die
+        // beiden Ergebnismengen enthalten einander dann NICHT.
+        let Some(b) = best else {
+            // Leerer Block: `best` bleibt `∞` ⇒ neutral, ohne Schalter.
+            return Ok(none);
+        };
+        if c.knobs.skip_lb_finite_gate {
+            return c.fsub(b, Iv::f32p(blk.slack));
         }
+        let fin = if b.lo.is_finite() && b.hi.is_finite() {
+            Decision::True
+        } else if b.lo == f64::INFINITY {
+            Decision::False
+        } else {
+            Decision::Both
+        };
+        sw(c, fin, |c| c.fsub(b, Iv::f32p(blk.slack)), |_| Ok(none))
     };
 
     sw(c, neutral, |_| Ok(none), value)
@@ -993,6 +1074,22 @@ fn enc_dist_aabb(c: &mut Ctx, p: [Iv; 3], bb: crate::csg::Aabb) -> Enc {
     if bb.is_empty() {
         return Ok(Iv::point(f64::INFINITY));
     }
+    // **Der exakte Null-Kurzschluss** (§8u-Korrektur). Liegt die ganze Zelle in
+    // der AABB, ist `(min−p).max(0).max(p−max)` für JEDE Achse exakt `0.0` —
+    // beide Differenzen sind `≤ 0`, und `max` rechnet nicht, es wählt. Also
+    // sind Quadratsumme und Wurzel exakt null, und die Produktion liefert
+    // exakt `0.0`.
+    //
+    // Ohne diesen Kurzschluss weitet die Aussen-Rundung die Null auf ein
+    // winziges POSITIVES Intervall — und genau daran hing die Prune-Bedingung
+    // `second_bound > 0.0` in [`enclose_node`]: der Prune-Fall wurde
+    // zugelassen, `min(d_first, bnd)` kollabierte auf ~0, und die obere
+    // Schranke einer Vereinigung tief im Material sprang von `−4` auf `0`.
+    // Das war keine Unsoundness (zu WEIT ist sicher), aber es hat Zweig 2
+    // im ganzen Material-Inneren blind gemacht.
+    if (0..3).all(|k| p[k].lo >= bb.min[k] as f64 && p[k].hi <= bb.max[k] as f64) {
+        return Ok(Iv::point(0.0));
+    }
     let mut q = [Iv::point(0.0); 3];
     for k in 0..3 {
         let a = c.fsub(Iv::f32p(bb.min[k]), p[k])?;
@@ -1000,7 +1097,10 @@ fn enc_dist_aabb(c: &mut Ctx, p: [Iv; 3], bb: crate::csg::Aabb) -> Enc {
         q[k] = a.max(Iv::point(0.0)).max(b);
     }
     let s = c.fdot(q, q)?;
-    c.fsqrt(s)
+    let d = c.fsqrt(s)?;
+    // Eine f32-Distanz ist nichtnegativ; die Aussen-Rundung darf die untere
+    // Schranke nicht unter null drücken.
+    Iv::new(d.lo.max(0.0), d.hi.max(0.0)).ok_or(Unknown("NaN(aabb)"))
 }
 
 /// Ein Primitiv, eingeschlossen. Unterstützt sind `Box`, `Sphere` und
@@ -1071,19 +1171,31 @@ fn enc_world_to_local(c: &mut Ctx, t: &Transform, p: [Iv; 3]) -> Result<[Iv; 3],
     let t0 = mk(c, qy, v[2], qz, v[1])?;
     let t1 = mk(c, qz, v[0], qx, v[2])?;
     let t2 = mk(c, qx, v[1], qy, v[0])?;
-    let comb = |c: &mut Ctx, base: Iv, a: Iv, b: Iv, x: Iv, y: Iv| -> Enc {
+    // **Die Produktions-Klammerung, Zeichen für Zeichen** (§8u-Korrektur).
+    // `v[0] + qw * t[0] + qy * t[2] - qz * t[1]` parst Rust links-assoziativ
+    // als `(((v₀ ⊕ (qw⊗t₀)) ⊕ (qy⊗t₂)) ⊖ (qz⊗t₁))`. Die erste §8u-Fassung
+    // rechnete stattdessen erst den Rotationsanteil zusammen und addierte `v`
+    // zum Schluss — über ℝ dasselbe, über f32 NICHT: bei Auslöschung zwischen
+    // `v` und dem Rotationsanteil weicht die Reassoziation weit mehr ab, als
+    // die Ein-ULP-Weitung deckt. Damit trug Beweispflicht 5 für gedrehte
+    // Blätter nicht.
+    let comb = |c: &mut Ctx, vk: Iv, base: Iv, a: Iv, b: Iv, x: Iv, y: Iv| -> Enc {
         let m0 = c.fmul(qw, base)?;
         let m1 = c.fmul(a, x)?;
         let m2 = c.fmul(b, y)?;
-        let s = c.fadd(m0, m1)?;
+        if c.knobs.reassociate_rotation {
+            // Gegenprobe: die falsche (reassoziierte) Reihenfolge.
+            let s = c.fadd(m0, m1)?;
+            let s = c.fsub(s, m2)?;
+            return c.fadd(vk, s);
+        }
+        let s = c.fadd(vk, m0)?;
+        let s = c.fadd(s, m1)?;
         c.fsub(s, m2)
     };
-    let r0 = comb(c, t0, qy, qz, t2, t1)?;
-    let r1 = comb(c, t1, qz, qx, t0, t2)?;
-    let r2 = comb(c, t2, qx, qy, t1, t0)?;
-    let e0 = c.fadd(v[0], r0)?;
-    let e1 = c.fadd(v[1], r1)?;
-    let e2 = c.fadd(v[2], r2)?;
+    let e0 = comb(c, v[0], t0, qy, qz, t2, t1)?;
+    let e1 = comb(c, v[1], t1, qz, qx, t0, t2)?;
+    let e2 = comb(c, v[2], t2, qx, qy, t1, t0)?;
     Ok([
         c.fdiv(e0, Iv::f32p(t.scale[0]))?,
         c.fdiv(e1, Iv::f32p(t.scale[1]))?,
@@ -1203,8 +1315,12 @@ pub fn certify_cell(
 ) -> Verdict {
     let rho = cell.rho();
     if let Some(u) = u_at(cell.center()) {
-        // Aufwärts gerundet: die Summe darf die Schranke nicht unterlaufen.
-        if next_up(u + rho) <= delta + tol {
+        // **Beide Seiten gerichtet** (§8u-Korrektur): die linke Seite nach
+        // oben, die RECHTE nach unten. Vorher rundete nur die linke aussen —
+        // rundet `δ + tol` in f64 nach oben, akzeptierte die Prüfung knapp
+        // OBERHALB der Schwelle. Jetzt impliziert das Bestehen
+        // `u + ρ ≤ δ + tol` in ℝ.
+        if next_up(u + rho) <= next_down(delta + tol) {
             return Verdict::Branch1;
         }
     }
@@ -1221,9 +1337,15 @@ pub fn certify_cell(
 }
 
 /// Zertifizierung mit **adaptiver Unterteilung**. Erreicht die Rekursion
-/// `max_depth`, ist das Ergebnis `Unknown` — nie Erfolg (Beweispflicht 10,
-/// Terminierung: die Tiefe ist beschränkt, jede Ebene halbiert, die Zahl der
-/// Zellen ist `≤ 2^max_depth`).
+/// `max_depth`, ist das Ergebnis `Unknown` — nie Erfolg.
+///
+/// **Terminierung** (Beweispflicht 10, §8u-korrigiert): sie steht auf DREI
+/// Schranken, nicht auf „jede Ebene halbiert". Erstens die Maximaltiefe
+/// (`≤ 2^max_depth` Teilzellen). Zweitens [`Box3::split`], das eine numerisch
+/// nicht mehr teilbare Zelle ehrlich verweigert — bei benachbarten oder sehr
+/// grossen f64-Endpunkten fällt der Mittelpunkt mit einem Endpunkt zusammen,
+/// und ohne diese Weigerung liefe die Rekursion auf der Elternzelle weiter.
+/// Drittens das gemeinsame Operations-Budget in [`Ctx`].
 ///
 /// Rückgabe: `Ok((n_branch1, n_branch2))` mit der Zahl der Teilzellen je
 /// Zweig, oder der erste `Unknown`-Grund.
@@ -1243,7 +1365,9 @@ pub fn certify_cell_adaptive(
             if max_depth == 0 {
                 return Err(why);
             }
-            let (a, b) = cell.split();
+            let Some((a, b)) = cell.split() else {
+                return Err("Zelle numerisch nicht mehr teilbar");
+            };
             let ra = certify_cell_adaptive(&a, field, delta, tol, u_at, max_depth - 1, c)?;
             let rb = certify_cell_adaptive(&b, field, delta, tol, u_at, max_depth - 1, c)?;
             Ok((ra.0 + rb.0, ra.1 + rb.1))
