@@ -12231,7 +12231,9 @@ fn arc_interval_unlocks_the_hub_384() {
                 iv::Verdict::Branch2
             ) {
                 b2 += 1;
-                if c.curved_arc_evals() > 0 {
+                // **Der starke Nachweis**: der Bogen hat die §8w-Auswahl
+                // überlebt UND sein Downstream ist in die Hülle eingegangen.
+                if c.curved_downstream() > 0 {
                     with_arc += 1;
                 }
             }
@@ -12331,40 +12333,245 @@ fn arc_interval_counter_probes_384() {
     }
     // Die ρ-Intersektion: ohne sie verliert die Kette Zellen an die Division
     // (fail-closed), statt sie auszuwerten.
-    // **Der ρ-Schnitt, auf der Mechanismus-Ebene gepinnt — mit ehrlichem
-    // Nebenbefund.**
-    //
-    // Die naheliegende Familie („Zelle enthält die Bogenachse, ohne Schnitt
-    // geht sie an der Division verloren") ist NICHT baubar, und der Grund ist
-    // strukturell: enthält die Zelle die Achse, so überspannen `x` und `y`
-    // beide die Null, und dann überspannt auch der Diamant-Nenner `x + y` die
-    // Null — `fdiv` verweigert dort ZUERST. Umgekehrt: ist der Diamant-Nenner
-    // beweisbar nullfrei (`min y > max |x|`), dann ist `ρ ≥ min y` ebenfalls
-    // von der Null weg, und der ρ-Schalter ist gar nicht gemischt. Beide
-    // Bedingungen schliessen einander aus.
-    //
-    // Der Schnitt bleibt trotzdem eine SOUNDNESS-Pflicht, keine Optimierung:
-    // ohne ihn stünde im Code eine Division durch ein Intervall, das die Null
-    // enthalten KANN, und die Verweigerung hinge an einer Koinzidenz zweier
-    // Nenner statt an einem Argument. Gepinnt wird deshalb der Mechanismus.
-    let raw = iv::Iv { lo: 0.0, hi: 1.0 };
-    let cut = raw
-        .intersect(iv::Iv { lo: 1.0e-9, hi: f64::INFINITY })
-        .expect("ρ-Schnitt ist leer");
-    assert!(cut.lo >= 1.0e-9, "der Schnitt hebt die untere Schranke nicht an");
-    let mut c = iv::Ctx::new();
+    // Der ρ-Schnitt hat einen eigenen Pin
+    // (`arc_interval_rho_cut_is_sharpness_not_soundness_384`).
+}
+
+
+
+/// **§8z-Korrektur-Pin: der ρ-Schnitt ist SCHÄRFE, keine Soundness-Pflicht —
+/// und die behauptete Dichotomie ist falsch.**
+///
+/// Die erste A1-Fassung behauptete zweierlei zu stark, beides wird hier
+/// richtiggestellt:
+///
+/// * **„Nullfreie Diamant-Nenner und ein gemischter ρ-Schalter schliessen
+///   einander aus."** Das ist im f32-Intervallmodell **kein Satz**. Bei sehr
+///   engem `x` um null und `y` wenige ulp oberhalb der Schwelle sind `x + y`
+///   und `y − x` klar positiv, während die auswärts versiegelte Kette
+///   `sqrt(x² + y²)` mit ihrer UNTEREN Schranke unter die Schwelle rutscht.
+///   Der Pin führt genau diese Konfiguration vor.
+/// * **„Der Schnitt ist eine Soundness-Pflicht."** Auch falsch: ohne ihn
+///   verweigert `fdiv` ein nullhaltiges Roh-Intervall ohnehin fail-closed, und
+///   die Division durch ein nullfreies Roh-Intervall ist sound, nur breiter.
+///
+/// **Was statt der Dichotomie gilt** — und warum die ursprünglich geforderte
+/// Familie („ohne Schnitt verloren, mit Schnitt ausgewertet") trotz ehrlichen
+/// Versuchs nicht baubar ist:
+///
+/// > Die Roh-Division verweigert genau dann, wenn `0 ∈ ρ`, also `ρ.lo = 0`.
+/// > Mit `fsquare ≥ 0` gilt `ρ.lo = 0` genau dann, wenn `0 ∈ x` UND `0 ∈ y`.
+/// > Dann ist aber auch `0 ∈ x + y` (untere Schranken addieren sich, obere
+/// > ebenso), und der Q1-Diamant-Zweig wird wegen `0 ∈ x` immer mit
+/// > ausgewertet (`decide_ge(x,0) ≠ False`). Sein `fdiv` verweigert also
+/// > ebenfalls — mit oder ohne ρ-Schnitt. ∎
+///
+/// Der Schnitt bleibt richtig und gewollt: er hebt `1/ρ` aus der
+/// Schwellen-Nähe und verengt das Ergebnis.
+#[test]
+fn arc_interval_rho_cut_is_sharpness_not_soundness_384() {
+    use iv::CellDomain;
+    let arc = synth_arc(2.0, 1.5707963, [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+    let ulp = |v: f32, n: i64| f32::from_bits((v.to_bits() as i64 + n) as u32);
+    let thr = 1.0e-9f32 as f64;
+    // (1) Ko-Existenz: gemischter ρ-Schalter UND nullfreie Diamant-Nenner.
+    let mut co_existence = 0usize;
+    for (xlo, xhi, ylo, yhi) in [
+        (-1.0e-15f32, 1.0e-15f32, 1.0e-9f32, ulp(1.0e-9, 1)),
+        (-1.0e-12, 1.0e-12, 1.0e-9, ulp(1.0e-9, 4)),
+    ] {
+        let cell = iv::Box3::new([xlo as f64, ylo as f64, 0.0], [xhi as f64, yhi as f64, 0.0]);
+        let w = cell.world_f32();
+        let mut c = iv::Ctx::new();
+        let (x, y) = (w[0], w[1]);
+        let xx = c.fsquare(x).unwrap();
+        let yy = c.fsquare(y).unwrap();
+        let r2 = c.fadd(xx, yy).unwrap();
+        let rho = c.fsqrt(r2).unwrap();
+        let d1 = c.fadd(x, y).unwrap();
+        let d2 = c.fsub(y, x).unwrap();
+        let mixed = rho.lo < thr && rho.hi >= thr;
+        let nz = !(d1.lo <= 0.0 && d1.hi >= 0.0) && !(d2.lo <= 0.0 && d2.hi >= 0.0);
+        if mixed && nz {
+            co_existence += 1;
+            // Und GENAU hier gibt es keinen Fail-closed-Unterschied: `ρ.lo > 0`.
+            assert!(rho.lo > 0.0, "ρ.lo = 0 trotz nullfreier Nenner");
+            let ok_cut = iv::enc_arc_closest(&mut iv::Ctx::new(), w, &arc).is_ok();
+            let ok_raw = iv::enc_arc_closest(
+                &mut iv::Ctx::with_knobs(iv::Knobs {
+                    arc_skip_rho_intersect: true,
+                    ..Default::default()
+                }),
+                w,
+                &arc,
+            )
+            .is_ok();
+            assert!(
+                ok_cut && ok_raw,
+                "hier darf der Schnitt keinen Fail-closed-Unterschied machen"
+            );
+        }
+    }
     assert!(
-        c.fdiv(iv::Iv { lo: -1.0, hi: 1.0 }, raw).is_err(),
-        "die Division durch das ROHE ρ-Intervall wird nicht verweigert"
+        co_existence > 0,
+        "die behauptete Dichotomie liesse sich nicht widerlegen — dann wäre die \
+         Richtigstellung unbegründet"
     );
+    // (2) Wo die Roh-Division WIRKLICH verweigert, verweigert der Diamant auch.
+    let both_zero = iv::Box3::new([-1.0e-9, -1.0e-9, 0.0], [1.0e-9, 1.0e-9, 0.0]);
+    let w = both_zero.world_f32();
+    let mut c = iv::Ctx::new();
+    let sx = c.fsquare(w[0]).unwrap();
+    let sy = c.fsquare(w[1]).unwrap();
+    let r2 = c.fadd(sx, sy).unwrap();
+    let rho = c.fsqrt(r2).unwrap();
+    assert_eq!(rho.lo, 0.0, "die Konfiguration trifft den ρ.lo = 0-Fall nicht");
+    let den = c.fadd(w[0], w[1]).unwrap();
     assert!(
-        c.fdiv(iv::Iv { lo: -1.0, hi: 1.0 }, cut).is_ok(),
-        "die Division durch das GESCHNITTENE ρ-Intervall schlägt fehl"
+        den.lo <= 0.0 && den.hi >= 0.0,
+        "ρ.lo = 0, aber der Q1-Nenner ist nullfrei — dann bricht das Argument"
+    );
+    assert!(iv::enc_arc_closest(&mut iv::Ctx::new(), w, &arc).is_err());
+    // (3) Der Schnitt VERENGT: das Ergebnis wird schmaler.
+    let cell = iv::Box3::new([-1.0e-15, 1.0e-9, 0.0], [1.0e-15, ulp(1.0e-9, 1) as f64, 0.0]);
+    let w = cell.world_f32();
+    let width = |knobs: iv::Knobs| -> f64 {
+        let mut c = iv::Ctx::with_knobs(knobs);
+        let alts = iv::enc_arc_closest(&mut c, w, &arc).expect("nicht auswertbar");
+        alts.iter().map(|a| a.t.width()).fold(0.0f64, f64::max)
+    };
+    let with_cut = width(iv::Knobs::default());
+    let without = width(iv::Knobs { arc_skip_rho_intersect: true, ..Default::default() });
+    // **Ehrlich gemessen:** der Schnitt verschlechtert nichts, aber sein
+    // Gewinn liegt hier UNTER der f32-Auflösung — er hebt `ρ.lo` nur um rund
+    // `10⁻⁷` relativ, und das Ergebnis rastet auf dasselbe f32-Gitter. Der
+    // Schnitt wird deshalb NICHT mit gemessener Schärfe begründet, sondern mit
+    // **Modell-Treue**: die Produktion erreicht diesen Ast nur mit `ρ ≥ 1e-9`,
+    // und genau das soll im Modell stehen — statt dass die Verweigerung an der
+    // Koinzidenz hängt, wo `fdiv` zuerst zuschlägt.
+    assert!(
+        with_cut <= without,
+        "der Schnitt VERBREITERT: {with_cut:.3e} gegen {without:.3e}"
     );
     println!(
-        "§8z-Gegenproben: ρ-Schnitt hebt lo auf {:.1e}; rohe Division verweigert, \
-         geschnittene nicht. Achsenhaltige Zellen scheitern strukturell schon am \
-         Diamant-Nenner (Nebenbefund).",
-        cut.lo
+        "§8z-Korrektur: Ko-Existenz an {co_existence} Konfigurationen belegt (Dichotomie \
+         widerlegt); t-Breite mit Schnitt {with_cut:.3e}, ohne {without:.3e} — die \
+         Verengung liegt unter der f32-Auflösung, der Schnitt steht auf Modell-Treue"
+    );
+}
+
+/// **§8z-Korrektur-Pin: die `L → Entire`-Brücke trägt 480 Zellen.**
+///
+/// Die Brücke ist sound (beide `lbv`-Konsumenten führen nur in `min`-Ketten,
+/// und im konkaven Zweig ist jeder Ausgang `≤ d`), aber ihre Wirkung war nicht
+/// separat gepinnt. Mit der Ablation (`lb_unknown_rejects`) fallen die
+/// Nabe-Zellen zurück.
+#[test]
+fn arc_interval_lb_entire_bridge_is_load_bearing_384() {
+    let delta = 2.0f32;
+    let (field, _) = compile_for(stepped_hub_node(3.0, 6.0, 4.0, 0.5, 1.2, 1.8, delta));
+    let none = |_c: [f64; 3]| None;
+    let cells = fixture_cells([-1.5, -1.5, 1.2], [1.5, 1.5, 3.2], 8);
+    let run = |knobs: iv::Knobs| -> usize {
+        cells
+            .iter()
+            .filter(|cell| {
+                let mut c = iv::Ctx::with_knobs(knobs);
+                matches!(
+                    iv::certify_cell(cell, &field, delta as f64, CERT_TOL, &none, &mut c),
+                    iv::Verdict::Branch2
+                )
+            })
+            .count()
+    };
+    let with_bridge = run(iv::Knobs::default());
+    let without = run(iv::Knobs { lb_unknown_rejects: true, ..Default::default() });
+    assert!(with_bridge > 0, "die Brücke trägt hier nichts — der Pin misst nichts");
+    assert!(
+        without < with_bridge,
+        "ohne die Brücke bleiben genauso viele Zertifikate ({without} von {with_bridge}) — \
+         dann ist sie nicht lasttragend"
+    );
+    println!("§8z: L→Entire trägt {with_bridge} Zellen, Ablation ⇒ {without}");
+}
+
+/// **§8z-Korrektur-Pin: die frühe `q`/`t`-Hüllung kostet Breite.**
+///
+/// Sie wäre sound — die Gegenprobe ist deshalb keine Soundness-, sondern eine
+/// SCHÄRFE-Probe: sie kombiniert Paare, die `arc_closest` nie erzeugt (`q` vom
+/// Endpunkt-Ast, `t` vom Fusspunkt-Ast). Messbar wird das nur, wo eine Zelle
+/// wirklich MEHRERE Alternativen hat — an den Nabe-Zellen hat jeder Bogen nur
+/// eine, dort ist die frühe Hüllung folgerichtig ein No-op.
+#[test]
+fn arc_interval_early_qt_hull_is_wider_384() {
+    use iv::CellDomain;
+    let e = |v: [f32; 3]| {
+        let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        [v[0] / n, v[1] / n, v[2] / n]
+    };
+    // Ein gekrümmter Bogen mit STARK verschiedenen Dualvektoren — sonst wirkt
+    // ein anderes `t` sich gar nicht aus.
+    let mut arc = synth_arc(2.0, 1.5707963, [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+    arc.m1s = e([0.0, 1.0, 1.0]);
+    arc.m1e = e([0.0, -1.0, 1.0]);
+    arc.m2s = e([1.0, 0.0, 1.0]);
+    arc.m2e = e([-1.0, 0.0, 1.0]);
+    let ch = synth_channel(vec![arc], true);
+    let dfull = ivf(-6.0, 3.0);
+    let ex = ivf(-1.0e30, 1.0);
+    // Zellen, die die Sektor- bzw. Endpunkt-Schaltfläche überspannen — dort
+    // koexistieren Fusspunkt- und Endpunkt-Alternative.
+    let mut cells: Vec<iv::Box3> = Vec::new();
+    for i in -6i32..=6 {
+        for j in -6i32..=6 {
+            for h in [0.35f64, 0.9, 1.8] {
+                cells.push(iv::Box3::cube(
+                    [i as f64 * 0.8, j as f64 * 0.8, 0.3],
+                    h,
+                ));
+            }
+        }
+    }
+    let (mut multi, mut wider) = (0usize, 0usize);
+    let (mut w_t, mut w_e) = (0.0f64, 0.0f64);
+    for cell in &cells {
+        let mut cc = iv::Ctx::new();
+        let alts = iv::enc_arc_closest(&mut cc, cell.world_f32(), &ch.arcs[0]);
+        if !matches!(&alts, Ok(a) if a.len() > 1) {
+            continue;
+        }
+        multi += 1;
+        let width = |knobs: iv::Knobs| -> Option<f64> {
+            let mut c = iv::Ctx::with_knobs(knobs);
+            iv::enclose_channel_apply(&mut c, cell.world_f32(), dfull, dfull, &ch, ex)
+                .ok()
+                .map(|v| v.width())
+        };
+        let (Some(t), Some(ee)) = (
+            width(iv::Knobs::default()),
+            width(iv::Knobs { arc_hull_qt_early: true, ..Default::default() }),
+        ) else {
+            continue;
+        };
+        assert!(
+            ee >= t - 1e-12,
+            "die frühe Hüllung ist ENGER ({ee:.6e} < {t:.6e}) — das wäre unmöglich"
+        );
+        w_t = w_t.max(t);
+        w_e = w_e.max(ee);
+        if ee > t {
+            wider += 1;
+        }
+    }
+    assert!(multi >= 2, "nur {multi} Zellen mit mehreren Alternativen — der Pin misst nichts");
+    assert!(
+        wider > 0,
+        "die frühe q/t-Hüllung kostet an KEINER der {multi} mehrdeutigen Zellen Breite \
+         (max {w_e:.6e} gegen {w_t:.6e}) — dann ist die Behauptung im Doc unbegründet \
+         und gehört gestrichen"
+    );
+    println!(
+        "§8z: frühe q/t-Hüllung an {wider} von {multi} mehrdeutigen Zellen breiter \
+         (max {w_e:.6e} gegen {w_t:.6e})"
     );
 }

@@ -404,6 +404,9 @@ pub struct Knobs {
     /// #384 §8z: gekrümmte Bögen wieder pauschal verweigern — die **Ablation**,
     /// die den A1-Erfolg gezielt entfernt.
     pub arc_refuse_curved: bool,
+    /// #384 §8z: ein unbekanntes `L` verwirft wieder den ganzen Stopp
+    /// (Ablation der `Entire`-Brücke).
+    pub lb_unknown_rejects: bool,
     /// Den `best.is_finite()`-Schalter in `lb_value` **weglassen**. Genau der
     /// fehlte in der ersten §8u-Fassung; ein modelliertes `+∞` wählt dann den
     /// `L`-Zweig, während die Produktion den `G`-Zweig nimmt.
@@ -419,6 +422,7 @@ pub struct Ctx {
     channel_evals: u64,
     max_candidates: usize,
     curved_arc_evals: u64,
+    curved_downstream: u64,
 }
 
 impl Ctx {
@@ -437,6 +441,7 @@ impl Ctx {
             channel_evals: 0,
             max_candidates: 0,
             curved_arc_evals: 0,
+            curved_downstream: 0,
         }
     }
 
@@ -470,6 +475,19 @@ impl Ctx {
     /// zufällig neben einem liegt.
     pub fn curved_arc_evals(&self) -> u64 {
         self.curved_arc_evals
+    }
+
+    /// #384 §8z-Korrektur — **der starke Beteiligungs-Nachweis.**
+    ///
+    /// [`Self::curved_arc_evals`] zählt am EINTRITT von `enc_arc_closest`,
+    /// also VOR der §8w-Auswahl (`can_update`) und vor dem Downstream. Es
+    /// belegt damit nur „ein gekrümmter Bogen wurde eingeschlossen" — nicht
+    /// „ein gekrümmter Kandidat hat die Auswahl überlebt und sein Downstream
+    /// ist in die Hülle eingegangen". Dieser Zähler wird erst in
+    /// [`enclose_channel_apply`] innerhalb der Kandidaten-/Alternativen-Schleife
+    /// erhöht, und zwar nur für einen wirklich gekrümmten Bogen.
+    pub fn curved_downstream(&self) -> u64 {
+        self.curved_downstream
     }
 
     #[inline]
@@ -564,7 +582,12 @@ impl Ctx {
             return Err(Unknown("NaN(square)"));
         }
         let lo = if a.lo <= 0.0 && a.hi >= 0.0 { 0.0 } else { l2.min(h2) };
-        self.seal(lo, l2.max(h2))
+        let r = self.seal(lo, l2.max(h2))?;
+        // Wie bei `fsqrt`: die Aussen-Rundung darf die untere Schranke nicht
+        // unter null drücken — ein f32-Quadrat ist nie negativ. Ohne diese
+        // Klemme läge `lo` beim kleinsten negativen Subnormal, und der
+        // Kommentar „`[0, …]`" wäre schlicht falsch.
+        Iv::new(r.lo.max(0.0), r.hi.max(0.0)).ok_or(Unknown("NaN(square)"))
     }
 
     /// **Die sichere Wurzel** (§8u-Lemma 8).
@@ -1094,7 +1117,14 @@ fn enclose_stop(
     //
     // Fail-closed bleibt gewahrt — `Entire` behauptet nichts.
     let lbv = match lb {
-        Some(b) if need_lb => enclose_lb_value(c, p, d0, b).unwrap_or(Iv::ENTIRE),
+        Some(b) if need_lb => {
+            let r = enclose_lb_value(c, p, d0, b);
+            if c.knobs.lb_unknown_rejects {
+                r?
+            } else {
+                r.unwrap_or(Iv::ENTIRE)
+            }
+        }
         _ => Iv::f32p(LB_NONE),
     };
     if !all_neutral {
@@ -1283,11 +1313,17 @@ struct ArcCand {
 ///
 /// ## Die tragende Stelle: `ρ` vor der Division schneiden
 ///
-/// Ist der ρ-Schalter gemischt, MUSS der Nicht-Achsen-Ast mit
-/// `ρ ∩ [1e-9, ∞)` rechnen, **bevor** `x/ρ` gebildet wird. Das rohe
-/// ρ-Intervall enthält dann die Null, und eine Division dadurch ist
-/// **unzulässig** — nicht bloss breit. Der Schnitt ist zulässig, weil auf
-/// diesem Ast die Produktion `ρ ≥ 1e-9` bereits geprüft hat.
+/// Ist der ρ-Schalter gemischt, rechnet der Nicht-Achsen-Ast mit
+/// `ρ ∩ [1e-9, ∞)`, **bevor** `x/ρ` gebildet wird. Der Schnitt ist zulässig,
+/// weil die Produktion auf diesem Ast `ρ ≥ 1e-9` bereits geprüft hat.
+///
+/// **Er ist eine SCHÄRFE-Massnahme, keine Soundness-Pflicht**
+/// (Richtigstellung nach dem zwölften Review; die erste A1-Fassung behauptete
+/// „Division durchs rohe Intervall wäre unzulässig"). Ohne den Schnitt
+/// verweigert [`Ctx::fdiv`] ein nullhaltiges Roh-Intervall ohnehin
+/// fail-closed, und die Division durch ein nullfreies Roh-Intervall ist sound
+/// — nur breiter und schlechter konditioniert. Richtig und gewollt bleibt der
+/// Schnitt trotzdem: er hebt `1/ρ` aus der Nähe der Schwelle heraus.
 ///
 /// Die Kondition `1/ρ` bleibt bei nullfreiem Intervall ein reines
 /// BREITEN-Problem; dagegen hilft Unterteilung oder `Unknown` — **nie ein
@@ -1300,6 +1336,14 @@ struct ArcCand {
 /// Quadranten" darf KEINE Box-Untergrenze werden: über einer Zelle ist die
 /// Korrelation zwischen `x` und `y` verloren. Nicht beweisbar nullfrei ⇒
 /// `Unknown` und Unterteilung.
+///
+/// **Keine Dichotomie zum ρ-Schalter.** Die erste A1-Fassung behauptete,
+/// nullfreie Diamant-Nenner und ein gemischter ρ-Schalter schlössen einander
+/// aus. Das ist im f32-Intervallmodell **kein Satz**: bei sehr engem `x` um
+/// null und `y` wenige ulp oberhalb der Schwelle sind `x + y` und `y − x`
+/// klar positiv, während die auswärts versiegelte Kette
+/// `sqrt(x² + y²)` mit ihrer UNTEREN Schranke unter die Schwelle rutschen
+/// kann. Beides tritt dann gleichzeitig auf.
 pub(crate) fn enc_arc_closest(
     c: &mut Ctx,
     p: [Iv; 3],
@@ -1715,6 +1759,9 @@ pub fn enclose_channel_apply(
                 near.alts.clone()
             };
             let arc = &ch.arcs[near.idx];
+            if !(arc.sweep < 0.0) {
+                c.curved_downstream += 1;
+            }
             for alt in &alts {
                 let m1 = enc_nlerp(c, arc.m1s, arc.m1e, alt.t)?;
                 let m2 = enc_nlerp(c, arc.m2s, arc.m2e, alt.t)?;

@@ -6439,28 +6439,53 @@ ein Bogen möglicher Produktionsgewinner ist, läuft **jede** Alternative
 vollständig durch `t → enc_nlerp → channel_apply`; erst die ERGEBNISSE werden
 gehüllt.
 
-### Die tragende Stelle: `ρ` vor der Division schneiden
+### `ρ` vor der Division schneiden — Schärfe und Modell-Treue
 
-Ist der ρ-Schalter gemischt, MUSS der Nicht-Achsen-Ast mit `ρ ∩ [1e-9, ∞)`
-rechnen, **bevor** `x/ρ` gebildet wird. Das rohe ρ-Intervall enthält dann die
-Null, und eine Division dadurch ist **unzulässig** — nicht bloss breit. Der
-Schnitt ist zulässig, weil die Produktion auf diesem Ast `ρ ≥ 1e-9` bereits
-geprüft hat.
+Ist der ρ-Schalter gemischt, rechnet der Nicht-Achsen-Ast mit `ρ ∩ [1e-9, ∞)`,
+**bevor** `x/ρ` gebildet wird. Zulässig ist der Schnitt, weil die Produktion auf
+diesem Ast `ρ ≥ 1e-9` bereits geprüft hat.
+
+**Richtigstellung nach dem zwölften Review.** Die erste A1-Fassung behauptete
+hier zwei Dinge zu stark; beide sind falsch:
+
+* **„Division durchs rohe Intervall wäre unzulässig — nicht bloss breit."**
+  Nein. Ohne den Schnitt verweigert [`Ctx::fdiv`] ein nullhaltiges
+  Roh-Intervall ohnehin fail-closed, und die Division durch ein nullfreies
+  Roh-Intervall ist **sound**, nur breiter und schlechter konditioniert. Der
+  Schnitt ist eine **Schärfe-/Konditionierungs-Massnahme**, keine
+  Soundness-Pflicht.
+* **„Nullfreie Diamant-Nenner und ein gemischter ρ-Schalter schliessen einander
+  aus."** Auch falsch, und das ist der interessantere Fehler. Im
+  f32-Intervallmodell ist das **kein Satz**: bei sehr engem `x` um null und `y`
+  wenige ulp oberhalb der Schwelle sind `x + y` und `y − x` klar positiv,
+  während die auswärts versiegelte Kette `sqrt(x² + y²)` mit ihrer UNTEREN
+  Schranke unter die Schwelle rutscht. Der Pin
+  `arc_interval_rho_cut_is_sharpness_not_soundness_384` führt genau diese
+  Konfiguration vor — die Ko-Existenz ist gemessen, die Dichotomie widerlegt.
+
+**Was statt der Dichotomie gilt.** Die ursprünglich geforderte Familie („ohne
+Schnitt verloren, mit Schnitt ausgewertet") ist nach ehrlichem Versuch mit genau
+der Review-Parametrisierung **nicht baubar**, aber aus einem anderen, korrekt
+formulierbaren Grund:
+
+> Die Roh-Division verweigert genau dann, wenn `0 ∈ ρ`, also `ρ.lo = 0`. Mit
+> `fsquare ≥ 0` gilt `ρ.lo = 0` genau dann, wenn `0 ∈ x` UND `0 ∈ y`. Dann ist
+> aber auch `0 ∈ x + y`, und der Q1-Diamant-Zweig wird wegen `0 ∈ x` immer mit
+> ausgewertet (`decide_ge(x,0) ≠ False`). Sein `fdiv` verweigert also
+> ebenfalls — mit oder ohne ρ-Schnitt. ∎
+
+Beide Aussagen sind gepinnt: die Ko-Existenz (Dichotomie widerlegt) und der
+`ρ.lo = 0`-Fall (dort verweigert auch der Nenner).
+
+**Und die Schärfe? Nicht messbar.** Der Schnitt hebt `ρ.lo` nur um rund `10⁻⁷`
+relativ; das Ergebnis rastet auf dasselbe f32-Gitter, die `t`-Breite ist mit und
+ohne Schnitt identisch (`2.205·10⁻⁶`). Der Schnitt bleibt trotzdem richtig und
+gewollt — begründet wird er ab jetzt mit **Modell-Treue**: die Produktion
+erreicht diesen Ast nur mit `ρ ≥ 1e-9`, und genau das soll im Modell stehen,
+statt dass die Verweigerung an der Koinzidenz hängt, wo `fdiv` zuerst zuschlägt.
 
 Die Kondition `1/ρ` bleibt bei nullfreiem Intervall ein reines BREITEN-Problem;
 dagegen hilft Unterteilung oder `Unknown` — **nie ein Fehlerbudget**.
-
-**Ehrlicher Nebenbefund:** die naheliegende Gegenprobe („Zelle enthält die
-Achse, ohne Schnitt geht sie an der Division verloren") ist **nicht baubar**,
-und der Grund ist strukturell. Enthält die Zelle die Achse, überspannen `x` und
-`y` beide die Null — dann überspannt auch der Diamant-Nenner `x + y` die Null,
-und `fdiv` verweigert dort ZUERST. Umgekehrt: ist der Diamant-Nenner beweisbar
-nullfrei (`min y > max |x|`), dann ist `ρ ≥ min y` ebenfalls von der Null weg,
-und der ρ-Schalter ist gar nicht gemischt. Beide Bedingungen schliessen
-einander aus. Der Schnitt bleibt trotzdem SOUNDNESS-Pflicht: ohne ihn stünde im
-Code eine Division durch ein Intervall, das die Null enthalten KANN, und die
-Verweigerung hinge an einer Koinzidenz zweier Nenner statt an einem Argument.
-Gepinnt wird deshalb der Mechanismus, nicht eine erfundene Familie.
 
 ### Was mitgefunden wurde
 
@@ -6468,7 +6493,9 @@ Gepinnt wird deshalb der Mechanismus, nicht eine erfundene Familie.
   Vier-Produkte-Regel liefert für ein nullüberspannendes `x` eine NEGATIVE
   untere Schranke (`x.lo·x.hi < 0`); die Produktion rechnet aber `x*x`, und ein
   f32-Quadrat ist nie negativ. Neu `Ctx::fsquare` mit `[0, max(lo², hi²)]` —
-  faithful UND enger.
+  faithful UND enger. Nach dem `seal` wird die untere Schranke wie bei `fsqrt`
+  auf `≥ 0` geklemmt; ohne das läge sie beim kleinsten negativen Subnormal und
+  der Kommentar „`[0, …]`" wäre schlicht falsch (zwölftes Review).
 * **Ein unbekanntes `L` darf den Stopp nicht verwerfen.** Bis A1 propagierte
   ein `Unknown` aus `enclose_lb_value` (etwa wegen `LbPiece::Rev`) und machte
   den ganzen Stopp unbekannt — an der Nabe waren das **480 von 492**
@@ -6478,7 +6505,10 @@ Gepinnt wird deshalb der Mechanismus, nicht eine erfundene Familie.
   stets `≤ d` — die OBERE Schranke hängt gar nicht von `gate` ab. `Entire` für
   `lbv` ist deshalb eine gültige, maximal konservative Einschliessung; sie
   kostet nur die untere Schranke. Fail-closed bleibt gewahrt: `Entire`
-  behauptet nichts.
+  behauptet nichts. Die Wirkung ist eigens gepinnt
+  (`arc_interval_lb_entire_bridge_is_load_bearing_384`, Ablation
+  `Knobs::lb_unknown_rejects`): ohne die Brücke fallen die Nabe-Zellen
+  vollständig zurück.
 
 ### Messung
 
@@ -6505,9 +6535,17 @@ oberer Zylinder `r = 4`, im Trust-Radius der Kreisnaht `r = 4 / z = 0.5`):
 | Zylinder b, tiefer | 1000 | **479** | **479** |
 
 **Jede** dieser Zertifizierungen hat einen gekrümmten Bogen tatsächlich
-ausgewertet — und die Ablation (`Knobs::arc_refuse_curved`, Krümmung wieder
-pauschal verweigert) entfernt sie **restlos** (`56 → 0` im Pin-Ausschnitt). Der
-Erfolg hängt damit kausal an A1, nicht an einer Nachbarwirkung.
+ausgewertet — und die Ablation (`Knobs::arc_refuse_curved`) entfernt sie
+**restlos** (`56 → 0` im Pin-Ausschnitt).
+
+**Der Beteiligungs-Nachweis ist nachgeschärft** (zwölftes Review):
+`curved_arc_evals` zählt am EINTRITT von `enc_arc_closest`, also vor der
+§8w-Auswahl und vor dem Downstream — es belegt nur „ein Bogen wurde
+eingeschlossen". Der Pin läuft deshalb jetzt auf `curved_downstream`, das erst
+in `enclose_channel_apply` innerhalb der Kandidaten-/Alternativen-Schleife
+hochzählt, und zwar nur für einen wirklich gekrümmten Bogen: der Kandidat hat
+die Auswahl überlebt UND sein Downstream ist in die Hülle eingegangen. **Alle
+56 Zellen bestehen auch diesen stärkeren Test.**
 
 ### Die zwölf Beweispflichten
 
@@ -6537,6 +6575,15 @@ Erfolg hängt damit kausal an A1, nicht an einer Nachbarwirkung.
 * `arc_interval_counter_probes_384` — vier Rückdrehungen reissen (nur erste
   Alternative, letzte gestrichen, Fusspunkt-Ast weg, Endpunkt-Ast weg), plus
   der Mechanismus-Pin des ρ-Schnitts.
+* `arc_interval_rho_cut_is_sharpness_not_soundness_384` — die beiden
+  Richtigstellungen oben, beide gemessen.
+* `arc_interval_lb_entire_bridge_is_load_bearing_384` — die 480-Zellen-Wirkung
+  der `Entire`-Brücke, mit Ablation.
+* `arc_interval_early_qt_hull_is_wider_384` — die frühe `q`/`t`-Hüllung kostet
+  Breite. Messbar ist das nur, wo eine Zelle wirklich MEHRERE Alternativen hat:
+  an 3 von 237 mehrdeutigen Zellen einer synthetischen Familie. An den
+  Nabe-Zellen hat jeder Bogen nur eine Alternative — dort ist die frühe Hüllung
+  folgerichtig ein No-op, und der Zertifikats-Zähler zeigt gar nichts.
 * Sonde `probe_384_arc_interval_reach`.
 
 ### Was OFFEN bleibt
