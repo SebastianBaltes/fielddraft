@@ -880,6 +880,35 @@ für Shell.
   daneben und asymmetrisch — genau die fehlende Kugel). Herleitung +
   Messtabellen: `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md`
   §8m.
+* **Die untere Distanzschranke: das Paar reicht nicht, der volle Schnitt schon
+  (#384 §8n, 2026-08-02).** §8k und §8l haben den Ausweg aus der `G`-Kappe
+  zweimal als PAAR benannt (`max_{a,b} dist(x, ∁(P_a∪P_b))`, „≤ 6×6 Keile")
+  und §8l sogar beziffert („das Paar (Platte, Zylinder A) liefert genau die
+  2.306 mm"). Gemessen ist beides falsch: (Platte, A) liefert **1.184392**,
+  das beste Paar überhaupt **2.237332**, exakt sind **2.315608** — und nur der
+  VOLLE Member-Schnitt erreicht sie. Der Grund ist strukturell: der Keil, der
+  das beste Paar niederhält, ist die Plattenoberseite ausserhalb von
+  Zylinder B, und die ist von Zylinder A verdeckt — *ein Paar sieht die
+  Verdeckung durch einen DRITTEN Member nicht.*
+  Die MECHANIK trägt dagegen vollständig. Mit `gate = max(G − d₀, L(x) − δ)`
+  überlebt der §8i-Satz (Über-Claim < `G`), und der neue Anteil kann
+  strukturell KEIN Phantom-Material erzeugen (`f ≥ δ − L ≥ e`). Gemessen als
+  Feld-Mutation: Nabe 59 → **14** (Paar) → **0 / 0.0000 mm** (voll), und an
+  Ecken-Schale (8 Dicken), Rippen-Kamm und notch bewegt sich **kein einziger
+  Punkt** — auch nicht auf der Über-Seite, wo „`G`-Kappe aus" den Kamm auf
+  448 Punkte / 1.9866 mm aufriss. Die alte Kappe ist der Spezialfall
+  `L = max_k depth_k = δ − d₀`: sie rechnete immer schon gegen eine untere
+  Schranke, nur gegen die schlechteste.
+  **Nicht gebaut, und zwar mit Zahlen:** die Keilzahl ist `∏_k n_k`, also
+  exponentiell in der Memberzahl (Rippen-Kamm: `6⁵ = 7776`); gemessen 460 ns
+  (Nabe, 27 Keile) bzw. 74 µs (Ecken-Schale, 216 Keile) je Auswertung. Der
+  lineare Ausweg ist die zugeschnittene Vereinigungs-B-Rep (`Σ_k n_k`
+  Randstücke) — und die im Tape zu führen ist ein eigenes Paket mit allen
+  sieben Spiegeln. Verworfen mit Grund: eine per-Kanal-Konstante (über der
+  Trust-Region ist sie 0), `gate = face_plane_gate` (`L ≥ h` ist falsch), und
+  die beiden Naht-Eltern als Paar (an der Nabe 1.115608, unter `δ`).
+  Herleitung, Handrechnung und alle Tabellen:
+  `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8n.
 
 ## 10. Verweise
 

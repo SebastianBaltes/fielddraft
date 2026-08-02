@@ -3790,3 +3790,689 @@ fn erosion_shell_is_exact_across_the_thickness_fan_384() {
         );
     }
 }
+
+// ══════════════ #384 §8n — die UNTERE Distanzschranke ══════════════
+//
+// Alle Referenzen der §8-Reihe (Strahl-Minimum, `de`, jede stützende Ebene,
+// die Grenzwert-Klemme) liefern OBERE Schranken von `dist(x,∁Ω)`. Für die
+// Unter-Seite braucht es das Gegenteil. Der Bauplan steht in §8k: `∁Ω` ist
+// der Durchschnitt der Member-Komplemente, und jedes Member-Komplement ist
+// die VEREINIGUNG seiner Austritts-Halbräume. Für eine Teilmenge `S` der
+// Member ist deshalb
+//
+//     dist(x, ∁(⋃_{k∈S} P_k)) = min über alle Auswahlen (i_k)_{k∈S}
+//                                   dist(x, ⋂_k S_{k,i_k})
+//
+// ein Minimum über `∏_{k∈S} n_k` konvexe KEILE — und weil eine kleinere
+// Vereinigung ein grösseres Komplement hat, ist der Wert für JEDE Teilmenge
+// eine gültige UNTERE Schranke von `dist(x,∁Ω)`. Die triviale Teilmenge
+// `S = {k}` liefert genau die Member-Tiefe, also `δ − d₀`; jede grössere
+// Teilmenge ist schärfer.
+
+/// Halbebene im (r,z)-Profil: `n_r·r + n_z·z >= d`.
+type Hp2 = [f64; 3];
+/// Halbraum: `n·q >= d`, `|n| = 1`.
+type Hp3 = [f64; 4];
+
+fn dist_halfplanes2(x: [f64; 2], hs: &[Hp2]) -> f64 {
+    let feas = |q: [f64; 2]| hs.iter().all(|h| h[0] * q[0] + h[1] * q[1] - h[2] >= -1e-7);
+    if feas(x) {
+        return 0.0;
+    }
+    let mut best = f64::INFINITY;
+    for h in hs {
+        let s = h[2] - (h[0] * x[0] + h[1] * x[1]);
+        if s <= 0.0 {
+            continue;
+        }
+        let q = [x[0] + s * h[0], x[1] + s * h[1]];
+        if feas(q) {
+            best = best.min(s);
+        }
+    }
+    for i in 0..hs.len() {
+        for j in (i + 1)..hs.len() {
+            let (a, b) = (hs[i], hs[j]);
+            let det = a[0] * b[1] - a[1] * b[0];
+            if det.abs() < 1e-12 {
+                continue;
+            }
+            let q = [(a[2] * b[1] - a[1] * b[2]) / det, (a[0] * b[2] - a[2] * b[0]) / det];
+            if feas(q) {
+                best = best.min(((q[0] - x[0]).powi(2) + (q[1] - x[1]).powi(2)).sqrt());
+            }
+        }
+    }
+    best
+}
+
+/// Lot auf den Schnitt der aktiven Ebenen: `q = x + Nᵀλ`, `(N Nᵀ)λ = b`.
+fn solve_active(x: [f64; 3], a: &[Hp3]) -> Option<[f64; 3]> {
+    let m = a.len();
+    let mut g = vec![vec![0.0f64; m + 1]; m];
+    for i in 0..m {
+        for j in 0..m {
+            g[i][j] = a[i][0] * a[j][0] + a[i][1] * a[j][1] + a[i][2] * a[j][2];
+        }
+        g[i][m] = a[i][3] - (a[i][0] * x[0] + a[i][1] * x[1] + a[i][2] * x[2]);
+    }
+    for c in 0..m {
+        let mut piv = c;
+        for r in c + 1..m {
+            if g[r][c].abs() > g[piv][c].abs() {
+                piv = r;
+            }
+        }
+        if g[piv][c].abs() < 1e-10 {
+            return None;
+        }
+        g.swap(c, piv);
+        for r in 0..m {
+            if r == c {
+                continue;
+            }
+            let f = g[r][c] / g[c][c];
+            for k in c..=m {
+                g[r][k] -= f * g[c][k];
+            }
+        }
+    }
+    let mut q = x;
+    for i in 0..m {
+        let l = g[i][m] / g[i][i];
+        for k in 0..3 {
+            q[k] += l * a[i][k];
+        }
+    }
+    Some(q)
+}
+
+fn dist_halfspaces3(x: [f64; 3], hs: &[Hp3]) -> f64 {
+    let feas = |q: [f64; 3]| {
+        hs.iter().all(|h| h[0] * q[0] + h[1] * q[1] + h[2] * q[2] - h[3] >= -1e-7)
+    };
+    if feas(x) {
+        return 0.0;
+    }
+    let m = hs.len();
+    let mut best = f64::INFINITY;
+    let dd = |q: [f64; 3]| {
+        ((q[0] - x[0]).powi(2) + (q[1] - x[1]).powi(2) + (q[2] - x[2]).powi(2)).sqrt()
+    };
+    for i in 0..m {
+        if let Some(q) = solve_active(x, &[hs[i]]) {
+            if feas(q) {
+                best = best.min(dd(q));
+            }
+        }
+        for j in i + 1..m {
+            if let Some(q) = solve_active(x, &[hs[i], hs[j]]) {
+                if feas(q) {
+                    best = best.min(dd(q));
+                }
+            }
+            for k in j + 1..m {
+                if let Some(q) = solve_active(x, &[hs[i], hs[j], hs[k]]) {
+                    if feas(q) {
+                        best = best.min(dd(q));
+                    }
+                }
+            }
+        }
+    }
+    best
+}
+
+fn obb_exits(o: &Obb) -> Vec<Hp3> {
+    let mut v = Vec::new();
+    for a in 0..3 {
+        for s in [-1.0f64, 1.0] {
+            let cu = d3(o.c, o.u[a]);
+            v.push([s * o.u[a][0], s * o.u[a][1], s * o.u[a][2], s * cu + o.he[a]]);
+        }
+    }
+    v
+}
+
+/// Die drei Member der Stufen-Nabe als AUSTRITTS-Halbebenen im (r,z)-Profil.
+/// Die Platte ist keine Rotationsfigur; ihre vier Seitenflächen werden durch
+/// `r >= 20` ersetzt — eine OBERMENGE der echten Austrittsmenge
+/// (`|x| >= 20` ⇒ `r >= 20`). Eine grössere Komplement-Menge liefert eine
+/// KLEINERE Distanz, die Schranke bleibt also gültig.
+fn hub_members(t: f64, cyls: &[(f64, f64, f64)], half: f64) -> Vec<Vec<Hp2>> {
+    let mut m = vec![vec![[0.0, 1.0, 0.0], [0.0, -1.0, t], [1.0, 0.0, half]]];
+    for &(r, zlo, zhi) in cyls {
+        m.push(vec![[1.0, 0.0, r], [0.0, 1.0, zhi], [0.0, -1.0, -zlo]]);
+    }
+    m
+}
+
+fn complement_lb2(x: [f64; 3], members: &[Vec<Hp2>], sub: &[usize]) -> f64 {
+    let q = [(x[0] * x[0] + x[1] * x[1]).sqrt(), x[2]];
+    let mut best = f64::INFINITY;
+    let mut idx = vec![0usize; sub.len()];
+    loop {
+        let hs: Vec<Hp2> = sub.iter().enumerate().map(|(k, &m)| members[m][idx[k]]).collect();
+        best = best.min(dist_halfplanes2(q, &hs));
+        let mut k = 0;
+        loop {
+            if k == sub.len() {
+                return best;
+            }
+            idx[k] += 1;
+            if idx[k] < members[sub[k]].len() {
+                break;
+            }
+            idx[k] = 0;
+            k += 1;
+        }
+    }
+}
+
+fn complement_lb3(x: [f64; 3], members: &[Vec<Hp3>], sub: &[usize]) -> f64 {
+    let mut best = f64::INFINITY;
+    let mut idx = vec![0usize; sub.len()];
+    loop {
+        let hs: Vec<Hp3> = sub.iter().enumerate().map(|(k, &m)| members[m][idx[k]]).collect();
+        best = best.min(dist_halfspaces3(x, &hs));
+        let mut k = 0;
+        loop {
+            if k == sub.len() {
+                return best;
+            }
+            idx[k] += 1;
+            if idx[k] < members[sub[k]].len() {
+                break;
+            }
+            idx[k] = 0;
+            k += 1;
+        }
+    }
+}
+
+fn pair_max3(x: [f64; 3], members: &[Vec<Hp3>]) -> f64 {
+    let mut best: f64 = 0.0;
+    for i in 0..members.len() {
+        for j in i + 1..members.len() {
+            best = best.max(complement_lb3(x, members, &[i, j]));
+        }
+    }
+    best
+}
+
+// ---- Feld-Mutation: gate = max(G − d₀, L(x) − δ) im KONKAVEN Zweig ----
+
+fn channel_apply_mut(
+    base: f32,
+    d: f32,
+    p: [f32; 3],
+    ch: &crate::offset_channel::OffsetChannel,
+    extra: f32,
+) -> f32 {
+    let Some((de, q, m1, m2)) = crate::offset_channel::channel_nearest(p, ch) else {
+        return d;
+    };
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let dq = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+    let (s1, s2) = (dot(dq, m1), dot(dq, m2));
+    let gate =
+        if ch.concave { (ch.gate - base).max(extra) } else { ch.gate + base };
+    let w_geo = s1
+        .min(s2)
+        .min(crate::offset_channel::end_plane_gate(p, ch))
+        .min(crate::offset_channel::face_plane_gate(p, ch))
+        .min(de - ch.delta)
+        .min(ch.trust - de);
+    let w = w_geo.min(gate);
+    if ch.concave {
+        if w > 0.0 {
+            d.min(-w)
+        } else if w_geo <= 0.0 {
+            d.min(-w_geo)
+        } else {
+            d
+        }
+    } else {
+        d.max(w)
+    }
+}
+
+fn vertex_apply_mut(
+    base: f32,
+    d: f32,
+    p: [f32; 3],
+    vs: &crate::offset_channel::VertexSphere,
+    extra: f32,
+) -> f32 {
+    let dq = [p[0] - vs.v[0], p[1] - vs.v[1], p[2] - vs.v[2]];
+    let rho = (dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2]).sqrt();
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let gate =
+        if vs.concave { (vs.gate - base).max(extra) } else { vs.gate + base };
+    let w_geo = dot(dq, vs.gates[0])
+        .min(dot(dq, vs.gates[1]))
+        .min(dot(dq, vs.gates[2]))
+        .min(rho - vs.delta)
+        .min(vs.trust - rho);
+    let w = w_geo.min(gate);
+    if vs.concave {
+        if w > 0.0 {
+            d.min(-w)
+        } else if w_geo <= 0.0 {
+            d.min(-w_geo)
+        } else {
+            d
+        }
+    } else {
+        d.max(w)
+    }
+}
+
+fn eval_mut(n: &BoundedCsg, p: [f32; 3], lb: &dyn Fn([f32; 3]) -> f32) -> f32 {
+    match n {
+        BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
+            let d0 = eval_mut(inner, p, lb);
+            let delta = channels
+                .first()
+                .map(|c| c.delta)
+                .or_else(|| verts.first().map(|v| v.delta))
+                .unwrap_or(0.0);
+            let extra = lb(p) - delta;
+            let mut d = d0;
+            let mut lim = -crate::offset_channel::END_PLANE_OFF;
+            for ch in channels {
+                lim = lim.max(crate::offset_channel::channel_limit(p, ch));
+                d = channel_apply_mut(d0, d, p, ch, extra);
+            }
+            for vs in verts {
+                lim = lim.max(crate::offset_channel::vertex_limit(p, vs));
+                d = vertex_apply_mut(d0, d, p, vs, extra);
+            }
+            let concave =
+                channels.first().map(|c| c.concave).or_else(|| verts.first().map(|v| v.concave));
+            d = match concave {
+                Some(true) => d.max(lim),
+                Some(false) => d.min(-lim),
+                None => d,
+            };
+            for block in rims {
+                d = crate::offset_rim::apply_rims_f32(d, p, block.concave, &block.recs);
+                d = crate::offset_rim::apply_rims_arc_f32(d, p, block.concave, &block.arc_recs);
+            }
+            d
+        }
+        BoundedCsg::Union { left, right, .. } => eval_mut(left, p, lb).min(eval_mut(right, p, lb)),
+        BoundedCsg::Intersection { left, right, .. } => {
+            eval_mut(left, p, lb).max(eval_mut(right, p, lb))
+        }
+        BoundedCsg::Difference { left, right, .. } => {
+            eval_mut(left, p, lb).max(-eval_mut(right, p, lb))
+        }
+        BoundedCsg::Offset { inner, delta, .. } => eval_mut(inner, p, lb) - delta,
+        _ => n.sdf(p, EvalMode::Visual),
+    }
+}
+
+struct Row {
+    name: String,
+    over: (usize, f64),
+    under: (usize, f64),
+    worst_under: [f64; 3],
+    lb_viol: f64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_mut(
+    name: &str,
+    field: &BoundedCsg,
+    delta: f32,
+    lo: [f64; 3],
+    hi: [f64; 3],
+    n: usize,
+    exact: &dyn Fn([f64; 3]) -> f64,
+    ray: &dyn Fn([f64; 3]) -> f64,
+    lb: &dyn Fn([f64; 3]) -> f64,
+    mutate: bool,
+) -> Row {
+    let mut row = Row {
+        name: name.into(),
+        over: (0, 0.0),
+        under: (0, 0.0),
+        worst_under: [0.0; 3],
+        lb_viol: 0.0,
+    };
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let f = [
+                    (ix as f64 + 0.2113248654) / n as f64,
+                    (iy as f64 + 0.5773502692) / n as f64,
+                    (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let p = [
+                    lo[0] + (hi[0] - lo[0]) * f[0],
+                    lo[1] + (hi[1] - lo[1]) * f[1],
+                    lo[2] + (hi[2] - lo[2]) * f[2],
+                ];
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let l = lb(p);
+                row.lb_viol = row.lb_viol.max(l - exact(p));
+                let got = if mutate {
+                    eval_mut(field, pf, &|q| {
+                        lb([q[0] as f64, q[1] as f64, q[2] as f64]) as f32
+                    })
+                } else {
+                    field.sdf(pf, EvalMode::Visual)
+                };
+                let (e, u) = (exact(p), ray(p));
+                if got < 0.0 {
+                    let err = delta as f64 - u;
+                    if err > 1e-3 {
+                        row.over.0 += 1;
+                        row.over.1 = row.over.1.max(err);
+                    }
+                } else {
+                    let err = e - delta as f64;
+                    if err > 1e-3 {
+                        row.under.0 += 1;
+                        if err > row.under.1 {
+                            row.under.1 = err;
+                            row.worst_under = p;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    row
+}
+
+/// **§8n-Selbsttest der unteren Schranke.** Sie ist nur dann etwas wert,
+/// wenn sie NIE über der Wahrheit liegt — eine erfundene untere Schranke
+/// würde das Gate öffnen, wo es schliessen muss, und damit Phantom-Material
+/// erzeugen. Geprüft wird gegen dieselben exakten Referenzen wie in §8k
+/// (`dist_hub_complement_exact`, `dist_obb_union_complement_exact`), an
+/// Nabe, Ecken-Schale, notch und Rippen-Kamm.
+///
+/// Zwei Richtungen, beide nötig:
+/// * **Solide** — `LB ≤ exakt` an jedem Gitterpunkt. Ohne diese Ungleichung
+///   ist jede Zusage, die auf `LB` baut, gelogen.
+/// * **Scharf** — `LB` darf nicht trivial 0 sein (eine Funktion, die überall
+///   0 liefert, bestünde die Ungleichung ebenfalls). Geprüft an der Nabe:
+///   der VOLLE Member-Schnitt trifft die exakte Distanz am Worst-Punkt
+///   AUF DEN MIKROMETER.
+#[test]
+fn complement_lower_bound_is_sound_384() {
+    let (t, r1, r2, zh1, e1, e2) = (3.0f64, 6.0f64, 4.0f64, 0.5f64, 1.2f64, 1.8f64);
+    let cyls = [(r1, -e1, zh1), (r2, -e2, 6.0f64)];
+    let hub = hub_members(t, &cyls, 20.0);
+    let (mut worst_viol, mut best_sharp) = (0.0f64, 0.0f64);
+    let n = 13usize;
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let p = [
+                    -9.0 + 18.0 * (ix as f64 + 0.2113248654) / n as f64,
+                    -9.0 + 18.0 * (iy as f64 + 0.5773502692) / n as f64,
+                    -t - 1.5 + (t + 2.0) * (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let e = dist_hub_complement_exact(t, &cyls, p);
+                for sub in [&[0usize, 1][..], &[0, 2], &[1, 2], &[0, 1, 2]] {
+                    let l = complement_lb2(p, &hub, sub);
+                    worst_viol = worst_viol.max(l - e);
+                    best_sharp = best_sharp.max(l);
+                }
+            }
+        }
+    }
+    // Box-Fixturen: Ecken-Schale, notch, Rippen-Kamm.
+    let mut box_sets: Vec<Vec<Obb>> = Vec::new();
+    for tf in [2.0f64, 3.0] {
+        box_sets.push(
+            thin_corner_boxes(tf * 2.0, 40.0).iter().map(|&(l, h)| obb_aabb(l, h)).collect(),
+        );
+    }
+    {
+        let gamma = std::f64::consts::PI - 90.0f64.to_radians();
+        box_sets.push(vec![
+            obb_rot_z([0.0, -50.0, 0.0], [100.0, 50.0, 50.0], 0.0),
+            obb_rot_z([50.0 * gamma.sin(), -50.0 * gamma.cos(), 0.0], [100.0, 50.0, 50.0], gamma),
+        ]);
+    }
+    let (_, comb_boxes, _) = rib_comb_node(4, 1.5, 0.8, 2.0);
+    box_sets.push(comb_boxes.iter().map(|&(l, h)| obb_aabb(l, h)).collect());
+    for obbs in &box_sets {
+        let mem: Vec<Vec<Hp3>> = obbs.iter().map(obb_exits).collect();
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for o in obbs {
+            for k in 0..3 {
+                let ext = (0..3).map(|a| (o.u[a][k] * o.he[a]).abs()).sum::<f64>();
+                lo[k] = lo[k].min(o.c[k] - ext);
+                hi[k] = hi[k].max(o.c[k] + ext);
+            }
+        }
+        let m = 9usize;
+        for ix in 0..m {
+            for iy in 0..m {
+                for iz in 0..m {
+                    let f = [
+                        (ix as f64 + 0.2113248654) / m as f64,
+                        (iy as f64 + 0.5773502692) / m as f64,
+                        (iz as f64 + 0.7886751346) / m as f64,
+                    ];
+                    let p = [
+                        lo[0] + (hi[0] - lo[0]) * f[0],
+                        lo[1] + (hi[1] - lo[1]) * f[1],
+                        lo[2] + (hi[2] - lo[2]) * f[2],
+                    ];
+                    let e = dist_obb_union_complement_exact(obbs, p);
+                    let l = pair_max3(p, &mem);
+                    worst_viol = worst_viol.max(l - e);
+                    best_sharp = best_sharp.max(l);
+                }
+            }
+        }
+    }
+    assert!(
+        worst_viol <= 1e-9,
+        "die untere Schranke übersteigt die exakte Distanz um {worst_viol:.3e} — sie erfindet \
+         Distanz, und jedes Gate, das auf ihr steht, erzeugt Phantom-Material"
+    );
+    assert!(best_sharp > 3.0, "die Schranke ist trivial (max {best_sharp:.4})");
+
+    // Handrechnung am §8l-Worst-Punkt der Nabe.
+    let x = [-1.463461473763636, -1.163986143381818, -0.6843920148636364];
+    let exact = dist_hub_complement_exact(t, &cyls, x);
+    let full = complement_lb2(x, &hub, &[0, 1, 2]);
+    // Nächste Luft ist die Platten-UNTERSEITE `z = −3`, senkrecht unter `x`.
+    assert!((exact - (t + x[2])).abs() < 1e-9, "exakte Referenz: {exact:.6}");
+    assert!(
+        (full - exact).abs() < 1e-6,
+        "der VOLLE Member-Schnitt muss die exakte Distanz treffen: {full:.6} vs {exact:.6}"
+    );
+}
+
+/// **§8n-Kern-Befund: das Nabe-Gate braucht den VOLLEN Member-Schnitt, das
+/// Paar reicht nicht.**
+///
+/// §8k und §8l haben den Weg aus der `G`-Kappe zweimal benannt und beide Male
+/// als PAAR beziffert („`∁(P_a ∪ P_b)` ist die Vereinigung von höchstens 6×6
+/// konvexen Keilen"), §8l sogar mit einer Zahl („das Paar (Platte, Zylinder A)
+/// liefert genau die 2.306 mm der Plattenunterseite"). Beides ist falsch, und
+/// dieser Pin hält fest, warum:
+///
+/// | Schranke | Wert am Worst-Punkt | Keil, der gewinnt |
+/// |---|---|---|
+/// | Paar (Platte, A) | 1.184392 | `z ≥ 0.5` — A's Deckel ist für dieses Paar Luft |
+/// | Paar (Platte, B) | 2.237332 | `z ≥ 0 ∧ r ≥ 4` — die Plattenoberseite ausserhalb B |
+/// | Paar (A, B) | 1.115608 | `z ≤ −1.8` — B's Boden |
+/// | **VOLL (Platte, A, B)** | **2.315608** | `z ≤ −3` — die Plattenunterseite |
+/// | exakt (§8k-Referenz) | 2.315608 | dieselbe Fläche |
+///
+/// Der Grund ist strukturell: der Keil, der das beste Paar (Platte, B)
+/// niederhält, ist die Plattenoberseite ausserhalb von B — und die ist von
+/// Zylinder A verdeckt. Ein Paar kann eine Verdeckung durch einen DRITTEN
+/// Member nicht sehen. Der Bedarf am Worst-Punkt ist `d₀ − f_wahr = 1.200`
+/// gegen `G = 0.868`; das Paar deckt davon 1.121, der volle Schnitt 1.200.
+#[test]
+fn hub_gate_needs_the_full_member_complement_384() {
+    let (t, r1, r2, zh1, e1, e2) = (3.0f64, 6.0f64, 4.0f64, 0.5f64, 1.2f64, 1.8f64);
+    let cyls = [(r1, -e1, zh1), (r2, -e2, 6.0f64)];
+    let mem = hub_members(t, &cyls, 20.0);
+    let x = [-1.463461473763636, -1.163986143381818, -0.6843920148636364];
+    let exact = dist_hub_complement_exact(t, &cyls, x);
+    let lb = |sub: &[usize]| complement_lb2(x, &mem, sub);
+    let pair_max = [&[0usize, 1][..], &[0, 2], &[1, 2]].iter().map(|s| lb(s)).fold(0.0f64, f64::max);
+    for (sub, want) in [
+        (&[0usize, 1][..], 1.184392f64),
+        (&[0, 2], 2.237332),
+        (&[1, 2], 1.115608),
+        (&[0, 1, 2], 2.315608),
+    ] {
+        let got = lb(sub);
+        assert!(
+            (got - want).abs() < 1e-5,
+            "Member-Teilmenge {sub:?}: {got:.6} statt {want:.6} — die Keil-Zerlegung hat sich \
+             bewegt, die §8n-Bilanz ist damit ungültig"
+        );
+    }
+    assert!(
+        pair_max < exact - 0.05,
+        "das Paar-Maximum {pair_max:.6} müsste UNTER der exakten Distanz {exact:.6} bleiben — \
+         genau das ist der Befund, der §8k/§8l korrigiert"
+    );
+    // Und der Bedarf: das Paar reicht über δ (das Vorzeichen kippt), aber
+    // nicht bis an den exakten Wert (der Restfehler bleibt).
+    assert!(pair_max > 2.0 && (lb(&[0, 1, 2]) - exact).abs() < 1e-6);
+}
+
+// ── einmalige §8n-Messung (Kosten + Deckenmessung), NICHT im Fast-Tier ──
+#[test]
+#[ignore]
+fn probe_384_pair_distance_gate() {
+    let delta = 2.0f32;
+    let mut rows: Vec<Row> = Vec::new();
+    {
+        let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+        let (field, _rep) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+        let cyls = [(r1 as f64, -(e1 as f64), zh1 as f64), (r2 as f64, -(e2 as f64), 6.0f64)];
+        let mem = hub_members(t as f64, &cyls, 20.0);
+        let exact = |p: [f64; 3]| dist_hub_complement_exact(t as f64, &cyls, p);
+        let ray = |p: [f64; 3]| dist_hub_complement(t as f64, &cyls, p, 160);
+        let pair = |p: [f64; 3]| {
+            [[0usize, 1], [0, 2], [1, 2]]
+                .iter()
+                .map(|s| complement_lb2(p, &mem, s))
+                .fold(0.0f64, f64::max)
+        };
+        let full = |p: [f64; 3]| complement_lb2(p, &mem, &[0, 1, 2]);
+        let (lo, hi) = ([-9.0, -9.0, -(t as f64) - 1.5], [9.0, 9.0, 0.5]);
+        let t0 = std::time::Instant::now();
+        rows.push(scan_mut(
+            "Nabe BASIS", &field, delta, lo, hi, 22, &exact, &ray, &|_| f64::NEG_INFINITY, false,
+        ));
+        rows.push(scan_mut("Nabe PAAR", &field, delta, lo, hi, 22, &exact, &ray, &pair, true));
+        rows.push(scan_mut("Nabe VOLL", &field, delta, lo, hi, 22, &exact, &ray, &full, true));
+        rows.push(scan_mut("Nabe NULLMUT", &field, delta, lo, hi, 22, &exact, &ray, &|_| -1e30, true));
+        println!("Nabe-Block {:?}", t0.elapsed());
+        // Kosten EINER L-Auswertung.
+        let probe = [1.0, 1.0, -1.0];
+        let t1 = std::time::Instant::now();
+        let mut acc = 0.0;
+        for _ in 0..20000 {
+            acc += full(probe);
+        }
+        println!("  L_voll (3 Member, 27 Keile): {:?}/Auswertung (acc {acc:.1})", t1.elapsed() / 20000);
+        let t2 = std::time::Instant::now();
+        let mut acc = 0.0;
+        for _ in 0..20000 {
+            acc += pair(probe);
+        }
+        println!("  L_paar (3 Paare, 27 Keile):  {:?}/Auswertung (acc {acc:.1})", t2.elapsed() / 20000);
+        // Welcher Keil gewinnt wo?
+        let xw = [-1.463461473763636, -1.163986143381818, -0.6843920148636364];
+        for sub in [&[0usize, 2][..], &[0, 1, 2]] {
+            println!("  Teilmenge {sub:?}: L = {:.6}", complement_lb2(xw, &mem, sub));
+        }
+    }
+    for tf in [2.0f32, 2.1, 2.25, 2.4, 2.5, 3.0, 4.0, 6.0] {
+        let t = tf * delta;
+        let (field, _rep) = compile_for(thin_corner_node(t, 40.0, delta));
+        let boxes = thin_corner_boxes(t as f64, 40.0);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let mem: Vec<Vec<Hp3>> = obbs.iter().map(obb_exits).collect();
+        let exact = |p: [f64; 3]| dist_obb_union_complement_exact(&obbs, p);
+        let ray = |p: [f64; 3]| dist_to_boxes_complement(&boxes, p, 160);
+        let pair = |p: [f64; 3]| pair_max3(p, &mem);
+        let full = |p: [f64; 3]| complement_lb3(p, &mem, &[0, 1, 2]);
+        if tf == 2.0 {
+            let probe = [-1.0, -1.0, -1.0];
+            let t1 = std::time::Instant::now();
+            let mut acc = 0.0;
+            for _ in 0..5000 {
+                acc += full(probe);
+            }
+            println!(
+                "  L_voll 3D (3 Boxen, 216 Keile): {:?}/Auswertung (acc {acc:.1})",
+                t1.elapsed() / 5000
+            );
+            let t2 = std::time::Instant::now();
+            let mut acc = 0.0;
+            for _ in 0..5000 {
+                acc += pair(probe);
+            }
+            println!(
+                "  L_paar 3D (3 Paare, 108 Keile): {:?}/Auswertung (acc {acc:.1})",
+                t2.elapsed() / 5000
+            );
+        }
+        let lo = -(t as f64 + delta as f64 + 1.0);
+        let (l3, h3) = ([lo; 3], [1.0; 3]);
+        rows.push(scan_mut(
+            &format!("Schale {tf} BASIS"), &field, delta, l3, h3, 22, &exact, &ray,
+            &|_| f64::NEG_INFINITY, false,
+        ));
+        rows.push(scan_mut(&format!("Schale {tf} PAAR"), &field, delta, l3, h3, 22, &exact, &ray, &pair, true));
+        rows.push(scan_mut(&format!("Schale {tf} VOLL"), &field, delta, l3, h3, 22, &exact, &ray, &full, true));
+    }
+    for (w, g) in [(1.5f32, 0.8f32), (2.0, 1.0)] {
+        let (node, boxes, span) = rib_comb_node(4, w, g, delta);
+        let (field, _rep) = compile_for(node);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let mem: Vec<Vec<Hp3>> = obbs.iter().map(obb_exits).collect();
+        let exact = |p: [f64; 3]| dist_obb_union_complement_exact(&obbs, p);
+        let ray = |p: [f64; 3]| dist_to_boxes_complement(&boxes, p, 160);
+        let pair = |p: [f64; 3]| pair_max3(p, &mem);
+        let (l3, h3) = ([-span, -3.0, -6.0], [span, 3.0, 0.5]);
+        rows.push(scan_mut(
+            &format!("Kamm {w}/{g} BASIS"), &field, delta, l3, h3, 24, &exact, &ray,
+            &|_| f64::NEG_INFINITY, false,
+        ));
+        rows.push(scan_mut(&format!("Kamm {w}/{g} PAAR"), &field, delta, l3, h3, 24, &exact, &ray, &pair, true));
+    }
+    for alpha in [90.0f64, 60.0] {
+        let (field, _rep) = compile_for(notch_union_node(alpha, delta as f64));
+        let gamma = std::f64::consts::PI - alpha.to_radians();
+        let obbs = vec![
+            obb_rot_z([0.0, -50.0, 0.0], [100.0, 50.0, 50.0], 0.0),
+            obb_rot_z([50.0 * gamma.sin(), -50.0 * gamma.cos(), 0.0], [100.0, 50.0, 50.0], gamma),
+        ];
+        let mem: Vec<Vec<Hp3>> = obbs.iter().map(obb_exits).collect();
+        let exact = |p: [f64; 3]| dist_obb_union_complement_exact(&obbs, p);
+        let ray = |p: [f64; 3]| dist_to_notch_complement(alpha, p);
+        let pair = |p: [f64; 3]| pair_max3(p, &mem);
+        let (l3, h3) = ([-10.0, -10.0, 42.0], [10.0, 10.0, 54.0]);
+        rows.push(scan_mut(
+            &format!("notch {alpha} BASIS"), &field, delta, l3, h3, 22, &exact, &ray,
+            &|_| f64::NEG_INFINITY, false,
+        ));
+        rows.push(scan_mut(&format!("notch {alpha} PAAR"), &field, delta, l3, h3, 22, &exact, &ray, &pair, true));
+    }
+    println!("\n{:<22} {:>6} {:>9} {:>6} {:>9} {:>10}", "Fixture", "über", "worst", "unter", "worst", "LB-Verstoß");
+    for r in &rows {
+        println!(
+            "{:<22} {:>6} {:>9.4} {:>6} {:>9.4} {:>10.2e}   {:?}",
+            r.name, r.over.0, r.over.1, r.under.0, r.under.1, r.lb_viol, r.worst_under
+        );
+    }
+}

@@ -2467,6 +2467,246 @@ identisch zum Stand vor dem Paket.
 * **Naht gegen Naht**, **der konvexe Zweig ohne viertes Gate**, **spitze
   Nähte**, **der Wächter als Stichprobe**: unverändert §8j/§8k.
 
+## 8n. Die untere Distanzschranke — das Paar reicht nicht, der volle Schnitt schon (#384, 2026-08-02)
+
+§8k und §8l haben den Ausweg aus der `G`-Kappe zweimal benannt und beide Male
+als **Paar** beziffert: „`∁(P_a ∪ P_b)` ist die Vereinigung von höchstens 6×6
+konvexen Keilen, `max_{a,b} dist(x, ∁(P_a∪P_b))` eine gültige untere Schranke",
+§8l sogar mit einer Zahl — „an der Nabe liefert das Paar (Platte, Zylinder A)
+genau die 2.306 mm der Plattenunterseite und würde den Term freigeben".
+
+Dieses Paket misst statt zu zitieren. Ergebnis in einem Satz: **die Mechanik
+trägt, die Zahl nicht.** Das Paar (Platte, Zylinder A) liefert 1.184392, das
+beste Paar überhaupt 2.237332 — die exakte Distanz ist 2.315608, und nur der
+VOLLE Member-Schnitt erreicht sie. Zum dritten Mal in Folge (nach §8k, §8l,
+§8m) lag der vorab benannte Verdacht daneben; der Plan-Text ist nicht die
+Messung.
+
+### Der Satz
+
+Sei `L(x) ≤ dist(x, ∁Ω)` eine BEWIESENE untere Distanzschranke und im
+konkaven Zweig
+
+    gate = max(G − d₀, L(x) − δ)     statt     gate = G − d₀
+
+Dann gilt beides:
+
+* **Der §8i-Satz überlebt.** Aus `f ≥ min(d₀ − G, δ − L)` folgt bei `f < 0`
+  entweder `f ≥ d₀ − G`, also `e ≤ d₀ ≤ f + G < G` (die alte Rechnung), oder
+  `f ≥ δ − L ≥ δ − dist = e`, also gar kein Über-Claim. Die Ein-Term-Schranke
+  bleibt `G`.
+* **Der NEUE Anteil kann strukturell kein Phantom-Material erzeugen.** Wo
+  `L − δ` bindet, liegt das Feld ÜBER dem Zielfeld (`f ≥ e`) — die Korrektur
+  kann nur fehlendes Material auffüllen, nie welches erfinden. Das ist der
+  ganze Unterschied zu „`G`-Kappe aus" (§8k Kandidat d, §8l Kandidat f), das
+  den Rippen-Kamm auf 448 Punkte / 1.9866 mm aufriss.
+
+Die alte Form ist der Spezialfall `L = max_k depth_k(x) = δ − d₀`: das ist die
+TRIVIALE Teilmenge (ein einzelner Member), und `gate = max(G − d₀, −d₀)` ist
+wegen `G > 0` genau `G − d₀`. **Die Kappe rechnete also immer schon gegen eine
+untere Schranke — nur gegen die schlechteste, die es gibt.**
+
+### Das Keil-Primitiv
+
+`∁Ω = ⋂_k ∁P_k`, und für einen konvexen Member ist `∁P_k = ⋃_i S_{k,i}` die
+Vereinigung seiner Austritts-Halbräume. Ausmultipliziert:
+
+    dist(x, ∁(⋃_{k∈S} P_k)) = min über alle Auswahlen (i_k)_{k∈S}
+                                  dist(x, ⋂_{k∈S} S_{k,i_k})
+
+— ein Minimum über `∏_{k∈S} n_k` konvexe Keile, jeder in geschlossener Form
+(Aktive-Mengen-Aufzählung über Teilmengen der Restriktionen; leerer Keil ⇒
+`∞`). Weil eine KLEINERE Vereinigung ein GRÖSSERES Komplement hat, ist der
+Wert für JEDE Teilmenge `S` eine gültige untere Schranke von `dist(x,∁Ω)`, und
+grössere Teilmengen sind schärfer.
+
+Zwei Zugeständnisse machen die Nabe rechenbar, beide in die sichere Richtung:
+
+* Die Platte ist keine Rotationsfigur; ihre vier Seitenflächen werden durch
+  `r ≥ 20` ersetzt. Das ist eine OBERMENGE der echten Austrittsmenge
+  (`|x| ≥ 20 ⇒ r ≥ 20`) — grösseres Komplement, kleinere Distanz, Schranke
+  bleibt gültig.
+* Damit ist alles rotationssymmetrisch, und die Distanz wird exakt im
+  `(r,z)`-Profil gerechnet (bei Rotationssymmetrie liegt der nächste Punkt in
+  derselben Halbebene).
+
+**Selbsttest** (`complement_lower_bound_is_sound_384`), gegen dieselben exakten
+Referenzen wie §8k: `LB ≤ exakt` an jedem Gitterpunkt von Nabe, Ecken-Schale
+(t/δ = 2.0 und 3.0), notch 90° und Rippen-Kamm — **grösster Verstoss
+1.8·10⁻¹⁵**, also Fliesskomma-Rauschen. Dazu die Gegenrichtung (eine Funktion,
+die überall 0 liefert, bestünde die Ungleichung auch): der volle Member-Schnitt
+trifft am Nabe-Worst-Punkt die exakte Distanz auf `1e−6`, und die Handrechnung
+`dist = t + z = 3 − 0.684392` steht daneben.
+
+### Term für Term am Worst-Punkt (Stufen-Nabe)
+
+Fixture: Platte `z ∈ [−3, 0]`, `|x|,|y| ≤ 20`; Zylinder A `r = 6`,
+`z ∈ [−1.2, 0.5]`; Zylinder B `r = 4`, `z ∈ [−1.8, 6]`; `δ = 2`.
+Punkt `[−1.463461, −1.163986, −0.684392]`, also `r = 1.869915`, IM Material
+aller drei Member. Exakt `dist = 2.315608` (senkrecht nach unten durch die
+Plattenunterseite), wahr `f = −0.315608`; das Feld liefert `+0.278006`, naiv
+war `d₀ = +0.884392`.
+
+| Term | Zahlen |
+|---|---|
+| ch1 (Kreisnaht `r = 4`, `z = 0.5`) | `de = 2.4372`, `s₁ = 1.1844`, `s₂ = 2.0875`, `K − de = 1.4712` |
+| | `face = +0.3156` = `dist − δ` — **`w_geo = +0.3156` ist der exakte Wert** |
+| | `gate = G − d₀ = 0.8684 − 0.8844 = −0.0160` ⇒ Term aus |
+| ch0 (Kreisnaht `r = 6`, `z = 0`) | `de = 4.1864`, `K − de = −0.2780` ⇒ Luftseiten-Klemme zieht `d` auf `0.278` |
+| **Bedarf** | `d₀ − f_wahr = 1.200000` gegen `G = 0.868` |
+
+Identisch zu §8l — der Term hat den exakten Wert längst, das Gate hält ihn
+zurück. Die Frage dieses Pakets ist allein: **wie gross wird `L` an diesem
+Punkt?**
+
+### Die untere Schranke, Teilmenge für Teilmenge
+
+| Teilmenge | `L` | Keil, der das Minimum stellt |
+|---|---|---|
+| Paar (Platte, A) | **1.184392** | `z ≥ 0.5` — A's Deckel ist für dieses Paar Luft |
+| Paar (Platte, B) | **2.237332** | `z ≥ 0 ∧ r ≥ 4` — Plattenoberseite ausserhalb B |
+| Paar (A, B) | **1.115608** | `z ≤ −1.8` — B's Boden |
+| **Paar-Maximum** | **2.237332** | — |
+| **VOLL (Platte, A, B)** | **2.315608** | `z ≤ −3` — die Plattenunterseite |
+| exakt (§8k-Referenz) | 2.315608 | dieselbe Fläche |
+
+Nachgerechnet: `z ≥ 0 ∧ r ≥ 4` verlangt `Δz = 0.684392` UND `Δr = 2.130085`,
+also `√(0.684392² + 2.130085²) = 2.237332`; `z ≤ −3` verlangt nur
+`3 − 0.684392 = 2.315608`.
+
+**Der Grund ist strukturell, nicht numerisch.** Der Keil, der das beste Paar
+niederhält, ist die Plattenoberseite ausserhalb von B — und die ist von
+Zylinder A verdeckt. *Ein Paar kann eine Verdeckung durch einen DRITTEN Member
+nicht sehen.* Genau dieselbe Blindheit, die §8l an der Einzel-Member-Tiefe
+diagnostiziert hat, eine Stufe höher. Und §8l's konkrete Zahl war doppelt
+daneben: es ist nicht das Paar (Platte, A) — das liefert 1.184392 —, und
+2.306 mm kommen in keiner Teilmenge vor.
+
+Für das Gate heisst das:
+
+| Variante | `gate` | `f` | Restfehler |
+|---|---|---|---|
+| heute (`G`) | `−0.0160` | `+0.278006` | 0.315608 fehlendes Material |
+| Paar | `0.237332` | `−0.237332` | 0.078276 — Vorzeichen richtig, Wert nicht |
+| VOLL | `0.315608` | `−0.315608` | **0** — exakt |
+
+Das Vorzeichen kippt schon beim Paar (`L > δ` genügt dafür), der WERT wird
+erst mit dem vollen Schnitt exakt. Auf dem Gitter schlägt sich das so nieder:
+
+### Die Kandidaten-Messtabelle
+
+Feld-Mutation am kompilierten Baum (kein Produktionscode): `gate` wie oben,
+sonst bit-identisch zu `channel_apply`/`vertex_apply`. Gitter und Grenzen wie
+im Doktrin-Pin (Nabe/Schale/notch 22³, Kamm 24³). **über** = Phantom-Material
+gegen die Strahl-Schranke, **unter** = fehlendes Material gegen die exakte
+Referenz.
+
+| Fixture | BASIS über / unter | PAAR | VOLL |
+|---|---|---|---|
+| **Stufen-Nabe** | 0 / **59 · 0.3156** | 0 / **14 · 0.1955** | **0 / 0** |
+| Ecken-Schale `t/δ = 2.0, 2.1, 2.25, 2.4, 2.5, 3.0, 4.0, 6.0` | 0 / 0 | **unverändert** | **unverändert** |
+| Rippen-Kamm 4×1.5/0.8 | **168 · 0.8103** / 0 | **unverändert** | (5 Member: `6⁵` Keile) |
+| Rippen-Kamm 4×2.0/1.0 | **144 · 0.5378** / 0 | **unverändert** | (dito) |
+| notch_union 90° / 60° | 0 / 0 | **unverändert** | **unverändert** |
+| Kontroll-Lauf `L = −∞` | reproduziert BASIS **exakt** | — | — |
+
+Drei Lehren:
+
+* **Kein einziger Über-Claim entsteht, nirgends.** Der Rippen-Kamm — die
+  Fixture, an der „`G`-Kappe aus" mit 448 Punkten / 1.9866 mm zerbrach —
+  bewegt sich um NULL Punkte. Das ist keine glückliche Messung, das ist der
+  Satz: wo `L − δ` bindet, bleibt das Feld über dem Zielfeld.
+* **Das Paar halbiert die Nabe, schliesst sie aber nicht** (59 → 14, worst
+  0.3156 → 0.1955). Die Zusage bliebe damit exakt so ausgenommen wie heute.
+* **Der Kontroll-Lauf ist der Beweis, dass die Sonde die richtige Maschine
+  misst**: mit `L = −∞` reproduziert der Mutations-Evaluator das Produktions-
+  feld Punkt für Punkt, inklusive des Fernfeld-Skips, den er gar nicht macht.
+
+### Kostenmessung
+
+| Objekt | Keile | Zeit je Auswertung (release, f64, skalar) |
+|---|---|---|
+| Nabe, VOLL (3 Member × 3 Austritte, `(r,z)`-Profil) | 27 | **460 ns** |
+| Nabe, Paar-Maximum (3 Paare × 9) | 27 | **382 ns** |
+| Ecken-Schale, VOLL (3 Boxen × 6 Austritte, 3D) | 216 | **74.2 µs** |
+| Ecken-Schale, Paar-Maximum (3 Paare × 36) | 108 | **14.2 µs** |
+
+Die 3D-Zeiten sind eine OBERE Schranke — die Sonde löst jeden Keil mit einer
+allokierenden Gauss-Elimination statt mit der geschlossenen Zwei-Ebenen-Formel;
+eine Faktor-10-Optimierung ist offensichtlich. Die Zahl, die zählt, ist ohnehin
+nicht die Nanosekunde, sondern die **Keilzahl
+`∏_k n_k` — sie wächst EXPONENTIELL in der Memberzahl.** Der Rippen-Kamm hat
+fünf Boxen: `6⁵ = 7776` Keile für den vollen Schnitt. Genau deshalb hat §8k
+das Paar vorgeschlagen (`O(m²·n²)`), und genau daran scheitert das Paar.
+
+Der lineare Ausweg existiert und ist bekannt: `dist(x,∁Ω)` ist auch das
+Minimum über die EXPONIERTEN Randflächen-Stücke — `Σ_k n_k` Stück, das
+Zuschneiden passiert einmalig in der Synthese. Das ist exakt das Verfahren der
+§8k-Referenz `dist_obb_union_complement_exact`. Nur ist das Laufzeit-Objekt
+dann die zugeschnittene B-Rep der Vereinigung im Tape — eine Format-Änderung
+in der Grössenordnung „B-Rep im Opcode-Strom", mit allen sieben Spiegeln.
+
+### Warum hier kein Feld-Integrat steht
+
+Der Weg ist gemessen, nicht gebaut, und das ist eine Entscheidung mit Zahlen:
+
+* Das PAAR, das §8k/§8l vorgeschlagen haben und dessen Kosten sie geschätzt
+  haben, **löst die Nabe nicht** (59 → 14). Ein Opcode plus sieben Spiegel für
+  eine Viertel-Lösung wäre schlecht investiert.
+* Der VOLLE Schnitt löst sie vollständig (59 → 0, worst 0 mm) — kostet aber
+  entweder exponentiell viele Keile oder die B-Rep im Tape. Beides ist ein
+  eigenes Paket, keine Fussnote in diesem.
+* Ein Zwischending gibt es nicht: aus dem `min` über die Keile darf kein Keil
+  entfallen (das würde `L` ÜBERschätzen und damit Phantom-Material erlauben),
+  nur die `max`-Seite über die Teilmengen darf man beschneiden.
+
+Ebenfalls geprüft und verworfen, jeweils mit Grund:
+
+| Kandidat | Warum nicht |
+|---|---|
+| Eine per-Kanal-KONSTANTE `Δ ≤ L(x) − max_k depth_k(x)` (spiegelfrei — nur eine andere Zahl im bestehenden Payload!) | Über der Trust-Region ist `Δ = 0`. Nachgerechnet am Punkt `(4, 0, 4)`: er liegt AUF B's Mantel, also `dist = 0` und Member-Tiefe `0`, und er liegt mit `de = 3.5 < K = 3.908` in ch1's Trust-Region. Eine Konstante muss überall dort gelten — also ist sie 0. |
+| `gate = face_plane_gate` (die stützende Fremdebene als Gate-Basis) | `L ≥ h` ist falsch — an demselben Punkt `(4, 0, 4)` ist `h = 7.0` (Plattenunterseite) und `dist = 0`. Und wo es bindet, ist es identisch zu „`G`-Kappe aus". |
+| Nur die beiden NAHT-Eltern als Paar (die stehen schon in `ch.parents`) | An der Nabe ist das Paar (A, B) und liefert **1.115608** — unter `δ`. Das nützliche Paar enthält einen FREMDEN Member. |
+
+### Bilanz
+
+| Fixture | §8m | §8n | Zusage |
+|---|---|---|---|
+| **Stufen-Nabe** | 0 / 81 · 0.3055 (26³) bzw. 0 / 59 · 0.3156 (22³) | **unverändert** — Weg vermessen, nicht gebaut | ≤ 0.010 Phantom, Unter-Seite ausgenommen |
+| Ecken-Schale, notch, Kamm, Tasche, Steinmetz | — | **unverändert** | unverändert |
+| `cargo test --workspace` | 1554 | **1556** (zwei neue Pins) | — |
+| Golden | — | **byte-identisch, 35/35 Szenen** | — |
+
+Neue Pins: `complement_lower_bound_is_sound_384` (das Primitiv selbst —
+Ungleichung gegen beide exakten Referenzen an vier Fixturen, Schärfe, und die
+Handrechnung am Worst-Punkt) und
+`hub_gate_needs_the_full_member_complement_384` (der Befund — die vier
+Teilmengen-Werte auf `1e−5` festgenagelt, plus die Aussage
+`Paar-Maximum < exakt`). Dazu die einmalige Deckenmessung
+`probe_384_pair_distance_gate` als `#[ignore]`. **Keine bestehende Pin-Zeile
+bewegt sich**, kein Produktionscode, kein Opcode, kein Spiegel.
+
+### Was OFFEN bleibt
+
+* **Die `G`-Kappe an der Nabe** — der Weg ist jetzt beziffert statt vermutet:
+  `L` muss der VOLLE Member-Schnitt sein, das Paar genügt nicht. Das
+  Laufzeit-Objekt dafür ist die zugeschnittene Vereinigungs-B-Rep im Tape
+  (`Σ_k n_k` Randstücke statt `∏_k n_k` Keile). Eigenes Paket.
+* **Der Unter-Claim-Zeuge** ist jetzt möglich, aber nicht gebaut. Das Primitiv
+  trägt (Selbsttest sauber an ~10⁵ Punkten); was fehlt, ist die
+  Member-Zerlegung in PRODUKTIONSCODE: `branch_halfspace_map` liefert die
+  Träger, aber (a) gekrümmte Träger brauchen ein EINBESCHRIEBENES Polytop
+  (`P' ⊆ P`, sonst kippt die Schranke), und (b) ein Member, der selbst nicht
+  konvex ist, macht `⋂{h_i ≤ 0} ⊋ P` und damit die Schranke ungültig — es
+  braucht einen Konvexitäts-Nachweis je Member. Beides ist Arbeit, keine
+  Zeile.
+* **Der konvexe Zweig** bleibt unberührt: die duale Schranke wäre eine OBERE
+  Distanzschranke zum Komplement einer Durchschnittsmenge, und die
+  Member-AABBs liefern dafür keine Obermenge (§8j-Argument, unverändert).
+* **Naht gegen Naht**, **spitze Nähte**, **der Wächter als Stichprobe**,
+  **die latente `safe_sqrt`-Entartung anderer Primitive**: unverändert
+  §8j/§8k/§8m.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -2477,7 +2717,14 @@ identisch zum Stand vor dem Paket.
   `erosion_notch_seam_end_is_exact_on_both_sides_384`,
   `face_plane_gates_cover_seam_end_faces_384`. §8m:
   `vertex_spheres_cover_every_trihedron_384`,
-  `erosion_shell_is_exact_across_the_thickness_fan_384`.
+  `erosion_shell_is_exact_across_the_thickness_fan_384`. §8n: das Keil-Primitiv
+  der unteren Distanzschranke (`dist_halfplanes2`, `dist_halfspaces3`,
+  `solve_active`, `obb_exits`, `hub_members`, `complement_lb2`,
+  `complement_lb3`, `pair_max3`), der Mutations-Evaluator (`eval_mut`,
+  `channel_apply_mut`, `vertex_apply_mut`, `scan_mut`) und die Pins
+  `complement_lower_bound_is_sound_384`,
+  `hub_gate_needs_the_full_member_complement_384` sowie die `#[ignore]`-
+  Deckenmessung `probe_384_pair_distance_gate`.
 - `crates/metricity-lab/tests/f_c_nonconvex_contact_spike.rs` — Machbarkeits-
   Prototyp (cavalier-Verschnitt L∩Rechteck, Zwei-Komponenten-Zerlegung,
   Loch-Kontakt), 3/3 grün.
