@@ -3651,3 +3651,142 @@ fn face_plane_gates_cover_seam_end_faces_384() {
     }
 }
 
+
+
+/// **§8m-Struktur-Pin: JEDES konkave Trieder bekommt seine Vertex-Kugel.**
+///
+/// Die Ecken-Schale hat acht konkave Trieder — die acht Ecken des Würfels
+/// `[−t, 0]³`. §8l fand, dass nicht jede von ihnen einen Term bekam, und
+/// vermutete den Trace: `trace_seam` biege am Eck auf die Nachbar-Naht ab und
+/// liefere kein blockiertes Ende. **Die Sonde widerlegt das** — alle acht
+/// Enden werden blockiert, alle acht Trieder-Kandidaten entstehen. Verloren
+/// gingen sie erst in [`project_to_vertex`]: dessen Newton landet auf der
+/// Fläche `x = −t`, wo der Dual-Gradient wegen der `safe_sqrt`-Regularisierung
+/// **exakt** `(0,0,0)` wird — und der Entartungs-Wächter (`‖g‖ < 1e−6`) warf
+/// den bereits gelösten Punkt weg.
+///
+/// Warum das an der PHASENLAGE hing: die Flächen bei Koordinate `0` erreicht
+/// die gedämpfte Newton nur asymptotisch (nahe null ist das f32-Raster dicht,
+/// die Konvergenzschwelle `1e−5·scale` greift lange vorher); die Flächen bei
+/// `−t` liegen dagegen auf einem f32-Raster der Weite `≈ 5e−7`, auf das ein
+/// einziger Schritt aus einem Residuum von `4e−5` bit-exakt einrastet. Ob er
+/// das tut, hängt daran, wo der Trace blockiert wurde — also an der
+/// Schrittweiten-Phase gegen die Wandstärke. Gemessen fielen genau `t/δ = 2.1`
+/// und `2.4` durch (dort 4 von 8 Kugeln, bis 0.975 mm fehlendes Material),
+/// `2.0`/`2.25`/`2.5` nicht.
+///
+/// Dieser Pin friert die STRUKTUR ein statt der Symptome: acht Kugeln, an den
+/// acht Würfelecken, über den ganzen Dicken-Fächer. Fällt er, ist die
+/// Trieder-Erkennung wieder phasenabhängig geworden.
+#[test]
+fn vertex_spheres_cover_every_trihedron_384() {
+    let delta = 2.0f32;
+    let mut fan: Vec<f32> = Vec::new();
+    let mut v = 2.0f32;
+    while v <= 2.6001 {
+        fan.push((v * 100.0).round() / 100.0);
+        v += 0.05;
+    }
+    fan.extend_from_slice(&[2.7, 2.8, 2.9, 3.0, 3.2, 3.5, 4.0, 4.4, 5.0, 6.0]);
+    fn anchors(n: &BoundedCsg, out: &mut Vec<[f32; 3]>) {
+        match n {
+            BoundedCsg::ArcChannel { inner, verts, .. } => {
+                out.extend(verts.iter().map(|v| v.v));
+                anchors(inner, out);
+            }
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. } => {
+                anchors(left, out);
+                anchors(right, out);
+            }
+            BoundedCsg::Offset { inner, .. } | BoundedCsg::Shell { inner, .. } => anchors(inner, out),
+            _ => {}
+        }
+    }
+    for tf in fan {
+        let t = tf * delta;
+        let (field, _) = compile_for(thin_corner_node(t, 40.0, delta));
+        let mut got = Vec::new();
+        anchors(&field, &mut got);
+        assert_eq!(
+            got.len(),
+            8,
+            "Schale t/δ={tf}: {} Vertex-Kugeln statt 8 — jede der acht Würfelecken ist ein \
+             konkaves Trieder und braucht ihren Term (§8m: bei 2.1/2.4 waren es 4). Anker: {:?}",
+            got.len(),
+            got
+        );
+        // …und zwar je EINE an jeder Ecke, nicht acht an derselben.
+        for cx in [0.0f32, -t] {
+            for cy in [0.0f32, -t] {
+                for cz in [0.0f32, -t] {
+                    let c = [cx, cy, cz];
+                    let hit = got
+                        .iter()
+                        .filter(|v| {
+                            (v[0] - c[0]).abs().max((v[1] - c[1]).abs()).max((v[2] - c[2]).abs())
+                                < 1e-2
+                        })
+                        .count();
+                    assert_eq!(
+                        hit, 1,
+                        "Schale t/δ={tf}: {hit} Kugeln an der Würfelecke {c:?} statt genau einer. \
+                         Anker: {got:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// **§8m-Kern-Pin: die Ecken-Schale ist über den ganzen Dicken-Fächer
+/// beidseitig exakt.**
+///
+/// §8l pinnte `t/δ = 2.0`/`2.25` (kollabierendes Regime) und `2.5…6.0`
+/// (`erosion_thin_corner_is_exact_on_both_sides_384`) — und ließ dazwischen
+/// zwei gemessene Löcher stehen: `2.1` mit 624 Punkten bis 0.877 mm und `2.4`
+/// mit 65 bis 0.933 mm fehlendem Material. Beide sind reine PHASENLAGEN
+/// (Nachbarn wie `2.15`/`2.2`/`2.45` waren sauber), also taugt kein einzelner
+/// Stützpunkt als Wächter: der Fächer selbst ist der Pin.
+///
+/// Geprüft werden die Zwischen-Phasen in 0.05er-Schritten; `2.0`/`2.25` und
+/// `2.5+` bleiben bei ihren bestehenden Pins, damit hier keine Erwartung
+/// doppelt geführt wird.
+#[test]
+fn erosion_shell_is_exact_across_the_thickness_fan_384() {
+    let delta = 2.0f32;
+    for tf in [2.05f32, 2.1, 2.15, 2.2, 2.3, 2.35, 2.4, 2.45] {
+        let t = tf * delta;
+        let (field, report) = compile_for(thin_corner_node(t, 40.0, delta));
+        let boxes = thin_corner_boxes(t as f64, 40.0);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let lo = -(t as f64 + delta as f64 + 1.0);
+        let r = two_sided_scan(
+            &field,
+            delta,
+            [lo; 3],
+            [1.0; 3],
+            22,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_boxes_complement(&boxes, p, 160),
+        );
+        assert!(r.pts > 1000 && r.xmax <= 1e-6, "die Sonde selbst ist kaputt: {:?}", r.xmax);
+        assert_eq!(
+            r.under.0, 0,
+            "Schale t/δ={tf}: {} Punkte mit FEHLENDEM Material, größtes {:.4} mm bei {:?} — \
+             die Phasenlage von Trace-Schritt zu Wandstärke darf keine Vertex-Kugel kosten \
+             (§8m, vor dem Fix: 2.1 → 624 / 0.877, 2.4 → 65 / 0.933). Reasons: {:?}",
+            r.under.0,
+            r.under.1,
+            r.under.2,
+            report.reasons()
+        );
+        assert_eq!(
+            r.over.0, 0,
+            "Schale t/δ={tf}: {} Punkte Phantom-Material, größtes {:.4} mm bei {:?} — die \
+             wiedergewonnenen Kugeln dürfen KEINEN Über-Claim eintauschen",
+            r.over.0, r.over.1, r.over.2
+        );
+    }
+}

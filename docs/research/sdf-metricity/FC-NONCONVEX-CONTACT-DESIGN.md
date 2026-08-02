@@ -2242,6 +2242,231 @@ identisch zum Stand vor dem Paket.
 * **Naht gegen Naht**, **der konvexe Zweig ohne viertes Gate**, **spitze
   Nähte**, **der Wächter als Stichprobe**: unverändert §8j/§8k.
 
+## 8m. Nicht jedes Trieder bekam seine Kugel — und der Trace war unschuldig (#384, 2026-08-02)
+
+§8l schloss die Ecken-Schale beidseitig ab und ließ genau eine Lücke offen:
+bei den ZWISCHEN-Phasenlagen `t/δ = 2.1` (624 Punkte bis 0.877 mm) und `2.4`
+(65 bis 0.933 mm) blieb ein Unter-Claim. Der Verdacht war benannt:
+`trace_seam` biege am Würfeleck auf die Nachbar-Naht ab, liefere kein
+blockiertes Ende, und deshalb entstehe dort kein Trieder-Kandidat.
+
+**Der Verdacht ist falsch.** Zum dritten Mal in Folge (§8k, §8l, §8m) hat die
+Messung den Plan-Text widerlegt. Alle acht Enden werden blockiert, alle acht
+Kandidaten entstehen — verloren gehen sie eine Stufe später.
+
+### Der Fächer, vorher
+
+δ = 2, Gitter 24³, exakte Referenz `dist_obb_union_complement_exact`,
+zweiseitig. `nVs` = Zahl der synthetisierten Vertex-Kugeln (Soll: 8, die acht
+Ecken des Würfels `[−t, 0]³`).
+
+| `t/δ` | über | unter | `nVs` | Zusage |
+|---|---|---|---|---|
+| 2.00 | 0 | 0 | 8 | ≤ 0.010 |
+| 2.05 | 0 | 0 | 8 | ≤ 0.010 |
+| **2.10** | 0 | **473 / 0.7157** | **4** | ≤ 0.868 (Zeuge) |
+| 2.15 | 0 | 0 | 6 | ≤ 0.010 |
+| 2.20 | 0 | 0 | 8 | ≤ 0.010 |
+| 2.25 | 0 | 0 | 6 | ≤ 0.010 |
+| 2.30 | 0 | 0 | 8 | ≤ 0.010 |
+| 2.35 | 0 | 0 | 7 | ≤ 0.010 |
+| **2.40** | 0 | **57 / 0.9752** | **4** | ≤ 0.010 (Unter-Seite ausgenommen) |
+| 2.45 … 6.00 | 0 | 0 | 4 … 8 | ≤ 0.010 |
+
+Die Kugelzahl schwankte über den ganzen Fächer zwischen 4 und 8 — bei den
+dickeren Wänden folgenlos (dort trägt die naive Platten-Erosion selbst), bei
+`2.1`/`2.4` nicht.
+
+### Term-für-Term am Worst-Punkt
+
+**`t/δ = 2.1`, `[−2.3445, −2.2194, −0.0972]`.** Exakt `dist = 2.715735`, wahr
+`f = −0.715735`; das Feld liefert `+0.025616`. Nächster Komplement-Punkt ist
+die Würfelecke `(−4.2, −4.2, 0)` — genau die Handrechnung
+`√(1.8555² + 1.9806² + 0.0972²)`.
+
+| Term | Zahlen | woran es scheitert |
+|---|---|---|
+| Vertex-Kugel an `(−4.2, −4.2, 0)` | **existiert nicht** | die Ecke hat keinen Term bekommen |
+| vs2 `(−4.2, 0, 0)` | `ρ = 2.8945`, alle Gates positiv, `ρ − δ = 0.8945` | trägt korrekt, ist aber die FALSCHE Ecke — `min` nimmt den kleineren Wert `−0.0972` |
+| ch0 (Naht ab `(0,0,0)`) | `de = 3.2298`, `de − δ = 1.2298` | `s₃ = −0.0973` — der Punkt liegt nicht entlang dieser Naht |
+| ch6 | `de = 1.9744` | `s₁ = −0.1766`, Kegel verlassen |
+| Grenzwert-Klemme | `lim = +0.0256` aus ch6 (`δ − de`) | hebt das Feld auf `+0.0256`; sie ist gültig, aber der fehlende Term senkt nichts |
+
+**`t/δ = 2.4`, `[−2.9558, −3.1883, −3.1108]`.** Exakt `dist = 2.975196`, wahr
+`f = −0.975196`; das Feld liefert `+0.022433`, naiv war `d₀ = +0.155848`.
+Nächster Komplement-Punkt ist die Würfelecke `(−4.8, −4.8, −4.8)`.
+
+| Term | Zahlen | woran es scheitert |
+|---|---|---|
+| Vertex-Kugel an `(−4.8,−4.8,−4.8)` | **existiert nicht** | dito |
+| vs0…vs3 (die vier vorhandenen Ecken) | `ρ = 4.58 … 5.35`, `K − ρ` **negativ** bei allen vieren | jede liegt außerhalb ihres eigenen Trust-Radius; sie klemmen nur noch luftseitig (`d` 0.1558 → 0.0224) |
+| Kanäle | kein einziger bindet | die drei Nähte an dieser Ecke enden dort, `s₃` schließt |
+
+In beiden Fällen ist die Diagnose dieselbe und sie ist keine Gate-Frage: **an
+der zuständigen Ecke steht überhaupt kein Term.** Alle vier fehlenden Ecken
+haben ZWEI oder DREI Koordinaten auf `−t`; die vier vorhandenen haben höchstens
+eine.
+
+### Wo die Kandidaten wirklich sterben
+
+Der instrumentierte Trace zeigt für `t/δ = 2.4` allein aus dem Paar
+(y-Platte, x-Platte) acht blockierte Enden — je eines an jeder Würfelecke,
+alle mit dem korrekten dritten Member. Die Kandidatenliste ist vollständig.
+`synthesize_vertices` verwirft vier davon, und zwar an derselben Stelle:
+`project_to_vertex` liefert `None`.
+
+Die Newton-Iteration, aufgeschlüsselt (Kandidat `(−4.79996, 4e−5, −4.3231)`):
+
+    it0  p [−4.7999601, 0.0000400, −4.3231254]
+         m0 v +4.00e−5  |g| 1     m1 v −4.01e−5  |g| 1     m2 v −4.77e−1  |g| 1
+    it1  p [−4.8000002, 0.0000002, −4.7976160]
+         m0 v +2.00e−7  |g| 1
+         m1 v +1e−10    |g| 0     → ABBRUCH
+
+`x = −4.8000002` ist der f32-Wert der Fläche `x = −t` selbst. Dort rechnet die
+Box-Auswertung `|p − c| − he = 2.4000000953674316 − 2.4000000953674316 = 0`
+**bit-exakt**. Und genau da stirbt der Dual-Gradient:
+
+* die Dual-Instanziierung regularisiert die Wurzel
+  (`safe_sqrt(x) = sqrt(x + 1e−20)`, `sdf_eval.rs`), damit `|q|` am Rand nicht
+  NaN-differenziert;
+* auf der Fläche ist der geklemmte Außen-Vektor `q₀ = 0`, also
+  `d(q₀·q₀)/dp = 2·q₀·dq₀/dp = 0` — die äußere Ableitung `1/(2·1e−10)` trifft
+  eine innere Null;
+* der Innen-Zweig `min(q_max, 0)` nimmt bei `q_max = 0` den eingefrorenen
+  `zero`-Ast, trägt also auch nichts bei.
+
+Ergebnis: Wert `+1e−10` (die `safe_sqrt`-Vorspannung), Gradient **exakt**
+`(0,0,0)` — an einer Fläche mit vollkommen wohldefinierter Normale. Der
+Entartungs-Wächter `n < 1e−6` wirft daraufhin den GANZEN Jitter-Versuch weg,
+und da jeder der fünf Jitter-Startpunkte auf dieselbe Ecke zuläuft, stirbt der
+Kandidat fünfmal. `x` war zu diesem Zeitpunkt bereits exakt richtig.
+
+### Warum es an der Phasenlage hing
+
+Die Asymmetrie zwischen den vorhandenen und den fehlenden Ecken ist eine reine
+**f32-Rasterfrage**, keine geometrische:
+
+* An einer Fläche bei Koordinate **0** nähert sich die (auf 0.995 gedämpfte)
+  Newton nur asymptotisch. Nahe null ist das f32-Raster beliebig dicht, das
+  Residuum bleibt bei jedem Schritt positiv, und die Konvergenzschwelle
+  `1e−5·scale = 8e−4` greift lange vorher. Gemessen an `(0,0,0)`:
+  `1.45e−5 → 7.23e−8 → 3.75e−10`, Gradient dabei durchgehend `|g| ≈ 1`.
+* An einer Fläche bei Koordinate **−t ≈ −4.8** ist das f32-Raster `≈ 4.8e−7`
+  weit. Ein einziger Schritt aus einem Residuum von `4e−5` rastet bit-exakt
+  ein — und dann ist `|p − c| − he` in f64 die exakte Differenz zweier
+  identischer Zahlen.
+
+Ob dieser eine Schritt bit-exakt einrastet, hängt am Residuum beim Eintritt,
+also daran, WO der Trace blockiert wurde — und das ist die Phase der
+Trace-Schrittweite gegen die Wandstärke. `t = 4.0` (exakt in f32) und `t = 4.4`
+landen daneben und behalten alle acht Kugeln; `t = 4.2` und `t = 4.8` landen
+darauf und verlieren vier. Das ist die ganze Dickenabhängigkeit.
+
+### Kandidaten, gemessen
+
+| Kandidat | Schale 2.1 unter | Schale 2.4 unter | Fächer `nVs` | Nabe | Kamm 1.5/0.8 | notch | Tasche s=4/6 |
+|---|---|---|---|---|---|---|---|
+| §8l (Ausgangsstand) | 624 / 0.877 | 65 / 0.933 | 4 … 8 | 81 / 0.3055 | 336 / 0.819 | 0 / 0 | 0 / 0 |
+| **(h1) FD-Rückfall in `Member::value_grad` (global)** | **0 / 0** | **0 / 0** | **8** | 81 / 0.3055 | 336 / 0.819 | 0 / 0 | **6 / 0.7599 ÜBER-Claim** |
+| **(h2) FD-Rückfall nur in `project_to_vertex` = §8m** | **0 / 0** | **0 / 0** | **8** | 81 / 0.3055 | 336 / 0.819 | 0 / 0 | **0 / 0** |
+
+**(h1) ist gemessen und verworfen.** Der Rückfall im Naht-Marsch
+(`project_to_seam` in `trace_seam`) lässt Traces über Punkte hinauslaufen, an
+denen sie bisher hielten. Das kostet drei Dilations-Fixturen:
+`dilation_channel_end_gate_is_exact_384` bekommt **6 Nullmengen-Fehler bis
+0.7599 mm bei zugesagten 0.010** am Taschenmund `[10.733, −7, 11]`,
+`dilation_junction_bisector_is_scale_invariant_384` fällt bei `f = 16` von
+„kein Fehler" auf einen Randpunkt-Zeugen mit 0.289 mm, und
+`pick_on_offset_channel_reports_both_edge_parents` verliert die auflösbare
+Provenance einer gewobenen Fläche — dieselbe Empfindlichkeit, die §8g schon am
+0.033-mm-Anbau vermessen hat.
+
+**(h2) ist der Fix.** Er greift genau dort, wo der Defekt gemessen wurde: die
+Trieder-Newton MUSS in dem Punkt landen, in dem alle drei Carrier exakt
+verschwinden — an achsparalleler Geometrie ist die Entartung dort strukturell
+unvermeidlich. Der Naht-Marsch bleibt beim reinen Dual-Gradienten; dort ist ein
+Abbruch ein legitimes Stopp-Signal, und ihn zu übergehen ist eine Änderung auf
+Verdacht mit gemessenem Preis.
+
+Der Zweig ist **strikt additiv**: oberhalb von `‖g‖ ≥ 1e−6` ist das Ergebnis
+wortgleich das alte. Darunter gab es bisher gar kein Ergebnis. Kein Opcode,
+kein Wire-Format, kein Spiegel — 55 hinzugefügte, 2 geänderte Zeilen in
+`offset_channel.rs`.
+
+### Bilanz
+
+| Fixture | §8l | §8m | Zusage |
+|---|---|---|---|
+| **Ecken-Schale** `t/δ = 2.05 … 2.45` (0.05er-Fächer) | 2.1: 0 / 624 · 0.877; 2.4: 0 / 65 · 0.933 | **0 / 0 durchgehend** | ≤ 0.010, beidseitig wahr |
+| **Ecken-Schale** `t/δ = 2.0` / `2.25` | 0 / 0 | **unverändert** | ≤ 0.010, beidseitig wahr |
+| **Ecken-Schale** `t/δ = 2.5 … 6.0` | 0 / 0 | **unverändert** | ≤ 0.010, beidseitig wahr |
+| **Vertex-Kugeln** über den ganzen Fächer | 4 … 8 | **8, je eine je Würfelecke** | — |
+| **notch_union** 90° / 60° | 0 / 0 | **unverändert** | ≤ 0.010, beidseitig wahr |
+| **Stufen-Nabe** | 0 / 81 · 0.3055 | **unverändert** | ≤ 0.010 Phantom, Unter-Seite ausgenommen |
+| **Rippen-Kamm** 4×1.5/0.8, 4×2.0/1.0 | 336 / 0, 280 / 0 · 0.819 | **unverändert** | ≤ 0.868, wahr |
+| Tasche (Dilation) `s ∈ {4, 6}` | 0 / 0 | **unverändert** | ≤ 0.010 |
+| `cargo test --workspace` | 1552 | **1554** (zwei neue Pins) | — |
+| `offset_fuzz` (`OFFSET_FUZZ_ITERS=200`) | 5/5 | **5/5** | — |
+| Web | 2082/2082 | **2082/2082** | — |
+
+Neue Pins: `vertex_spheres_cover_every_trihedron_384` (der STRUKTUR-Pin — acht
+Kugeln an den acht Würfelecken über den ganzen Fächer, also die Ursache statt
+des Symptoms) und `erosion_shell_is_exact_across_the_thickness_fan_384` (die
+Zwischen-Phasen in 0.05er-Schritten, zweiseitig). Beide fallen ohne den Fix
+(gegengeprüft: 4 statt 8 Kugeln, 396 Punkte fehlendes Material). **Keine
+bestehende Pin-Zeile bewegt sich** — die zweiseitigen Doktrin-Pins sind
+bedingt formuliert und überleben ein Schließen der Unter-Seite von selbst.
+
+### Golden — was sich bewegt und warum
+
+| Szene | Tape | Feldwerte |
+|---|---|---|
+| 34 von 35 Szenen | byte-identisch | byte-identisch |
+| `vertex_sphere_corner` | gleiche Länge (2490 Ops), 342 Payload-Werte | **2 von 512** |
+
+Die beiden Bewegungen, nachgerechnet. Die Fixture sind drei Platten der Dicke
+10 mit δ = 1.5.
+
+| Punkt | vorher | nachher | wahr |
+|---|---|---|---|
+| `(−7.3, 0, 0)` | `−1.1999922` | `−1.1999998` | **`−1.2`** |
+| `(0, −7.3, 0)` | `−1.1999798` | `−1.1999998` | **`−1.2`** |
+
+Der Punkt liegt im Inneren der x-Platte auf der verdeckten Kante `(y=0, z=0)`;
+die nächste Luft ist die Plattenunterseite `x = −10`, also `dist = 2.7` und
+`f = 1.5 − 2.7 = −1.2`. **Beide Werte SINKEN** (der erodierte Körper wächst,
+ein Außenpunkt rückt näher — die march-sichere Richtung) und beide landen auf
+dem exakten Wert; vorher lagen sie 8e−6 bzw. 2e−5 daneben und
+**unterschiedlich weit**, obwohl die Fixture in `x`/`y` symmetrisch ist. Genau
+diese Asymmetrie war die fehlende Kugel. Die AABB der Szene wandert um 4e−5 mm
+mit den nun exakt auf den Ecken sitzenden Ankern.
+
+`check_interp` (Rust `eval_opcodes` ↔ C++ `sdf_interp.h`): **35 Szenen,
+17920 Checks, 0 Failures, worst_err 0.000002** (`sweep_open_twist`) —
+identisch zum Stand vor dem Paket.
+
+### Was OFFEN bleibt
+
+* **Die G-Kappe an der Nabe** (§8l Ursache 3) — unverändert vertagt, 81 Punkte
+  bis 0.3055 mm. Der Weg ist die pairweise untere Distanzschranke
+  `dist(x, ∁(P_a ∪ P_b))` als Gate-Basis statt der Konstante `G`; eigenes
+  Paket in der Größenordnung von §8f.
+* **Der Unter-Claim-Zeuge fehlt weiter** (§8k unverändert): dieselbe
+  pairweise Schranke als Wächter. Doppelt motiviert.
+* **Der FD-Rückfall ist auf die Trieder-Newton beschränkt.** Dieselbe
+  Entartung trifft `project_to_seam` — dort mit gemessenem Preis (h1). Ob ein
+  Naht-Marsch, der über die Entartung hinweg weiterläuft, mit nachgezogenen
+  End-/Fremdebenen tragfähig wird, ist NICHT gemessen. Solange nicht, ist der
+  Abbruch dort das ehrlichere Verhalten.
+* **Andere Primitive als die Box.** Die Entartung ist eine Eigenschaft von
+  `safe_sqrt` an jeder geklemmten Null; gemessen ist sie an achsparallelen
+  Box-Flächen. Zylinder-Mäntel und Extrude-Wände treffen sie nur, wenn ein
+  Newton-Schritt bit-exakt auf der Fläche landet — an der Nabe und am notch
+  passierte das über den ganzen Fächer nicht.
+* **Naht gegen Naht**, **der konvexe Zweig ohne viertes Gate**, **spitze
+  Nähte**, **der Wächter als Stichprobe**: unverändert §8j/§8k.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -2250,7 +2475,9 @@ identisch zum Stand vor dem Paket.
   `dist_hub_complement_exact`), die zweiseitige Sonde (`two_sided_scan`) und
   die drei neuen Pins. §8l: `erosion_collapsing_shell_is_exact_on_both_sides_384`,
   `erosion_notch_seam_end_is_exact_on_both_sides_384`,
-  `face_plane_gates_cover_seam_end_faces_384`.
+  `face_plane_gates_cover_seam_end_faces_384`. §8m:
+  `vertex_spheres_cover_every_trihedron_384`,
+  `erosion_shell_is_exact_across_the_thickness_fan_384`.
 - `crates/metricity-lab/tests/f_c_nonconvex_contact_spike.rs` — Machbarkeits-
   Prototyp (cavalier-Verschnitt L∩Rechteck, Zwei-Komponenten-Zerlegung,
   Loch-Kontakt), 3/3 grün.
@@ -2262,7 +2489,9 @@ identisch zum Stand vor dem Paket.
   S ⊆ U, Stufe-2-Klemme (submergierte-Π-Luftseiten-Klemme).
 - `docs/research/sdf-metricity/F396-RIM-OPCODE-DESIGN.md` — ∂P-Rand-Fillet
   (radiale Distanz + Halbraum-Maske + Nearest-Feature, Over-Fill = 0).
-- `crates/kernel/src/offset_channel.rs` — §8l: `set_end_plane_gates`
+- `crates/kernel/src/offset_channel.rs` — §8m: `Member::value_grad_vertex`
+  (zentrale Differenzen, wenn der Dual-Gradient AUF der eigenen Fläche
+  entartet), `project_to_vertex`; §8l: `set_end_plane_gates`
   (Drei-Wege-Regel am freien Ende), `set_face_plane_gates`
   (Trägerflächen-Filter über die Naht-ENTHALTUNG statt der Berührung),
   `clamp_vertex_trust` (nur noch gegen VERWEIGERTE Trieder),

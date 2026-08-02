@@ -1,3 +1,6 @@
+## 0.56.12
+- fix(kernel) #384: In einer konkaven Raumecke bekommt jetzt jede der acht Ecken ihren Eckklotz — bei bestimmten Wandstärken fehlte die Hälfte davon, und mit ihr bis zu einem halben Millimeter Material.
+
 ## 0.56.11
 - fix(kernel) #384: Am Ende einer Offset-Naht bleibt kein Materialstreifen mehr stehen: die Korrektur reicht jetzt bis an die echte Abschlussfläche statt bis zum Ende der intern verfolgten Kurve.
 - fix(kernel) #384: In einer konkaven Raumecke, deren Wände nur doppelt so dick sind wie der Offset, entsteht der Eckklotz jetzt vollständig — vorher fehlte dort bis zu ein Drittel der Wandstärke an Material.

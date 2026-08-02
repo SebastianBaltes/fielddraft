@@ -753,7 +753,60 @@ impl Member<'_> {
             [self.sign * g[0], self.sign * g[1], self.sign * g[2]],
         )
     }
+
+    /// #384 §8m — wie [`Self::value_grad`], aber mit **zentralem
+    /// Differenzen-Rückfall, wenn der Dual-Gradient AUF der eigenen Fläche
+    /// entartet.**
+    ///
+    /// Die Dual-Instanziierung der Primitiv-Eval regularisiert die Wurzel
+    /// (`safe_sqrt(x) = sqrt(x + 1e-20)`), damit `|q|` am Rand nicht
+    /// NaN-differenziert. Genau AUF einer Box-Fläche ist der geklemmte
+    /// Aussen-Vektor aber `q₀ = 0`, also `d(q₀·q₀)/dp = 2·q₀·dq₀/dp = 0` — die
+    /// äussere Ableitung `1/(2·1e−10)` trifft eine innere Null; und der
+    /// Innen-Zweig `min(q_max, 0)` nimmt bei `q_max = 0` den eingefrorenen
+    /// `zero`-Ast. Ergebnis: Wert `+1e−10`, Gradient **exakt** `(0,0,0)` — an
+    /// einer Fläche mit vollkommen wohldefinierter Normale.
+    ///
+    /// [`sdf_gradient_mode`](crate::sdf_dual::sdf_gradient_mode) fällt bei
+    /// einem NICHT-ENDLICHEN Dual-Gradienten längst auf zentrale Differenzen
+    /// zurück; eine exakte Null bei endlichem Wert ist dieselbe
+    /// Entartungsklasse und bekommt hier denselben Rückfall.
+    ///
+    /// **Nur [`project_to_vertex`] nutzt ihn.** Diese Newton MUSS in dem Punkt
+    /// landen, in dem alle drei Carrier exakt verschwinden — an
+    /// achsparalleler Geometrie ist die Entartung dort strukturell
+    /// unvermeidlich, und der Abbruch wirft einen bereits gelösten
+    /// Trieder-Punkt weg. Der Naht-Marsch ([`project_to_seam`] in
+    /// [`trace_seam`]) bleibt bewusst beim reinen Dual-Gradienten: dort ist
+    /// der Abbruch ein legitimes Stopp-Signal, und ein Verlängern der Traces
+    /// ist gemessen teuer (§8m-Kandidat h1: 0.760 mm Über-Claim an der
+    /// Dilations-Tasche bei zugesagten 0.010, plus zwei weitere gebrochene
+    /// Dilations-Fixturen).
+    fn value_grad_vertex(&self, p: [f32; 3]) -> (f32, [f32; 3]) {
+        let (v, g) = self.value_grad(p);
+        if norm(g) >= DUAL_GRAD_MIN {
+            return (v, g);
+        }
+        let h = DUAL_GRAD_FD;
+        let fd = |k: usize| {
+            let (mut a, mut b) = (p, p);
+            a[k] += h;
+            b[k] -= h;
+            (self.node.sdf(a, EvalMode::Visual) - self.node.sdf(b, EvalMode::Visual)) / (2.0 * h)
+        };
+        (v, [self.sign * fd(0), self.sign * fd(1), self.sign * fd(2)])
+    }
 }
+
+/// #384 §8m — unterhalb dieser Gradienten-Länge gilt der Dual-Gradient eines
+/// Members als entartet; identisch zur Abbruch-Schwelle, mit der
+/// [`project_to_seam`]/[`project_to_vertex`] ihn bisher verwarfen.
+const DUAL_GRAD_MIN: f32 = 1e-6;
+
+/// #384 §8m — Schrittweite des zentralen Differenzen-Rückfalls. Gleicher Wert
+/// wie in [`crate::sdf_dual::sdf_gradient_mode`], dessen NaN-Rückfall dieser
+/// hier fortsetzt.
+const DUAL_GRAD_FD: f32 = 1e-4;
 
 /// Flacht den Kind-Baum eines Stopps in Member-Normalform.
 /// `union_form = true`: Union-Ketten flach (Vorzeichen +).
@@ -910,9 +963,9 @@ fn project_to_vertex(
             let mut f = [0.0f32; 3];
             let mut g = [[0.0f32; 3]; 3];
             for (r, &mi) in tri.iter().enumerate() {
-                let (v, gr) = members[mi].value_grad(p);
+                let (v, gr) = members[mi].value_grad_vertex(p);
                 let n = norm(gr);
-                if !(v.is_finite() && n.is_finite()) || n < 1e-6 {
+                if !(v.is_finite() && n.is_finite()) || n < DUAL_GRAD_MIN {
                     continue 'jitter;
                 }
                 f[r] = v / n;

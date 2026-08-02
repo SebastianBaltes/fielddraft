@@ -844,9 +844,42 @@ für Shell.
   `−0.055635`). Herleitung + Messtabellen:
   `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8l.
   *Was NICHT dazugehört:* an `t/δ = 2.1` und `2.4` bekommt nicht jedes Trieder
-  eine Vertex-Kugel (`trace_seam` biegt am Eck auf die Nachbar-Naht und
-  liefert kein blockiertes Ende) — 624 bzw. 65 Punkte bis 0.93 mm, vom
-  Report ehrlich gedeckt, aber nicht geschlossen.
+  eine Vertex-Kugel — 624 bzw. 65 Punkte bis 0.93 mm, vom Report ehrlich
+  gedeckt, aber nicht geschlossen. → geschlossen in §8m; der dort genannte
+  Verdacht (`trace_seam` biege am Eck ab) war FALSCH.
+* **Jedes Trieder bekommt seine Kugel — und der Trace war unschuldig
+  (#384 §8m, v0.56.12, 2026-08-02).** Der von §8l benannte Verdacht ist
+  widerlegt: der instrumentierte Trace liefert an ALLEN acht Würfelecken ein
+  blockiertes Ende, die Kandidatenliste ist vollständig. Verloren gingen vier
+  davon eine Stufe später, in `project_to_vertex`. Dessen Newton landet auf
+  der Fläche `x = −t`, wo `|p − c| − he` bit-exakt 0 wird — und dort ist der
+  **Dual-Gradient exakt `(0,0,0)`**: die Regularisierung
+  `safe_sqrt(x) = sqrt(x + 1e−20)` lässt die äussere Ableitung `1/(2·1e−10)`
+  auf die innere Null `d(q₀·q₀)/dp = 2·q₀·dq₀/dp = 0` treffen, und der
+  Innen-Zweig `min(q_max, 0)` nimmt bei `q_max = 0` den eingefrorenen
+  `zero`-Ast. Der Entartungs-Wächter `‖g‖ < 1e−6` warf daraufhin einen bereits
+  gelösten Trieder-Punkt weg.
+  Die **Phasenlagen-Abhängigkeit ist eine reine f32-Rasterfrage**: an einer
+  Fläche bei Koordinate `0` nähert sich die gedämpfte Newton nur asymptotisch
+  (dichtes Raster, Konvergenzschwelle `8e−4` greift lange vorher); an einer
+  Fläche bei `−t ≈ −4.8` ist das Raster `4.8e−7` weit und ein einziger Schritt
+  rastet bit-exakt ein. Ob er das tut, hängt daran, wo der Trace blockiert
+  wurde — also an der Trace-Schrittweite gegen die Wandstärke. `t = 4.0`/`4.4`
+  daneben (8 Kugeln), `t = 4.2`/`4.8` darauf (4 Kugeln).
+  Der Fix ist ein zentraler Differenzen-Rückfall **nur** in der Trieder-Newton
+  (`Member::value_grad_vertex`), strikt additiv: oberhalb `‖g‖ ≥ 1e−6`
+  wortgleich das alte Ergebnis, darunter gab es bisher gar keins. Kein Opcode,
+  kein Spiegel. Der GLOBALE Rückfall (auch im Naht-Marsch) ist gemessen und
+  **verworfen**: er kostet 0.760 mm Über-Claim an der Dilations-Tasche bei
+  zugesagten 0.010 plus zwei weitere Dilations-Fixturen.
+  Ergebnis: der ganze Dicken-Fächer `t/δ = 2.0 … 6.0` ist beidseitig 0/0 bei
+  enger Zusage, und über den ganzen Fächer entstehen **8 Vertex-Kugeln, je
+  eine je Würfelecke** (vorher 4–8). Nabe, Kamm, notch, Tasche bit-gleich.
+  Golden: 34/35 byte-identisch; in `vertex_sphere_corner` SINKEN zwei
+  Feldwerte auf den handgerechnet exakten `−1.2` (vorher 8e−6 bzw. 2e−5
+  daneben und asymmetrisch — genau die fehlende Kugel). Herleitung +
+  Messtabellen: `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md`
+  §8m.
 
 ## 10. Verweise
 
