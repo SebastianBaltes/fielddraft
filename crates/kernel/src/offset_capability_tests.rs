@@ -9359,13 +9359,16 @@ fn fixture_cells(lo: [f64; 3], hi: [f64; 3], n: usize) -> Vec<iv::Box3> {
 ///   `Offset`/`Leaf` — inklusive der AABB-Prunes, die NICHT als korrekt
 ///   vorausgesetzt, sondern als Fallunterscheidung eingeschlossen werden);
 /// * die **Vertex-Ablation** des ausgelieferten Feldes (Vertex-Kugeln,
-///   `L`-Block, Grenzwert-Klemme) — der vollständig unterstützte Ausschnitt.
+///   `L`-Block, Grenzwert-Klemme);
+/// * seit §8v das **ausgelieferte Feld selbst** — also inklusive der
+///   Kanal-Terme mit Nearest-Segment, `nlerp` und den beiden affinen Gates.
 ///
 /// Ein Ausreisser wäre der Beweis, dass die Einschliessung lügt.
 #[test]
 fn interval_encloses_the_delivered_field_384() {
     let delta = 2.0f32;
     let (mut cells, mut probes, mut evaluated) = (0usize, 0usize, 0usize);
+    let mut delivered = 0usize;
     for (name, field, _exact, lo, hi, _n) in cert_matrix(delta) {
         if !(name.starts_with("Stufen")
             || name == "Ecken-Schale t/δ=2.5"
@@ -9377,7 +9380,9 @@ fn interval_encloses_the_delivered_field_384() {
         let (stop, _blk) = stop_with_lb(&field);
         let cut = strip_channels(&field);
         for cell in fixture_cells(lo, hi, 5) {
-            for (tag, node) in [("naiv", stop), ("Vertex-Ablation", &cut)] {
+            for (tag, node) in
+                [("naiv", stop), ("Vertex-Ablation", &cut), ("ausgeliefert", &field)]
+            {
                 let (esc, n, ok) = field_enclosure_escapes(node, &cell, 2);
                 assert_eq!(
                     esc, 0,
@@ -9387,13 +9392,21 @@ fn interval_encloses_the_delivered_field_384() {
                 cells += 1;
                 probes += n;
                 evaluated += ok as usize;
+                if tag == "ausgeliefert" && ok {
+                    delivered += 1;
+                }
             }
         }
     }
-    assert!(cells >= 800, "nur {cells} Zell-Läufe");
-    assert!(probes > 20_000, "nur {probes} Proben — der Pin misst nichts");
+    assert!(cells >= 1200, "nur {cells} Zell-Läufe");
+    assert!(probes > 30_000, "nur {probes} Proben — der Pin misst nichts");
     assert!(
-        evaluated * 4 >= cells * 3,
+        delivered >= 60,
+        "nur {delivered} Zellen des AUSGELIEFERTEN Feldes liefern überhaupt eine \
+         Einschliessung — dann prüft der Pin den §8v-Kanal-Pfad nicht"
+    );
+    assert!(
+        evaluated * 2 >= cells,
         "nur {evaluated} von {cells} Zellen liefern überhaupt eine Einschliessung — \
          dann prüft der Pin überwiegend `Unknown` und nicht die Arithmetik"
     );
@@ -9969,8 +9982,8 @@ fn probe_384_interval_seam_far() {
     }
     let (field, _) = compile_for(thin_corner_node(6.0 * delta, 40.0, delta));
     let none = |_c: [f64; 3]| None;
-    println!("| Gebiet | Zellen | Zweig 2 | Kanal-Term | sup f ≥ 0 |");
-    println!("|---|---|---|---|---|");
+    println!("| Gebiet | Zellen | Zweig 2 | Hauptgründe |");
+    println!("|---|---|---|---|");
     for (tag, lo, hi, n) in [
         ("Doktrin-Gitter (naht-nah)", [-15.0f64; 3], [1.0f64; 3], 12usize),
         ("Plattenkern, mittel", [-38.0, -9.0, -38.0], [-24.0, -3.0, -24.0], 12),
@@ -9985,11 +9998,333 @@ fn probe_384_interval_seam_far() {
                 iv::Verdict::Branch1 => {}
             }
         }
-        println!(
-            "| {tag} | {} | {b2} | {} | {} |",
-            n * n * n,
-            unk.get("Kanal-Term (nicht als neutral bewiesen)").copied().unwrap_or(0),
-            unk.get("sup f ≥ 0").copied().unwrap_or(0)
+        let mut v: Vec<_> = unk.iter().collect();
+        v.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
+        let top: String =
+            v.iter().take(2).map(|(k, c)| format!("{k}·{c}")).collect::<Vec<_>>().join(", ");
+        println!("| {tag} | {} | {b2} | {top} |", n * n * n);
+    }
+}
+
+// ══════════════ #384 §8v — Kanal-Terme, gerade Segmente ══════════════
+
+use crate::offset_channel::{ChannelArc, OffsetChannel};
+
+/// Ein Geradensegment-Bogen für die synthetischen §8v-Familien.
+#[allow(clippy::too_many_arguments)]
+fn seg_arc(
+    a: [f32; 3],
+    b: [f32; 3],
+    m1s: [f32; 3],
+    m1e: [f32; 3],
+    m2s: [f32; 3],
+    m2e: [f32; 3],
+) -> ChannelArc {
+    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let u = [d[0] / len, d[1] / len, d[2] / len];
+    ChannelArc {
+        c: a,
+        u,
+        v: [0.0; 3],
+        r: len,
+        sweep: -1.0,
+        bc: [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1]), 0.5 * (a[2] + b[2])],
+        br: 0.5 * len,
+        m1s,
+        m2s,
+        m1e,
+        m2e,
+    }
+}
+
+fn synth_channel(arcs: Vec<ChannelArc>, concave: bool) -> OffsetChannel {
+    let mut bc = [0.0f32; 3];
+    for a in &arcs {
+        for k in 0..3 {
+            bc[k] += a.bc[k] / arcs.len() as f32;
+        }
+    }
+    let mut br = 0.0f32;
+    for a in &arcs {
+        let d = ((a.bc[0] - bc[0]).powi(2) + (a.bc[1] - bc[1]).powi(2) + (a.bc[2] - bc[2]).powi(2))
+            .sqrt();
+        br = br.max(d + a.br);
+    }
+    OffsetChannel {
+        arcs,
+        delta: 2.0,
+        concave,
+        trust: 3.91,
+        gate: 0.87,
+        bound_c: bc,
+        bound_r: br,
+        end_planes: [crate::offset_channel::END_PLANE_NONE; 4],
+        face_planes: [crate::offset_channel::END_PLANE_NONE; 4],
+        branch: 0x700,
+        parents: [0, 0],
+    }
+}
+
+/// Zählt Ausreisser der `channel_apply`-Einschliessung gegen die Produktion.
+fn channel_enclosure_escapes(
+    knobs: iv::Knobs,
+    ch: &OffsetChannel,
+    cell: &iv::Box3,
+    base: iv::Iv,
+    d: iv::Iv,
+    extra: iv::Iv,
+    sub: usize,
+) -> (usize, usize, usize) {
+    let mut c = iv::Ctx::with_knobs(knobs);
+    let Ok(enc) = iv::enclose_channel_apply(&mut c, cell.world_f32(), base, d, ch, extra) else {
+        return (0, 0, 0);
+    };
+    let (mut esc, mut n) = (0usize, 0usize);
+    for p in cell_samples(cell, sub) {
+        let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+        for b in iv_samples(base) {
+            for dd in iv_samples(d) {
+                for e in iv_samples(extra) {
+                    let got = crate::offset_channel::channel_apply(b, dd, pf, ch, e);
+                    n += 1;
+                    if !got.is_finite() || !enc.contains(got as f64) {
+                        esc += 1;
+                    }
+                }
+            }
+        }
+    }
+    (esc, n, 1)
+}
+
+/// Die adversariale §8v-Familie: jede Zeile zielt auf eine Schwachstelle des
+/// Kanal-Terms.
+fn adversarial_channel_cases() -> Vec<(String, OffsetChannel, iv::Box3, iv::Iv, iv::Iv, iv::Iv)> {
+    let e = |v: [f32; 3]| {
+        let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        [v[0] / n, v[1] / n, v[2] / n]
+    };
+    let mut out = Vec::new();
+    let dfull = ivf(-6.0, 3.0);
+    let ex = ivf(-1.0e30, 1.0);
+    // EIN Segment entlang x, Duale schräg — der Regelfall.
+    let one = synth_channel(
+        vec![seg_arc(
+            [-5.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            e([0.0, 1.0, 1.0]),
+            e([0.0, 1.0, 1.2]),
+            e([0.0, -1.0, 1.0]),
+            e([0.0, -1.2, 1.0]),
+        )],
+        true,
+    );
+    // (4) Segment-Slab: Zelle mittig, am Ende, und HALB draussen.
+    for (tag, ctr, h) in [
+        ("Slab innen", [0.0f64, 1.4, 0.9], 0.4f64),
+        ("Slab am Ende", [5.0, 1.4, 0.9], 0.6),
+        ("Slab halb draussen", [5.4, 1.0, 0.7], 0.9),
+        ("Slab weit draussen", [7.5, 1.0, 0.7], 0.5),
+        ("Slab auf der Achse", [0.0, 0.0, 0.0], 0.35),
+    ] {
+        out.push((format!("1-Seg {tag}"), one.clone(), iv::Box3::cube(ctr, h), dfull, dfull, ex));
+    }
+    // (2) nlerp mit fast antipodalen Endvektoren: `v` löscht sich bei t≈0.5
+    //     aus, die Norm überspannt die 1e-9-Schwelle.
+    let anti = synth_channel(
+        vec![seg_arc(
+            [-5.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            e([0.0, 0.0, 1.0]),
+            e([1e-9, 0.0, -1.0]),
+        )],
+        true,
+    );
+    for (tag, ctr, h) in [
+        ("t≈0.5", [0.0f64, 1.3, 0.8], 0.3f64),
+        ("t≈0.5 eng", [0.0, 1.3, 0.8], 0.02),
+        ("t-Sweep", [0.0, 1.1, 0.6], 2.5),
+    ] {
+        out.push((
+            format!("nlerp antipodal {tag}"),
+            anti.clone(),
+            iv::Box3::cube(ctr, h),
+            dfull,
+            dfull,
+            ex,
+        ));
+    }
+    // (1)/(3) ZWEI Segmente, deren Nearest-Gewinner in der Zelle wechselt — mit
+    //         DEUTLICH verschiedenen Dualvektoren. Spiegelbildliche Duale
+    //         genügen nicht: dann ist `min(s₁,s₂)` auf beiden Seiten gleich,
+    //         und der Gewinnerwechsel bliebe folgenlos.
+    let two = synth_channel(
+        vec![
+            seg_arc(
+                [-6.0, 0.0, 0.0],
+                [-1.0, 0.0, 0.0],
+                e([0.0, 1.0, 1.0]),
+                e([0.0, 1.0, 1.0]),
+                e([0.0, -1.0, 1.0]),
+                e([0.0, -1.0, 1.0]),
+            ),
+            seg_arc(
+                [1.0, 0.0, 0.0],
+                [6.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0],
+            ),
+        ],
+        true,
+    );
+    // `d` als PUNKT weit über null: dann bestimmt `−w_geo` das Ergebnis und
+    // nicht das breite `d`-Intervall — nur so wird ein Gewinnerwechsel im
+    // Ergebnis überhaupt sichtbar.
+    let dp = ivf(5.0, 5.0);
+    let exo = ivf(10.0, 10.0);
+    for (tag, ctr, h) in [
+        ("Voronoi-Grenze", [0.0f64, 2.6, 0.8], 1.6f64),
+        ("Voronoi eng", [0.0, 2.6, 0.8], 0.05),
+        ("klar links", [-3.5, 2.6, 0.8], 0.3),
+        ("klar rechts", [3.5, 2.6, 0.8], 0.3),
+    ] {
+        out.push((
+            format!("2-Seg {tag}"),
+            two.clone(),
+            iv::Box3::cube(ctr, h),
+            dp,
+            dp,
+            exo,
+        ));
+    }
+    // Dieselbe Geometrie mit breitem `d` — die Soundness muss auch dort halten.
+    out.push((
+        "2-Seg Voronoi breites d".into(),
+        two,
+        iv::Box3::cube([0.0, 2.6, 0.8], 1.6),
+        dfull,
+        dfull,
+        ex,
+    ));
+    // Der konvexe Zweig.
+    let cvx = synth_channel(one.arcs.clone(), false);
+    out.push(("1-Seg konvex".into(), cvx, iv::Box3::cube([0.0, 1.4, 0.9], 0.5), dfull, dfull, ex));
+    out
+}
+
+/// **§8v-Pin 1: die Einschliessung von `channel_apply` hält gegen die
+/// Produktion.**
+///
+/// Dieselbe Doktrin wie §8u: dichte Proben sind Falsifikatoren der
+/// Einschliessung. Die Familien zielen auf den Segment-Slab (Sättigung des
+/// `clamp`), auf `nlerp` mit fast antipodalen Endvektoren (Norm an der
+/// 1e-9-Schwelle) und auf den Argmin-Wechsel zwischen zwei Segmenten.
+#[test]
+fn interval_encloses_the_production_channel_term_384() {
+    let (mut cases, mut probes) = (0usize, 0usize);
+    for (name, ch, cell, base, d, extra) in adversarial_channel_cases() {
+        let (esc, n, ok) =
+            channel_enclosure_escapes(iv::Knobs::default(), &ch, &cell, base, d, extra, 3);
+        assert_eq!(
+            esc, 0,
+            "{name}: {esc} von {n} Produktionswerten liegen AUSSERHALB der Einschliessung"
+        );
+        cases += ok;
+        probes += n;
+    }
+    // Die ECHTEN Kanäle der Matrix — dieselbe Formel, echte Daten.
+    let delta = 2.0f32;
+    let (field, _) = compile_for(notch_union_node(90.0, delta as f64));
+    let mut stops = Vec::new();
+    stop_nodes(&field, &mut stops);
+    let mut real = 0usize;
+    for st in stops {
+        let BoundedCsg::ArcChannel { channels, .. } = st else { continue };
+        for ch in channels {
+            for (ctr, h) in [([0.0f64, 0.0, 48.0], 0.7f64), ([1.5, -1.5, 50.0], 1.1)] {
+                let cell = iv::Box3::cube(ctr, h);
+                let dv = ivf(-7.0, 2.0);
+                let (esc, n, ok) = channel_enclosure_escapes(
+                    iv::Knobs::default(),
+                    ch,
+                    &cell,
+                    dv,
+                    dv,
+                    ivf(-1.0e30, 0.9),
+                    2,
+                );
+                assert_eq!(esc, 0, "echter Kanal: {esc} von {n} Werte entkommen");
+                real += ok;
+                probes += n;
+            }
+        }
+    }
+    assert!(
+        cases >= 10 && probes > 15_000,
+        "nur {cases} synthetische Fälle / {probes} Proben ausgewertet — eine leer-grüne \
+         Familie belegt nichts"
+    );
+    let _ = real;
+}
+
+/// **§8v-Pin 2: das Nearest-Arc-Lemma — Eindeutigkeit oder `Unknown`.**
+///
+/// `channel_nearest` gibt die Daten des GEWINNERS zurück; `q*`, `m̂₁`, `m̂₂`
+/// springen beim Argmin-Wechsel. Eine Zelle, in der zwei Segmente den
+/// Gewinner tauschen, MUSS deshalb `Unknown` liefern — und die Rückdreh-Probe
+/// („nimm einfach den ersten Kandidaten") MUSS an derselben Familie reissen.
+#[test]
+fn interval_nearest_arc_uniqueness_is_load_bearing_384() {
+    let straddle: Vec<_> = adversarial_channel_cases()
+        .into_iter()
+        .filter(|(n, ..)| n.starts_with("2-Seg Voronoi"))
+        .collect();
+    assert!(straddle.len() >= 2, "die Voronoi-Familie fehlt");
+    // (a) Über der Grenze verweigert die Eindeutigkeits-Prüfung.
+    let mut refused = 0usize;
+    for (name, ch, cell, base, d, extra) in &straddle {
+        let mut c = iv::Ctx::new();
+        if iv::enclose_channel_apply(&mut c, cell.world_f32(), *base, *d, ch, *extra).is_err() {
+            refused += 1;
+        } else {
+            panic!("{name}: die Zelle überspannt die Voronoi-Grenze, die Prüfung hat aber \
+                    einen eindeutigen Gewinner behauptet");
+        }
+    }
+    assert_eq!(refused, straddle.len());
+    // (b) Klar zugeordnete Zellen werden NICHT verweigert — sonst wäre die
+    //     Prüfung bloss eine Dauer-Verweigerung.
+    let clear: Vec<_> = adversarial_channel_cases()
+        .into_iter()
+        .filter(|(n, ..)| n.starts_with("2-Seg klar"))
+        .collect();
+    assert!(clear.len() >= 2, "die eindeutige Familie fehlt");
+    for (name, ch, cell, base, d, extra) in &clear {
+        let mut c = iv::Ctx::new();
+        assert!(
+            iv::enclose_channel_apply(&mut c, cell.world_f32(), *base, *d, ch, *extra).is_ok(),
+            "{name}: eindeutig zugeordnete Zelle wurde trotzdem verweigert"
         );
     }
+    // (c) Die Rückdreh-Gegenprobe: erster Kandidat statt Beweis.
+    let knobs = iv::Knobs { first_arc_wins: true, ..Default::default() };
+    let (mut broken, mut esc_total) = (0usize, 0usize);
+    for (_n, ch, cell, base, d, extra) in &straddle {
+        let (esc, _n2, _ok) = channel_enclosure_escapes(knobs, ch, cell, *base, *d, *extra, 3);
+        if esc > 0 {
+            broken += 1;
+            esc_total += esc;
+        }
+    }
+    assert!(
+        broken > 0,
+        "die Gegenprobe blieb still: wer über einer Argmin-Grenze blind den ersten Bogen \
+         nimmt, MUSS Produktionswerte verlieren ({esc_total} Ausreisser) — sonst belegt \
+         das Nearest-Arc-Lemma nichts"
+    );
 }

@@ -5224,6 +5224,238 @@ eigentlich greifen müsste.
 * **Der konvexe Zweig**, **Member-Formen jenseits Box/Zylinder/konvexem
   Geraden-Extrude**, **spitze Nähte**: unverändert §8j/§8m/§8n/§8q/§8r.
 
+## 8v. Intervall-Stufe Paket 2 — der Kanal-Term, für gerade Segmente (#384, 2026-08-02)
+
+§8u hat Zweig 2 gebaut und benannt, woran er auf den Doktrin-Gittern scheitert:
+`channel_limit = δ − min(de, s₄ + δ)` lässt sich nur über eine **untere
+Schranke der Naht-Distanz `de`** nach oben abschätzen, und die gab es nicht —
+die beiden billigen Kandidaten (Kanal-Bounding-Sphere, Bogen-Ball) waren mit
+3.3 … 98.4 mm gegen `K = 3.91 mm` wertlos. §8v liefert die Schranke, indem es
+`channel_apply` und `channel_limit` **auswertet** statt sie wegzuschätzen — für
+gerade Segmente mit beweisbar eindeutiger Nearest-Zuordnung.
+
+**Das Ergebnis vorweg:** auf den Doktrin-Gittern (die um die NAHT liegen)
+zertifiziert Zweig 2 jetzt dort, wo die Nahtstücke gerade und eindeutig sind —
+Rippen-Kamm 4×2/1 **0 → 1008** von 1728, notch 90° **0 → 360**, notch 60°
+**0 → 400**. Naht-fern im Plattenkern der Ecken-Schale `t/δ = 6`:
+**1037 → 1728**, also lückenlos. Die Ecken-Schalen bleiben auf ihren
+Doktrin-Gittern bei null, mit einem präzisen Grund: **Argmin-Wechsel**, Paket 3.
+
+### Was gebaut wurde
+
+Alles in `offset_interval.rs`, Rahmen unverändert (f32-Modell, `Ctx::seal`,
+fail-closed `Unknown`, Domäne bleibt `Box3` — die Zelle ist die Domäne, das
+Segment ist Geometrie-Daten; ein `LineParam`-Adapter ist erst für die
+Naht-Zertifizierung P5 nötig und wurde NICHT gebaut).
+
+* `enc_segment_closest` — `arc_closest` für `sweep < 0`, Klammer für Klammer.
+* `enc_nlerp` — die Interpolation der Dualvektoren samt Normalisierung.
+* `enc_channel_nearest` — das Nearest-Arc-Lemma.
+* `enc_gate_planes` — die vier affinen Halbräume von `end_plane_gate` /
+  `face_plane_gate` (endlich benutzt `affine_over_box` jemand).
+* `enclose_channel_limit`, `enclose_channel_apply`.
+* `three_way_concave` — der Drei-Wege-Schalter, jetzt von Kanal UND Vertex
+  geteilt, damit beide nachweislich dieselbe Fallunterscheidung modellieren.
+
+### Das Nearest-Arc-Lemma
+
+`channel_nearest` bildet ein `min` über die Bögen und gibt die Daten des
+GEWINNERS zurück. `q*`, `m̂₁`, `m̂₂` sind damit **nicht stetig** in `p` — sie
+springen beim Argmin-Wechsel. Eine Intervall-Auswertung darf einen Bogen
+deshalb nur einsetzen, wenn er über der ganzen Zelle gewinnt:
+
+```text
+upper_i < lower_j   für ALLE j ≠ i.
+```
+
+Bei Gleichheit oder Überlappung: `Unknown`. Die Hülle über alle erreichbaren
+Kandidaten samt adaptiver Unterteilung wäre Paket 3 und wurde hier nicht
+vorweggenommen.
+
+**Der Prune muss mitbewiesen werden**, und das ist der Teil, den man leicht
+übersieht. Die Produktionsschleife überspringt einen Bogen, wenn
+`|p − bc| − br ≥ best`; überspränge sie den Gewinner, wäre `best` grösser als
+`de_i` und die Rückgabe eine andere. Das Argument: alle anderen Bögen haben
+`de_j > upper_i ≥ de_i`, das laufende `best` ist also zu jedem Zeitpunkt
+`> de_i`; es genügt somit `upper(dbs_i) ≤ lower(de_i)`. **Das ist eine Rechnung
+im f32-Modell, keine geerbte Behauptung über die Bounding-Sphere** — die
+Containment-Invariante „Bogen liegt in seiner Kugel" wird nirgends
+vorausgesetzt. (Auf der Matrix scheitert diese Zusatzprüfung an genau 3 von
+22 464 Zellen — sie ist also scharf genug, um nicht zu stören, und wirksam
+genug, um zu greifen.)
+
+### Die Korrelations-Frage: welchen Weg jeder Term geht
+
+Die Beratung nannte `q*`, `t`, `m̂₁`, `m̂₂` als korreliert und warnte, eine naive
+unabhängige Auswertung werde „breit oder unsound". Der Befund nach dem Bau:
+**breit ja, unsound nein — und zwar aus einem Grund, der keine Herleitung
+braucht.** Intervall-Arithmetik ist inklusions-isoton; solange jeder Teilterm
+seinen eigenen Wert umfasst, umfasst die natürliche Komposition den
+zusammengesetzten Ausdruck (§8u-Beweispflicht 3). Korrelation kostet Schärfe,
+nie Gültigkeit. Die angebotene Rückfall-Einschliessung
+`|s_i| = |⟨p−q*, m̂_i⟩| ≤ de` mit zertifiziertem `‖m̂_i‖ ≤ 1` wäre eine
+ZWEITE, unabhängige Schranke gewesen — sie hätte eine eigene Herleitung für die
+f32-Rundung des Skalarprodukts gebraucht und wurde deshalb **nicht** gebaut.
+
+Also, Term für Term:
+
+| Term | Weg | Kosten |
+|---|---|---|
+| `de` (Segment-Distanz) | **voll**, op-weise | `t` und `q*` teilen `p` ⇒ leichte Überschätzung; auf der Matrix unkritisch |
+| `q*` | **voll** | s. o. |
+| `t` | **voll** (exakt: eine affine Form, dann `clamp`) | keine |
+| `m̂₁`, `m̂₂` (`nlerp`) | **voll**, inkl. Normalisierungs-Schalter | Hülle nur an der 1e-9-Schwelle |
+| `s₁`, `s₂` | **voll** (natürliche Komposition) | die Korrelation `p−q*` gegen `m̂` bleibt drin |
+| `s₃`, `s₄` (Ebenen-Gates) | **voll, exakt** (affin über der Box) | keine |
+| `channel_skip`, `channel_limit`-Vorprüfungen | **voll**, als Schalter | Hülle nur im Grenzband |
+
+Gemessen war das scharf genug: der Rippen-Kamm 4×2/1 geht von 0 auf 1008
+zertifizierte Zellen, ohne dass eine einzige Zusatz-Schranke nötig war. Wo es
+NICHT reicht, liegt es an der Eindeutigkeit, nicht an der Breite.
+
+### Das Normalisierungslemma
+
+`nlerp(a,b,t)` rechnet `v = a + (b−a)·t`, `n = |v|`, und dann `v/n` falls
+`n > 1e-9`, sonst `a`. Drei Pflichten:
+
+* **Nie durch ein nullhaltiges Intervall dividieren.** Im
+  Normalisierungs-Zweig GILT `n > 1e-9` — die Bedingung wird deshalb in den
+  Zweig hinein GESCHNITTEN (`n ∩ [1e-9, ∞)`), bevor dividiert wird. Ohne den
+  Schnitt wäre die untere Schranke bei einem unentschiedenen Schalter null, die
+  Division müsste fail-closed abbrechen, und der Zweig ginge verloren, obwohl
+  er wohldefiniert ist. Das ist die allgemeine Lehre: **ein Schalter liefert
+  nicht nur zwei Zweige, er liefert im Zweig auch eine Zusatz-Information über
+  die Operanden — und die darf man benutzen.**
+* **Der Rückfall `a` ist ein Zweig, kein Sonderfall.** Überspannt `n` die
+  Schwelle, wird gehüllt.
+* **Fast antipodale Endvektoren** sind genau der Fall, in dem `v` durch
+  Auslöschung klein wird. Die Pflicht-Familie fährt ihn (`m̂₁` von `(0,1,0)`
+  nach `(0,−1,0)`, Norm bei `t ≈ 0.5` an der Schwelle).
+
+### Der Segment-Slab hat gar keinen Zweig
+
+Die Pflicht-Familie „Zelle teils innerhalb, teils ausserhalb des
+Segment-Slabs" zielte auf den erwarteten Endpunkt- gegen Projektions-Zweig.
+Den gibt es nicht: `arc_closest` klemmt für ein Segment nur
+`t = clamp(⟨p−c,û⟩/len, 0, 1)`, und `clamp` ist `max` gefolgt von `min` —
+beides exakte Auswahl ohne Rundung. Die Intervall-Form bildet die Sättigung
+also ohne jede Hülle exakt ab. Die Familie bleibt trotzdem im Pin: sie prüft
+genau das, und ein späterer Umbau auf eine echte Verzweigung würde sofort
+auffallen.
+
+### Messung
+
+Zell-Zertifizierung über das Doktrin-Gitter jeder Fixture, 12³ = 1728 Zellen,
+`δ = 2 mm`, `tol = 10⁻³` (Sonde `probe_384_interval_cell_certification`).
+„Z2 vorher" ist der §8u-Stand.
+
+| Fixture | Zellen | Zweig 1 | **Z2 vorher** | **Z2 §8v** | Unknown | Hauptgrund des Rests |
+|---|---|---|---|---|---|---|
+| Stufen-Nabe | 1728 | 1236 | 0 | 0 | 492 | `LbPiece::Rev` 480, Bogen-Krümmung 12 |
+| Ecken-Schale `t/δ = 2` | 1728 | 1023 | 0 | 0 | 705 | Argmin nicht eindeutig 704, Prune 1 |
+| Ecken-Schale `t/δ = 2.1` | 1728 | 876 | 0 | 0 | 852 | Argmin 850, Prune 2 |
+| Ecken-Schale `t/δ = 2.25` | 1728 | 722 | 0 | 0 | 1006 | Argmin 1006 |
+| Ecken-Schale `t/δ = 2.4` | 1728 | 700 | 0 | 0 | 1028 | Argmin 1028 |
+| Ecken-Schale `t/δ = 2.5` | 1728 | 658 | 0 | 0 | 1070 | Argmin 1070 |
+| Ecken-Schale `t/δ = 3` | 1728 | 450 | 0 | 0 | 1278 | Argmin 1278 |
+| Ecken-Schale `t/δ = 4` | 1728 | 216 | 0 | 0 | 1512 | Argmin 1512 |
+| Ecken-Schale `t/δ = 6` | 1728 | 64 | 0 | 0 | 1664 | Argmin 1664 |
+| Rippen-Kamm 4×1.5/0.8 | 1728 | 432 | 0 | 0 | 1296 | `Operator` (3 Extrude-Blätter) |
+| **Rippen-Kamm 4×2/1** | 1728 | 432 | 0 | **1008** | 288 | `sup f ≥ 0` 288 |
+| **notch α = 90°** | 1728 | 972 | 0 | **360** | 396 | `sup f ≥ 0` 396 |
+| **notch α = 60°** | 1728 | 916 | 0 | **400** | 412 | `sup f ≥ 0` 412 |
+
+Damit sind Rippen-Kamm 4×2/1 zu **83 %** (1440 von 1728) und notch 90° zu
+**77 %** (1332) beweisbar unter-claim-frei, statt 25 % bzw. 56 % durch Zweig 1
+allein.
+
+Naht-FERN (Sonde `probe_384_interval_seam_far`, Ecken-Schale `t/δ = 6`,
+ausgeliefertes Feld, Zweig 1 abgeschaltet):
+
+| Gebiet | Zellen | Z2 §8u | **Z2 §8v** | Rest |
+|---|---|---|---|---|
+| Doktrin-Gitter (naht-nah) | 1728 | 0 | 0 | Argmin 1728 |
+| Plattenkern, mittel | 1728 | 238 | **1452** | `sup f ≥ 0` 276 |
+| Plattenkern, tief | 1728 | 1037 | **1728** | — |
+
+Der tiefe Plattenkern ist jetzt **lückenlos** zertifiziert.
+
+### Die ehrliche Restliste
+
+Die `Unknown`-Gründe sind gezählt und benennen exakt die nächsten Pakete:
+
+* **Argmin nicht eindeutig — 10 414 Zellen, alle an den Ecken-Schalen.** Das
+  ist **Paket 3**: Hülle über alle erreichbaren Kandidaten plus adaptive
+  Unterteilung im Kanal-Scan. Dass es ausgerechnet die Schalen trifft, ist
+  strukturell: ihre Naht besteht aus mehreren kollinear anschliessenden
+  Segmenten, und über einer Zelle sind zwei davon fast gleich weit entfernt.
+* **Bogen-Krümmung — 12 Zellen (Stufen-Nabe).** **Paket 4** (sin/cos-Enclosure).
+* **`LbPiece::Rev` — 480 Zellen (Stufen-Nabe).** Unverändert §8u.
+* **`Operator` — 1296 Zellen (Rippen-Kamm 4×1.5/0.8).** Skizzen-Blätter,
+  unverändert §8u.
+* **Bogen-Prune nicht als harmlos bewiesen — 3 Zellen.** Die schärfste Stelle
+  des Nearest-Lemmas; sie greift, sie stört aber nicht.
+
+### Pflicht-Gegen-Beispiel-Familien
+
+* **Argmin-Wechsel in der Zelle** (`2-Seg Voronoi`): zwei Segmente, deren
+  Gewinner in der Zelle wechselt, mit DEUTLICH verschiedenen Dualvektoren. Die
+  Eindeutigkeits-Prüfung liefert `Unknown` — und die Rückdreh-Variante
+  (`Knobs::first_arc_wins`, „nimm einfach den ersten") verliert
+  Produktionswerte. **Beide Richtungen gepinnt**, dazu die Gegenrichtung
+  (`2-Seg klar links/rechts` wird NICHT verweigert, sonst wäre die Prüfung eine
+  Dauer-Verweigerung).
+  *Lehre beim Bau:* mit SPIEGELBILDLICHEN Dualvektoren blieb die Gegenprobe
+  still — `min(s₁,s₂)` ist dann auf beiden Seiten gleich, und der
+  Gewinnerwechsel bleibt folgenlos. Erst deutlich verschiedene Duale UND ein
+  `d` als Punkt (statt eines breiten Intervalls, das das Ergebnis ohnehin
+  dominiert) machen ihn sichtbar.
+* **`nlerp` fast antipodal**, Norm an der 1e-9-Schwelle, in drei Zellgrössen.
+* **Voronoi-Grenze exakt**, eng und breit, mit beiden `d`-Regimen.
+* **Segment-Slab** innen / am Ende / halb draussen / weit draussen / auf der
+  Achse (die Sättigung des `clamp`).
+
+Dazu die ECHTEN Kanäle des notch. Zusammen rund 20 000 Proben, **null
+Ausreisser** — und seit §8v prüft `interval_encloses_the_delivered_field_384`
+das AUSGELIEFERTE Feld selbst mit, nicht mehr nur das naive und die Ablation.
+
+### Prüfungen
+
+* **Golden**: `cmp` über die ganze Datei — **byte-identisch**, Tape UND
+  Feldwerte. Kein Auswerter, kein Opcode, kein Payload-Wort, kein Spiegel.
+* **`just test`**: Fast-Tier **1488** (Baseline 1486, zwei neue Pins) / Web
+  **2082**. `cargo test --workspace` **1593** (Baseline 1591).
+* **`OFFSET_FUZZ_ITERS=200 … offset_fuzz --release`**: 5/5.
+
+### Neue Pins
+
+* `interval_encloses_the_production_channel_term_384` — die adversariale
+  Kanal-Familie plus die echten Kanäle des notch.
+* `interval_nearest_arc_uniqueness_is_load_bearing_384` — das Nearest-Arc-Lemma
+  in drei Richtungen: es verweigert über der Grenze, es verweigert NICHT
+  daneben, und die Rückdreh-Probe reisst.
+
+Transformiert (eigene §8u-Pins, wie vom Rahmen erlaubt):
+`interval_encloses_the_delivered_field_384` prüft jetzt zusätzlich das
+ausgelieferte Feld und verlangt eine Mindestzahl dort ausgewerteter Zellen.
+
+**Keine bestehende Pin-Zeile bewegt sich**; `FEHLENDES Material`,
+`Stück-Schranke L` und `≤ 0.01 mm` stehen unverändert im Zusagen-Text.
+
+### Was OFFEN bleibt
+
+* **Paket 3 — Argmin-Wechsel und adaptive Unterteilung im Kanal-Scan.** Der
+  grösste Einzelposten (10 414 Zellen) und jetzt der Flaschenhals.
+* **Paket 4 — Kreisbögen mit trigonometrischem Enclosure.**
+* **Paket 5 — der geometrische Naht-Aussenzeuge und die η-Klemme.** Erst er
+  macht aus „die Naht liegt auf `∂Ω`" einen Satz statt einer Modell-Annahme;
+  hier kommt auch der `LineParam`-Domänen-Adapter ins Spiel.
+* **`LbPiece::Rev`**, **Skizzen-Blätter**, **Rotations-Dependency**: unverändert
+  §8u.
+* **Die Zusage selbst ist unverändert.** Die Unter-Seiten-Ausnahme steht
+  wörtlich; die Zell-Zertifizierung ist ein zweiter, unabhängiger Nachweis und
+  ersetzt den Stichproben-Zeugen nicht.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -5294,6 +5526,16 @@ eigentlich greifen müsste.
   ihm fallen `at_vertex`/`at_face` und der `verts`-Parameter).
   **Kein Auswerter, kein Opcode, kein Payload-Wort, kein Spiegel** — Golden
   35/35 byte-identisch, `check_interp` 35 Szenen / 0 failures.
+- Produktionscode §8v: `crates/kernel/src/offset_interval.rs` — `enc_gate_planes`,
+  `enc_segment_closest`, `enc_nlerp`, `enc_channel_nearest` (Nearest-Arc-Lemma),
+  `enclose_channel_limit`, `enclose_channel_apply`, der geteilte
+  `three_way_concave`, `Knobs::first_arc_wins`, und der Zwei-Durchgang in
+  `enclose_stop`. Pins/Familien in `offset_capability_tests.rs`: `seg_arc`,
+  `synth_channel`, `channel_enclosure_escapes`, `adversarial_channel_cases`,
+  `interval_encloses_the_production_channel_term_384`,
+  `interval_nearest_arc_uniqueness_is_load_bearing_384`.
+  **Kein Auswerter, kein Opcode, kein Payload-Wort, kein Spiegel** — Golden
+  byte-identisch.
 - Produktionscode §8u: **neu** `crates/kernel/src/offset_interval.rs` — die
   Intervall-Stufe (Algebra mit Aussen-Rundung und f32-Modell, `CellDomain`/
   `Box3`, `enclose_lb_value`, `enclose_vertex_apply`, `channel_is_neutral`,

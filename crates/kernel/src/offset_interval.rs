@@ -91,7 +91,7 @@
 //! mit ([`Decision::Both`] ⇒ Hülle beider Zweige) statt zu glätten.
 
 use crate::bvh::BoundedCsg;
-use crate::offset_channel::{OffsetChannel, VertexSphere, END_PLANE_OFF, LB_AVAIL};
+use crate::offset_channel::{ChannelArc, OffsetChannel, VertexSphere, END_PLANE_OFF, LB_AVAIL};
 use crate::offset_lb::{LbBlock, LbPiece, LB_NONE};
 use fielddraft_protocol::{Primitive, Transform};
 
@@ -374,6 +374,11 @@ pub struct Knobs {
     /// ℝ identisch, über f32 nicht — das war der erste blockierende Befund des
     /// vierten Mathe-Reviews.
     pub reassociate_rotation: bool,
+    /// Den ERSTEN Bogen als Nearest nehmen, statt die Eindeutigkeit zu
+    /// beweisen (§8v). Der klassische Argmin-Fehler: `q*`, `m̂₁`, `m̂₂` springen
+    /// beim Gewinnerwechsel, ein blind gewählter Kandidat ist also keine
+    /// Einschliessung.
+    pub first_arc_wins: bool,
     /// Den `best.is_finite()`-Schalter in `lb_value` **weglassen**. Genau der
     /// fehlte in der ersten §8u-Fassung; ein modelliertes `+∞` wählt dann den
     /// `L`-Zweig, während die Produktion den `G`-Zweig nimmt.
@@ -964,36 +969,9 @@ pub fn enclose_vertex_apply(
         if !vs.concave {
             return Ok(d.max(w));
         }
-        // Drei-Wege-Schalter. Ein Zweig darf NUR entfallen, wenn er über der
-        // ganzen Zelle unerreichbar ist.
-        let zero = Iv::point(0.0);
-        let mut out: Option<Iv> = None;
-        let mut add = |v: Iv| {
-            out = Some(match out {
-                Some(o) => o.hull(v),
-                None => v,
-            })
-        };
-        let w_pos = decide_gt(w, zero);
-        if w_pos != Decision::False {
-            add(d.min(w.neg()));
-            if c.knobs.first_branch_only {
-                return out.ok_or(Unknown("leerer Schalter"));
-            }
-        }
-        if w_pos != Decision::True {
-            let g_neg = decide_le(w_geo, zero);
-            if g_neg != Decision::False {
-                add(d.min(w_geo.neg()));
-                if c.knobs.first_branch_only {
-                    return out.ok_or(Unknown("leerer Schalter"));
-                }
-            }
-            if g_neg != Decision::True {
-                add(d);
-            }
-        }
-        out.ok_or(Unknown("leerer Schalter"))
+        // Drei-Wege-Schalter — geteilt mit `channel_apply` (§8v), damit beide
+        // Terme nachweislich dieselbe Fallunterscheidung modellieren.
+        three_way_concave(c, d, w, w_geo)
     };
 
     sw(c, skip, |_| Ok(d), body)
@@ -1002,33 +980,6 @@ pub fn enclose_vertex_apply(
 // ════════════════════════════════════════════════════════════════════════════
 // Ebene 3 — der Stopp und der Baum darunter
 // ════════════════════════════════════════════════════════════════════════════
-
-/// **Ist dieser Kanal über der GANZEN Zelle neutral?**
-///
-/// Kanal-Terme werden in Paket 1 nie ausgewertet. Sie dürfen aber
-/// *wegbewiesen* werden, und dafür gibt es genau EIN Argument, das ohne die
-/// Naht-Geometrie auskommt: den Fernfeld-Skip über die Bounding-Sphere der
-/// Kurve. Mit `dbs = |p − bound_c| − bound_r ≤ de` gilt
-///
-/// ```text
-/// dbs ≥ K   ⇒   channel_limit ≡ −1e30              (erste Zeile von `channel_limit`)
-/// dbs ≥ K ∧ (K − dbs ≤ ∓d)  ⇒  channel_apply ≡ d   (`channel_skip`)
-/// ```
-///
-/// Beides muss über der ganzen Zelle UND für den ganzen laufenden `d`-Bereich
-/// gelten. Genau das prüft diese Funktion — sie ist die einzige Stelle, an der
-/// ein Kanal überhaupt vorkommt, und sie behauptet nichts über seinen Wert.
-pub fn channel_is_neutral(c: &mut Ctx, p: [Iv; 3], d: Iv, ch: &OffsetChannel) -> bool {
-    let Ok(bc) = fsub3(c, p, c3(ch.bound_c)) else { return false };
-    let Ok(nb) = c.fnorm(bc) else { return false };
-    let Ok(dbs) = c.fsub(nb, Iv::f32p(ch.bound_r)) else { return false };
-    if decide_ge(dbs, Iv::f32p(ch.trust)) != Decision::True {
-        return false;
-    }
-    let Ok(lhs) = c.fsub(Iv::f32p(ch.trust), dbs) else { return false };
-    let rhs = if ch.concave { d.neg() } else { d };
-    decide_le(lhs, rhs) == Decision::True
-}
 
 /// [`crate::offset_channel::stop_apply`], eingeschlossen — für Stopps, deren
 /// Terme vollständig unterstützt sind.
@@ -1042,19 +993,24 @@ fn enclose_stop(
 ) -> Enc {
     let mut d = d0;
     let mut lim = Iv::f32p(-END_PLANE_OFF);
-    // Die Kanäle zuerst: sie sind der billige Ausschluss, und `L` wird nur
-    // gebraucht, wenn überhaupt eine Vertex-Kugel ihr Gate liest. Die
-    // Reihenfolge ist auswertungs-neutral — `lb_value` hängt nur von `p` und
-    // `d₀` ab, nicht vom laufenden `d`.
-    for ch in channels {
-        if !channel_is_neutral(c, p, d, ch) {
-            return Err(Unknown("Kanal-Term (nicht als neutral bewiesen)"));
-        }
-    }
+    // **Zwei Durchgänge** (§8v). Erst der billige Ausschluss: sind ALLE Kanäle
+    // schon gegen `d₀` neutral, bleibt `d` über die ganze Kanal-Schleife `d₀`,
+    // alle Grenzwert-Beiträge sind `−1e30`, und `L` wird nur gebraucht, wenn
+    // überhaupt eine Vertex-Kugel ihr Gate liest. Erst wenn das nicht aufgeht,
+    // wird sequenziell voll ausgewertet — dann kostet `L` seinen Preis.
+    let all_neutral = channels.iter().all(|ch| channel_is_neutral(c, p, d0, ch));
+    let need_lb = !verts.is_empty() || !all_neutral;
     let lbv = match lb {
-        Some(b) if !verts.is_empty() => enclose_lb_value(c, p, d0, b)?,
+        Some(b) if need_lb => enclose_lb_value(c, p, d0, b)?,
         _ => Iv::f32p(LB_NONE),
     };
+    if !all_neutral {
+        for ch in channels {
+            lim = lim.max(enclose_channel_limit(c, p, ch)?);
+            let extra = c.fsub(lbv, Iv::f32p(ch.delta))?;
+            d = enclose_channel_apply(c, p, d0, d, ch, extra)?;
+        }
+    }
     for vs in verts {
         lim = lim.max(enclose_vertex_limit(c, p, vs)?);
         let extra = c.fsub(lbv, Iv::f32p(vs.delta))?;
@@ -1066,6 +1022,316 @@ fn enclose_stop(
         Some(false) => d.min(lim.neg()),
         None => d,
     })
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// §8v — Kanal-Terme: gerade Segmente mit eindeutiger Nearest-Zuordnung
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Die vier Halbraum-Slots von [`crate::offset_channel::end_plane_gate`] bzw.
+/// [`crate::offset_channel::face_plane_gate`], eingeschlossen.
+///
+/// Produktion: `s = +∞; for g { s = s.min(p₀g₀ + p₁g₁ + p₂g₂ − g₃) }`. Jedes
+/// Glied ist eine affine Form über der Zelle und damit **exakt** reichweitbar
+/// (die drei Koordinaten sind unabhängig, Minimum und Maximum werden je an
+/// einer Ecke angenommen); das `min` ist eine Auswahl ohne Rundung.
+fn enc_gate_planes(c: &mut Ctx, p: [Iv; 3], planes: &[[f32; 4]; 4]) -> Enc {
+    let mut s = Iv::point(f64::INFINITY);
+    for g in planes {
+        s = s.min(affine_over_box(c, p, *g)?);
+    }
+    Ok(s)
+}
+
+/// Die Einschliessung von [`crate::offset_channel::arc_closest`] für ein
+/// **Geradensegment** (`sweep < 0`): `(de, q, t)`.
+///
+/// Bemerkenswert: die Produktion hat hier **keine Verzweigung**. Der Wechsel
+/// zwischen Lotfusspunkt und Endpunkt steckt allein im `clamp(0,1)` von `t`,
+/// und `clamp` ist `max` gefolgt von `min` — beides exakte Auswahl, keine
+/// Rundung. Der „Endpunkt- gegen Projektions-Zweig", den man erwarten würde,
+/// ist also gar kein Schalter, sondern eine Sättigung, und die Intervall-Form
+/// bildet sie ohne Hülle exakt ab. (Die Pflicht-Familie dazu prüft genau das:
+/// Zellen teils innerhalb, teils ausserhalb des Segment-Slabs.)
+fn enc_segment_closest(
+    c: &mut Ctx,
+    p: [Iv; 3],
+    arc: &ChannelArc,
+) -> Result<(Iv, [Iv; 3], Iv), Unknown> {
+    let len = arc.r.max(1e-12);
+    let pc = fsub3(c, p, c3(arc.c))?;
+    let num = c.fdot(pc, c3(arc.u))?;
+    let t = c.fdiv(num, Iv::f32p(len))?;
+    let t = t.max(Iv::point(0.0)).min(Iv::point(1.0));
+    let tl = c.fmul(t, Iv::f32p(len))?;
+    let mut q = [Iv::point(0.0); 3];
+    for k in 0..3 {
+        let m = c.fmul(Iv::f32p(arc.u[k]), tl)?;
+        q[k] = c.fadd(Iv::f32p(arc.c[k]), m)?;
+    }
+    let dq = fsub3(c, p, q)?;
+    let de = c.fnorm(dq)?;
+    Ok((de, q, t))
+}
+
+/// **Das Normalisierungslemma** — [`nlerp`], eingeschlossen.
+///
+/// Produktion: `v = a + (b−a)·t`, `n = |v|`, und dann `v/n` falls `n > 1e-9`,
+/// sonst `a`. Drei Dinge sind zu beweisen:
+///
+/// * **Nie durch ein nullhaltiges Intervall dividieren.** Im
+///   Normalisierungs-Zweig GILT `n > 1e-9` — diese Bedingung wird deshalb in
+///   den Zweig hinein GESCHNITTEN (`n ∩ [1e-9, ∞)`), bevor dividiert wird.
+///   Ohne den Schnitt wäre die untere Schranke von `n` bei einem unentschiedenen
+///   Schalter null, und die Division müsste fail-closed abbrechen — der Zweig
+///   ginge verloren, obwohl er wohldefiniert ist.
+/// * **Der Rückfall ist ein Zweig, kein Sonderfall.** Überspannt `n` die
+///   Schwelle `1e-9`, wird die Hülle aus normalisiertem Zweig UND `a` gebildet.
+/// * **Fast antipodale Endvektoren** sind genau der Fall, in dem `v` durch
+///   Auslöschung klein wird und `n` die Schwelle überspannt. Die Pflicht-Familie
+///   fährt ihn.
+fn enc_nlerp(
+    c: &mut Ctx,
+    a: [f32; 3],
+    b: [f32; 3],
+    t: Iv,
+) -> Result<[Iv; 3], Unknown> {
+    let mut v = [Iv::point(0.0); 3];
+    for k in 0..3 {
+        let ab = Iv::f32p(b[k] - a[k]);
+        let m = c.fmul(ab, t)?;
+        v[k] = c.fadd(Iv::f32p(a[k]), m)?;
+    }
+    let n = c.fnorm(v)?;
+    let thr = Iv::f32p(1.0e-9);
+    let dec = decide_gt(n, thr);
+    let norm_branch = |c: &mut Ctx| -> Result<[Iv; 3], Unknown> {
+        // Der Schnitt: in diesem Zweig ist `n > 1e-9` bewiesen.
+        let nn = n.intersect(Iv { lo: 1.0e-9, hi: f64::INFINITY }).ok_or(Unknown("nlerp n"))?;
+        Ok([c.fdiv(v[0], nn)?, c.fdiv(v[1], nn)?, c.fdiv(v[2], nn)?])
+    };
+    match dec {
+        Decision::True => norm_branch(c),
+        Decision::False => Ok(c3(a)),
+        Decision::Both => {
+            if c.knobs.first_branch_only {
+                return norm_branch(c);
+            }
+            let x = norm_branch(c)?;
+            let y = c3(a);
+            Ok([x[0].hull(y[0]), x[1].hull(y[1]), x[2].hull(y[2])])
+        }
+    }
+}
+
+/// Das Ergebnis von [`crate::offset_channel::channel_nearest`], sofern über der
+/// ganzen Zelle EIN Bogen beweisbar gewinnt.
+struct NearestSeg {
+    de: Iv,
+    q: [Iv; 3],
+    m1: [Iv; 3],
+    m2: [Iv; 3],
+}
+
+/// **Das Nearest-Arc-Lemma** (§8v).
+///
+/// `channel_nearest` bildet ein `min` über die Bögen und gibt die Daten des
+/// GEWINNERS zurück — `q*`, `m̂₁`, `m̂₂` sind also nicht stetig in `p`, sie
+/// springen beim Argmin-Wechsel. Eine Intervall-Auswertung darf deshalb nur
+/// dann einen Bogen einsetzen, wenn er über der ganzen Zelle gewinnt:
+///
+/// ```text
+/// upper_i < lower_j   für ALLE j ≠ i.
+/// ```
+///
+/// Bei Gleichheit oder Überlappung ist das Ergebnis `Unknown` — die Hülle über
+/// alle erreichbaren Kandidaten samt adaptiver Unterteilung ist Paket 3 und
+/// wird hier NICHT vorweggenommen.
+///
+/// **Der Prune muss mitbewiesen werden.** Die Produktionsschleife überspringt
+/// einen Bogen, wenn `|p − bc| − br ≥ best` — überspränge sie den Gewinner,
+/// wäre `best` grösser als `de_i` und die Rückgabe eine andere. Das Lemma
+/// dafür: alle anderen Bögen haben `de_j > upper_i ≥ de_i`, das laufende `best`
+/// ist also zu jedem Zeitpunkt `> de_i`; es genügt somit
+/// `upper(dbs_i) ≤ lower(de_i)`. Das ist eine Rechnung im f32-Modell und
+/// **keine geerbte Behauptung** über die Bounding-Sphere.
+///
+/// **Bögen mit Krümmung sind `Unknown`.** Ihr `arc_closest` braucht `atan2`,
+/// `sin` und `cos`; das trigonometrische Enclosure ist Paket 4. Enthält ein
+/// Kanal auch nur einen gekrümmten Bogen, verweigert diese Funktion — auch für
+/// die Konkurrenz-Schranken, damit kein halber Beweis entsteht.
+fn enc_channel_nearest(c: &mut Ctx, p: [Iv; 3], ch: &OffsetChannel) -> Result<NearestSeg, Unknown> {
+    if ch.arcs.is_empty() {
+        return Err(Unknown("Kanal ohne Bogen"));
+    }
+    if ch.arcs.iter().any(|a| !(a.sweep < 0.0)) {
+        return Err(Unknown("Kanal-Bogen mit Krümmung (Paket 4)"));
+    }
+    let mut dist = Vec::with_capacity(ch.arcs.len());
+    for arc in &ch.arcs {
+        dist.push(enc_segment_closest(c, p, arc)?);
+    }
+    // Der eindeutige Gewinner.
+    let mut win: Option<usize> = None;
+    for i in 0..dist.len() {
+        if (0..dist.len()).all(|j| j == i || dist[i].0.certainly_lt(dist[j].0)) {
+            win = Some(i);
+            break;
+        }
+    }
+    if c.knobs.first_arc_wins {
+        // Gegenprobe: blind den ersten Kandidaten nehmen.
+        win = Some(0);
+    }
+    let Some(i) = win else {
+        return Err(Unknown("Nearest-Bogen nicht eindeutig (Paket 3)"));
+    };
+    // Der Prune darf den Gewinner nicht überspringen.
+    if ch.arcs.len() > 1 {
+        let arc = &ch.arcs[i];
+        let bc = fsub3(c, p, c3(arc.bc))?;
+        let nb = c.fnorm(bc)?;
+        let dbs = c.fsub(nb, Iv::f32p(arc.br))?;
+        if !dbs.certainly_le(dist[i].0) {
+            return Err(Unknown("Bogen-Prune nicht als harmlos bewiesen"));
+        }
+    }
+    let (de, q, t) = dist[i];
+    let arc = &ch.arcs[i];
+    let m1 = enc_nlerp(c, arc.m1s, arc.m1e, t)?;
+    let m2 = enc_nlerp(c, arc.m2s, arc.m2e, t)?;
+    Ok(NearestSeg { de, q, m1, m2 })
+}
+
+/// [`crate::offset_channel::channel_limit`], eingeschlossen.
+pub fn enclose_channel_limit(c: &mut Ctx, p: [Iv; 3], ch: &OffsetChannel) -> Enc {
+    let neutral = Iv::f32p(-END_PLANE_OFF);
+    let bc = fsub3(c, p, c3(ch.bound_c))?;
+    let nb = c.fnorm(bc)?;
+    let dbs = c.fsub(nb, Iv::f32p(ch.bound_r))?;
+    if decide_ge(dbs, Iv::f32p(ch.trust)) == Decision::True {
+        return Ok(neutral);
+    }
+    let near = enc_channel_nearest(c, p, ch)?;
+    let far = decide_ge(near.de, Iv::f32p(ch.trust));
+    let val = |c: &mut Ctx| -> Enc {
+        let s4 = enc_gate_planes(c, p, &ch.face_planes)?;
+        let h = c.fadd(s4, Iv::f32p(ch.delta))?;
+        c.fsub(Iv::f32p(ch.delta), near.de.min(h))
+    };
+    // Der `dbs ≥ K`-Schalter kann noch unentschieden sein; dann gehört der
+    // neutrale Fall in die Hülle.
+    let inner = sw(c, far, |_| Ok(neutral), val)?;
+    match decide_ge(dbs, Iv::f32p(ch.trust)) {
+        Decision::False => Ok(inner),
+        _ => Ok(inner.hull(neutral)),
+    }
+}
+
+/// **Ist dieser Kanal über der GANZEN Zelle neutral?** (§8u; der billige
+/// Ausschluss, der ohne jede Naht-Geometrie auskommt.)
+///
+/// Mit `dbs = |p − bound_c| − bound_r ≤ de` gilt
+///
+/// ```text
+/// dbs ≥ K   ⇒   channel_limit ≡ −1e30              (erste Zeile von `channel_limit`)
+/// dbs ≥ K ∧ (K − dbs ≤ ∓d)  ⇒  channel_apply ≡ d   (`channel_skip`)
+/// ```
+pub fn channel_is_neutral(c: &mut Ctx, p: [Iv; 3], d: Iv, ch: &OffsetChannel) -> bool {
+    let Ok(bc) = fsub3(c, p, c3(ch.bound_c)) else { return false };
+    let Ok(nb) = c.fnorm(bc) else { return false };
+    let Ok(dbs) = c.fsub(nb, Iv::f32p(ch.bound_r)) else { return false };
+    if decide_ge(dbs, Iv::f32p(ch.trust)) != Decision::True {
+        return false;
+    }
+    let Ok(lhs) = c.fsub(Iv::f32p(ch.trust), dbs) else { return false };
+    let rhs = if ch.concave { d.neg() } else { d };
+    decide_le(lhs, rhs) == Decision::True
+}
+
+/// [`crate::offset_channel::channel_apply`], eingeschlossen — die
+/// §8v-Erweiterung.
+///
+/// Struktur identisch zu [`enclose_vertex_apply`], nur mit dem
+/// Nearest-Segment statt des Punkt-Spines und zwei zusätzlichen affinen Gates.
+pub fn enclose_channel_apply(
+    c: &mut Ctx,
+    p: [Iv; 3],
+    base: Iv,
+    d: Iv,
+    ch: &OffsetChannel,
+    extra: Iv,
+) -> Enc {
+    // Der Fernfeld-Skip, als Schalter.
+    let bc = fsub3(c, p, c3(ch.bound_c))?;
+    let nb = c.fnorm(bc)?;
+    let dbs = c.fsub(nb, Iv::f32p(ch.bound_r))?;
+    let lhs = c.fsub(Iv::f32p(ch.trust), dbs)?;
+    let rhs = if ch.concave { d.neg() } else { d };
+    // `channel_skip` ist ein UND aus zwei Bedingungen.
+    let skip = match (decide_le(lhs, rhs), decide_ge(dbs, Iv::f32p(ch.trust))) {
+        (Decision::True, Decision::True) => Decision::True,
+        (Decision::False, _) | (_, Decision::False) => Decision::False,
+        _ => Decision::Both,
+    };
+    if skip == Decision::True {
+        return Ok(d);
+    }
+    let body = |c: &mut Ctx| -> Enc {
+        let near = enc_channel_nearest(c, p, ch)?;
+        let dq = fsub3(c, p, near.q)?;
+        let s1 = c.fdot(dq, near.m1)?;
+        let s2 = c.fdot(dq, near.m2)?;
+        let gate = if ch.concave {
+            enclose_concave_gate(c, ch.gate, base, extra)?
+        } else {
+            c.fadd(Iv::f32p(ch.gate), base)?
+        };
+        let s3 = enc_gate_planes(c, p, &ch.end_planes)?;
+        let s4 = enc_gate_planes(c, p, &ch.face_planes)?;
+        let rd = c.fsub(near.de, Iv::f32p(ch.delta))?;
+        let tr = c.fsub(Iv::f32p(ch.trust), near.de)?;
+        let w_geo = s1.min(s2).min(s3).min(s4).min(rd).min(tr);
+        let w = w_geo.min(gate);
+        if !ch.concave {
+            return Ok(d.max(w));
+        }
+        three_way_concave(c, d, w, w_geo)
+    };
+    sw(c, skip, |_| Ok(d), body)
+}
+
+/// Der Drei-Wege-Schalter am Ende von `channel_apply`/`vertex_apply`
+/// (konkaver Zweig) — geteilt, damit beide Terme bit-gleich modelliert sind.
+fn three_way_concave(c: &mut Ctx, d: Iv, w: Iv, w_geo: Iv) -> Enc {
+    let zero = Iv::point(0.0);
+    let mut out: Option<Iv> = None;
+    let mut add = |v: Iv| {
+        out = Some(match out {
+            Some(o) => o.hull(v),
+            None => v,
+        })
+    };
+    let w_pos = decide_gt(w, zero);
+    if w_pos != Decision::False {
+        add(d.min(w.neg()));
+        if c.knobs.first_branch_only {
+            return out.ok_or(Unknown("leerer Schalter"));
+        }
+    }
+    if w_pos != Decision::True {
+        let g_neg = decide_le(w_geo, zero);
+        if g_neg != Decision::False {
+            add(d.min(w_geo.neg()));
+            if c.knobs.first_branch_only {
+                return out.ok_or(Unknown("leerer Schalter"));
+            }
+        }
+        if g_neg != Decision::True {
+            add(d);
+        }
+    }
+    out.ok_or(Unknown("leerer Schalter"))
 }
 
 /// [`crate::bvh::distance_point_to_aabb`], eingeschlossen — nur für die
