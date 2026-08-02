@@ -391,6 +391,7 @@ pub struct Ctx {
     pub knobs: Knobs,
     ops: u64,
     max_ops: u64,
+    channel_evals: u64,
 }
 
 impl Ctx {
@@ -402,7 +403,7 @@ impl Ctx {
     /// ist die konservative Richtung — ein erschöpftes Budget endet in
     /// `Unknown`, nie in einer Zertifizierung.
     pub fn new() -> Ctx {
-        Ctx { knobs: Knobs::default(), ops: 0, max_ops: 4_000_000 }
+        Ctx { knobs: Knobs::default(), ops: 0, max_ops: 4_000_000, channel_evals: 0 }
     }
 
     pub fn with_knobs(knobs: Knobs) -> Ctx {
@@ -412,6 +413,14 @@ impl Ctx {
     /// Verbrauchte Operationen (Terminierungs-Zeuge).
     pub fn ops(&self) -> u64 {
         self.ops
+    }
+
+    /// Wie oft ein Kanal-Term wirklich AUSGEWERTET wurde (also nicht über den
+    /// Fernfeld-Skip neutral war). Ein Pin, der nur zählt, wie viele Zellen
+    /// eine Einschliessung liefern, könnte auch dann grün sein, wenn kein
+    /// einziger Kanal je gerechnet wurde.
+    pub fn channel_evals(&self) -> u64 {
+        self.channel_evals
     }
 
     #[inline]
@@ -702,14 +711,18 @@ fn fsub3(c: &mut Ctx, a: [Iv; 3], b: [Iv; 3]) -> Result<[Iv; 3], Unknown> {
     Ok([c.fsub(a[0], b[0])?, c.fsub(a[1], b[1])?, c.fsub(a[2], b[2])?])
 }
 
-/// **Affine Ebene über der Zelle, exakt.** `⟨p, n̂⟩ − c` in der
+/// **Eine affine Ebene über der Zelle.** `⟨p, n̂⟩ − c` in der
 /// Produktions-Reihenfolge von [`crate::offset_channel::end_plane_gate`]
-/// (`p₀g₀ + p₁g₁ + p₂g₂ − g₃`).
+/// (`p₀g₀ + p₁g₁ + p₂g₂ − g₃`), op-weise f32-eingeschlossen.
 ///
-/// Über einer Box ist das **die exakte Reichweite** der affinen Form: die drei
-/// Koordinaten sind unabhängig, Minimum und Maximum werden also
-/// komponentenweise an je einer Ecke angenommen — die natürliche Auswertung
-/// ist hier keine Überschätzung.
+/// Die drei Koordinaten sind über einer Box unabhängig, die REELLE affine Form
+/// nimmt Minimum und Maximum also je an einer Ecke an — es gibt hier keine
+/// Dependency-Überschätzung.
+///
+/// **Was das NICHT heisst** (§8v-Korrektur nach dem fünften Review): „exakt"
+/// wäre als Schärfe-Aussage zu stark. Jede Operation geht durch
+/// [`Ctx::seal`], und die Aussen-Rundung weitet um bis zu ein f32-ulp je
+/// Schritt. Die Zusage ist Einschliessung, nicht Schärfe.
 pub fn affine_over_box(c: &mut Ctx, p: [Iv; 3], g: [f32; 4]) -> Enc {
     let m0 = c.fmul(p[0], Iv::f32p(g[0]))?;
     let m1 = c.fmul(p[1], Iv::f32p(g[1]))?;
@@ -1032,9 +1045,16 @@ fn enclose_stop(
 /// [`crate::offset_channel::face_plane_gate`], eingeschlossen.
 ///
 /// Produktion: `s = +∞; for g { s = s.min(p₀g₀ + p₁g₁ + p₂g₂ − g₃) }`. Jedes
-/// Glied ist eine affine Form über der Zelle und damit **exakt** reichweitbar
-/// (die drei Koordinaten sind unabhängig, Minimum und Maximum werden je an
-/// einer Ecke angenommen); das `min` ist eine Auswahl ohne Rundung.
+/// Glied ist eine affine Form über der Zelle, wird also ohne
+/// Dependency-Überschätzung eingeschlossen (s. [`affine_over_box`]); das `min`
+/// ist eine Auswahl ohne Rundung.
+///
+/// **Das `min` selbst ist trotzdem eine Überschätzung** (§8v-Korrektur nach
+/// dem fünften Review): die vier Ebenen teilen sich `p`, und das
+/// Intervall-`min` verliert diese Kopplung. Schulbeispiel: `h₁ = x`,
+/// `h₂ = −x` über `x ∈ [−1,1]` hat als reelles Minimum `[−1, 0]`, das
+/// Intervall-`min` liefert `[−1, 1]`. Sound, aber nicht scharf — „exakt" wäre
+/// hier die falsche Vokabel.
 fn enc_gate_planes(c: &mut Ctx, p: [Iv; 3], planes: &[[f32; 4]; 4]) -> Enc {
     let mut s = Iv::point(f64::INFINITY);
     for g in planes {
@@ -1107,7 +1127,9 @@ fn enc_nlerp(
     let dec = decide_gt(n, thr);
     let norm_branch = |c: &mut Ctx| -> Result<[Iv; 3], Unknown> {
         // Der Schnitt: in diesem Zweig ist `n > 1e-9` bewiesen.
-        let nn = n.intersect(Iv { lo: 1.0e-9, hi: f64::INFINITY }).ok_or(Unknown("nlerp n"))?;
+        // `thr.lo` statt eines eigenen Literals: die Begründung des Schnitts
+        // hängt an der PRODUKTIONS-Konstante, nicht an einer Kopie davon.
+        let nn = n.intersect(Iv { lo: thr.lo, hi: f64::INFINITY }).ok_or(Unknown("nlerp n"))?;
         Ok([c.fdiv(v[0], nn)?, c.fdiv(v[1], nn)?, c.fdiv(v[2], nn)?])
     };
     match dec {
@@ -1161,6 +1183,7 @@ struct NearestSeg {
 /// Kanal auch nur einen gekrümmten Bogen, verweigert diese Funktion — auch für
 /// die Konkurrenz-Schranken, damit kein halber Beweis entsteht.
 fn enc_channel_nearest(c: &mut Ctx, p: [Iv; 3], ch: &OffsetChannel) -> Result<NearestSeg, Unknown> {
+    c.channel_evals += 1;
     if ch.arcs.is_empty() {
         return Err(Unknown("Kanal ohne Bogen"));
     }

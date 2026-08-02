@@ -9318,10 +9318,14 @@ fn interval_encloses_the_production_vertex_term_384() {
 
 
 /// Zählt Ausreisser einer Feld-Einschliessung über einer Zelle.
-fn field_enclosure_escapes(node: &BoundedCsg, cell: &iv::Box3, sub: usize) -> (usize, usize, bool) {
+fn field_enclosure_escapes(
+    node: &BoundedCsg,
+    cell: &iv::Box3,
+    sub: usize,
+) -> (usize, usize, bool, u64) {
     let mut c = iv::Ctx::new();
     let Ok(enc) = iv::enclose_node(&mut c, node, cell.world_f32()) else {
-        return (0, 0, false);
+        return (0, 0, false, 0);
     };
     let (mut esc, mut n) = (0usize, 0usize);
     for p in cell_samples(cell, sub) {
@@ -9331,7 +9335,7 @@ fn field_enclosure_escapes(node: &BoundedCsg, cell: &iv::Box3, sub: usize) -> (u
             esc += 1;
         }
     }
-    (esc, n, true)
+    (esc, n, true, c.channel_evals())
 }
 
 /// Ein Zellen-Raster über einer Fixture (dieselbe Aufteilung wie [`cell_scan`]).
@@ -9369,6 +9373,7 @@ fn interval_encloses_the_delivered_field_384() {
     let delta = 2.0f32;
     let (mut cells, mut probes, mut evaluated) = (0usize, 0usize, 0usize);
     let mut delivered = 0usize;
+    let mut channel_work = 0u64;
     for (name, field, _exact, lo, hi, _n) in cert_matrix(delta) {
         if !(name.starts_with("Stufen")
             || name == "Ecken-Schale t/δ=2.5"
@@ -9383,7 +9388,7 @@ fn interval_encloses_the_delivered_field_384() {
             for (tag, node) in
                 [("naiv", stop), ("Vertex-Ablation", &cut), ("ausgeliefert", &field)]
             {
-                let (esc, n, ok) = field_enclosure_escapes(node, &cell, 2);
+                let (esc, n, ok, chev) = field_enclosure_escapes(node, &cell, 2);
                 assert_eq!(
                     esc, 0,
                     "{name}/{tag}: {esc} von {n} Feldwerten liegen AUSSERHALB der \
@@ -9394,6 +9399,7 @@ fn interval_encloses_the_delivered_field_384() {
                 evaluated += ok as usize;
                 if tag == "ausgeliefert" && ok {
                     delivered += 1;
+                    channel_work += chev;
                 }
             }
         }
@@ -9404,6 +9410,13 @@ fn interval_encloses_the_delivered_field_384() {
         delivered >= 60,
         "nur {delivered} Zellen des AUSGELIEFERTEN Feldes liefern überhaupt eine \
          Einschliessung — dann prüft der Pin den §8v-Kanal-Pfad nicht"
+    );
+    // Eine Einschliessung allein beweist noch nicht, dass ein Kanal GERECHNET
+    // wurde — sie könnte auch aus lauter neutralen Kanälen entstehen.
+    assert!(
+        channel_work >= 100,
+        "nur {channel_work} nicht-neutrale Kanal-Auswertungen im ausgelieferten Feld — \
+         dann trägt der §8v-Pfad den Pin nicht"
     );
     assert!(
         evaluated * 2 >= cells,
@@ -9430,7 +9443,7 @@ fn interval_subdivision_keeps_every_sample_384() {
             let Ok(parent) = iv::enclose_node(&mut c0, node, cell.world_f32()) else { continue };
             let Some((a, b)) = cell.split() else { continue };
             for child in [a, b] {
-                let (esc, n, ok) = field_enclosure_escapes(node, &child, 2);
+                let (esc, n, ok, _) = field_enclosure_escapes(node, &child, 2);
                 assert_eq!(esc, 0, "Kind-Zelle {child:?}: {esc} von {n} Werten entkommen");
                 if !ok {
                     continue;
@@ -10269,7 +10282,11 @@ fn interval_encloses_the_production_channel_term_384() {
         "nur {cases} synthetische Fälle / {probes} Proben ausgewertet — eine leer-grüne \
          Familie belegt nichts"
     );
-    let _ = real;
+    assert!(
+        real >= 2,
+        "nur {real} ECHTE Kanäle der Matrix wurden ausgewertet — dann prüft der Pin bloss \
+         synthetische Daten"
+    );
 }
 
 /// **§8v-Pin 2: das Nearest-Arc-Lemma — Eindeutigkeit oder `Unknown`.**
@@ -10327,4 +10344,56 @@ fn interval_nearest_arc_uniqueness_is_load_bearing_384() {
          nimmt, MUSS Produktionswerte verlieren ({esc_total} Ausreisser) — sonst belegt \
          das Nearest-Arc-Lemma nichts"
     );
+}
+
+/// **§8v-Pin 3: die Kachelung ist lückenlos.**
+///
+/// Die Zellen eines Laufs sind eine echte Kachelung des Quaders — sie decken
+/// ihn ohne Lücke und ohne Überschneidung. Wenn also im tiefen Plattenkern
+/// JEDE Zelle zertifiziert wird, ist der ganze Quader beweisbar
+/// unter-claim-frei, und nicht bloss „die meisten Stichproben".
+///
+/// Genau das nagelt dieser Pin fest: `b2 == n³`, am AUSGELIEFERTEN Feld, mit
+/// abgeschaltetem Zweig 1. Bis §8v stand die Zahl nur als Druckausgabe in einer
+/// `#[ignore]`-Sonde — eine Aussage, die niemand nachhält, ist keine.
+#[test]
+fn interval_tiling_of_the_plate_core_is_gapless_384() {
+    let delta = 2.0f32;
+    let (field, _) = compile_for(thin_corner_node(6.0 * delta, 40.0, delta));
+    let none = |_c: [f64; 3]| None;
+    let (lo, hi, n) = ([-36.0, -8.0, -36.0], [-30.0, -5.0, -30.0], 8usize);
+    let cells = fixture_cells(lo, hi, n);
+    assert_eq!(cells.len(), n * n * n, "die Kachelung hat nicht n³ Zellen");
+    // Lückenlosigkeit der Kachelung selbst: benachbarte Zellen stossen exakt
+    // aneinander, die Vereinigung ist der ganze Quader.
+    for k in 0..3 {
+        let mut edges: Vec<f64> = cells.iter().map(|c| c.lo[k]).collect();
+        edges.extend(cells.iter().map(|c| c.hi[k]));
+        edges.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        edges.dedup();
+        assert_eq!(edges.len(), n + 1, "Achse {k}: {} Kanten statt {}", edges.len(), n + 1);
+        assert_eq!(edges[0], lo[k]);
+        assert_eq!(edges[n], hi[k]);
+    }
+    let mut b2 = 0usize;
+    let mut probes = 0usize;
+    for cell in &cells {
+        let mut c = iv::Ctx::new();
+        match iv::certify_cell(cell, &field, delta as f64, CERT_TOL, &none, &mut c) {
+            iv::Verdict::Branch2 => {
+                b2 += 1;
+                for p in cell_samples(cell, 1) {
+                    let f = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+                    probes += 1;
+                    assert!(f < 0.0, "zertifizierte Zelle {cell:?} liefert bei {p:?} {f} ≥ 0");
+                }
+            }
+            other => panic!(
+                "Zelle {cell:?} des Plattenkerns ist {other:?} — die Kachelung ist damit \
+                 nicht mehr lückenlos zertifiziert"
+            ),
+        }
+    }
+    assert_eq!(b2, n * n * n, "nur {b2} von {} Zellen zertifiziert", n * n * n);
+    assert!(probes > 3_000, "nur {probes} Proben");
 }

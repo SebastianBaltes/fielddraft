@@ -5253,6 +5253,18 @@ Naht-Zertifizierung P5 nötig und wurde NICHT gebaut).
 * `enc_channel_nearest` — das Nearest-Arc-Lemma.
 * `enc_gate_planes` — die vier affinen Halbräume von `end_plane_gate` /
   `face_plane_gate` (endlich benutzt `affine_over_box` jemand).
+
+**Zur Vokabel „exakt" — eine Richtigstellung aus dem fünften Review.** Die
+erste §8v-Fassung nannte die Ebenen-Gates „exakt affin, keine Überschätzung".
+Das ist als SCHÄRFE-Aussage zu stark, und zwar aus zwei Gründen. Erstens geht
+jede Operation durch `Ctx::seal`, das um bis zu ein f32-ulp weitet. Zweitens
+teilen sich die vier Ebenen ihr `p`, und das Intervall-`min` verliert diese
+Kopplung — Schulbeispiel: `h₁ = x`, `h₂ = −x` über `x ∈ [−1,1]` hat als
+reelles Minimum `[−1, 0]`, das Intervall-`min` liefert `[−1, 1]`. Korrekt
+formuliert ist die Zusage: **op-weise f32-eingeschlossen; jede EINZELNE reelle
+Ebene ist affin und damit ohne Dependency-Überschätzung.** Einschliessung, nicht
+Schärfe. (Sound war es immer — die Richtigstellung betrifft den Text, nicht den
+Code.)
 * `enclose_channel_limit`, `enclose_channel_apply`.
 * `three_way_concave` — der Drei-Wege-Schalter, jetzt von Kanal UND Vertex
   geteilt, damit beide nachweislich dieselbe Fallunterscheidung modellieren.
@@ -5306,7 +5318,7 @@ Also, Term für Term:
 | `t` | **voll** (exakt: eine affine Form, dann `clamp`) | keine |
 | `m̂₁`, `m̂₂` (`nlerp`) | **voll**, inkl. Normalisierungs-Schalter | Hülle nur an der 1e-9-Schwelle |
 | `s₁`, `s₂` | **voll** (natürliche Komposition) | die Korrelation `p−q*` gegen `m̂` bleibt drin |
-| `s₃`, `s₄` (Ebenen-Gates) | **voll, exakt** (affin über der Box) | keine |
+| `s₃`, `s₄` (Ebenen-Gates) | **voll**, op-weise (jede einzelne Ebene affin über der Box) | keine Dependency-Breite je Ebene; das `min` über die vier Ebenen verliert aber ihre gemeinsame `p`-Abhängigkeit |
 | `channel_skip`, `channel_limit`-Vorprüfungen | **voll**, als Schalter | Hülle nur im Grenzband |
 
 Gemessen war das scharf genug: der Rippen-Kamm 4×2/1 geht von 0 auf 1008
@@ -5434,6 +5446,10 @@ das AUSGELIEFERTE Feld selbst mit, nicht mehr nur das naive und die Ablation.
 * `interval_nearest_arc_uniqueness_is_load_bearing_384` — das Nearest-Arc-Lemma
   in drei Richtungen: es verweigert über der Grenze, es verweigert NICHT
   daneben, und die Rückdreh-Probe reisst.
+* `interval_tiling_of_the_plate_core_is_gapless_384` — die Kachelung des
+  tiefen Plattenkerns ist eine echte, lückenlose Zerlegung des Quaders UND
+  jede ihrer Zellen ist zertifiziert (`b2 == n³`). Bis dahin stand die Zahl nur
+  als Druckausgabe in einer `#[ignore]`-Sonde.
 
 Transformiert (eigene §8u-Pins, wie vom Rahmen erlaubt):
 `interval_encloses_the_delivered_field_384` prüft jetzt zusätzlich das
