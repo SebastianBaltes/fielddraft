@@ -3779,6 +3779,276 @@ die Teilstrings, an denen sie hängen (`FEHLENDES Material`, `Stück-Schranke L`
   Geraden-Extrude**, **spitze Nähte**, **die latente `safe_sqrt`-Entartung**:
   unverändert §8j/§8m/§8n/§8q.
 
+## 8s. Das freie Naht-Ende — eine Junction, die keine war, und ein δ ohne Beweis (#384, 2026-08-02)
+
+§8r hat den Zeugen gebaut und ihn sprechen lassen: an vier von neun
+Matrix-Fixturen bewiesen fehlendes Material, bis 0.499 mm, alles am freien
+NAHT-ENDE. Es benannte als Ursache „§8l Ursache 2 — die um δ verschobene freie
+End-Ebene".
+
+**Das war zur Hälfte richtig.** Term für Term nachgerechnet zerfällt der Fund in
+ZWEI Ursachen an zwei verschiedenen Fixturen, und die grössere (die Schale, 0.499
+von 0.499 mm) ist eine, die noch niemand vermutet hatte: eine **Junction, die
+keine ist**. Der siebte Fehlschlag des vorab benannten Verdächtigen in Folge —
+diesmal ein halber.
+
+### Was am schlimmsten Punkt wirklich passiert (Ecken-Schale `t/δ = 2.25`)
+
+Das §8r-Gitter lag um die Ecke; ein 40³-Gitter direkt am Naht-Ende findet einen
+noch schlimmeren Punkt: `x = [−2.215660, −1.181181, −37.481699]`.
+
+| Grösse | Wert |
+|---|---|
+| Feld (ausgeliefert, §8r-Stand) | **+0.000555** — behauptet LUFT |
+| naives `d₀` | **−0.215660** — behauptet MATERIAL |
+| exakt `dist(x,∁Ω)` | 2.510844 |
+| wahr `f = δ − dist` | **−0.510844** |
+| bewiesen fehlend | **0.511 mm** |
+
+Die erste Zeile, die nicht ins Bild passt: `d₀ < 0 < f`. **Der Stopp hat den
+Punkt VERSCHLECHTERT** — das naive Feld sagte richtig „Material", das korrigierte
+sagt „Luft". Kein Kanal-Term kann das: jeder konkave Term ist ein `min`, er kann
+nur senken. Die Zerlegung zeigt den Schuldigen sofort:
+
+    ⇒ nach Termen −0.215660,  lim = +0.000555  ⇒  +0.000555
+
+Es ist `OP_STOP_LIMIT`, die **Grenzwert-Klemme** aus §8j — `d ← max(d, lim)` mit
+`lim = δ − min_j de_j`. Sie ist ein reiner Über-Claim-Tilger und beruht auf EINEM
+Satz (§8j): *„Jeder Naht-Punkt liegt auf `∂Ω`, also gilt `dist(x,∁Ω) ≤ de`
+bedingungslos."*
+
+**Der Satz war falsch.** Der `de = 1.999445`, den die Klemme liest, misst zum
+Punkt `q* = [−1.7563, 0.0000, −39.0281]` — und der liegt **0.825 mm TIEF im
+Material**, nicht auf `∂Ω`: er sitzt auf der `y = 0`-Fläche der einen Platte,
+aber im INNEREN der anderen (`x = −1.756 ∈ (−4.5, 0)`, `z = −39.03 ∈ (−40, 40)`).
+
+### Die Phantom-Junction, hergeleitet
+
+`q*` liegt auf dem LETZTEN Bogen des Kanals, und der Bogen ist nicht getract,
+sondern **angebaut**. Die Spine der Reflex-Kante `x = 0, y = 0`:
+
+    arc0: (0, 0, −4.5000)    → (0, 0, −4.5864)
+    arc1: (0, 0, −4.5864)    → (0, 0, −38.5064)     ← Trace-Ende
+    arc2: (0, 0, −38.5064)   → (−2.2500, 0, −39.1748)   ← ANBAU
+
+Der Anbau kommt von `snap_channel_ends_to_junctions` (§8g). Sein Ziel ist
+`junction_anchor`, und dessen Rückfall für (anti)parallele Tangenten war der
+**Mittelpunkt der beiden Trace-Enden**. Nachgerechnet:
+
+| Grösse | Wert |
+|---|---|
+| eigenes Trace-Ende `E₁` (Kante `x=0, y=0`) | `[0, 0, −38.5064]`, `t̂₁ = +ẑ` |
+| Nachbar-Ende `E₂` (Kante `x=−4.5, y=0`) | `[−4.5, 0, −39.8431]`, `t̂₂ = +ẑ` |
+| `|E₁ − E₂|` | 4.6944 |
+| Fenster `join = max(0.5·δ, 3·step)`, `step = 0.02 · 80` | **4.8** ⇒ gepaart |
+| `t̂₁ · t̂₂` | **1.0** ⇒ parallel ⇒ Rückfall auf `mid` |
+| `mid` | **`[−2.2500, 0, −39.1748]`** — exakt der Bogen-Endpunkt |
+
+Die beiden Kanten sind die **Innen- und die Aussenkante DERSELBEN Platte**, `t`
+mm auseinander, exakt parallel, und sie enden beide an derselben Stirnfläche
+`z = −40`. Sie treffen sich nirgends. Ihr „gemeinsamer Anker" ist der Punkt in
+der Mitte der Platte — `t/2` mm tief im Material. Gemessen über alle Bögen aller
+24 Kanäle: bis **1.126 mm Eindringtiefe** (`t/δ = 2.25`), an JEDEM Kanal, an
+BEIDEN Enden, an allen Schalen-Dicken.
+
+Und weil `set_end_plane_gates` dieselbe Paarung noch einmal fährt, bekamen die
+vier Enden zusätzlich „Voronoi-Bisektoren" zu Nähten, mit denen sie nichts
+teilen: `s₃ = 0.4186` bzw. `0.7800` statt der nötigen `0.5108`.
+
+**Der Fix ist eine Streichung.** Eine Junction ist ein Punkt, in dem sich zwei
+Naht-GERADEN treffen. Parallele Geraden treffen sich nicht — `junction_anchor`
+liefert dort `None` statt eines Ersatzes. Dazu die Beweispflicht, die dem
+gesamten Aufbau zugrunde liegt und die niemand geprüft hatte:
+
+> **Jeder Spine-Punkt liegt auf `∂Ω`.** `junction_of` tastet beide
+> Verlängerungen `E_i → a` ab und verwirft die Junction, sobald ein Punkt tiefer
+> als `gate_eps` im Material liegt — dieselbe Schwelle, mit der
+> `blocking_member` im Trace entscheidet, ob ein Punkt noch auf dem
+> Composite-Rand liegt. Der Snap gehorcht damit exakt der Regel des Traces, den
+> er verlängert.
+
+**Handrechnung nachher**, am selben Punkt. Die Spine endet wieder bei
+`E = [0,0,−38.5064]`; der nächste Naht-Punkt ist `[0, 0, −37.4817]` (gleiches
+`z`, die Kante läuft gerade), also
+
+    de     = √(2.215660² + 1.181181²) = 2.510871
+    de − δ = 0.510871
+    s₃     = ⟨x−E, t̂⟩ = −37.4817 + 38.5064 = 1.0247 > 0      (reine Reichweite)
+    s₄     = (40 − 37.4817) − δ = 0.5183                      (Stirnfläche z = −40)
+    gate   = L − δ = 0.510277
+    w      = min(1.9279, …, s₃, s₄, de−δ, K−de, gate) = 0.510277
+    f      = −w = **−0.510277**
+
+Gemessen: **−0.510277**. Wahr: −0.510844. Rest **0.000567** — das ist exakt der
+`slack` der Stück-Schranke `L` (§8r-Tabelle: `L − exakt = −5.67·10⁻⁴` an jeder
+Schalen-Dicke). Nichts anderes bleibt übrig.
+
+### Die zweite Ursache: der δ-Versatz war eine Distanz-Behauptung ohne Beweis
+
+Der Kamm bleibt nach dem Junction-Fix stehen (0.112 / 0.199 mm) — dort ist die
+§8r-Vermutung richtig, und sie lässt sich schärfer fassen als „zu stumpf".
+
+Die freie End-Ebene hatte seit §8f zwei Rollen (§8l benennt sie):
+
+    Reichweite:  s₃ = ⟨x−E, t̂⟩        — der Term greift nicht über sein Ende hinaus
+    Distanz:     s₃ = ⟨x−E, t̂⟩ − δ    — die Endfläche als Kandidat in w_geo
+
+Die zweite ist eine **Behauptung über `Ω`**: `⟨x−E,t̂⟩` ist nur dann eine obere
+Schranke von `dist(x,∁Ω)`, wenn der Halbraum `H = {⟨x−E,t̂⟩ ≥ 0}` **lokal
+stützend** ist —
+
+    Ω ∩ B(Naht, 2·K)  ⊆  H
+
+— genau die Bedingung, die §8j für JEDE Fremdebene verlangt und die
+`set_face_plane_gates` an den Member-AABBs prüft. Der δ-Versatz hat sie nie
+geprüft. Er nahm an, das Trace-Ende sitze auf einer stützenden Ebene quer zur
+Naht.
+
+**Die geschlossene Form macht sichtbar, dass er beides nicht sein kann.** Sei `F`
+die echte Trägerebene mit `h(x) = ⟨x−F, n̂⟩` und `g = ⟨E−F, t̂⟩ ≥ 0` der
+Trace-Rückstand (der Prädiktor-Korrektor bleibt am `on_composite_boundary`-Gate
+einen Schritt vor der Fläche stehen). Ist `H` stützend, dann ist `n̂ = t̂` und
+
+    s₃^alt = ⟨x−E, t̂⟩ − δ = (h(x) − g) − δ = s₄ − g   ≤ s₄
+
+Der δ-Versatz ist dann **`s₄` minus dem Rückstand** — er kann nichts beitragen,
+was `s₄` nicht schärfer schon hat, und liegt um genau `g` darunter. §8l hat diese
+Identität unwissentlich schon vermessen: am notch `s₃ = −0.238` gegen
+`s₄ = +0.661` bei einem gemessenen Rückstand von 0.9 mm; die Differenz ist
+`0.899`. Ist `H` NICHT stützend, existiert `s₄` gar nicht — und `s₃^alt`
+behauptet Distanz zu einer Fläche, die es nicht gibt. Also:
+
+> **Der δ-Versatz ist entweder redundant oder falsch. Die freie End-Ebene trägt
+> nur noch die Reichweite:** `s₃ = ⟨x−E, t̂⟩`. Die Distanz-Rolle gehört den
+> bewiesenen Stützebenen (`s₄`, §8j) und der Vertex-Kugel (§8g) — beide am
+> ECHTEN Rand verankert statt am Trace-Ende. ∎
+
+**Der Kamm ist der Fall „nicht stützend".** Die Naht Rippen-Flanke `x = −5.5` ∩
+Platten-Stirn `y = 20` endet auf der Rippen-UNTERSEITE `z = −5`; darunter läuft
+die Platte weiter bis `z = −12`. `H = {z ≥ −5}` ist also nicht stützend,
+`set_face_plane_gates` hat die Ebene zu Recht nicht belegt, `at_face` war falsch
+— und der Versatz schaltete den Term im ganzen δ-Band vor dem Ende ab, in dem er
+exakt war.
+
+**Handrechnung**, `x = [−4.585187, 18.072169, −4.084340]`, Kamm 4×2/1:
+
+| Grösse | vorher | nachher |
+|---|---|---|
+| `de` (zur Naht `x=−5.5, y=20`) | 2.133874 | 2.133874 |
+| `de − δ` | 0.133874 | 0.133874 |
+| Trace-Ende `E_z` (Soll −5) | −4.9266 | −4.9266 |
+| `s₃` | `0.8423 − 2 = ` **−1.1577** ⇒ Term AUS | `0.8423` ⇒ Term AN |
+| `w = min(w_geo, L−δ)` | — | 0.133567 |
+| Feld | **+0.072168** (`= d₀`) | **−0.133567** |
+| wahr | −0.133873 | −0.133873 |
+| Rest | 0.206 mm fehlend | **0.000306** = `slack` (§8r: `−3.07·10⁻⁴`) |
+
+Warum §8k/§8l den Versatz trotzdem behalten mussten: damals hatte
+`set_face_plane_gates` ein Loch — der Trägerflächen-Filter warf jede ENDFLÄCHE
+weg (`h_seam > 0` statt `h_max > 0`), und ohne Versatz riss der Randpunkt-Zeuge
+0.868 mm Über-Claim an der äusseren Deckfläche der Ecken-Schale auf. §8l hat das
+Loch geschlossen („0 von 24 Kanälen ohne Fremdebene"). §8s misst nach, dass die
+Rückfall-Ebene seitdem nichts mehr trägt — ausser Material weg.
+
+### Vorher/nachher an allen vier Fund-Fixturen
+
+Gemessen am AUSGELIEFERTEN Feld, an genau den Punkten, die der §8r-Zeuge
+benannt hat (`f` wahr `= δ − exakt`):
+
+| Fixture | Punkt | Feld §8r | Feld §8s | wahr | Rest |
+|---|---|---|---|---|---|
+| Ecken-Schale `t/δ = 2` | `[−1.78, −1.30, −37.78]` | +0.045825 | **−0.203610** | −0.204178 | 0.000567 |
+| Ecken-Schale `t/δ = 2.1` | `[−3.06, −2.02, −37.76]` | (Fund 0.240) | **−0.239434** | −0.240000 | 0.000566 |
+| Ecken-Schale `t/δ = 2.25` | `[−3.36, −2.28, −37.47]` | (Fund 0.499) | **−0.495029** | −0.495596 | 0.000567 |
+| Rippen-Kamm 4×1.5/0.8 | `[3.52, 18.00, −3.56]` | (Fund 0.110) | **−0.112132** | −0.112439 | 0.000307 |
+| Rippen-Kamm 4×2/1 | `[−4.43, 18.01, −3.52]` | (Fund 0.199) | **−0.196281** | −0.196588 | 0.000308 |
+| Ecken-Schale `t/δ = 2.25`, 40³-Worst | `[−2.2157, −1.1812, −37.4817]` | +0.000555 | **−0.510277** | −0.510844 | 0.000567 |
+
+**Der Rest ist überall exakt der `slack` der Stück-Schranke `L`** — 5.67·10⁻⁴ an
+der Schale, 3.07·10⁻⁴ am Kamm, dieselben Zahlen, die §8r für `L − exakt`
+gemessen hat. Es bleibt nichts Geometrisches übrig.
+
+### Der Zeuge und die Über-Seite
+
+| | vorher (§8r) | nachher (§8s) |
+|---|---|---|
+| Unter-Claim-Zeuge, Matrix (9 Fixturen) | 4 sprechen (0.200 / 0.499 / 0.110 / 0.199 mm) | **alle 13 schweigen** |
+| Zwei-Seiten-Scan, alle 13 Fixturen | über `0 / 0.0000` | über **`0 / 0.0000`** (unverändert) |
+| | unter `0 / 0.0000` (Gitter lagen falsch) | unter **`0 / 0.0000`** |
+| Status / `promised_bound` | `ToleranceBounded` / `0.010` | unverändert |
+| Naht-Ende-Gitter 40³ (Schale 2 / 2.1 / 2.25) | Unter-Claims bis 0.511 | **leer** |
+
+Die Über-Seite bewegt sich an keiner Fixture. Das ist kein Zufall und auch nicht
+nur Messung: wo `L` gatet, ist `f ≥ δ − L ≥ δ − dist` ein SATZ (§8p), und `L`
+hat sich nicht geändert. Was sich geändert hat, sind zwei Masken, die dem Term
+Korrektur WEGNAHMEN — beide können nur in Material-Richtung wirken.
+
+### Verifikation
+
+* **Golden**: `cmp` über die ganze Datei — **35 von 35 Szenen byte-identisch**.
+  Das war nicht erwartet und ist ein Befund: keine der 35 Szenen hat eine
+  Konfiguration, in der eine der beiden Masken feuerte. `arc_channel_notch` hat
+  offene Naht-Enden, aber dort ist die Stirnfläche als `s₄` belegt (`at_face`,
+  §8l), der δ-Versatz war also schon vorher aus; `arc_channel_steinmetz` hat
+  eine geschlossene Spine (kein Ende); parallele Naht-Enden im 3·step-Fenster
+  hat keine.
+* **`check_interp`** gegen das NEUE Golden: 35 Szenen, 17920 Checks,
+  `worst_err = 0.000002`, **0 failures**.
+* **Spiegel**: keiner berührt. Die Änderung ist reine SYNTHESE — Opcode-Layout,
+  Payload-Länge und Auswerter-Semantik sind identisch; es ändern sich nur die
+  WERTE, die in `end_planes` geschrieben werden (und an drei Fixturen die
+  Bogenliste).
+* **`just test`**: Fast-Tier **1468** (Baseline 1466, zwei neue Pins) / Web
+  **2082** (unverändert). `cargo test --workspace` **1573** (Baseline 1571).
+* **`OFFSET_FUZZ_ITERS=200 … offset_fuzz`**: 5/5.
+
+### Pins — eine Transformation und zwei Neue
+
+**Pin-Transformation** (deshalb liegt das Paket auf `fix/384-seam-end`):
+
+* `promise_names_the_under_claim_witness_384` — das §8r-Inventar stand auf vier
+  Funden; §8s schliesst sie, das Inventar ist leer. Die alten Zahlen stehen als
+  Tabelle im Doc-Kommentar des Pins (Präzedenz §8p).
+* `junction_anchor_hits_the_true_corner_384` — die letzte Zeile forderte für
+  parallele Tangenten den Mittelpunkt-Rückfall. Genau dieser Rückfall IST der
+  Fund. Sie fordert jetzt `None`, für parallele wie antiparallele Tangenten.
+
+**Neu:**
+
+* `seam_end_fix_is_load_bearing_384` — die **Rückdreh-Gegenprobe**, beide
+  Hälften. (1) Sie rechnet den alten Mittelpunkt-Anker der Ecken-Schale nach und
+  misst seine Eindringtiefe: > 0.9 mm (gemessen 1.126). (2) Sie nimmt das
+  AUSGELIEFERTE Kamm-Feld, schiebt jede freie End-Ebene wieder um `δ` nach innen
+  — bit-genau die gestrichene Operation — und lässt den PRODUKTIONS-Zeugen
+  darüber laufen: **0.2268 mm bewiesen fehlendes Material** bei
+  `[−4.4808, 18.0005, −4.0054]`, jeder Fund gegen die exakte Referenz
+  gegengeprüft. Am ausgelieferten Feld schweigt derselbe Zeuge (0 Funde).
+* `every_seam_point_lies_on_the_boundary_384` — die **Invariante als Pin**:
+  jeder Bogen jedes Kanals wird abgetastet, die Eindringtiefe im naiven
+  Vereinigungsfeld muss unter `fit_tol + f32` bleiben. 5082 Naht-Punkte über
+  neun Fixturen. Dieser Pin wäre §8g–§8r durchgefallen; er ist das Netz, das den
+  Fund beim nächsten Mal am Tag seiner Entstehung fängt.
+
+### Was OFFEN bleibt
+
+* **Der Zeuge bleibt eine Stichprobe.** 240 Richtungen × 10 Radien je Station;
+  sein Schweigen ist kein Beweis, und die Zusage sagt das wörtlich. Die
+  Unter-Seiten-Ausnahme bleibt deshalb stehen — jetzt allerdings ohne einen
+  einzigen bekannten Verstoss.
+* **Die Intervall-Stufe** — unverändert §8r: Zweig 1 (`U(c) + ρ ≤ δ + tol`) ist
+  baubar, Zweig 2 braucht eine Intervall-Auswertung des korrigierten Feldes.
+* **Der Trace-Rückstand `g` selbst.** Die freie End-Ebene sitzt weiter am
+  Trace-Ende, nicht an der echten Fläche; als reine Reichweiten-Grenze kostet
+  das nur dort etwas, wo weder `s₄` noch eine Vertex-Kugel greift. Gemessen ist
+  das an keiner der dreizehn Fixturen mehr der Fall.
+* **Der konvexe Zweig** (Dilations-Stopp) bekommt weiterhin keine
+  Stützebenen-Kandidaten (§8j) — dort ist die freie End-Ebene ab §8s ebenfalls
+  ohne δ-Versatz, und die Fixturen (Tasche, Prisma-Dilation) bleiben
+  unverändert.
+* **Member-Formen jenseits Box/Zylinder/konvexem Geraden-Extrude**, **spitze
+  Nähte**, **die latente `safe_sqrt`-Entartung**: unverändert
+  §8j/§8m/§8n/§8q/§8r.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -3839,6 +4109,23 @@ die Teilstrings, an denen sie hängen (`FEHLENDES Material`, `Stück-Schranke L`
   Fixturen), `probe_384_p8p_control` (Kontroll-Äquivalenz),
   `probe_384_lb_refusal` (Member-Formen eines Stopps) samt dem
   modus-fähigen Auswerter `eval_p8p`/`p8p_gate`/`eval_term`.
+- Produktionscode §8s: `offset_channel.rs` — `junction_anchor` (liefert jetzt
+  `Option`, der Mittelpunkt-Rückfall für (anti)parallele und windschiefe
+  Tangenten ist gestrichen), `on_union_boundary` + `junction_of` +
+  `JUNCTION_SAMPLES` (neu: die Beweispflicht „die Geraden treffen sich UND die
+  Verlängerung bleibt auf `∂Ω`"), `snap_channel_ends_to_junctions` und
+  `set_end_plane_gates` (beide bekommen `members`/`union_form`/`gate_eps` und
+  benutzen `junction_of`; die freie End-Ebene verliert den δ-Versatz, und mit
+  ihm fallen `at_vertex`/`at_face` und der `verts`-Parameter).
+  **Kein Auswerter, kein Opcode, kein Payload-Wort, kein Spiegel** — Golden
+  35/35 byte-identisch, `check_interp` 35 Szenen / 0 failures.
+- Pins §8s: `seam_end_fix_is_load_bearing_384` (Rückdreh-Gegenprobe, beide
+  Hälften) und `every_seam_point_lies_on_the_boundary_384` (die Invariante
+  „jeder Naht-Punkt liegt auf `∂Ω`" als Pin) in `offset_capability_tests.rs`;
+  transformiert: `promise_names_the_under_claim_witness_384` (Inventar jetzt
+  leer, §8r-Zahlen als Historie im Doc-Kommentar) und
+  `junction_anchor_hits_the_true_corner_384` in `offset_channel_tests.rs`
+  (parallele Tangenten ⇒ `None` statt Mittelpunkt).
 
 ## 10. Verweise
 

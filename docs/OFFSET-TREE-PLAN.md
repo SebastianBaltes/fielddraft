@@ -1041,6 +1041,39 @@ für Shell.
   Herleitung, Handrechnungen, Abdeckungs- und Fund-Tabellen:
   `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8r.
 
+* **#384 §8s — das freie Naht-Ende ist zu; der Fund zerfiel in ZWEI Ursachen
+  (v0.56.17, 2026-08-02).** §8r hatte den Rest der um `δ` verschobenen freien
+  End-Ebene zugeschrieben. Term für Term nachgerechnet stimmt das nur für die
+  Rippen-Kämme; die grössere Hälfte (die Ecken-Schale, 0.511 mm im 40³-Gitter am
+  Naht-Ende) ist eine **Junction, die keine ist**. `junction_anchor` fiel für
+  (anti)parallele Tangenten auf den MITTELPUNKT der beiden Trace-Enden zurück,
+  und `snap_channel_ends_to_junctions` verlängerte die Spine dorthin. An der
+  Schale enden Innen- und Aussenkante DERSELBEN Platte parallel an derselben
+  Stirnfläche, `4.69 mm` auseinander im `3·step = 4.8 mm`-Fenster — der
+  „gemeinsame Anker" liegt `t/2` mm TIEF IM MATERIAL (gemessen bis 1.126 mm
+  Eindringtiefe an jedem der 24 Kanäle). Damit fiel die Voraussetzung von
+  `channel_limit` (§8j: „jeder Naht-Punkt liegt auf `∂Ω`, also `dist ≤ de`"),
+  und die Klemme hob das Feld von `d₀ = −0.2157` auf `+0.0006` — der Stopp
+  machte den Punkt SCHLECHTER als das naive Feld. Fix: parallele Geraden
+  treffen sich nicht (`junction_anchor → None`, der Rückfall ist gestrichen),
+  und jede Verlängerung muss nachweislich auf `∂Ω` bleiben (`junction_of`, mit
+  der `gate_eps`-Schwelle des Traces). Zweite Ursache, sauber hergeleitet: der
+  δ-Versatz der freien End-Ebene ist eine DISTANZ-Behauptung und braucht den
+  §8j-Stützebenen-Beweis. Mit dem Trace-Rückstand `g` gilt `s₃^alt = s₄ − g`,
+  wo die Ebene stützt (also redundant und um `g` zu streng — am notch
+  gemessen 0.899 mm), und `s₄` existiert gar nicht, wo sie es nicht tut (am
+  Kamm endet die Naht auf der Rippen-Unterseite, unter der die Platte
+  weiterläuft). Also: **die freie End-Ebene trägt nur noch die Reichweite,
+  `s₃ = ⟨x−E,t̂⟩`;** die Distanz-Rolle gehört `s₄` (§8j) und der Vertex-Kugel
+  (§8g), beide am ECHTEN Rand verankert. Ergebnis: der Unter-Claim-Zeuge
+  schweigt an allen dreizehn Fixturen, die Über-Seite bleibt überall
+  `0 / 0.0000`, und an jedem §8r-Fundpunkt ist der Rest exakt der `slack` von
+  `L` (5.67·10⁻⁴ Schale, 3.07·10⁻⁴ Kamm). Golden 35/35 byte-identisch (keine
+  der Szenen hat parallel endende Nähte oder eine freie End-Ebene ohne `s₄`),
+  `check_interp` 0 failures, kein Spiegel berührt.
+  Herleitung, Handrechnungen und Vorher/Nachher-Tabelle:
+  `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8s.
+
 ## 10. Verweise
 
 * SYNTHESIS.md: §1 (Fehler-Taxonomie), §5 (2×2-Pushdown-Messung,

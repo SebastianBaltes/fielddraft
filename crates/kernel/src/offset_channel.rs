@@ -175,9 +175,11 @@ pub struct OffsetChannel {
     /// schneiden nur QUER dazu.
     ///
     /// Welche Ebene je Ende gilt, entscheidet [`set_end_plane_gates`]
-    /// strukturell: die um `δ` nach innen geschobene **Endebene**, wenn die
-    /// Naht an fremder Fläche endet, sonst der **Voronoi-Bisektor** zur
-    /// anschließenden Nachbar-Naht.
+    /// strukturell: der **Voronoi-Bisektor** zur anschließenden Nachbar-Naht,
+    /// wenn sich die beiden Nähte nachweislich TREFFEN ([`junction_of`]),
+    /// sonst die freie **Endebene** `⟨x−E,t̂⟩ ≥ 0`. Letztere trägt seit §8s
+    /// KEINEN δ-Versatz mehr: sie begrenzt die Reichweite, die Distanz-Rolle
+    /// gehört den bewiesenen Stützebenen in [`Self::face_planes`].
     ///
     /// Geschlossene Spines haben kein Ende: dort steht der Sentinel
     /// `[0,0,0,−1e30]` ⇒ `s₃ = 1e30` ⇒ feldwert-neutral.
@@ -1460,7 +1462,7 @@ pub fn arc_point_at(arc: &ChannelArc, t: f32) -> [f32; 3] {
 
 /// Tangenten-Einheitsvektor eines Bogens/Segments bei `t ∈ {0,1}`, in
 /// Kurvenrichtung (Start → Ende).
-fn arc_tangent_at(arc: &ChannelArc, t: f32) -> Option<[f32; 3]> {
+pub(crate) fn arc_tangent_at(arc: &ChannelArc, t: f32) -> Option<[f32; 3]> {
     let v = if arc.sweep < 0.0 {
         arc.u
     } else {
@@ -1870,10 +1872,23 @@ fn end_region_violation(
 ///   obwohl er dort exakt ist (gemessen: Taschen-Restfehler 0.395 mm statt
 ///   0.000 mm).
 ///
-/// Der Diskriminator ist damit rein strukturell: endet die Spine eines
-/// ANDEREN Kanals desselben Stopps im selben Punkt, gilt der Bisektor
-/// (bis zu zwei Nachbarn je Ende — an einer Triple-Junction sind es genau
-/// zwei); sonst die um δ verschobene Endebene.
+/// Der Diskriminator ist damit rein strukturell: TREFFEN sich die Spine eines
+/// ANDEREN Kanals desselben Stopps und die eigene in einem Punkt, gilt der
+/// Bisektor (bis zu zwei Nachbarn je Ende — an einer Triple-Junction sind es
+/// genau zwei); sonst die freie End-Ebene.
+///
+/// #384 §8s korrigiert beide Hälften dieses Satzes:
+///
+/// * „im selben Punkt enden" ist nicht dasselbe wie „sich treffen".
+///   [`junction_of`] verlangt jetzt den Beweis (die Naht-Geraden schneiden
+///   sich, und die Verlängerung bleibt auf `∂Ω`) — an der Ecken-Schale
+///   endeten VIER paarweise PARALLELE Reflex-Kanten an derselben Stirnfläche
+///   und bekamen einen „Bisektor", der keiner ist.
+/// * Die freie End-Ebene trägt nur noch die REICHWEITE, ohne δ-Versatz. Der
+///   Versatz war eine Distanz-Behauptung ohne Stützebenen-Beweis; wo die
+///   Ebene wirklich stützt, hat `set_face_plane_gates` sie als `s₄` (schärfer,
+///   am echten Rand verankert), und wo sie es nicht tut, kostete er `δ`
+///   Korrektur (Rippen-Kamm: 0.110 / 0.199 mm bewiesen fehlendes Material).
 ///
 /// Das ersetzt die §8e-Kappe (ein terminales Bogenstück, dessen zweites
 /// Kegel-Gate auf `∓t̂` gedreht wurde): die war ein reiner Halbraum an der
@@ -1883,7 +1898,13 @@ fn end_region_violation(
 /// Geschlossene Spines (Steinmetz) haben kein Ende: alle vier Halbräume
 /// bleiben der neutrale Sentinel, das Feld ist wertidentisch zu einem
 /// Kanal ohne drittes Gate.
-fn set_end_plane_gates(channels: &mut [OffsetChannel], steps: &[f32], verts: &[VertexSphere]) {
+fn set_end_plane_gates(
+    channels: &mut [OffsetChannel],
+    steps: &[f32],
+    members: &[Member],
+    union_form: bool,
+    gate_eps: f32,
+) {
     // Alle offenen Spine-Enden des Stopps mit ihrer Innen-Tangente sammeln.
     let mut ends: Vec<(usize, [f32; 3], [f32; 3])> = Vec::new();
     for (ci, ch) in channels.iter().enumerate() {
@@ -1928,7 +1949,6 @@ fn set_end_plane_gates(channels: &mut [OffsetChannel], steps: &[f32], verts: &[V
         .collect();
     let mut slot = vec![0usize; channels.len()];
     for (k, (ci, e, t)) in ends.iter().enumerate() {
-        let ch_delta = channels[*ci].delta;
         let mut planes: Vec<[f32; 4]> = Vec::new();
         for (m, (cj, e2, t2)) in ends.iter().enumerate() {
             if m == k || cj == ci || norm(sub(*e, *e2)) > join_of[*ci].max(join_of[*cj]) {
@@ -1940,69 +1960,70 @@ fn set_end_plane_gates(channels: &mut [OffsetChannel], steps: &[f32], verts: &[V
             if l < 1e-3 {
                 continue; // gleiche Richtung — kein trennender Bisektor
             }
+            // #384 §8s — **erst die Junction, dann der Bisektor.** Dieselbe
+            // Beweispflicht wie beim Snap ([`junction_of`]): treffen sich die
+            // beiden Naht-Geraden nicht, ist das kein Eckpunkt, sondern zwei
+            // Nähte, die zufällig nebeneinander enden. Die Ecken-Schale hat
+            // davon vier Paare je Stirnfläche, und ihr „Bisektor" schnitt dem
+            // Term genau die Korrektur weg, die er am freien Ende braucht.
+            let Some(a) = junction_of(*e, *t, *e2, *t2, members, union_form, gate_eps) else {
+                continue;
+            };
             let n = [n[0] / l, n[1] / l, n[2] / l];
-            planes.push({
-                let a = junction_anchor(*e, *t, *e2, *t2);
-                [n[0], n[1], n[2], dot(a, n)]
-            });
+            planes.push([n[0], n[1], n[2], dot(a, n)]);
         }
         if planes.len() > 2 {
             planes.clear(); // mehr als eine Triple-Junction — konservativ
         }
         if planes.is_empty() {
-            // Kein Nachbar-Kanal: die Naht endet an fremder Geometrie. Diese
-            // Ebene hat ZWEI Rollen, und #384 §8l trennt sie:
+            // Kein Nachbar-Kanal: die Naht endet an fremder Geometrie.
             //
-            // * **Reichweite** — der Term darf nicht über sein eigenes Naht-Ende
-            //   hinausgreifen. Das leistet die reine Ebene `⟨x−E,t̂⟩ ≥ 0`.
+            // #384 §8s — **die freie End-Ebene ist eine REICHWEITEN-Grenze und
+            // sonst nichts.** §8l hatte ihr zwei Rollen zugeschrieben:
+            //
+            // * **Reichweite** — der Term darf nicht über sein eigenes
+            //   Naht-Ende hinausgreifen. Das leistet die reine Ebene
+            //   `⟨x−E,t̂⟩ ≥ 0`, und sie ist gemessen unverzichtbar (ohne sie
+            //   fällt `open_channel_ends_carry_the_third_gate_384`).
             // * **Distanz** — der δ-Versatz nimmt die Endfläche als weiteren
-            //   Kandidaten ins `w_geo`-Minimum auf (`min(de, h) − δ`, §8f: „am
-            //   notch zwingend").
+            //   Kandidaten ins `w_geo`-Minimum auf (`min(de, h) − δ`).
             //
-            // Der δ-Versatz ist zugleich die Quelle eines UNTER-Claims: er
-            // schaltet den Term im ganzen δ-Band vor dem Ende ab, obwohl er
-            // dort exakt wäre — und er sitzt am TRACE-Ende, das typisch einen
-            // Schritt vor der echten Fläche stehenbleibt (am notch 0.9 mm:
-            // `s₃ = −0.238`, während die echte Deckfläche `s₄ = +0.661` = der
-            // exakte Wert liefert).
+            // Die zweite Rolle ist eine BEHAUPTUNG ÜBER `Ω`: `⟨x−E,t̂⟩` ist nur
+            // dann eine obere Schranke von `dist(x,∁Ω)`, wenn die Ebene lokal
+            // STÜTZEND ist (`Ω ∩ B ⊆ {⟨x−E,t̂⟩ ≥ 0}`, der §8j-Satz). Für diese
+            // Behauptung hatte der δ-Versatz nie einen Beweis — er nahm an, das
+            // Trace-Ende sitze auf einer stützenden Ebene quer zur Naht.
             //
-            // Deshalb fällt der Versatz GENAU DANN, wenn die Distanz-Rolle
-            // nachweislich eine andere Instanz trägt — und nur dann:
+            // Beide Fälle sind ohne ihn versorgt, und zwar SCHÄRFER:
             //
-            // 1. Das Ende sitzt auf dem Anker einer **Vertex-Kugel**
-            //    ([`snap_channel_ends_to_vertices`] hat es dorthin gesnappt).
-            //    Jenseits der Ebene `⟨x−v,t̂⟩ = 0` ist `q* = v`, dort übernimmt
-            //    die Kugel mit ihrem ENGEREN Trieder-Kegel; der Kanal (zwei
-            //    Gates statt drei) würde über sie hinaus behaupten. Die reine
-            //    Ebene ist genau die Übergabestelle — beide Terme haben dort
-            //    denselben Wert.
-            // 2. Eine **stützende Fremdebene quer am Ende** ist belegt
-            //    ([`set_face_plane_gates`], Normale ≈ Innen-Tangente, Ebene
-            //    innerhalb der Junction-Toleranz am Ende). Dann ist
-            //    `s₄ = h − δ` derselbe Ausdruck, nur am ECHTEN Rand verankert
-            //    statt am Trace-Ende — strikt schärfer und nie unter der
-            //    Wahrheit (§8j-Satz).
+            // * Ist die Ebene stützend, dann ist sie ein planarer Carrier eines
+            //   Members, und [`set_face_plane_gates`] hat sie als `s₄` — am
+            //   ECHTEN Rand verankert statt am Trace-Ende, das typisch einen
+            //   Schritt davor stehenbleibt (am notch 0.9 mm: `s₃ = −0.238`,
+            //   während `s₄ = +0.661` den exakten Wert liefert). Genau dieselbe
+            //   Rolle trägt jenseits eines gesnappten Endes die Vertex-Kugel
+            //   (§8g) mit ihrem engeren Trieder-Kegel.
+            // * Ist sie NICHT stützend, dann geht `Ω` über sie hinaus, und der
+            //   δ-Versatz behauptet Distanz zu einer Fläche, die es nicht gibt.
+            //   Er kostet dann exakt `δ` Korrektur im Band vor dem Ende.
             //
-            // Trägt die Distanz-Rolle niemand, bleibt der δ-Versatz stehen:
-            // ein Über-Claim wäre schlimmer als der Sliver. Genau das war der
-            // §8k-Befund, der die pauschalen Varianten (b)/(c) verwarf — der
-            // Randpunkt-Zeuge fand 0.868 mm Über-Claim an der äusseren
-            // Deckfläche der Ecken-Schale, weil `set_face_plane_gates` dort
-            // keine Ebene belegt hatte. Seit §8l belegt es sie (Endflächen
-            // fallen nicht mehr durch den Trägerflächen-Filter), und der
-            // Zeuge schweigt.
-            let snap_r = (3.0 * steps.get(*ci).copied().unwrap_or(0.0)).max(1e-3);
-            let at_vertex = verts.iter().any(|vs| norm(sub(vs.v, *e)) <= snap_r);
-            let eps = 1e-3 * ch_delta;
-            let at_face = channels[*ci].face_planes.iter().any(|g| {
-                let n = [g[0], g[1], g[2]];
-                // `g[3] = c₀ + δ`; `h(E) = ⟨E,n̂⟩ − c₀` ist der Abstand des
-                // Nahtendes von der Fremdebene.
-                let h_e = dot(*e, n) - (g[3] - ch_delta);
-                norm(n) > 0.5 && dot(n, *t) > 0.99 && h_e >= -eps && h_e <= join_of[*ci]
-            });
-            let off = if at_vertex || at_face { 0.0 } else { ch_delta };
-            planes.push([t[0], t[1], t[2], dot(*e, *t) + off]);
+            // Der zweite Fall ist der §8s-Fund am Rippen-Kamm: die Naht
+            // Rippen-Flanke ∩ Platten-Stirn endet auf der Rippen-UNTERSEITE
+            // `z = −embed`, unter der die Platte weiterläuft (bis `z = −plate`).
+            // Die Ebene ist dort nicht stützend, `set_face_plane_gates` hat sie
+            // zu Recht nicht belegt — und der Versatz schaltete den Term im
+            // ganzen δ-Band ab, in dem er exakt war. Bewiesen fehlendes
+            // Material: 0.110 mm (4×1.5/0.8) und 0.199 mm (4×2/1).
+            //
+            // Warum §8k/§8l den Versatz trotzdem behalten mussten: damals hatte
+            // `set_face_plane_gates` ein Loch (der Trägerflächen-Filter warf
+            // jede ENDFLÄCHE weg), und ohne Versatz riss der Randpunkt-Zeuge
+            // 0.868 mm Über-Claim an der äusseren Deckfläche der Ecken-Schale
+            // auf. §8l hat das Loch geschlossen (0 von 24 Kanälen ohne
+            // Fremdebene); §8s misst nach, dass die Rückfall-Ebene seitdem
+            // nichts mehr trägt — ausser Material weg. Über-Seite an allen
+            // dreizehn Fixturen unverändert 0 / 0.0000.
+            planes.push([t[0], t[1], t[2], dot(*e, *t)]);
         }
         for pl in planes {
             let s = &mut slot[*ci];
@@ -2227,33 +2248,116 @@ fn set_face_plane_gates(
 /// Suchradius entfernt liegt — fällt die Berechnung auf den Mittelpunkt
 /// zurück; beide Nachbarn rechnen dabei denselben Ausdruck mit vertauschten
 /// Rollen, die Ebene bleibt also für beide Seiten identisch.
-fn junction_anchor(e1: [f32; 3], t1: [f32; 3], e2: [f32; 3], t2: [f32; 3]) -> [f32; 3] {
-    let mid = [
-        0.5 * (e1[0] + e2[0]),
-        0.5 * (e1[1] + e2[1]),
-        0.5 * (e1[2] + e2[2]),
-    ];
+/// #384 §8s — **der Mittelpunkt-Rückfall ist gestrichen: parallele Geraden
+/// treffen sich nicht.**
+///
+/// §8g hielt für (anti)parallele oder windschiefe Tangenten den Mittelpunkt
+/// der beiden Trace-Enden als Ersatz-Anker bereit, mit dem Argument, beide
+/// Nachbarn rechneten denselben Ausdruck. Das stimmt — nur ist der Ausdruck
+/// dann kein Eckpunkt mehr. An der Ecken-Schale sind die beiden Reflex-Kanten
+/// `x = 0, y = 0` und `x = −t, y = 0` PARALLEL, `t` mm auseinander, und beide
+/// enden an derselben Stirnfläche `z = −l`. Der Mittelpunkt liegt genau in der
+/// Mitte der Platte — `t/2` mm TIEF IM MATERIAL. Dorthin verlängert, verlässt
+/// die Spine `∂Ω`, und mit ihr fällt die Voraussetzung von
+/// [`channel_limit`] („jeder Naht-Punkt liegt auf `∂Ω`", §8j). Gemessen:
+/// bis 1.126 mm Eindringtiefe und daraus 0.511 mm bewiesen fehlendes Material
+/// (§8s).
+///
+/// Eine Junction ist ein Punkt, in dem sich zwei Naht-GERADEN treffen.
+/// Treffen sie sich nicht, gibt es keine — `None`.
+pub(crate) fn junction_anchor(
+    e1: [f32; 3],
+    t1: [f32; 3],
+    e2: [f32; 3],
+    t2: [f32; 3],
+) -> Option<[f32; 3]> {
     let d1 = [-t1[0], -t1[1], -t1[2]];
     let d2 = [-t2[0], -t2[1], -t2[2]];
     let b = dot(d1, d2);
     let den = 1.0 - b * b;
     if den.abs() < 1e-6 {
-        return mid; // (anti)parallel — kein eindeutiger Schnitt
+        return None; // (anti)parallel — kein Schnitt, also keine Junction
     }
     let w0 = sub(e1, e2);
     let dd = dot(d1, w0);
     let ee = dot(d2, w0);
     let s = (b * ee - dd) / den;
     let u = (ee - b * dd) / den;
+    let q1 = [e1[0] + d1[0] * s, e1[1] + d1[1] * s, e1[2] + d1[2] * s];
+    let q2 = [e2[0] + d2[0] * u, e2[1] + d2[1] * u, e2[2] + d2[2] * u];
     let p = [
-        0.5 * ((e1[0] + d1[0] * s) + (e2[0] + d2[0] * u)),
-        0.5 * ((e1[1] + d1[1] * s) + (e2[1] + d2[1] * u)),
-        0.5 * ((e1[2] + d1[2] * s) + (e2[2] + d2[2] * u)),
+        0.5 * (q1[0] + q2[0]),
+        0.5 * (q1[1] + q2[1]),
+        0.5 * (q1[2] + q2[2]),
+    ];
+    let mid = [
+        0.5 * (e1[0] + e2[0]),
+        0.5 * (e1[1] + e2[1]),
+        0.5 * (e1[2] + e2[2]),
     ];
     if !p.iter().all(|c| c.is_finite()) || norm(sub(p, mid)) > 2.0 * norm(sub(e1, e2)) + 1e-3 {
-        return mid; // Lösung außerhalb des Suchfensters — konservativ
+        return None; // Lösung außerhalb des Suchfensters — konservativ
     }
-    p
+    Some(p)
+}
+
+/// #384 §8s — **liegt `p` auf `∂Ω`?** Das naive Feld des Stopps ist
+/// `min_k value_k` (Union-Form) bzw. `max_k value_k` (Schnitt-Form); auf dem
+/// Rand ist es null. Dieselbe Schwelle `gate_eps`, mit der
+/// [`blocking_member`] entscheidet, ob ein Punkt noch auf dem
+/// Composite-Rand liegt — der Snap gehorcht damit exakt der Regel des
+/// Traces, den er verlängert.
+fn on_union_boundary(members: &[Member], p: [f32; 3], union_form: bool, eps: f32) -> bool {
+    let mut u = if union_form { f32::INFINITY } else { f32::NEG_INFINITY };
+    for m in members {
+        let v = m.value(p);
+        if !v.is_finite() {
+            return false;
+        }
+        u = if union_form { u.min(v) } else { u.max(v) };
+    }
+    u.is_finite() && u.abs() <= eps
+}
+
+/// Stützstellen je Verlängerungs-Segment im [`junction_of`]-Randtest.
+const JUNCTION_SAMPLES: usize = 4;
+
+/// #384 §8s — **die Junction zweier Naht-Enden, mit Beweispflicht.**
+///
+/// Zwei Bedingungen, beide strukturell, beide symmetrisch in den Rollen der
+/// zwei Enden (sonst bekäme die Bisektor-Zerlegung ein Loch — §8f):
+///
+/// 1. Die beiden Naht-GERADEN treffen sich ([`junction_anchor`]).
+/// 2. Beide Verlängerungen `e_i → a` liegen ganz auf `∂Ω`. Das ist die
+///    Invariante, auf der ALLES weiter unten ruht: `channel_nearest` liefert
+///    `de` als obere Schranke von `dist(x,∁Ω)`, und [`channel_limit`] macht
+///    daraus die untere Feld-Schranke `δ − de`. Ein Spine-Punkt der Tiefe `u`
+///    im Material hebt das Feld um bis zu `u` über die Wahrheit — genau der
+///    §8s-Fund.
+fn junction_of(
+    e1: [f32; 3],
+    t1: [f32; 3],
+    e2: [f32; 3],
+    t2: [f32; 3],
+    members: &[Member],
+    union_form: bool,
+    eps: f32,
+) -> Option<[f32; 3]> {
+    let a = junction_anchor(e1, t1, e2, t2)?;
+    for e in [e1, e2] {
+        for k in 1..=JUNCTION_SAMPLES {
+            let s = k as f32 / JUNCTION_SAMPLES as f32;
+            let q = [
+                e[0] + (a[0] - e[0]) * s,
+                e[1] + (a[1] - e[1]) * s,
+                e[2] + (a[2] - e[2]) * s,
+            ];
+            if !on_union_boundary(members, q, union_form, eps) {
+                return None;
+            }
+        }
+    }
+    Some(a)
 }
 
 /// #384 §8g — **Spine-Snapping an die Kanal↔Kanal-Junction.** Spiegel von
@@ -2271,7 +2375,13 @@ fn junction_anchor(e1: [f32; 3], t1: [f32; 3], e2: [f32; 3], t2: [f32; 3]) -> [f
 /// werden dabei konstant fortgeschrieben (wie beim Vertex-Snap). Danach
 /// treffen sich die Spine-Enden EXAKT, und der Bisektor aus
 /// [`set_end_plane_gates`] sitzt ohne Restversatz.
-fn snap_channel_ends_to_junctions(channels: &mut [OffsetChannel], steps: &[f32]) {
+fn snap_channel_ends_to_junctions(
+    channels: &mut [OffsetChannel],
+    steps: &[f32],
+    members: &[Member],
+    union_form: bool,
+    gate_eps: f32,
+) {
     // (Kanal, at_start, Endpunkt, Innen-Tangente)
     let mut ends: Vec<(usize, bool, [f32; 3], [f32; 3])> = Vec::new();
     for (ci, ch) in channels.iter().enumerate() {
@@ -2309,8 +2419,12 @@ fn snap_channel_ends_to_junctions(channels: &mut [OffsetChannel], steps: &[f32])
             if d > join_of[ci].max(join_of[cj]) {
                 continue;
             }
+            let Some(a) = junction_of(e, t, e2, t2, members, union_form, gate_eps) else {
+                continue; // keine Junction — die Geraden treffen sich nicht, oder
+                          // die Verlängerung verließe `∂Ω` (§8s)
+            };
             if best.map_or(true, |(bd, _)| d < bd) {
-                best = Some((d, junction_anchor(e, t, e2, t2)));
+                best = Some((d, a));
             }
         }
         if let Some((_, a)) = best {
@@ -5235,7 +5349,9 @@ fn synthesize_stop(
                                     &mut channels, &members, &branch_maps, &branch_lists,
                                     union_form, gate_eps,
                                 );
-                                set_end_plane_gates(&mut channels, &chan_step, &verts);
+                                set_end_plane_gates(
+                                    &mut channels, &chan_step, &members, union_form, gate_eps,
+                                );
                                 let lb =
                                     stop_lb_block(inner, &prisms, &channels, &verts, delta);
                                 let audit = audit_channel_end_caps(
@@ -5437,12 +5553,16 @@ fn synthesize_stop(
                                         &mut channels, &chan_ends, &verts, &members, union_form,
                                         gate_eps,
                                     );
-                                    snap_channel_ends_to_junctions(&mut channels, &chan_step);
+                                    snap_channel_ends_to_junctions(
+                                        &mut channels, &chan_step, &members, union_form, gate_eps,
+                                    );
                                     set_face_plane_gates(
                                         &mut channels, &members, &branch_maps, &branch_lists,
                                         union_form, gate_eps,
                                     );
-                                    set_end_plane_gates(&mut channels, &chan_step, &verts);
+                                    set_end_plane_gates(
+                                        &mut channels, &chan_step, &members, union_form, gate_eps,
+                                    );
                                     let lb =
                                         stop_lb_block(inner, &prisms, &channels, &verts, delta);
                                     let audit = audit_channel_end_caps(
@@ -5498,9 +5618,9 @@ fn synthesize_stop(
     snap_channel_ends_to_vertices(
         &mut channels, &chan_ends, &verts, &members, union_form, gate_eps,
     );
-    snap_channel_ends_to_junctions(&mut channels, &chan_step);
+    snap_channel_ends_to_junctions(&mut channels, &chan_step, &members, union_form, gate_eps);
     set_face_plane_gates(&mut channels, &members, &branch_maps, &branch_lists, union_form, gate_eps);
-    set_end_plane_gates(&mut channels, &chan_step, &verts);
+    set_end_plane_gates(&mut channels, &chan_step, &members, union_form, gate_eps);
     let lb = stop_lb_block(inner, &prisms, &channels, &verts, delta);
     let audit =
         audit_channel_end_caps(&channels, &verts, inner, &prisms, lb.as_ref(), delta, tol, report);

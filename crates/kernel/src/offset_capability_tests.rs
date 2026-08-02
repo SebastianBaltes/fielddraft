@@ -6774,33 +6774,46 @@ fn under_certificate_covers_the_risk_set_384() {
     assert_eq!(checked, 4, "nur {checked} Fixtures geprüft");
 }
 
-/// **§8r-Zusagen-Pin: die Unter-Seiten-Ausnahme benennt ihren Zeugen — und der
-/// hat an vier von neun Fixturen etwas gefunden.**
+/// **§8r/§8s-Zusagen-Pin: die Unter-Seiten-Ausnahme benennt ihren Zeugen — und
+/// der schweigt jetzt an allen neun Fixturen.**
 ///
 /// Bis §8q lautete die Ausnahme „für diese Richtung ist keine Schranke
 /// belegbar" und damit basta: niemand hatte je hingesehen, und die Begründung
-/// stützte sich auf zwölf leere Messgitter. §8r sieht hin — mit einem Zeugen,
-/// dessen Fund ein BEWEIS ist (`L > δ + tol` bei stehendem Feld) — und findet
-/// an vier der neun Matrix-Fixturen echtes fehlendes Material. Nicht weil sich
-/// das Feld bewegt hätte, sondern weil die Gitter der §8k-Reihe um die
-/// interessante Ecke herumlagen und das freie NAHT-ENDE nie abtasteten.
+/// stützte sich auf zwölf leere Messgitter. §8r sah hin — mit einem Zeugen,
+/// dessen Fund ein BEWEIS ist (`L > δ + tol` bei stehendem Feld) — und fand an
+/// vier der neun Matrix-Fixturen echtes fehlendes Material, alles am freien
+/// NAHT-ENDE:
 ///
-/// Der Pin nagelt das Inventar fest. Bewegt sich eine Zeile, ist entweder der
-/// Naht-Ende-Rest gefallen (dann gehört die Zeile gestrichen und §8r
-/// fortgeschrieben) oder ein neuer aufgemacht.
+/// | Fixture | §8r (Fund) | §8s (nachher) |
+/// |---|---|---|
+/// | Ecken-Schale `t/δ = 2` | 0.200 mm | — |
+/// | Ecken-Schale `t/δ = 2.25` | 0.499 mm | — |
+/// | Rippen-Kamm 4×1.5/0.8 | 0.110 mm | — |
+/// | Rippen-Kamm 4×2/1 | 0.199 mm | — |
+///
+/// §8s hat die zwei Ursachen geschlossen (Phantom-Junction zwischen parallelen
+/// Naht-Enden; δ-Versatz der freien End-Ebene ohne Stützebenen-Beweis). Das
+/// Inventar ist damit leer — und genau das nagelt dieser Pin jetzt fest.
+///
+/// **Ein leeres Inventar ist von einem kaputten Zeugen nicht zu unterscheiden.**
+/// Deshalb steht daneben `seam_end_fix_is_load_bearing_384`: es dreht beide
+/// Hälften des Fixes künstlich zurück und weist die alten Funde wieder nach.
 #[test]
 fn promise_names_the_under_claim_witness_384() {
     let delta = 2.0f32;
     let tol_class = CHANNEL_TOL_RENDER as f64 + 1e-9;
     // Fixture → nachgewiesenes FEHLENDES Material (`None` = der Zeuge schweigt).
+    // §8s: alle neun leer. Die §8r-Funde (0.200 / 0.499 / 0.110 / 0.199 mm)
+    // stehen als Historie im Doc-Kommentar; die Rückdreh-Gegenprobe
+    // `seam_end_fix_is_load_bearing_384` weist sie wieder nach.
     let inventory: &[(&str, Option<f64>)] = &[
         ("Stufen-Nabe", None),
-        ("Ecken-Schale t/δ=2", Some(0.200)),
-        ("Ecken-Schale t/δ=2.25", Some(0.499)),
+        ("Ecken-Schale t/δ=2", None),
+        ("Ecken-Schale t/δ=2.25", None),
         ("Ecken-Schale t/δ=3", None),
         ("Ecken-Schale t/δ=6", None),
-        ("Rippen-Kamm 4×1.5/0.8", Some(0.110)),
-        ("Rippen-Kamm 4×2/1", Some(0.199)),
+        ("Rippen-Kamm 4×1.5/0.8", None),
+        ("Rippen-Kamm 4×2/1", None),
         ("notch α=90", None),
         ("notch α=60", None),
     ];
@@ -6862,6 +6875,264 @@ fn promise_names_the_under_claim_witness_384() {
         }
     }
     assert_eq!(seen, inventory.len(), "nur {seen} Fixtures geprüft");
+}
+
+/// **§8s-Rückdreh-Gegenprobe: der Fix trägt, und der Zeuge lebt.**
+///
+/// `promise_names_the_under_claim_witness_384` steht ab §8s auf einem LEEREN
+/// Inventar. Leer heisst aber nur dann etwas, wenn dasselbe Messwerkzeug am
+/// selben Feld mit zurückgedrehtem Fix wieder anschlägt. Genau das tut dieser
+/// Pin — für beide Hälften des §8s-Fixes, jede an ihrer eigenen Fixture.
+///
+/// **Hälfte 1 — die Phantom-Junction (Ecken-Schale).** Bis §8r verlängerte
+/// `snap_channel_ends_to_junctions` ein Naht-Ende bis zum
+/// [`crate::offset_channel::junction_anchor`]; für (anti)parallele Tangenten
+/// war dessen Ergebnis der MITTELPUNKT der beiden Enden. An der Stirnfläche
+/// `z = −l` enden vier paarweise PARALLELE Reflex-Kanten; ihr Mittelpunkt liegt
+/// `t/2` mm tief IM MATERIAL. Der Pin rechnet genau diesen alten Mittelpunkt
+/// nach und misst seine Eindringtiefe im naiven Vereinigungsfeld: sie ist
+/// gross. Damit war [`crate::offset_channel::channel_limit`] dort unsauber —
+/// seine Voraussetzung ist „jeder Naht-Punkt liegt auf `∂Ω`" (§8j).
+///
+/// **Hälfte 2 — der δ-Versatz der freien End-Ebene (Rippen-Kamm).** Der Pin
+/// nimmt das AUSGELIEFERTE Feld und schiebt jede freie End-Ebene wieder um `δ`
+/// nach innen — bit-genau die Operation, die §8s gestrichen hat. Danach weist
+/// der Produktions-Zeuge ([`crate::offset_channel::under_claim_witness`]) den
+/// §8r-Fund wieder nach: ≥ 0.19 mm fehlendes Material am Kamm 4×2/1.
+#[test]
+fn seam_end_fix_is_load_bearing_384() {
+    use crate::offset_channel as oc;
+    let delta = 2.0f32;
+    let tol = CHANNEL_TOL_RENDER;
+
+    // ── Hälfte 1: der alte Mittelpunkt-Anker lag im Material ──────────────
+    let t = 2.25f32 * delta;
+    let (shell, _) = compile_for(thin_corner_node(t, 40.0, delta));
+    let mut stops = Vec::new();
+    stop_nodes(&shell, &mut stops);
+    let mut deepest = 0.0f32;
+    let mut deepest_at = [0.0f32; 3];
+    for node in stops.iter() {
+        let BoundedCsg::ArcChannel { inner, channels, .. } = node else { continue };
+        // Alle offenen Enden mit ihrer Innen-Tangente (wie set_end_plane_gates).
+        let mut ends: Vec<(usize, [f32; 3], [f32; 3])> = Vec::new();
+        for (ci, ch) in channels.iter().enumerate() {
+            if ch.arcs.is_empty() {
+                continue;
+            }
+            let s0 = oc::arc_point_at(&ch.arcs[0], 0.0);
+            let e0 = oc::arc_point_at(ch.arcs.last().unwrap(), 1.0);
+            if norm3(sub3(s0, e0)) < 1e-4 {
+                continue;
+            }
+            if let Some(tg) = oc::arc_tangent_at(&ch.arcs[0], 0.0) {
+                ends.push((ci, s0, tg));
+            }
+            if let Some(tg) = oc::arc_tangent_at(ch.arcs.last().unwrap(), 1.0) {
+                ends.push((ci, e0, [-tg[0], -tg[1], -tg[2]]));
+            }
+        }
+        for (a, e1, t1) in ends.iter() {
+            for (b, e2, t2) in ends.iter() {
+                if a == b {
+                    continue;
+                }
+                let d = norm3(sub3(*e1, *e2));
+                // Das alte Fenster: max(0.5·δ, 3·step); step = 2 % der
+                // Überlappungs-AABB, hier 1.6 mm ⇒ 4.8 mm.
+                if d > 4.8 {
+                    continue;
+                }
+                // (anti)parallel ⇒ der alte Code nahm den Mittelpunkt.
+                if (dot3(*t1, *t2).abs() - 1.0).abs() > 1e-3 {
+                    continue;
+                }
+                let mid = [
+                    0.5 * (e1[0] + e2[0]),
+                    0.5 * (e1[1] + e2[1]),
+                    0.5 * (e1[2] + e2[2]),
+                ];
+                // Eindringtiefe im naiven Vereinigungsfeld (d0 = sdf_∪ + δ).
+                let depth = -(inner.sdf(mid, EvalMode::Visual) - delta);
+                if depth > deepest {
+                    deepest = depth;
+                    deepest_at = mid;
+                }
+            }
+        }
+    }
+    assert!(
+        deepest > 0.9,
+        "der alte Mittelpunkt-Anker lag nur {deepest:.4} mm im Material (bei {deepest_at:?})          — dann ist die Ecken-Schale nicht mehr die Fixture, an der §8s gemessen wurde"
+    );
+    // Und genau dafür gibt es ihn nicht mehr.
+    assert!(
+        oc::junction_anchor([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [4.5, 0.0, 0.0], [0.0, 0.0, 1.0])
+            .is_none(),
+        "parallele Naht-Enden dürfen keine Junction bilden"
+    );
+
+    // ── Hälfte 2: der δ-Versatz zurückgedreht ⇒ der Fund ist wieder da ────
+    let (node, boxes, span) = rib_comb_node(4, 2.0, 1.0, delta);
+    let (comb, _) = compile_for(node);
+    let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+    let mut rolled = comb.clone();
+    let shifted = shift_free_end_planes(&mut rolled, delta);
+    assert!(
+        shifted > 0,
+        "keine einzige freie End-Ebene gefunden — die Rückdrehung misst nichts"
+    );
+    let (stop, blk) = stop_with_lb(&comb);
+    let _ = span;
+    // Feines Fenster um das freie Naht-Ende (Rippen-Flanke ∩ Platten-Stirn,
+    // `x = ±(w/2) + cx`, `y = 20`, Ende auf der Rippen-Unterseite `z = −5`).
+    let (lo, hi, n) = ([-6.5, 17.0, -5.5], [-2.5, 20.5, -2.0], 44usize);
+    let mut worst = 0.0f32;
+    let mut worst_at = [0.0f32; 3];
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let fr = [
+                    (ix as f64 + 0.2113248654) / n as f64,
+                    (iy as f64 + 0.5773502692) / n as f64,
+                    (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let p = [
+                    lo[0] + (hi[0] - lo[0]) * fr[0],
+                    lo[1] + (hi[1] - lo[1]) * fr[1],
+                    lo[2] + (hi[2] - lo[2]) * fr[2],
+                ];
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let d0 = stop.sdf(pf, EvalMode::Visual);
+                let (found, _) = oc::under_claim_witness(
+                    None,
+                    d0,
+                    pf,
+                    rolled.sdf(pf, EvalMode::Visual),
+                    Some(blk),
+                    delta,
+                    tol,
+                );
+                let Some((v, at)) = found else { continue };
+                // Kein Falsch-Positiv: die exakte Referenz muss mitgehen.
+                let e = dist_obb_union_complement_exact(&obbs, p);
+                assert!(
+                    e - delta as f64 >= v as f64 - 1e-4,
+                    "Unter-Zeuge behauptet {v:.4} mm bei {at:?}, exakt sind es nur {:.4}",
+                    e - delta as f64
+                );
+                if v > worst {
+                    worst = v;
+                    worst_at = at;
+                }
+            }
+        }
+    }
+    assert!(
+        worst > 0.19,
+        "mit zurückgedrehtem δ-Versatz weist der Zeuge nur {worst:.4} mm nach (bei          {worst_at:?}) — §8r mass am Kamm 4×2/1 0.199 mm; findet die Rückdrehung das          nicht mehr, misst der Pin nicht mehr, was er behauptet"
+    );
+    // Und am ausgelieferten Feld schweigt derselbe Zeuge.
+    let mut prod_hits = 0usize;
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let fr = [
+                    (ix as f64 + 0.2113248654) / n as f64,
+                    (iy as f64 + 0.5773502692) / n as f64,
+                    (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let p = [
+                    lo[0] + (hi[0] - lo[0]) * fr[0],
+                    lo[1] + (hi[1] - lo[1]) * fr[1],
+                    lo[2] + (hi[2] - lo[2]) * fr[2],
+                ];
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let d0 = stop.sdf(pf, EvalMode::Visual);
+                let (found, _) = oc::under_claim_witness(
+                    None,
+                    d0,
+                    pf,
+                    comb.sdf(pf, EvalMode::Visual),
+                    Some(blk),
+                    delta,
+                    tol,
+                );
+                if found.is_some() {
+                    prod_hits += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(
+        prod_hits, 0,
+        "am AUSGELIEFERTEN Kamm-Feld weist der Zeuge {prod_hits} Unter-Claims nach —          §8s hat das Naht-Ende geschlossen"
+    );
+}
+
+fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn norm3(a: [f32; 3]) -> f32 {
+    dot3(a, a).sqrt()
+}
+
+/// Dreht §8s Hälfte 2 zurück: schiebt jede FREIE End-Ebene (Normale = die
+/// Innen-Tangente eines Spine-Endes, `c = ⟨E,t̂⟩`) um `δ` nach innen — exakt
+/// die Form, die `set_end_plane_gates` bis §8r schrieb. Bisektor-Ebenen bleiben
+/// unberührt. Liefert die Zahl der geschobenen Ebenen.
+fn shift_free_end_planes(node: &mut BoundedCsg, delta: f32) -> usize {
+    use crate::offset_channel as oc;
+    let mut n = 0usize;
+    match node {
+        BoundedCsg::ArcChannel { inner, channels, .. } => {
+            for ch in channels.iter_mut() {
+                if ch.arcs.is_empty() {
+                    continue;
+                }
+                let s0 = oc::arc_point_at(&ch.arcs[0], 0.0);
+                let e0 = oc::arc_point_at(ch.arcs.last().unwrap(), 1.0);
+                if norm3(sub3(s0, e0)) < 1e-4 {
+                    continue; // geschlossen
+                }
+                let mut ends: Vec<([f32; 3], [f32; 3])> = Vec::new();
+                if let Some(tg) = oc::arc_tangent_at(&ch.arcs[0], 0.0) {
+                    ends.push((s0, tg));
+                }
+                if let Some(tg) = oc::arc_tangent_at(ch.arcs.last().unwrap(), 1.0) {
+                    ends.push((e0, [-tg[0], -tg[1], -tg[2]]));
+                }
+                for g in ch.end_planes.iter_mut() {
+                    if g[3] <= -1.0e29 {
+                        continue;
+                    }
+                    let gn = [g[0], g[1], g[2]];
+                    for (e, tg) in &ends {
+                        if norm3(sub3(gn, *tg)) < 1e-4 && (g[3] - dot3(*e, *tg)).abs() < 1e-4 {
+                            g[3] += delta;
+                            n += 1;
+                            break;
+                        }
+                    }
+                }
+            }
+            n += shift_free_end_planes(inner, delta);
+        }
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. } => {
+            n += shift_free_end_planes(left, delta);
+            n += shift_free_end_planes(right, delta);
+        }
+        BoundedCsg::Offset { inner, .. } | BoundedCsg::Shell { inner, .. } => {
+            n += shift_free_end_planes(inner, delta);
+        }
+        _ => {}
+    }
+    n
 }
 
 #[test]
@@ -7023,4 +7294,83 @@ fn probe_384_seam_end_grid() {
             worst
         );
     }
+}
+
+/// **§8s-Invarianten-Pin: JEDER Naht-Punkt liegt auf `∂Ω`.**
+///
+/// Das ist keine Kosmetik, sondern die Voraussetzung, auf der zwei Aussagen
+/// dieses Stopps stehen:
+///
+/// * [`crate::offset_channel::channel_limit`] (§8j) macht aus `de` die untere
+///   Feld-Schranke `δ − de`. Sie gilt, weil `q*` auf `∂Ω` liegt und damit
+///   `dist(x,∁Ω) ≤ de` — bedingungslos. Liegt `q*` statt dessen `u` mm TIEF im
+///   Material, hebt die Klemme das Feld um bis zu `u` über die Wahrheit: sie
+///   erzeugt fehlendes Material, statt Phantom-Material zu tilgen.
+/// * Der Term selbst liest `de − δ` als Distanz-Kandidaten in `w_geo`.
+///
+/// Der Trace hält die Invariante von sich aus ein (`project_to_seam` +
+/// `blocking_member`). Gebrochen haben sie die SNAPS: bis §8r verlängerte
+/// `snap_channel_ends_to_junctions` ein Ende bis zum Mittelpunkt zweier
+/// PARALLELER Naht-Enden — an der Ecken-Schale `t/2` mm ins Material hinein
+/// (gemessen 1.126 mm bei `t/δ = 2.25`), an jedem einzelnen der 24 Kanäle.
+///
+/// Der Pin tastet jeden Bogen jedes Kanals ab und misst die Eindringtiefe im
+/// naiven Vereinigungsfeld des Stopps. Erlaubt ist nur, was der Bogen-Fit
+/// selbst kostet (`fit_tol = tol/2`, plus f32-Rauschen).
+#[test]
+fn every_seam_point_lies_on_the_boundary_384() {
+    let delta = 2.0f32;
+    let mut cases: Vec<(String, BoundedCsg)> = Vec::new();
+    cases.push((
+        "Stufen-Nabe".into(),
+        compile_for(stepped_hub_node(3.0, 6.0, 4.0, 0.5, 1.2, 1.8, delta)).0,
+    ));
+    for tf in [2.0f32, 2.25, 3.0, 6.0] {
+        cases.push((
+            format!("Ecken-Schale t/δ={tf}"),
+            compile_for(thin_corner_node(tf * delta, 40.0, delta)).0,
+        ));
+    }
+    for (w, g) in [(1.5f32, 0.8f32), (2.0, 1.0)] {
+        cases.push((
+            format!("Rippen-Kamm 4×{w}/{g}"),
+            compile_for(rib_comb_node(4, w, g, delta).0).0,
+        ));
+    }
+    for alpha in [90.0f64, 60.0] {
+        cases.push((
+            format!("notch α={alpha}"),
+            compile_for(notch_union_node(alpha, delta as f64)).0,
+        ));
+    }
+    // Der Greedy-Bogen-Fit darf `fit_tol = tol/2` von der Naht abweichen; dazu
+    // das f32-Rauschen der Member-Auswertung an 40-mm-Geometrie.
+    let allow = (CHANNEL_TOL_RENDER * 0.5 + 1e-3) as f32;
+    let mut checked = 0usize;
+    for (name, field) in cases {
+        let mut stops = Vec::new();
+        stop_nodes(&field, &mut stops);
+        assert!(!stops.is_empty(), "{name}: kein Stopp-Knoten");
+        for node in stops.iter() {
+            let BoundedCsg::ArcChannel { inner, channels, .. } = node else { continue };
+            for (ci, ch) in channels.iter().enumerate() {
+                for (ai, arc) in ch.arcs.iter().enumerate() {
+                    for k in 0..=20 {
+                        let q = crate::offset_channel::arc_point_at(arc, k as f32 / 20.0);
+                        // naiver Stoppwert `d₀ = sdf_∪ + δ` ⇒ `sdf_∪ = d₀ − δ`.
+                        let depth = -(inner.sdf(q, EvalMode::Visual) - ch.delta);
+                        assert!(
+                            depth <= allow,
+                            "{name} K{ci}/arc{ai}: Naht-Punkt {q:?} liegt {depth:.4} mm TIEF im \
+                             Material (erlaubt {allow:.4}). Damit ist `de` keine obere Schranke \
+                             von dist(x,∁Ω) mehr, und `channel_limit` hebt das Feld über die \
+                             Wahrheit — genau der §8s-Fund."
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 4_000, "nur {checked} Naht-Punkte geprüft — der Pin misst zu wenig");
 }
