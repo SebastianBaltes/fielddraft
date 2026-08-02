@@ -5766,3 +5766,359 @@ fn lb_block_covers_convex_extrude_members_384() {
          Punkten — sie ERFINDET Distanz, und das §8p-Gate steht allein auf ihr"
     );
 }
+
+/// **§8q-Inventar (einmalig): Zusage gegen Wirklichkeit, Fixture für Fixture.**
+///
+/// Druckt je Fixture den Status, die daraus abgeleitete zugesagte Schranke
+/// ([`promised_bound`]), die vollständigen Report-Gründe, die zweiseitige
+/// Messung und die `L`-Blöcke des Baums. Nur so ist entscheidbar, welche
+/// Zusage heute STUMPFER ist als das ausgelieferte Feld.
+#[test]
+#[ignore]
+fn probe_384_promise_inventory() {
+    let delta = 2.0f32;
+    let mut rows: Vec<(String, TwoSided, CapabilityReport, Vec<usize>)> = Vec::new();
+    let lb_of = |field: &BoundedCsg| {
+        let mut b = Vec::new();
+        collect_lb(field, &mut b);
+        b.iter().map(|x| x.pieces.len()).collect::<Vec<_>>()
+    };
+    {
+        let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+        let (field, report) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+        let cyls = [(r1 as f64, -(e1 as f64), zh1 as f64), (r2 as f64, -(e2 as f64), 6.0f64)];
+        let r = two_sided_scan(
+            &field, delta, [-9.0, -9.0, -(t as f64) - 1.5], [9.0, 9.0, 0.5], 22,
+            &|p| dist_hub_complement_exact(t as f64, &cyls, p),
+            &|p| dist_hub_complement(t as f64, &cyls, p, 160),
+        );
+        let l = lb_of(&field);
+        rows.push(("Stufen-Nabe".into(), r, report, l));
+    }
+    for tf in [2.0f32, 2.1, 2.25, 2.4, 2.5, 3.0, 4.0, 6.0] {
+        let t = tf * delta;
+        let (field, report) = compile_for(thin_corner_node(t, 40.0, delta));
+        let boxes = thin_corner_boxes(t as f64, 40.0);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let lo = -(t as f64 + delta as f64 + 1.0);
+        let r = two_sided_scan(
+            &field, delta, [lo; 3], [1.0; 3], 22,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_boxes_complement(&boxes, p, 160),
+        );
+        let l = lb_of(&field);
+        rows.push((format!("Ecken-Schale t/d={tf}"), r, report, l));
+    }
+    for (w, g) in [(1.5f32, 0.8f32), (2.0, 1.0)] {
+        let (node, boxes, span) = rib_comb_node(4, w, g, delta);
+        let (field, report) = compile_for(node);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let r = two_sided_scan(
+            &field, delta, [-span, -3.0, -6.0], [span, 3.0, 0.5], 24,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_boxes_complement(&boxes, p, 160),
+        );
+        let l = lb_of(&field);
+        rows.push((format!("Rippen-Kamm 4x{w}/{g}"), r, report, l));
+    }
+    for alpha in [90.0f64, 60.0] {
+        let (field, report) = compile_for(notch_union_node(alpha, delta as f64));
+        let gamma = std::f64::consts::PI - alpha.to_radians();
+        let obbs = vec![
+            obb_rot_z([0.0, -50.0, 0.0], [100.0, 50.0, 50.0], 0.0),
+            obb_rot_z([50.0 * gamma.sin(), -50.0 * gamma.cos(), 0.0], [100.0, 50.0, 50.0], gamma),
+        ];
+        let r = two_sided_scan(
+            &field, delta, [-10.0, -10.0, 42.0], [10.0, 10.0, 54.0], 22,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_notch_complement(alpha, p),
+        );
+        let l = lb_of(&field);
+        rows.push((format!("notch a={alpha}"), r, report, l));
+    }
+    // Die Kaskaden-Pins messen auf FEINEREN Gittern (26³ Nabe, 28³ Kamm) und
+    // nur gegen die Strahl-Schranke. Eine geschärfte Zusage muss auch DORT
+    // halten — deshalb hier dieselbe Rechnung.
+    {
+        let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+        let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+        let cyls = [(r1 as f64, -(e1 as f64), zh1 as f64), (r2 as f64, -(e2 as f64), 6.0f64)];
+        let n = 26usize;
+        let (mut miss, mut worst) = (0usize, 0.0f64);
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let p = [
+                        -9.0 + 18.0 * (ix as f64 + 0.2113248654) / n as f64,
+                        -9.0 + 18.0 * (iy as f64 + 0.5773502692) / n as f64,
+                        -(t as f64) - 1.5
+                            + (t as f64 + 2.0) * (iz as f64 + 0.7886751346) / n as f64,
+                    ];
+                    if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
+                        continue;
+                    }
+                    let err = delta as f64 - dist_hub_complement(t as f64, &cyls, p, 160);
+                    if err > 1e-3 {
+                        miss += 1;
+                        worst = worst.max(err);
+                    }
+                }
+            }
+        }
+        println!("\n## FEIN Stufen-Nabe 26^3: miss={miss} worst={worst:.4}");
+    }
+    for (w, g) in [(1.5f32, 0.8f32), (2.0, 1.0)] {
+        let (node, boxes, span) = rib_comb_node(4, w, g, delta);
+        let (field, _) = compile_for(node);
+        let n = 28usize;
+        let (mut miss, mut worst) = (0usize, 0.0f64);
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let p = [
+                        -span + 2.0 * span * (ix as f64 + 0.2113248654) / n as f64,
+                        -3.0 + 6.0 * (iy as f64 + 0.5773502692) / n as f64,
+                        -6.0 + 6.5 * (iz as f64 + 0.7886751346) / n as f64,
+                    ];
+                    if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
+                        continue;
+                    }
+                    let err = delta as f64 - dist_to_boxes_complement(&boxes, p, 160);
+                    if err > 1e-3 {
+                        miss += 1;
+                        worst = worst.max(err);
+                    }
+                }
+            }
+        }
+        println!("## FEIN Rippen-Kamm 4x{w}/{g} 28^3: miss={miss} worst={worst:.4}");
+    }
+    println!("\n=== §8q INVENTAR ===");
+    for (name, r, report, l) in &rows {
+        println!(
+            "\n## {name}\n  status={:?} promised={:?} L-Bloecke={:?}\n  ueber={} / {:.4}  unter={} / {:.4}",
+            report.status(),
+            promised_bound(report),
+            l,
+            r.over.0, r.over.1, r.under.0, r.under.1
+        );
+        for s in report.reasons() {
+            println!("  REASON: {s}");
+        }
+    }
+}
+
+// ─── #384 §8q: die Zusage sieht `L` ──────────────────────────────────────────
+//
+// Bis §8p rief der Randpunkt-Zeuge `stop_apply(…, None)` — der `L`-Block
+// entstand erst NACH dem Audit. Die Zusage war dadurch nie falsch (`G` ist die
+// SCHWÄCHERE Aussage), aber am Rippen-Kamm 87-fach stumpfer als das Feld:
+//
+// | Fixture | Zusage vorher | Zusage nachher | zweiseitig gemessen | `L`-Stücke |
+// |---|---|---|---|---|
+// | Stufen-Nabe | ≤ 0.010 | ≤ 0.010 | 0 / 0 | 15 |
+// | Ecken-Schale (8 Dicken) | ≤ 0.010 | ≤ 0.010 | 0 / 0 | 72 |
+// | Rippen-Kamm 4×1.5/0.8 | **≤ 0.868** | **≤ 0.010** | 0 / 0 | 296 |
+// | Rippen-Kamm 4×2.0/1.0 | **≤ 0.868** | **≤ 0.010** | 0 / 0 | 140 |
+// | notch 90° / 60° | ≤ 0.010 | ≤ 0.010 | 0 / 0 | 28 |
+
+/// Alle Fixturen der §8q-Matrix als (Name, Feld, Report, zweiseitige Messung).
+fn promise_matrix(delta: f32) -> Vec<(String, BoundedCsg, CapabilityReport, TwoSided)> {
+    let mut out: Vec<(String, BoundedCsg, CapabilityReport, TwoSided)> = Vec::new();
+    {
+        let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+        let (field, report) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+        let cyls = [(r1 as f64, -(e1 as f64), zh1 as f64), (r2 as f64, -(e2 as f64), 6.0f64)];
+        let r = two_sided_scan(
+            &field, delta, [-9.0, -9.0, -(t as f64) - 1.5], [9.0, 9.0, 0.5], 22,
+            &|p| dist_hub_complement_exact(t as f64, &cyls, p),
+            &|p| dist_hub_complement(t as f64, &cyls, p, 160),
+        );
+        out.push(("Stufen-Nabe".into(), field, report, r));
+    }
+    for tf in [2.0f32, 2.25, 3.0, 6.0] {
+        let t = tf * delta;
+        let (field, report) = compile_for(thin_corner_node(t, 40.0, delta));
+        let boxes = thin_corner_boxes(t as f64, 40.0);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let lo = -(t as f64 + delta as f64 + 1.0);
+        let r = two_sided_scan(
+            &field, delta, [lo; 3], [1.0; 3], 22,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_boxes_complement(&boxes, p, 160),
+        );
+        out.push((format!("Ecken-Schale t/δ={tf}"), field, report, r));
+    }
+    for (w, g) in [(1.5f32, 0.8f32), (2.0, 1.0)] {
+        let (node, boxes, span) = rib_comb_node(4, w, g, delta);
+        let (field, report) = compile_for(node);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let r = two_sided_scan(
+            &field, delta, [-span, -3.0, -6.0], [span, 3.0, 0.5], 24,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_boxes_complement(&boxes, p, 160),
+        );
+        out.push((format!("Rippen-Kamm 4×{w}/{g}"), field, report, r));
+    }
+    for alpha in [90.0f64, 60.0] {
+        let (field, report) = compile_for(notch_union_node(alpha, delta as f64));
+        let gamma = std::f64::consts::PI - alpha.to_radians();
+        let obbs = vec![
+            obb_rot_z([0.0, -50.0, 0.0], [100.0, 50.0, 50.0], 0.0),
+            obb_rot_z([50.0 * gamma.sin(), -50.0 * gamma.cos(), 0.0], [100.0, 50.0, 50.0], gamma),
+        ];
+        let r = two_sided_scan(
+            &field, delta, [-10.0, -10.0, 42.0], [10.0, 10.0, 54.0], 22,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_notch_complement(alpha, p),
+        );
+        out.push((format!("notch α={alpha}"), field, report, r));
+    }
+    out
+}
+
+/// **§8q-Kern-Pin: die Zusage ist die Wirklichkeit — in BEIDE Richtungen.**
+///
+/// Der bestehende Pin `erosion_promise_names_the_side_it_covers_384` prüft nur
+/// die eine Hälfte des Vertrags: die zugesagte Schranke darf nicht ÜBERSCHRITTEN
+/// werden. Das ist gegen eine Lüge gerichtet — und gegen Stumpfheit blind: eine
+/// Zusage `≤ 1000 mm` bestünde ihn an jeder Fixture. Genau in dieser Lücke saß
+/// der Rippen-Kamm: gemeldet `≤ 0.868 mm`, gemessen NULL Phantom-Punkte, weil
+/// der Zeuge das Feld ohne `L` sah.
+///
+/// Dieser Pin schließt sie: an jeder Fixture, die einen `L`-Block trägt, MUSS
+/// die Zusage die enge sein (Ziel-Toleranz-Klasse), nicht die `G`-Kappe. Er
+/// wäre vor §8q an beiden Kämmen mit `0.868` gefallen.
+#[test]
+fn promise_is_as_sharp_as_the_field_384() {
+    let delta = 2.0f32;
+    let tol_class = CHANNEL_TOL_RENDER as f64 + 1e-9;
+    for (name, field, report, r) in promise_matrix(delta) {
+        let mut blocks = Vec::new();
+        collect_lb(&field, &mut blocks);
+        let b = promised_bound(&report).unwrap_or_else(|| {
+            panic!("{name}: der Stopp sagt gar nichts mehr zu. Reasons: {:?}", report.reasons())
+        });
+        // (1) Die Zusage muss WAHR sein — die Über-Seite hält sie ein.
+        assert!(
+            r.over.1 <= b + 1e-3,
+            "{name}: {} Punkte Phantom-Material, größtes {:.4} mm bei {:?} — zugesagt sind aber \
+             nur {b:.3} mm. Reasons: {:?}",
+            r.over.0, r.over.1, r.over.2, report.reasons()
+        );
+        // (2) Und sie darf nicht grob STUMPFER sein als das Feld. Wo eine
+        //     Stück-Schranke im Baum liegt, gatet seit §8p `L` allein, der
+        //     §8p-Satz schließt Phantom-Material strukturell aus — dann ist die
+        //     `G`-Kappe als Zusage schlicht die falsche Zahl.
+        if !blocks.is_empty() {
+            assert!(
+                b <= tol_class,
+                "{name}: {} L-Block/Blöcke mit {:?} Randstücken im Baum, gemessen {} Punkte / \
+                 {:.4} mm Phantom-Material — aber zugesagt werden {b:.3} mm statt der \
+                 Ziel-Toleranz. Genau so sah es aus, als der Zeuge `stop_apply(…, None)` rief. \
+                 Reasons: {:?}",
+                blocks.len(),
+                blocks.iter().map(|x| x.pieces.len()).collect::<Vec<_>>(),
+                r.over.0, r.over.1, report.reasons()
+            );
+            assert!(
+                report.reasons().iter().any(|s| s.contains("Stück-Schranke L")),
+                "{name}: der Baum trägt eine Stück-Schranke, die Zusage nennt sie aber nicht — \
+                 dann steht dort noch die tote `G`-Kappen-Begründung. Reasons: {:?}",
+                report.reasons()
+            );
+        }
+        // (3) Die Unter-Seite bleibt ausdrücklich ausgenommen, solange sie es
+        //     ist: für sie gibt es weiterhin keinen Satz, nur Messungen.
+        assert!(
+            report
+                .reasons()
+                .iter()
+                .any(|s| s.contains("FEHLENDES Material") || s.contains("keine Schranke")),
+            "{name}: der Report muss die Unter-Seite ausdrücklich ausnehmen, sonst liest sich \
+             die Zusage zweiseitig. Reasons: {:?}",
+            report.reasons()
+        );
+        assert!(
+            r.under.0 == 0,
+            "{name}: {} Punkte FEHLENDES Material, größtes {:.4} mm bei {:?} — die Matrix ist \
+             seit §8p beidseitig leer",
+            r.under.0, r.under.1, r.under.2
+        );
+    }
+}
+
+/// **§8q-Lockstep-Pin: Zeuge und Laufzeit sehen DASSELBE `L`.**
+///
+/// Der Zeuge darf nichts validieren, was die Laufzeit nicht liefert. Die
+/// Absicherung ist keine Ähnlichkeits-Prüfung zweier Nachbildungen, sondern
+/// **Identität**: [`crate::offset_channel::stop_lb_block`] baut den Block
+/// EINMAL, vor dem Audit; das Audit bekommt ihn als `lb.as_ref()`, und derselbe
+/// `Option` wandert unverändert in den `ArcChannel`-Knoten. Damit teilen sich
+/// beide Seiten automatisch jede Klemme: Innen-Indikator `d₀ ≤ δ`,
+/// Fernfeld-Kugel, `slack`, [`crate::offset_channel::LB_AVAIL`]-Schwelle.
+///
+/// Testbar ist die Identität so: der Block IM Baum muss bit-genau das sein, was
+/// die Produktions-Synthese aus dem AUSGELIEFERTEN Baum ergibt. Baut irgendwer
+/// je eine zweite Fassung (andere Quelle, andere Kugel, andere Reihenfolge),
+/// fällt dieser Pin — und mit ihm die Grundlage jeder Zusage, die auf `L` steht.
+#[test]
+fn witness_and_runtime_share_the_same_lower_bound_384() {
+    let delta = 2.0f32;
+    let mut checked = 0usize;
+    for (name, field, _report, _) in promise_matrix(delta) {
+        let mut stops = Vec::new();
+        stop_nodes(&field, &mut stops);
+        for st in stops {
+            let BoundedCsg::ArcChannel { inner, channels, verts, lb, .. } = st else {
+                continue;
+            };
+            let BoundedCsg::Offset { inner: src, delta: d, .. } = &**inner else {
+                continue;
+            };
+            // Der ausgelieferte Baum trägt die Kontakt-Prismen bereits; deshalb
+            // hier die leere Prisma-Liste — `attach_prisms` ist dann die
+            // Identität, und übrig bleibt exakt der Aufruf, den das Audit sah.
+            let rebuilt = crate::offset_channel::stop_lb_block(src, &[], channels, verts, *d);
+            match (lb, &rebuilt) {
+                (None, None) => {}
+                (Some(a), Some(b)) => {
+                    assert_eq!(
+                        a.pieces.len(),
+                        b.pieces.len(),
+                        "{name}: der Baum trägt {} Randstücke, die Synthese liefert {} — \
+                         Zeuge und Laufzeit sehen verschiedene Felder",
+                        a.pieces.len(),
+                        b.pieces.len()
+                    );
+                    for (i, (pa, pb)) in a.pieces.iter().zip(b.pieces.iter()).enumerate() {
+                        assert_eq!(
+                            pa.to_words().map(f32::to_bits),
+                            pb.to_words().map(f32::to_bits),
+                            "{name}: Randstück {i} weicht ab"
+                        );
+                    }
+                    assert_eq!(
+                        [a.delta, a.slack, a.center[0], a.center[1], a.center[2], a.skip_r]
+                            .map(f32::to_bits),
+                        [b.delta, b.slack, b.center[0], b.center[1], b.center[2], b.skip_r]
+                            .map(f32::to_bits),
+                        "{name}: Kopf des L-Blocks weicht ab (δ / slack / Fernfeld-Kugel) — \
+                         genau die Klemmen, die in Lockstep sein müssen"
+                    );
+                    checked += 1;
+                }
+                (a, b) => panic!(
+                    "{name}: Baum hat L={}, Synthese liefert L={} — die eine Seite gatet mit \
+                     einer Schranke, die die andere nicht kennt",
+                    a.is_some(),
+                    b.is_some()
+                ),
+            }
+        }
+    }
+    assert!(
+        checked >= 8,
+        "nur {checked} Stopps mit L-Block geprüft — der Pin misst nichts"
+    );
+}

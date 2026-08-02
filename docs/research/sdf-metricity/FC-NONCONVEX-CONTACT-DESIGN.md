@@ -3289,6 +3289,193 @@ erst einen Trust-Region-Beweis).
   **spitze Nähte**, **der Wächter als Stichprobe**, **die latente
   `safe_sqrt`-Entartung**: unverändert §8j/§8m/§8n.
 
+## 8q. Die Zusage sieht `L` — der Zeuge mass ein Feld, das seit §8p nicht mehr ausgeliefert wird (#384, 2026-08-02)
+
+§8p hat es benannt und liegen lassen: *„Die Zusage des Stopps entsteht in
+`audit_channel_end_caps` aus einem Randpunkt-Zeugen, und der ruft
+`stop_apply(..., lb = None)` — er sieht also das Feld OHNE `L`."* Die Richtung
+war die sichere (die gemeldete Schranke ist SCHWÄCHER als das Feld, nie
+stärker), der Preis stand nicht in Zahlen da.
+
+Dieses Paket misst ihn zuerst und schliesst ihn dann. Ergebnis in einer Zeile:
+**beide Rippen-Kämme melden statt `≤ 0.868 mm` jetzt `≤ 0.010 mm`, bei
+unverändert 0 Phantom-Punkten** — die Zusage war 87-fach stumpfer als das
+ausgelieferte Feld. Kein Feldwert bewegt sich, Golden 35/35 byte-identisch.
+
+### Das Inventar (vor dem ersten Eingriff)
+
+Alle zwölf Fixturen der §8p-Matrix, jeweils Zusage (das, was
+`CapabilityReport` ausgibt und `promised_bound` daraus liest) gegen die
+zweiseitige Messung derselben Harness. Gitter wie im Doktrin-Pin (Nabe/Schale/
+notch 22³, Kamm 24³); zusätzlich die feineren Gitter der Kaskaden-Pins
+(Nabe 26³, Kamm 28³), weil eine geschärfte Zusage auch DORT halten muss.
+
+| Fixture | Zusage heute | über / unter (22³ bzw. 24³) | Feingitter | `L`-Stücke |
+|---|---|---|---|---|
+| Stufen-Nabe | `≤ 0.010` + Unter-Seiten-Ausnahme | 0 / 0 | 0 (26³) | 15 |
+| Ecken-Schale `t/δ = 2.0 … 6.0` (8 Dicken) | `≤ 0.010` + dieselbe Ausnahme | 0 / 0 je | — | 72 |
+| **Rippen-Kamm 4×1.5/0.8** | **`≤ 0.868`** (Zeuge bei `[−6.20, −9.87, −1.29]`) | **0 / 0** | 0 (28³) | 296 |
+| **Rippen-Kamm 4×2.0/1.0** | **`≤ 0.868`** (Zeuge bei `[−4.43, −18.86, −6.83]`) | **0 / 0** | 0 (28³) | 140 |
+| notch_union 90° / 60° | `≤ 0.010` + dieselbe Ausnahme | 0 / 0 | — | 28 |
+
+Zwei Befunde, und der zweite war nicht vorhergesagt:
+
+* **Die Kamm-Zusage ist die einzige mit einer FALSCHEN ZAHL.** 0.868 ist `G`,
+  die Ein-Term-Kappe — die seit §8p an einem Stopp mit `L`-Block gar nicht mehr
+  gatet. Der Zeuge fand seinen Über-Claim genau dort, wo die `G`-Kappe ihn
+  erlaubt hätte; das ausgelieferte Feld lässt ihn nicht zu.
+* **JEDE Fixture der Matrix trägt einen `L`-Block** (15 … 296 Stücke). Damit
+  ist die Begründung der Unter-Seiten-Ausnahme in ALLEN zwölf Notizen tot:
+  *„wo ein Gate bindet (Ein-Term-Kappe `G`, δ-verschobene End-Ebene), bleibt
+  der naive Sliver stehen"* nennt einen Mechanismus, der an diesen Stopps nicht
+  mehr läuft. Die Ausnahme SELBST bleibt wahr (für die Unter-Seite gibt es
+  weiterhin keinen Satz, nur Messungen) — ihre Ursache ist eine andere geworden:
+  nicht mehr das Gate, sondern die geometrische Klemme `w_geo`.
+
+### Das Kern-Risiko und seine Auflösung: Lockstep durch Identität, nicht durch Ähnlichkeit
+
+Der Zeuge darf nichts validieren, was die Laufzeit nicht liefert. Gäbe man ihm
+ein NACHGEBAUTES `L`, müssten fünf Klemmen von Hand in Deckung gehalten werden
+— Innen-Indikator `d₀ ≤ δ`, Fernfeld-Kugel `skip_r`, `slack`, die
+`LB_AVAIL`-Schwelle und die `ch.delta`-Verschiebung des `extra`-Arguments. Jede
+davon ist eine künftige Drift-Stelle, und eine zu grosszügige Nachbildung wäre
+genau die Sorte Fehler, die dieses Ticket ausschliessen soll: eine Zusage, die
+mehr behauptet, als das Feld hält.
+
+Deshalb gibt es hier **keine zweite Fassung**. Der Grund, warum es sie vorher
+gab, war reine Reihenfolge: `synthesize_stop` baute Kanäle, Vertex-Kugeln,
+Prismen und rief das Audit — und der `L`-Block entstand erst im AUFRUFER, nach
+der Rückkehr. §8q dreht die Reihenfolge um:
+
+* `stop_lb_block(inner, prisms, channels, verts, delta)` baut den Block am Ende
+  von `synthesize_stop`, VOR `audit_channel_end_caps`.
+* Das Audit bekommt ihn als `lb.as_ref()` und reicht ihn bis
+  `stop_apply(d, x, channels, verts, lb)` durch — dieselbe Produktions-Funktion,
+  die auch der Auswerter ruft, mit demselben `stop_lb_value`/`lb_value`.
+* Derselbe `Option<LbBlock>` wird nach oben zurückgegeben und unverändert in den
+  `ArcChannel`-Knoten gehängt. **Ein Objekt, zwei Leser.**
+
+Damit ist Lockstep keine Behauptung über zwei Implementierungen, sondern eine
+Identität. Dass beide auch dasselbe `d₀` sehen, ist der zweite Halbsatz: der
+Zeuge rechnet `d = field(x) − δ_signed` auf demselben prismenbehafteten Baum,
+aus dem der Auswerter sein `OP_STOP_BASE` zieht — und `d₀` ist genau das
+Argument, mit dem `lb_value` seinen Innen-Indikator prüft.
+
+Die Prisma-Verdrahtung musste dafür aus dem Aufrufer heraus: sie stand dort
+inline und wäre im Synthese-Pfad ein zweites Mal geschrieben worden. Jetzt gibt
+es `attach_prisms(node, prisms, delta)`, und beide Stellen rufen sie. Das ist
+zugleich der Grund, warum sich **kein einziger Golden-Feldwert bewegt**: die
+Quelle des Blocks ist bitgenau derselbe Baum wie vorher.
+
+### Die Erwartung, vor dem Diff benannt
+
+| Fixture | Erwartung | eingetreten |
+|---|---|---|
+| Rippen-Kamm 4×2.0/1.0 | Zeuge findet nichts mehr ⇒ `0.868 → 0.010` | **ja** |
+| Rippen-Kamm 4×1.5/0.8 | dito (seit §8p hat auch er einen Block) | **ja** |
+| Stufen-Nabe | Gate ÖFFNET dort mit `L` (1.200 > `G`) — der Zeuge könnte einen NEUEN Über-Claim finden | **nein**, und das ist der §8p-Satz: wo `L` gatet, ist `f ≥ δ − L ≥ δ − dist` |
+| Ecken-Schale, notch | unverändert `≤ 0.010` | **ja** |
+| Golden | unverändert (keine Auswerter-Zeile berührt) | **ja, 35/35 byte-identisch** |
+
+Die Handrechnung zum Kamm-Zeugen, damit die erste Zeile nicht bloss behauptet
+ist. Der Zeugenpunkt `[−6.20, −9.87, −1.29]` liegt im Plattenkörper
+(`z ∈ [−12, 0]`), aber ausserhalb jeder Rippe (die linkeste ist
+`x ∈ [−4.2, −2.7]`): die nächste freie Fläche ist die Plattenoberseite bei
+`z = 0`, also `dist ≈ 1.29` und `L ≈ 1.29`. Damit ist `L − δ ≈ −0.71 < 0`, jeder
+Term fällt in den dritten Zweig (`w ≤ 0`, `w_geo > 0` ⇒ `d` unverändert), und
+das Feld bleibt beim naiven `d₀ = δ + min_k f_k ≈ +0.71` — es kippt kein
+Vorzeichen, es gibt keinen Zeugen. Mit `lb = None` dagegen ist
+`G − d₀ = 0.868 − 0.71 = +0.158 > 0`, der Term darf addieren, und genau das hat
+der blinde Zeuge gemessen.
+
+### Vorher/nachher der Zusagen
+
+| Fixture | Zusage vorher | Zusage nachher | gemessen (unverändert) |
+|---|---|---|---|
+| Stufen-Nabe | `≤ 0.010`, Ausnahme mit `G`-Begründung | `≤ 0.010`, Ausnahme mit `w_geo`-Begründung, `L` (15 Stücke) benannt | 0 / 0 |
+| Ecken-Schale (8 Dicken) | dito | dito, `L` (72) benannt | 0 / 0 |
+| **Rippen-Kamm 4×1.5/0.8** | **`≤ 0.868` (Gate-/B0-Schranke)** | **`≤ 0.010` (Ziel-Toleranz)**, `L` (296) benannt | 0 / 0 |
+| **Rippen-Kamm 4×2.0/1.0** | **`≤ 0.868` (Gate-/B0-Schranke)** | **`≤ 0.010` (Ziel-Toleranz)**, `L` (140) benannt | 0 / 0 |
+| notch 90° / 60° | `≤ 0.010`, Ausnahme mit `G`-Begründung | `≤ 0.010`, Ausnahme mit `w_geo`-Begründung, `L` (28) benannt | 0 / 0 |
+
+**Bleibt eine Zusage trotz `L` conservative?** In der Matrix: nein, keine
+einzige. Die `G`-Kappe steht weiterhin als Zusage bereit, aber nur noch für die
+drei Fälle, in denen `lb_value` ehrlich `LB_NONE` liefert — kein Block (Member
+jenseits Box/Zylinder/konvexem Geraden-Extrude), `x ∉ Ω`, ausserhalb der
+Term-Kugel. Für die letzten beiden kann ohnehin kein Term addieren
+(`d₀ > δ > G` bzw. `w_geo ≤ K − de < 0`), also ist der einzige real verbleibende
+`G`-Fall die **Member-Verweigerung**. Die beiden Report-Zweige des Audits sagen
+das jetzt auch: *„dort trägt die Stück-Schranke `L` nicht, sonst wäre der
+Über-Claim strukturell ausgeschlossen"*.
+
+### Was NICHT geschärft wurde, und warum
+
+| Kandidat | Warum nicht |
+|---|---|
+| Die Über-Seite an `L`-Stopps als **`exact`** melden statt `≤ tol` | Der §8p-Satz gibt `f ≥ 0` unter `dist < δ` her — aber nur für die Kanal-/Kugel-Terme. Die `∂P`-Rand-Fillets (`apply_rims_*`) laufen danach mit eigenen Masken, und der Status `exact` ist eine Aussage über den GANZEN Stopp. Die Notiz nennt den strukturellen Ausschluss deshalb im Text, die geparste Zahl bleibt die Ziel-Toleranz. |
+| Die Über-Seiten-Zahl von `tol` auf den `slack` (`3·10⁻⁴ mm`) senken | Der `slack` ist ein Synthese-Detail des Blocks, keine Stopp-weite Grösse (er skaliert mit dem Modellmass), und die f32-Rundung der sechs Auswerter-Spiegel ist darin nicht enthalten. Eine Zahl, die kleiner ist als die Rechengenauigkeit, die sie beschreibt, wäre wieder ein Versprechen ohne Deckung. |
+| Die Unter-Seiten-Ausnahme ganz streichen (gemessen ist sie an zwölf Fixturen leer) | Zwölf leere Gitter sind kein Satz. Für die Unter-Seite bindet nicht das Gate, sondern `w_geo`; dafür existiert keine Herleitung. Eine Messung als Zusage auszugeben wäre exakt der Zirkelschluss, den §8g entlarvt hat. Die Ausnahme bleibt — nur ihre BEGRÜNDUNG ist jetzt die richtige. |
+
+### Verifikation
+
+* **Golden**: `cmp` über die ganze Datei — **35 von 35 Szenen byte-identisch**,
+  Tape UND Feldwerte. Das ist die erwartete Richtung: es wurde keine
+  Auswerter-Zeile, kein Opcode, kein Payload-Wort und kein Spiegel berührt.
+* **`check_interp`** (Binary aus v0.56.14, Golden-Pfad als ARGUMENT): 35 Szenen,
+  17920 Prüfungen, worst_err 2·10⁻⁶, **0 Failures**.
+* **`just test`**: Fast-Tier **1462** (Baseline 1460, zwei neue Pins) / Web
+  **2082** (unverändert). `cargo test --workspace` **1567** (Baseline 1565).
+* **`OFFSET_FUZZ_ITERS=200 … offset_fuzz --release`**: **5/5**.
+* **Gegenprobe des Pins** (nicht committet): mit auf `None` zurückgedrehtem
+  Zeugen fällt `promise_is_as_sharp_as_the_field_384` sofort — *„1 L-Block mit
+  [296] Randstücken im Baum, gemessen 0 Punkte / 0.0000 mm Phantom-Material —
+  aber zugesagt werden 0.868 mm"*. Der Pin misst also wirklich etwas.
+
+### Neue Pins
+
+* `promise_is_as_sharp_as_the_field_384` — der Vertrag in BEIDE Richtungen. Der
+  bestehende `erosion_promise_names_the_side_it_covers_384` prüft nur, dass die
+  Zusage nicht ÜBERSCHRITTEN wird; gegen Stumpfheit ist er blind (eine Zusage
+  `≤ 1000 mm` bestünde ihn überall). Der neue Pin verlangt zusätzlich: wo ein
+  `L`-Block im Baum liegt, MUSS die Zusage die Ziel-Toleranz-Klasse sein und
+  die Stück-Schranke benennen — und die Unter-Seite muss weiterhin ausdrücklich
+  ausgenommen sein.
+* `witness_and_runtime_share_the_same_lower_bound_384` — der Lockstep als
+  Identität: der Block IM Baum ist bit-genau (`to_bits` über alle Stück-Worte,
+  `δ`, `slack`, Fernfeld-Kugel) das, was `stop_lb_block` aus dem
+  AUSGELIEFERTEN Baum ergibt. Baut je irgendwer eine zweite Fassung, fällt
+  dieser Pin. Geprüft an neun Stopps.
+* Dazu die einmalige `#[ignore]`-Sonde `probe_384_promise_inventory` (die
+  Tabelle oben, inklusive der Feingitter der Kaskaden-Pins).
+
+**Keine bestehende Pin-Zeile bewegt sich** — der Diff an
+`offset_capability_tests.rs` ist 356 Zeilen Zusatz und 0 Löschungen. Das war
+nicht selbstverständlich: `erosion_rib_comb_cascade_promise_is_true_384` prüft
+den Kamm auf einem 28³-Gitter gegen `promised_bound`, und mit der geschärften
+Zusage `0.010` hätte dort jeder Punkt über 0.011 mm den Pin gerissen. Gemessen
+sind es 0 Punkte.
+
+### Was OFFEN bleibt
+
+* **Member-Formen jenseits Box/Zylinder/konvexem Geraden-Extrude** (Revolve,
+  Sweep, Loft, bogenführende oder nicht-konvexe Profile) verweigern den Block
+  weiterhin — dort gatet `G`, und die `G`-Zusage ist die ehrliche Degradation.
+  Sie ist ab §8q der EINZIGE reale Fall, in dem sie noch auftritt.
+* **Der konvexe Zweig** hat weiterhin kein `L` (`∁Ω` ist dort unbeschränkt) und
+  damit auch keine geschärfte Zusage.
+* **Kosten.** Das Audit wertet `L` jetzt an jedem Zeugen-Abtastpunkt mit aus;
+  am 296-Stück-Kamm ist das der teuerste Fall. Gemessen an der Fixture-Matrix:
+  Synthese + Messung von 2.7 s auf 4.7 s (`#[ignore]`-Sonde, dreizehn Fixturen,
+  je zweimal kompiliert). Das räumliche Pruning der Stück-Liste bleibt
+  unverändert ungebaut (§8o: jedes weggelassene Stück braucht erst einen
+  Trust-Region-Beweis).
+* **Der Wächter bleibt eine Stichprobe.** Der Zeuge sieht jetzt das richtige
+  Feld, aber weiterhin nur 240 Fibonacci-Richtungen × 10 Radien je Station. Ein
+  fehlender Zeuge ist kein Beweis der Exaktheit — deshalb steht die Über-Seiten-
+  Aussage im Text auf dem §8p-SATZ und nicht auf dem Schweigen der Sonde.
+* **Der Unter-Claim-Zeuge**, **Naht gegen Naht**, **spitze Nähte**, **die
+  latente `safe_sqrt`-Entartung**: unverändert §8j/§8k/§8m/§8n.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -3333,6 +3520,17 @@ erst einen Trust-Region-Beweis).
   (`LB_AVAIL` + zwei `select`), `cgal-mesher/src/sdf_interp.h`
   (`FD_LB_AVAIL` + zwei Ternäre). **Kein Tape-Format, keine Opcodes, keine
   Payload-Längen** — `tape_spec.h` und `sdfRenderer.ts` sind unberührt.
+- Produktionscode §8q: `offset_channel.rs` (`attach_prisms` — die
+  Prisma-Verdrahtung, bisher inline im Aufrufer; `stop_lb_block` — der
+  `L`-Block, jetzt VOR dem Audit gebaut; `lb`-Parameter von
+  `end_region_violation` und `audit_channel_end_caps`; sechster Rückgabewert
+  von `synthesize_stop`; die beiden `L`-abhängigen Report-Texte).
+  **Kein Auswerter, kein Opcode, kein Payload-Wort, kein Spiegel** — Golden
+  35/35 byte-identisch.
+- Pins §8q in `offset_capability_tests.rs`: `promise_matrix` (die zwölf
+  Fixturen als eine Liste), `promise_is_as_sharp_as_the_field_384`,
+  `witness_and_runtime_share_the_same_lower_bound_384` und die
+  `#[ignore]`-Sonde `probe_384_promise_inventory`.
 - Sonden §8p in `offset_capability_tests.rs`: `probe_384_seam_vs_seam`
   (Term-für-Term-Zerlegung), `probe_384_lb_only_gate` (A/B über alle
   Fixturen), `probe_384_p8p_control` (Kontroll-Äquivalenz),

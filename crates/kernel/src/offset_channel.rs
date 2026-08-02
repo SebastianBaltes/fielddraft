@@ -625,6 +625,76 @@ fn lb_skip_sphere(
     Some((c, r))
 }
 
+/// #384 §8q — **die Prisma-Verdrahtung, EINMAL.**
+///
+/// Die Kontakt-Prismen (#395) hängen als reguläre Boolean-Member VOR dem ±δ im
+/// gefalteten Baum: Erosion als Union-Member (füllt den Phantom-Schlitz),
+/// Dilation als Difference-Rechtskind (tilgt den Phantom-Fin,
+/// Komplement-Dualität). Genau dieser Baum ist die Quelle des naiven Stoppwerts
+/// `d₀` UND die Quelle der Member-Vereinigung, aus der `L` synthetisiert wird —
+/// deshalb darf es davon nur EINE Fassung geben. Bis §8p stand sie inline im
+/// Aufrufer, und der `L`-Block entstand danach; seit §8q baut
+/// [`stop_lb_block`] denselben Baum, damit der Randpunkt-Zeuge dasselbe `L`
+/// sieht, das ausgeliefert wird.
+fn attach_prisms(node: BoundedCsg, prisms: &[BoundedCsg], delta: f32) -> BoundedCsg {
+    let mut node = node;
+    for prism in prisms {
+        node = if delta < 0.0 {
+            let bb = Aabb::union(node.aabb(), prism.aabb());
+            BoundedCsg::Union {
+                left: Box::new(node),
+                right: Box::new(prism.clone()),
+                aabb: bb,
+            }
+        } else {
+            // Difference: das Ergebnis kann nur schrumpfen → linke AABB.
+            let bb = node.aabb();
+            BoundedCsg::Difference {
+                left: Box::new(node),
+                right: Box::new(prism.clone()),
+                aabb: bb,
+            }
+        };
+    }
+    node
+}
+
+/// #384 §8q — **der `L`-Block des Stopps, gebaut VOR dem Audit.**
+///
+/// Bis §8p entstand der Block erst im Aufrufer, also NACH
+/// [`audit_channel_end_caps`]; der Randpunkt-Zeuge rief deshalb
+/// `stop_apply(…, None)` und mass den `G`-Kappen-Pfad, während ausgeliefert
+/// längst das `L`-Gate wurde. Die Zusage war dadurch nie falsch (`G` ist die
+/// SCHWÄCHERE Aussage), aber am Rippen-Kamm 87-fach stumpfer als das Feld:
+/// gemeldet `≤ 0.868 mm`, gemessen `0` Phantom-Punkte.
+///
+/// Jetzt baut die Synthese den Block EINMAL, an dieser Stelle, und gibt ihn
+/// nach oben durch — der Zeuge und der Auswerter teilen sich **dasselbe
+/// Objekt**. Lockstep ist damit keine Behauptung über zwei Nachbildungen,
+/// sondern Identität: gleiche Stücke, gleicher `slack`, gleiche Fernfeld-Kugel,
+/// gleicher Innen-Indikator, gleiche [`LB_AVAIL`]-Schwelle — weil es nur einen
+/// Block gibt und beide Seiten durch [`stop_lb_value`] auf ihn zugreifen.
+///
+/// Nur der KONKAVE Stopp (`δ < 0` über einer Union) hat eine
+/// Member-Vereinigung, und nur sein Gate ist `G − d₀`. Ein nicht darstellbarer
+/// Member (Revolve, Sweep, nicht-konvexes Profil) lässt die Synthese den ganzen
+/// Block verweigern: ein fehlendes Randstück ist der EINE Fehler, den `L` nicht
+/// machen darf.
+pub(crate) fn stop_lb_block(
+    inner: &BoundedCsg,
+    prisms: &[BoundedCsg],
+    channels: &[OffsetChannel],
+    verts: &[VertexSphere],
+    delta: f32,
+) -> Option<crate::offset_lb::LbBlock> {
+    if delta >= 0.0 {
+        return None;
+    }
+    let (c, r) = lb_skip_sphere(channels, verts)?;
+    let src = attach_prisms(inner.clone(), prisms, delta);
+    crate::offset_lb::synthesize_lb(&src, delta.abs(), c, r)
+}
+
 /// #384 §8o — das `L`-Register des Stopps (Spiegel von `OP_STOP_LB`).
 /// Ohne Block ist es [`crate::offset_lb::LB_NONE`] = `−1e30`, das `max` im Gate
 /// also wirkungslos: **die Kontroll-Äquivalenz ist keine Messung, sondern eine
@@ -1498,10 +1568,17 @@ fn boundary_witness(
 /// nächsten das Gate. An zwei koaxialen Naben (beide Nähte Kreise) blieb der
 /// Wächter deshalb still, während das Feld 2.0 mm Phantom-Material
 /// behauptete. Jetzt kommen je Bogen drei innere Stationen dazu.
+///
+/// #384 §8q — **der Zeuge sieht jetzt dasselbe Feld wie die Laufzeit.** Bis
+/// §8p rief er `stop_apply(…, None)`, weil der `L`-Block erst nach dem Audit
+/// entstand. Seit §8q baut [`stop_lb_block`] ihn davor, und `lb` ist
+/// buchstäblich derselbe Block, der gleich darauf im Baum landet — kein
+/// Nachbau, keine zweite Klemmen-Fassung.
 fn end_region_violation(
     channels: &[OffsetChannel],
     verts: &[VertexSphere],
     field: &dyn Fn([f32; 3]) -> f32,
+    lb: Option<&crate::offset_lb::LbBlock>,
     delta_signed: f32,
     tol: f32,
 ) -> Option<(f32, f32, [f32; 3])> {
@@ -1560,20 +1637,15 @@ fn end_region_violation(
                     if !d.is_finite() {
                         continue;
                     }
-                    // #384 §8p — **der Zeuge sieht das Feld OHNE `L`.** Seit
-                    // §8p gatet die untere Distanzschranke allein, wo es sie
-                    // gibt; hier steht sie noch nicht zur Verfügung (der Block
-                    // entsteht erst nach dem Audit), also misst der Zeuge den
-                    // `G`-Kappen-Pfad. Die Richtung ist die sichere: die
-                    // gemeldete Zusage ist damit höchstens SCHWÄCHER als das
-                    // ausgelieferte Feld, nie stärker. Am Rippen-Kamm 4×2.0/1.0
-                    // meldet der Report deshalb weiter die `G`-Schranke, obwohl
-                    // die Über-Seite gemessen leer ist. Den Zeugen mit
-                    // demselben `L` rechnen zu lassen, das ausgeliefert wird,
-                    // ist ein eigenes Paket: es ändert die Status-Meldung JEDER
-                    // Fixture mit `L`-Block (§8p, „Was das für die Zusage
-                    // heisst").
-                    let corr = stop_apply(d, x, channels, verts, None);
+                    // #384 §8q — **dasselbe `L`, das ausgeliefert wird.** `d`
+                    // IST der naive Stoppwert `d₀` (`field` ist der Baum mit
+                    // Prismen, `delta_signed` das ±δ desselben Stopps), also
+                    // liest `stop_apply` hier denselben Innen-Indikator,
+                    // dieselbe Term-Kugel und dieselbe `LB_AVAIL`-Schwelle wie
+                    // der Auswerter. Bis §8p stand hier `None` und der Zeuge
+                    // mass den `G`-Kappen-Pfad — ehrlich, aber am Rippen-Kamm
+                    // 87-fach stumpfer als das Feld.
+                    let corr = stop_apply(d, x, channels, verts, lb);
                     // Geprüft wird die NULLMENGE (die Zusage des Stopps), und
                     // nur, was der Term VERURSACHT: das naive Feld muss den
                     // Punkt richtig klassifizieren, das korrigierte falsch.
@@ -1641,7 +1713,8 @@ fn end_region_violation(
                 if !d.is_finite() {
                     continue;
                 }
-                let corr = stop_apply(d, x, channels, verts, None);
+                // #384 §8q: derselbe Block wie im Kanal-Zweig (s. o.).
+                let corr = stop_apply(d, x, channels, verts, lb);
                 let flipped = if delta_signed > 0.0 {
                     d <= 0.0 && corr > 0.0
                 } else {
@@ -4693,12 +4766,16 @@ fn synthesize_stop(
     // #384 §8e: `true` = die enge Kanal-Zusage ist an diesem Stopp widerlegt
     // (der Aufrufer unterdrückt dann seine `tol`-Notiz).
     bool,
+    // #384 §8q: die untere Distanzschranke des Stopps — hier gebaut, DAMIT der
+    // Randpunkt-Zeuge sie sieht, und vom Aufrufer unverändert in den Baum
+    // gehängt. Ein Objekt, zwei Leser: das ist der Lockstep.
+    Option<crate::offset_lb::LbBlock>,
 ) {
     let union_form = delta < 0.0;
     let mut members = Vec::new();
     flatten_members(inner, union_form, 1.0, &mut members);
     if members.len() < 2 {
-        return (Vec::new(), Vec::new(), Vec::new(), Vec::new(), false);
+        return (Vec::new(), Vec::new(), Vec::new(), Vec::new(), false, None);
     }
     // Phase 4 (#398): der ∂P-Rand-Fillet dieses Stopps aus DERSELBEN
     // `contact_clips`-Quelle wie die Prismen (faithful Accept/Refuse-Mirror,
@@ -5068,10 +5145,13 @@ fn synthesize_stop(
                                     union_form, gate_eps,
                                 );
                                 set_end_plane_gates(&mut channels, &chan_step, &verts);
+                                let lb =
+                                    stop_lb_block(inner, &prisms, &channels, &verts, delta);
                                 let capped = audit_channel_end_caps(
-                                    &channels, &verts, inner, &prisms, delta, tol, report,
+                                    &channels, &verts, inner, &prisms, lb.as_ref(), delta, tol,
+                                    report,
                                 );
-                                return (channels, verts, prisms, rims, capped);
+                                return (channels, verts, prisms, rims, capped, lb);
                             }
                             // Schon von einer früheren Kurve abgedeckt?
                             if claimed.iter().any(|q| norm(sub(*q, seed)) < step * 1.5) {
@@ -5272,10 +5352,13 @@ fn synthesize_stop(
                                         union_form, gate_eps,
                                     );
                                     set_end_plane_gates(&mut channels, &chan_step, &verts);
+                                    let lb =
+                                        stop_lb_block(inner, &prisms, &channels, &verts, delta);
                                     let capped = audit_channel_end_caps(
-                                        &channels, &verts, inner, &prisms, delta, tol, report,
+                                        &channels, &verts, inner, &prisms, lb.as_ref(), delta,
+                                        tol, report,
                                     );
-                                    return (channels, verts, prisms, rims, capped);
+                                    return (channels, verts, prisms, rims, capped, lb);
                                 }
                                 // #384 §8k — **die Sperrliste erst JETZT.**
                                 // Sie verhindert, dass dieselbe Naht aus 64
@@ -5327,8 +5410,10 @@ fn synthesize_stop(
     snap_channel_ends_to_junctions(&mut channels, &chan_step);
     set_face_plane_gates(&mut channels, &members, &branch_maps, &branch_lists, union_form, gate_eps);
     set_end_plane_gates(&mut channels, &chan_step, &verts);
-    let capped = audit_channel_end_caps(&channels, &verts, inner, &prisms, delta, tol, report);
-    (channels, verts, prisms, rims, capped)
+    let lb = stop_lb_block(inner, &prisms, &channels, &verts, delta);
+    let capped =
+        audit_channel_end_caps(&channels, &verts, inner, &prisms, lb.as_ref(), delta, tol, report);
+    (channels, verts, prisms, rims, capped, lb)
 }
 
 /// #384 §8e: prüft NACH dem End-Kappen-Gate, ob die Korrektur in der
@@ -5360,11 +5445,20 @@ fn synthesize_stop(
 ///
 /// Rückgabe: `true`, wenn die enge Zusage gefallen ist (der Aufrufer
 /// unterdrückt dann seine `tol`-Notiz).
+///
+/// #384 §8q — **das Audit rechnet mit dem ausgelieferten `L`.** Der Parameter
+/// `lb` ist derselbe Block, den der Aufrufer gleich darauf in den Baum hängt
+/// ([`stop_lb_block`]). Wo `L` verfügbar ist, kann der Zeuge strukturell kein
+/// Phantom-Material mehr finden (§8p-Satz: `f ≥ δ − L ≥ δ − dist`); findet er
+/// trotzdem eines, war `L` an diesem Punkt NICHT verfügbar (kein Block, `x ∉ Ω`,
+/// ausserhalb der Term-Kugel) — dort gatet weiterhin `G`, und `G` ist genau die
+/// Schranke, die dieser Zweig meldet.
 fn audit_channel_end_caps(
     channels: &[OffsetChannel],
     verts: &[VertexSphere],
     inner: &BoundedCsg,
     prisms: &[BoundedCsg],
+    lb: Option<&crate::offset_lb::LbBlock>,
     delta_signed: f32,
     tol: f32,
     report: &mut crate::offset_capability::CapabilityReport,
@@ -5385,7 +5479,7 @@ fn audit_channel_end_caps(
         v
     };
     let Some((viol, gate, at)) =
-        end_region_violation(channels, verts, &field, delta_signed, tol)
+        end_region_violation(channels, verts, &field, lb, delta_signed, tol)
     else {
         return false;
     };
@@ -5399,7 +5493,9 @@ fn audit_channel_end_caps(
             "Duale Boolean-Kante über Arc-Spline-Kanäle korrigiert — am Nahtende aber NICHT auf die \
              Bau-Toleranz: der Term greift dort über Fremdgeometrie, und der Randpunkt-Zeuge bei \
              [{:.2}, {:.2}, {:.2}] weist {viol:.3} mm Fehlklassifikation nach — MEHR als die \
-             strukturelle Gate-/B0-Schranke {gate:.3} mm. Damit ist keine Schranke mehr belegbar.",
+             strukturelle Gate-/B0-Schranke {gate:.3} mm. Damit ist keine Schranke mehr belegbar. \
+             (Dort trägt die Stück-Schranke L nicht — mit ihr wäre der Über-Claim strukturell \
+             ausgeschlossen, #384 §8q.)",
             at[0], at[1], at[2]
         ));
         return true;
@@ -5408,7 +5504,8 @@ fn audit_channel_end_caps(
         "Duale Boolean-Kante über Arc-Spline-Kanäle korrigiert — am Nahtende aber NICHT auf die \
          Bau-Toleranz: dort greift der Term über Fremdgeometrie (Randpunkt-Zeuge bei \
          [{:.2}, {:.2}, {:.2}], nachgewiesene Fehlklassifikation {viol:.3} mm). Fehler ≤ \
-         {gate:.3} mm (Gate-/B0-Schranke).",
+         {gate:.3} mm (Gate-/B0-Schranke) — dort trägt die Stück-Schranke L nicht, sonst wäre \
+         der Über-Claim strukturell ausgeschlossen (#384 §8q).",
         at[0], at[1], at[2]
     ));
     true
@@ -5577,7 +5674,7 @@ pub fn synthesize_offset_channels_reported(
             // Prismen, Konkavitäts-Gate inklusive) — sie schließen den δ-schmalen
             // Sliver/Keil, den das Prisma stehen lässt, und fließen in die
             // Capability-Note (Rest = tol statt 0.75·δ).
-            let (channels, verts, prisms, rims, cap_over_claim) =
+            let (channels, verts, prisms, rims, cap_over_claim, lb) =
                 synthesize_stop(&inner, delta, tol, report);
             // #395: die Kontakt-Prismen als reguläre Boolean-Member VOR dem ±δ in
             // den gefalteten Baum hängen (Design §3.2). Da S ⊆ U (Erosion) bzw.
@@ -5590,29 +5687,12 @@ pub fn synthesize_offset_channels_reported(
             //   Dilation `+δ` über Intersection/Difference: `max(f_inner, −f_S)`
             //     (Difference-Rechtskind, tilgt den Phantom-Fin — Stufe 3,
             //     Komplement-Dualität).
+            // #384 §8q: EINE Fassung der Verdrahtung ([`attach_prisms`]) — dieselbe,
+            // aus der `stop_lb_block` den `L`-Block gebaut hat.
             let inner: Box<BoundedCsg> = if prisms.is_empty() {
                 inner
             } else {
-                let mut node = *inner;
-                for prism in prisms {
-                    node = if delta < 0.0 {
-                        let bb = Aabb::union(node.aabb(), prism.aabb());
-                        BoundedCsg::Union {
-                            left: Box::new(node),
-                            right: Box::new(prism),
-                            aabb: bb,
-                        }
-                    } else {
-                        // Difference: das Ergebnis kann nur schrumpfen → linke AABB.
-                        let bb = node.aabb();
-                        BoundedCsg::Difference {
-                            left: Box::new(node),
-                            right: Box::new(prism),
-                            aabb: bb,
-                        }
-                    };
-                }
-                Box::new(node)
+                Box::new(attach_prisms(*inner, &prisms, delta))
             };
             let stop = BoundedCsg::Offset { inner, delta, aabb };
             if channels.is_empty() && verts.is_empty() && rims.is_empty() {
@@ -5625,13 +5705,33 @@ pub fn synthesize_offset_channels_reported(
                 // Zusage an diesem Stopp mit einem Randpunkt-Zeugen widerlegt
                 // und die ehrliche (weitere) Schranke bereits notiert — dann
                 // wäre diese Notiz ein Bound-Over-Claim.
-                report.note_tolerance(format!(
-                    "Duale Boolean-Kante über Arc-Spline-Kanäle toleranzbeschränkt korrigiert: \
-                     PHANTOM-Material ≤ {tol} mm (Ziel-Toleranz). FEHLENDES Material ist davon \
-                     NICHT gedeckt — wo ein Gate bindet (Ein-Term-Kappe G, δ-verschobene \
-                     End-Ebene), bleibt der naive Sliver stehen; für diese Richtung ist keine \
-                     Schranke belegbar (#384 §8k)."
-                ));
+                // #384 §8q — **die Begründung der Ausnahme hängt daran, WAS gatet.**
+                // Ohne Stück-Schranke ist es die Ein-Term-Kappe `G`; mit ihr gatet
+                // seit §8p `L − δ` allein, und dann ist die Über-Seite nicht mehr
+                // bloss toleranzbeschränkt, sondern strukturell leer (§8p-Satz:
+                // jeder addierende Term erfüllt `f ≥ δ − L ≥ δ − dist`). Die
+                // Unter-Seite bleibt in BEIDEN Fällen ungedeckt — dort entscheidet
+                // die geometrische Klemme `w_geo`, nicht das Gate, und für sie gibt
+                // es weiterhin keinen Satz.
+                report.note_tolerance(match lb.as_ref() {
+                    Some(b) => format!(
+                        "Duale Boolean-Kante über Arc-Spline-Kanäle toleranzbeschränkt korrigiert, \
+                         gegatet von der Stück-Schranke L des Stopps ({} Randstücke, #384 §8p): \
+                         PHANTOM-Material ≤ {tol} mm (Ziel-Toleranz) — und darüber hinaus \
+                         strukturell ausgeschlossen, weil jeder addierende Term \
+                         f ≥ δ − L ≥ δ − dist(x,∁Ω) erfüllt. FEHLENDES Material ist davon NICHT \
+                         gedeckt: dafür ist die geometrische Klemme massgeblich, nicht das Gate; \
+                         für diese Richtung ist keine Schranke belegbar (#384 §8k).",
+                        b.pieces.len()
+                    ),
+                    None => format!(
+                        "Duale Boolean-Kante über Arc-Spline-Kanäle toleranzbeschränkt korrigiert: \
+                         PHANTOM-Material ≤ {tol} mm (Ziel-Toleranz). FEHLENDES Material ist davon \
+                         NICHT gedeckt — wo ein Gate bindet (Ein-Term-Kappe G, δ-verschobene \
+                         End-Ebene), bleibt der naive Sliver stehen; für diese Richtung ist keine \
+                         Schranke belegbar (#384 §8k)."
+                    ),
+                });
             }
             let aabb = Aabb::union(
                 Aabb::union(
@@ -5640,18 +5740,9 @@ pub fn synthesize_offset_channels_reported(
                 ),
                 rims_aabb(&rims),
             );
-            // #384 §8o: die untere Distanzschranke des Stopps. Nur der KONKAVE
-            // Stopp (`δ < 0` über einer Union) hat eine Member-Vereinigung, und
-            // nur sein Gate ist `G − d₀`. Quelle ist `inner` NACH dem Anhängen
-            // der Kontakt-Prismen — genau der Baum, aus dem auch `d₀` entsteht.
-            // Ein nicht darstellbarer Member (Prisma, Revolve, Sweep) lässt die
-            // Synthese den ganzen Block verweigern: ein fehlendes Randstück ist
-            // der EINE Fehler, den `L` nicht machen darf.
-            let lb = match (&stop, delta < 0.0) {
-                (BoundedCsg::Offset { inner: src, .. }, true) => lb_skip_sphere(&channels, &verts)
-                    .and_then(|(c, r)| crate::offset_lb::synthesize_lb(src, delta.abs(), c, r)),
-                _ => None,
-            };
+            // #384 §8q: `lb` kommt aus [`stop_lb_block`] — dem SELBEN Aufruf, den
+            // der Randpunkt-Zeuge im Audit gelesen hat. Bis §8p wurde er hier ein
+            // zweites Mal synthetisiert, und das Audit lief davor mit `None`.
             BoundedCsg::ArcChannel {
                 inner: Box::new(stop),
                 channels,

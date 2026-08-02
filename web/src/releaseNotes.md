@@ -1,3 +1,6 @@
+## 0.56.15
+- fix(kernel) #384: Die Genauigkeits-Zusage eines erodierten Boolean-Körpers meldet jetzt, was das Feld wirklich leistet. Bisher prüfte der interne Zeuge, aus dem die Zusage entsteht, eine ältere Fassung des Feldes ohne die untere Distanzschranke — an einer Rippenreihe stand deshalb „Fehler ≤ 0.868 mm“ im Bericht, obwohl kein einziger Messpunkt Phantom-Material zeigt. Jetzt ist es die Ziel-Toleranz von 0.01 mm, und der Bericht nennt die Schranke, die tatsächlich gatet, statt der abgelösten pauschalen Kappe. Das Feld selbst bleibt Punkt für Punkt unverändert.
+
 ## 0.56.14
 - fix(kernel) #384: Erodierte Körper mit dicht stehenden Rippen behaupten kein Material mehr dort, wo die freie Nachbarfläche näher liegt als die Naht, die es behauptet — bis zu 0.81 mm Phantom-Material an einer Rippenreihe verschwinden. Trägt der Stopp eine untere Distanzschranke aus dem zugeschnittenen Körperrand, entscheidet ab sofort nur noch sie über die Korrektur; die alte pauschale Kappe bleibt nur dort, wo es keine solche Schranke gibt. Neu erkannt werden dabei auch gerade, konvexe Extrusionen als Rand-Quelle — damit bekommen auch Rippenreihen mit Kontaktkörpern diese Schranke. Nabe, Ecken-Schalen und Kerben bleiben Punkt für Punkt unverändert.
 

@@ -970,6 +970,40 @@ für Shell.
   Messtabellen: `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md`
   §8p.
 
+* **Die Zusage sah ein Feld, das nicht mehr ausgeliefert wird
+  (#384 §8q, v0.56.15, 2026-08-02).** §8p hatte es benannt und liegen lassen:
+  der Randpunkt-Zeuge, aus dem die Genauigkeits-Zusage eines Stopps entsteht,
+  rief `stop_apply(…, None)` — er mass den `G`-Kappen-Pfad, während seit §8p
+  die Stück-Schranke `L` allein gatet. Die Richtung war die sichere (die
+  gemeldete Schranke ist SCHWÄCHER als das Feld), der Preis stand nicht in
+  Zahlen da. **Das Inventar zuerst:** von zwölf Fixturen melden zehn die enge
+  Zusage `≤ 0.010`, die beiden Rippen-Kämme aber `≤ 0.868` (`G`) — bei
+  gemessen **0** Phantom-Punkten. Die Zusage war 87-fach stumpfer als das
+  Feld. Und: JEDE der zwölf trägt einen `L`-Block (15 … 296 Stücke), womit die
+  Begründung der Unter-Seiten-Ausnahme („wo die Ein-Term-Kappe `G` bindet,
+  bleibt der naive Sliver stehen") in allen zwölf Notizen tot war — die
+  Ausnahme selbst bleibt wahr, ihre Ursache ist die geometrische Klemme
+  `w_geo`, nicht mehr das Gate.
+  **Der Fix ist eine Reihenfolge, keine Nachbildung:** `stop_lb_block` baut den
+  `L`-Block am Ende von `synthesize_stop`, also VOR
+  `audit_channel_end_caps`; das Audit reicht ihn bis `stop_apply` durch, und
+  DERSELBE `Option<LbBlock>` wandert unverändert in den `ArcChannel`-Knoten.
+  Ein Objekt, zwei Leser — damit sind Innen-Indikator `d₀ ≤ δ`, Fernfeld-Kugel,
+  `slack` und die `LB_AVAIL`-Schwelle nicht „in Deckung gehalten", sondern
+  identisch. Dafür musste die Prisma-Verdrahtung aus dem Aufrufer heraus
+  (`attach_prisms`), damit es sie nur EINMAL gibt.
+  **Ergebnis: beide Kämme von `≤ 0.868` auf `≤ 0.010`**, die übrigen zehn
+  unverändert eng, aber mit der richtigen Begründung; kein Feldwert bewegt sich
+  (Golden 35/35 byte-identisch, `check_interp` 35/17920/0), weil keine
+  Auswerter-Zeile, kein Opcode und kein Spiegel berührt wurde. Verworfen mit
+  Grund: die Über-Seite als `exact` melden (die `∂P`-Rand-Fillets laufen nach
+  den Kanal-Termen und tragen eigene Masken), die Zahl auf den `slack` senken
+  (kleiner als die f32-Rechengenauigkeit der sechs Spiegel), und die
+  Unter-Seiten-Ausnahme streichen (zwölf leere Gitter sind kein Satz).
+  Inventar-Tabelle, Lockstep-Begründung, Handrechnung am Kamm-Zeugen und die
+  Gegenprobe des Pins:
+  `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8q.
+
 ## 10. Verweise
 
 * SYNTHESIS.md: §1 (Fehler-Taxonomie), §5 (2×2-Pushdown-Messung,
