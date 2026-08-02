@@ -1024,6 +1024,204 @@ Golden-Suite abdeckt.
   gekrümmten Nähten wächst das Tape also um einen Bogen je gesnappter
   Junction. An den gemessenen Fixturen bleibt es weit unter
   `MAX_ARCS_PER_STOP`.
+  → beide erstgenannten Punkte gemessen in §8h.
+
+## 8h. Die Kaskade bricht — und der Wächter sah nie hin (#384, 2026-08-02)
+
+§8e/§8f/§8g ließen zwei Verdachte ausdrücklich UNGEMESSEN stehen: den
+**Kaskaden-Effekt** sequenzieller Terme („an den gemessenen Fixturen führt das
+zu keiner einzigen Fehlklassifikation, strukturell ausgeschlossen ist es
+nicht") und die **7³-Gitter-Blindheit** der Kontakt-Prismen-Zeugen.
+
+**Der erste bricht.** An einer vollkommen gewöhnlichen Baugruppe — Platte mit
+zweistufiger Nabe — behauptet das Feld 2.0 mm Phantom-Material in freier Luft,
+bei zugesagten 0.01 mm. Der zweite ist bestätigt blind und ist jetzt
+gerichtet.
+
+### Verdacht A — Sonden-Design
+
+Gesucht war eine Szene, in der die Auslenkung ÜBER die Ein-Term-Schranke
+`G = (c−1)·δ + 4·tol` hinaus kaskadiert UND der Stopp trotzdem eine enge
+Zusage macht. Vier Familien, alle gegen exakte Referenzen (Erosion,
+`dist(x, ∁Ω)` als Strahl-Minimum über 160–240 Fibonacci-Richtungen, je
+Richtung exakt über verschmolzene Slab-Intervalle — eine OBERE Schranke, die
+einen Fehler nur unterschätzen, nie erfinden kann), δ = 2 mm, G = 0.868:
+
+| Familie | Konstruktionsidee | Ergebnis |
+|---|---|---|
+| **Rippen-Kamm** (N eingelassene Rippen auf einer Platte) | viele parallele konkave Nähte im Abstand < K, KEINE gemeinsame Junction | **bricht** (bis 1.870 mm), Wächter meldet aber schon `conservative` |
+| **Zapfen-Reihe** (Zylinder-Zapfen, Kreisnähte) | geschlossene Nähte dicht nebeneinander | **hält** (0 Fehler bis Spalt 1.0 mm) — strukturelles Argument s. u. |
+| **V-Rippen** (zwei angewinkelte Rippen) | Kaskade in der Mitte, Naht-Enden weit auseinander | bricht 1.886 mm, aber `G` ist dort selbst 5.767 (spitze Naht) ⇒ Zusage HÄLT |
+| **Stufen-Nabe** (zwei koaxiale Zylinder auf dünner Platte) | ZWEI geschlossene Kreisnähte + freie Platten-Unterseite | **bricht 2.000 mm bei zugesagten 0.01 mm** |
+
+### Der Bruch, Term für Term
+
+Platte `z ∈ [−3, 0]`, Zylinder A (r = 6, `z ∈ [−1.2, 0.5]`), Zylinder B
+(r = 4, `z ∈ [−1.8, 6]`), Erosion δ = 2. Zwei Kanäle, beide Spines
+GESCHLOSSEN. Messpunkt `[−3.60, −1.40, −3.35]` — 0.35 mm UNTER der Platte,
+also in freier Luft (`u = 0`, wahrer Fehler = δ):
+
+| Schritt | Zahlen | `d` |
+|---|---|---|
+| naiv | korrekt außen | **+2.3494** |
+| ch0 (Kreis r = 6) | `de = 3.9756` knapp über `K = 3.908` ⇒ `w_geo = K − de = −0.0671` ⇒ **Luftseiten-Klemme** | +2.3494 → **+0.0671** |
+| ch1 (Kreis r = 4) | `de = 3.852 < K`, im Kegel (`s₂ = +0.133`), `w_geo = +0.0564`; `gate = G − d =` **+0.8013** statt −1.4810 | +0.0671 → **−0.0564** |
+
+Ohne ch0 stünde ch1s Gate bei `0.868 − 2.349 = −1.481`, der Term wäre
+strukturell AUS. 3396 Gitterpunkte einer 44³-Sonde fielen so.
+
+**Der Verstärker ist die Luftseiten-Klemme, nicht die Addition.** Der
+konkave Zweig hat drei Fälle; nur einer kann das Vorzeichen kippen
+(`w > 0 ⇒ f = min(d, −w)`), und der verlangt `gate = G − d > 0`, also
+`d < G`. Weil das naive Feld konservativ ist (`d₀ ≥ e`), gilt für einen
+EINZELNEN Term deshalb immer `Fehler = e ≤ d₀ < G` — die Ein-Term-Schranke
+ist ein Satz, kein Schätzwert. Die Klemme `min(d, −w_geo)` ist der einzige
+Zweig, der `d` senkt, OHNE das Vorzeichen zu kippen — und sie ist nach unten
+unbeschränkt: direkt außerhalb des Trust-Radius ist `−w_geo = de − K → 0⁺`.
+Ein einziger Term genügt also, um jedem folgenden das volle `G` zu öffnen.
+Genau das ist die Kaskade; „zwei weit auseinander liegende Nähte" (§8f) war
+eine zu enge Beschreibung.
+
+**Warum die Zapfen-Reihe hält** (Negativ-Befund mit Begründung): die
+Normalkegel zweier BENACHBARTER konkaver Nähte zeigen voneinander WEG. Am
+Fuß eines Zapfens ist der Kegel der Kreisnaht der Schatten UNTER dem Zapfen;
+der Nachbarzapfen hat seinen eigenen, disjunkten Schatten. Ein Über-Claim
+entsteht erst, wo sich Kegel ÜBERLAPPEN — bei zwei Nähten desselben
+Bauteils (Rippe: linke und rechte Fußnaht überlappen unter der Rippe) oder
+bei koaxialer Stufung. Nähe allein genügt nicht; es braucht Kegel-Überlappung.
+
+### Warum der Wächter still blieb
+
+`end_region_violation` — seit §8e der empirische Nachhalter des Beweises —
+sondierte ausschließlich die BEIDEN ENDEN jeder Spine und übersprang
+geschlossene Kurven vollständig (`if |start − end| < 1e-4 { continue }`).
+Beide Nähte der Stufen-Nabe sind Kreise. Der Wächter hat dort nie gesucht.
+
+Am Rippen-Kamm fiel der Bruch nur deshalb auf, weil dieselbe Fehlerklasse
+zufällig auch an den Naht-ENDEN auftrat (die Rippen ragen über die Platte
+hinaus). Das ist Glück, keine Deckung: die V-Rippen-Sonde trennt Mitte und
+Enden gezielt, und dort meldete der Wächter zwar etwas — aber die Zusage war
+wegen der spitzen Naht ohnehin weit (5.767 mm).
+
+### Fix — der Wächter sieht jetzt die ganze Naht
+
+Report-seitig, kein Feld-Eingriff: `end_region_violation` sammelt je Kanal
+**Stationen** statt Enden — die beiden Enden (nur bei offener Spine) PLUS je
+Bogen drei innere Punkte (`t ∈ {0.25, 0.5, 0.75}`, Bogenzahl gedeckelt auf 8
+per `step_by`), jeweils mit den dort interpolierten Dualkegel-Vektoren als
+Kegel-Filter. Der Rest der Sonde ist unverändert: 240 Fibonacci-Richtungen ×
+10 Radien im Wirkfenster `δ < r < K`, volle Korrektur (alle Kanäle, dann alle
+Vertex-Kugeln — wie der Evaluator), und ein Zeuge ist erst ein Zeuge, wenn
+`boundary_witness` einen Randpunkt näher als δ NACHWEIST. Übersteigt er die
+strukturelle Schranke `gate`, meldet die Capability `conservative` (§8g-Regel
+„ein Zeuge ist keine Schranke").
+
+Damit ist die Stufen-Nabe `conservative` statt „≤ 0.01 mm" — ehrliches
+Downgrade statt gebrochenem Versprechen.
+
+### Was das NICHT ist — und was der saubere Endzustand wäre
+
+Der Wächter ist eine Stichprobe; die Kaskade bleibt strukturell offen. Der
+saubere Fix ist gemessen und benannt: **das Gate muss gegen den NAIVEN
+Stopp-Wert `d₀` rechnen, nicht gegen den laufenden `d`.**
+
+* Er ist beweisbar scharf: mit `gate = G ∓ d₀` gilt `|f − d₀| ≤ G` für jeden
+  Term und damit global — die Ein-Term-Schranke wird zur echten Schranke.
+* Er kostet legitime Korrektur NICHTS: der Maximalbedarf eines Terms ist
+  `de − δ ∓ d₀ ≤ (c−1)·δ` genau am naiven Scheitel; das Gate mit `d₀` ist
+  exakt so weit wie nötig (`de ≤ c·δ` ⟺ `de − δ ≤ G − d₀`, da `d₀ = δ − L`
+  und `L ≥ de/c`).
+* Er stellt die **Reihenfolge-Unabhängigkeit** her, die der Modulkopf für die
+  Vertex-Kugeln bereits behauptet („Reihenfolge feldwert-neutral") und die
+  heute nur ohne Gate gilt: alle Terme sind `min` (konkav) bzw. `max`
+  (konvex), einzig das Gate macht das Ergebnis von der Term-Reihenfolge
+  abhängig.
+* Er ist eine **Opcode-Semantik-Änderung**: der Tape ist eine Stack-Maschine,
+  jeder `OP_ARC_CHANNEL` popt `d` und pusht das Ergebnis — der naive Wert ist
+  nach dem ersten Term weg. Minimal-invasive Bauform: EIN neuer Opcode ohne
+  Payload (`base = top of stack`, direkt nach dem Stopp emittiert) plus ein
+  Skalar-Register in jedem Evaluator; die Payload-Layouts von
+  `OP_ARC_CHANNEL`/`OP_VERTEX_SPHERE` bleiben unberührt. Sechs Spiegel plus
+  `tape_spec.h` — eigenes Paket, wie §8f eines war.
+
+Zwei naheliegende Abkürzungen sind **geprüft und verworfen**:
+
+* **Trust-Radius gegen die Nachbar-Naht klemmen** (der §8g-Spiegel für
+  Kanäle). Wirkungslos gegen die Kaskade: die Klemme begrenzt das
+  ADDITIONS-Band, der Verstärker ist aber der Klemm-Zweig, und der greift
+  überall, wo `channel_skip` den Term nicht ohnehin überspringt. Am
+  Rippen-Kamm (Nähte 0.8 mm auseinander) würde `K ← max(D − δ, δ) = δ` beide
+  Kanäle ganz abschalten und den Über-Claim gegen einen gleich großen
+  UNTER-Claim (B0-Sliver bis `(c−1)·δ`) tauschen — kein Gewinn, nur eine
+  andere Lüge.
+* **Die Klemme selbst deckeln** (`f = min(d, max(−w_geo, d − G))`, also `−w`
+  statt `−w_geo`). Schließt die Stufen-Nabe (eine Klemme kostet dann höchstens
+  `G` statt beliebig viel), aber nicht den Rippen-Kamm: dort ist
+  `−w_geo = δ − de = 0.550` von sich aus kleiner als `d − G`, die Kaskade
+  bleibt (0.925 mm bei 0.868 zugesagt). Ein halber Fix ist kein Fix.
+
+### Verdacht B — die 7³-Gitter des Kontakt-Prismas
+
+`prism_subset_of_union` (S ⊆ U) und `prism_outside_inner` (S ⊆ ∁Innenkörper)
+tasteten mit einem 7³-Gitter über der Prisma-AABB ab. Beide Prüfungen haben
+dieselbe Form „Verletzung = beide Bedingungen gleichzeitig", also
+`V(x) = min(a, b) > 0`. Ein Gitter FINDET eine Verletzung nur, wenn ein
+Stützpunkt zufällig in `{V > 0}` fällt — bei einer dünnen Schicht ist das
+prinzipiell aussichtslos.
+
+Statt zu hoffen, wird `V` jetzt **maximiert**: das 7³-Gitter liefert nur noch
+die Saaten (jeder alte Fund bleibt damit ein Fund, die Prüfung wird strikt
+schärfer, nie laxer), und von den acht besten läuft eine
+Koordinaten-Pattern-Search mit halbierender Schrittweite bergauf (Start:
+halbe Zellweite, Ende: unter der Bau-Toleranz; Abbruch, sobald `V > 0` — ein
+Punkt IST der Beweis).
+
+Beleg mit einer künstlich eingebauten Regression
+(`thin_violation_layer_is_found_by_directed_probe_384`, δ-frei, rein
+geometrisch): eine 0.06 mm dünne, schräg liegende Verletzungsschicht in einer
+20-mm-AABB (Zellweite 3.33 mm), als `min` zweier Halbräume gebaut und so
+gelegt, dass der nächste der 343 Rasterwerte 0.058 mm entfernt ist.
+
+| Netz | Ergebnis |
+|---|---|
+| 7³-Gitter (alt) | größter Wert < 0 — **verpasst** |
+| gerichtete Suche (§8h) | `V > 0`, Ort liegt nachweislich IN der Schicht — **gefunden** |
+
+Gegenprobe `directed_probe_invents_no_violation_384`: wo keine Verletzung
+existiert, findet die Suche auch keine (sonst wäre der Preis eine
+Verweigerungs-Lawine an gesunden Prismen).
+
+### Bilanz
+
+| Szene | vorher | Zusage vorher | nachher | Zusage nachher |
+|---|---|---|---|---|
+| Stufen-Nabe (2 Kreisnähte) | 3396 Fehler, **2.000 mm** | ≤ 0.010 (still) | unverändert (Feld unberührt) | `conservative`, Zeuge 2.366 mm |
+| Rippen-Kamm 4×1.5/0.8 | 3910 Fehler, 1.870 mm | `conservative` | unverändert | `conservative` |
+| Rippen-Kamm 4×2.0/1.0 | 2652 Fehler, 0.925 mm | `conservative` | unverändert | `conservative` |
+| Zapfen-Reihe (Spalt 1.0–3.0) | **0 Fehler** | ≤ 0.010 | unverändert | ≤ 0.010 wahr |
+| Rippen bündig (ylen = Platte) | 714 Fehler, 0.733 mm | ≤ 0.868 | unverändert | ≤ 0.868 wahr |
+| Prismen-Zeuge, 0.06-mm-Schicht | verpasst | — | gefunden | — |
+| Golden (35 Szenen) | — | — | **35/35 byte-identisch** | — |
+| `cargo test --workspace` | 1536 | — | **1540** | — |
+
+Die Golden-Neutralität ist wieder die Aussage des Pakets: **kein Feldwert
+ändert sich.** Beide Eingriffe sind Verweigerungs-/Report-Logik — der eine
+sucht breiter, der andere gerichteter. Was sich ändert, ist ausschließlich,
+worüber der Stopp die Wahrheit sagt.
+
+### Was OFFEN bleibt
+
+* **Die Kaskade selbst.** Strukturell offen; der Wächter meldet sie, er
+  verhindert sie nicht. Der Fix ist oben benannt und vermessen
+  (`gate` gegen `d₀`) und braucht ein Opcode-Paket.
+* **Der Wächter bleibt eine Stichprobe.** Er sondiert jetzt die ganze Naht,
+  aber mit 240 Richtungen × 10 Radien je Station und drei Stationen je Bogen
+  (bei > 8 Bögen ausgedünnt). Eine sehr lokale Fehlstelle an einer langen,
+  fein zerlegten Naht kann er weiterhin verfehlen.
+* **Quer zur Naht** unverändert das Phase-C-Restrisiko: liegt Fremdgeometrie
+  innerhalb des Normalkegels näher als `K`, gibt es keine
+  Exaktheitsgarantie — die Stufen-Nabe ist genau dieser Fall (die
+  Platten-Unterseite konkurriert mit der Kreisnaht), nur eben jetzt gemeldet.
 
 ## 9. Geschriebene Dateien
 
@@ -1043,7 +1241,8 @@ Golden-Suite abdeckt.
   `junction_anchor`, `snap_channel_ends_to_junctions`, `set_end_plane_gates`,
   `end_region_violation`, `audit_channel_end_caps`; ferner
   `box_contact_faces`, `clip_convex`,
-  `cleanup_poly`, `plane_frame`, `build_prism_member`, `prism_subset_of_union`,
+  `cleanup_poly`, `plane_frame`, `build_prism_member`, `max_violation` (§8h),
+  `prism_subset_of_union`,
   `prism_outside_inner`, `contact_clips`, `synthesize_stop`.
 - `crates/kernel/src/offset_rim.rs` — `rims_from_clip`, `edge_on_rect`/
   `classify_edge`, Konkavitäts-Gate, `synthesize_vertices`, `RimBlock::from_stop`.

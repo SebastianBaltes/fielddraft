@@ -1972,3 +1972,328 @@ fn dilation_junction_bisector_is_scale_invariant_384() {
     }
 }
 
+
+// ─── #384 §8h: der Kaskaden-Effekt sequenzieller Terme ───────────────────
+//
+// Die Kanäle/Vertex-Kugeln eines Stopps werden SEQUENZIELL angewandt, und das
+// Gate jedes Terms rechnet gegen den LAUFENDEN Wert: `gate = G ∓ d`. Hat ein
+// Term `d` schon bewegt, öffnet das Gate des nächsten weiter als beim naiven
+// `d` — die Ein-Term-Schranke `G = (c−1)·δ + 4·tol` ist damit KEINE globale
+// Schranke. §8f/§8g hatten das notiert, aber an keiner Fixture reproduziert.
+//
+// Der Verstärker ist die march-sichere **Luftseiten-Klemme** `min(d, −w_geo)`:
+// sie ist keine Addition (sie kann kein Vorzeichen kippen) und darf `d`
+// beliebig weit herunterziehen — im Extremfall auf fast 0, direkt außerhalb
+// des Trust-Radius (`−w_geo = de − K → 0⁺`). Danach steht das Gate des
+// NÄCHSTEN Terms mit fast vollem `G` offen, obwohl das naive Feld 2 mm
+// Abstand meldet. Gemessen an zwei Szenen (δ = 2, G = 0.868):
+//
+// | Szene | naiv d₀ | Klemme | Gate danach | Nullmengen-Fehler | vorher zugesagt |
+// |---|---|---|---|---|---|
+// | Stufen-Nabe (2 KREIS-Nähte) | +2.349 | 0.067 | +0.801 | **2.000 mm** | ≤ 0.01 mm |
+// | Rippen-Kamm (4 Rippen) | +1.886 | 0.550 | +0.319 | **1.870 mm** | (schon conservative) |
+//
+// Die Stufen-Nabe war der stille Fall: BEIDE Nähte sind geschlossene Kreise,
+// und der Randpunkt-Zeugen-Wächter übersprang geschlossene Spines ganz
+// (`continue`) — er hat dort nie gesucht. Seit §8h sondiert er auch das
+// Naht-INNERE und damit auch Kreise; die Zusage fällt auf `conservative`.
+
+/// Die Schranke, die ein Report ZUSAGT: `None` = keine (conservative),
+/// sonst das Maximum aller in der Prosa genannten „≤ X mm" (der schlimmste
+/// Downgrade gewinnt), mindestens die Bau-Toleranz.
+fn promised_bound(report: &CapabilityReport) -> Option<f64> {
+    match report.status() {
+        CapabilityStatus::Conservative | CapabilityStatus::Unsupported => return None,
+        CapabilityStatus::Exact => return Some(1e-3),
+        CapabilityStatus::ToleranceBounded => {}
+    }
+    let mut b = CHANNEL_TOL_RENDER as f64;
+    for r in report.reasons() {
+        for (i, _) in r.match_indices('≤') {
+            let rest = &r[i + '≤'.len_utf8()..];
+            let num: String = rest
+                .chars()
+                .skip_while(|c| c.is_whitespace())
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            if let Ok(x) = num.trim_end_matches('.').parse::<f64>() {
+                b = b.max(x);
+            }
+        }
+    }
+    Some(b)
+}
+
+fn cyl_z(fid: u32, cz: f32, r: f32, hh: f32) -> CsgNode {
+    // Primitive::Cylinder hat die Achse in Y — per R_x(90°) auf Z drehen.
+    CsgNode::Transform(
+        Transform {
+            translate: [0.0, 0.0, cz],
+            rotation: [
+                std::f32::consts::FRAC_1_SQRT_2,
+                0.0,
+                0.0,
+                std::f32::consts::FRAC_1_SQRT_2,
+            ],
+            scale: [1.0; 3],
+        },
+        Box::new(CsgNode::Leaf {
+            id: id(fid),
+            primitive: Primitive::Cylinder { center: [0.0; 3], radius: r, half_height: hh },
+        }),
+    )
+}
+
+fn box_at(fid: u32, c: [f32; 3], h: [f32; 3]) -> CsgNode {
+    CsgNode::Transform(
+        Transform { translate: c, rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+        Box::new(leaf_box(fid, h)),
+    )
+}
+
+/// **Stufen-Nabe auf dünner Platte** (§8h-Sonde 1). Platte der Dicke `t`,
+/// darauf zwei koaxiale Zylinder verschiedener Höhe/Einbettung. Beide
+/// Basis-Nähte sind KREISE — geschlossene Spines ohne Enden.
+fn stepped_hub_node(t: f32, r1: f32, r2: f32, zh1: f32, e1: f32, e2: f32, delta: f32) -> CsgNode {
+    let plate = box_at(1, [0.0, 0.0, -0.5 * t], [20.0, 20.0, 0.5 * t]);
+    let a = cyl_z(2, 0.5 * (zh1 - e1), r1, 0.5 * (zh1 + e1));
+    let b = cyl_z(3, 0.5 * (6.0 - e2), r2, 0.5 * (6.0 + e2));
+    CsgNode::Offset(
+        Box::new(CsgNode::Union(
+            Box::new(CsgNode::Union(Box::new(plate), Box::new(a))),
+            Box::new(b),
+        )),
+        -delta,
+    )
+}
+
+/// `dist(p, ∁Ω)` der Stufen-Nabe als Strahl-Minimum (je Richtung exakt:
+/// Box-Slabs + Zylinder-Slabs). OBERE Schranke — kann einen Fehler nur
+/// unterschätzen, nie erfinden.
+fn dist_hub_complement(
+    t: f64,
+    cyls: &[(f64, f64, f64)], // (radius, z_lo, z_hi)
+    p: [f64; 3],
+    ndir: usize,
+) -> f64 {
+    let l = 20.0f64;
+    let ga = std::f64::consts::PI * (3.0 - 5.0f64.sqrt());
+    let mut best = f64::INFINITY;
+    for i in 0..ndir {
+        let z = 1.0 - 2.0 * (i as f64 + 0.5) / ndir as f64;
+        let rr = (1.0 - z * z).max(0.0).sqrt();
+        let th = ga * i as f64;
+        let d = [rr * th.cos(), rr * th.sin(), z];
+        let mut iv: Vec<(f64, f64)> = Vec::new();
+        {
+            let (lo, hi) = ([-l, -l, -t], [l, l, 0.0]);
+            let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
+            let mut hit = true;
+            for k in 0..3 {
+                if d[k].abs() < 1e-12 {
+                    if p[k] < lo[k] || p[k] > hi[k] {
+                        hit = false;
+                    }
+                } else {
+                    let a = (lo[k] - p[k]) / d[k];
+                    let b = (hi[k] - p[k]) / d[k];
+                    t0 = t0.max(a.min(b));
+                    t1 = t1.min(a.max(b));
+                }
+            }
+            if hit && t1 >= t0 && t1 > 0.0 {
+                iv.push((t0.max(0.0), t1));
+            }
+        }
+        for (r, zlo, zhi) in cyls.iter().copied() {
+            let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
+            let mut hit = true;
+            if d[2].abs() < 1e-12 {
+                if p[2] < zlo || p[2] > zhi {
+                    hit = false;
+                }
+            } else {
+                let a = (zlo - p[2]) / d[2];
+                let b = (zhi - p[2]) / d[2];
+                t0 = t0.max(a.min(b));
+                t1 = t1.min(a.max(b));
+            }
+            let qa = d[0] * d[0] + d[1] * d[1];
+            let qb = 2.0 * (p[0] * d[0] + p[1] * d[1]);
+            let qc = p[0] * p[0] + p[1] * p[1] - r * r;
+            if qa < 1e-15 {
+                if qc > 0.0 {
+                    hit = false;
+                }
+            } else {
+                let disc = qb * qb - 4.0 * qa * qc;
+                if disc <= 0.0 {
+                    hit = false;
+                } else {
+                    let sq = disc.sqrt();
+                    t0 = t0.max((-qb - sq) / (2.0 * qa));
+                    t1 = t1.min((-qb + sq) / (2.0 * qa));
+                }
+            }
+            if hit && t1 >= t0 && t1 > 0.0 {
+                iv.push((t0.max(0.0), t1));
+            }
+        }
+        if iv.is_empty() {
+            return 0.0;
+        }
+        iv.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        if iv[0].0 > 1e-12 {
+            return 0.0;
+        }
+        let mut end = 0.0f64;
+        for (a, b) in iv {
+            if a <= end + 1e-9 {
+                end = end.max(b);
+            } else {
+                break;
+            }
+        }
+        best = best.min(end);
+    }
+    best
+}
+
+/// **Kern-Pin (§8h, Verdacht A).** Zwei koaxiale Naben auf einer 3-mm-Platte:
+/// die äußere Kreisnaht klemmt (`de` knapp über `K`), die innere addiert
+/// durch das aufgerissene Gate — das Feld behauptet Material 0.35 mm UNTER
+/// der Platte, also in freier Luft. Zugesagt waren ≤ 0.01 mm.
+///
+/// Der Pin prüft die DOKTRIN, nicht eine Zahl: was der Stopp zusagt, muss
+/// wahr sein. Er hält also auch dann noch, wenn ein späteres Paket die
+/// Kaskade strukturell schließt (dann sinkt der Fehler, und die Zusage darf
+/// wieder eng werden).
+#[test]
+fn erosion_stepped_hub_cascade_promise_is_true_384() {
+    let delta = 2.0f32;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let (field, report) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+    assert!(
+        crate::offset_channel::count_channels(&field).0 >= 2,
+        "die Sonde taugt nur mit mindestens zwei Kanal-Termen — sonst gibt es \
+         nichts zu kaskadieren"
+    );
+    let cyls = [
+        (r1 as f64, -(e1 as f64), zh1 as f64),
+        (r2 as f64, -(e2 as f64), 6.0f64),
+    ];
+    let n = 26usize;
+    let (mut miss, mut worst, mut at) = (0usize, 0.0f64, [0.0f64; 3]);
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let p = [
+                    -9.0 + 18.0 * (ix as f64 + 0.2113248654) / n as f64,
+                    -9.0 + 18.0 * (iy as f64 + 0.5773502692) / n as f64,
+                    -(t as f64) - 1.5 + (t as f64 + 2.0) * (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
+                    continue;
+                }
+                let u = dist_hub_complement(t as f64, &cyls, p, 160);
+                let err = delta as f64 - u;
+                if err <= 1e-3 {
+                    continue;
+                }
+                miss += 1;
+                if err > worst {
+                    worst = err;
+                    at = p;
+                }
+            }
+        }
+    }
+    match promised_bound(&report) {
+        None => assert!(
+            report.reasons().iter().any(|r| r.contains("keine Schranke mehr belegbar")),
+            "wenn der Stopp nichts zusagt, muss er auch sagen WARUM: {:?}",
+            report.reasons()
+        ),
+        Some(b) => assert!(
+            worst <= b + 1e-3,
+            "Stufen-Nabe: {miss} Nullmengen-Fehler, größter {worst:.4} mm bei {at:?} — \
+             zugesagt sind aber nur {b:.3} mm. Reasons: {:?}",
+            report.reasons()
+        ),
+    }
+}
+
+/// **Zweiter Pin (§8h).** Derselbe Mechanismus an reiner Quader-Geometrie:
+/// vier eingelassene Rippen im Abstand 0.8 mm. Hier klemmt die Nachbar-Naht
+/// (`de = 1.45 < δ`, also `−w_geo = δ − de = 0.550`) und die ÜBERNÄCHSTE
+/// addiert. Gemessen 1.870 mm Nullmengen-Fehler bei einer Ein-Term-Schranke
+/// von 0.868 mm.
+#[test]
+fn erosion_rib_comb_cascade_promise_is_true_384() {
+    let delta = 2.0f32;
+    let (nribs, w, g, embed, ylen) = (4usize, 1.5f32, 0.8f32, 5.0f32, 22.0f32);
+    let (h, plate, l) = (8.0f32, 12.0f32, 20.0f32);
+    let pitch = w + g;
+    let x0 = -0.5 * (nribs as f32 * pitch - g);
+    let mut node = box_at(1, [0.0, 0.0, -0.5 * plate], [l, l, 0.5 * plate]);
+    let mut boxes: Vec<([f64; 3], [f64; 3])> =
+        vec![([-l as f64, -l as f64, -plate as f64], [l as f64, l as f64, 0.0])];
+    for i in 0..nribs {
+        let cx = x0 + 0.5 * w + i as f32 * pitch;
+        node = CsgNode::Union(
+            Box::new(node),
+            Box::new(box_at(
+                2 + i as u32,
+                [cx, 0.0, 0.5 * (h - embed)],
+                [0.5 * w, ylen, 0.5 * (h + embed)],
+            )),
+        );
+        boxes.push((
+            [(cx - 0.5 * w) as f64, -ylen as f64, -embed as f64],
+            [(cx + 0.5 * w) as f64, ylen as f64, h as f64],
+        ));
+    }
+    let (field, report) = compile_for(CsgNode::Offset(Box::new(node), -delta));
+    assert!(
+        crate::offset_channel::count_channels(&field).0 >= 2,
+        "die Sonde braucht mindestens zwei Kanal-Terme"
+    );
+    let span = (0.5 * (nribs as f32 * pitch - g) + 3.0) as f64;
+    let (miss, worst, at) = {
+        let n = 28usize;
+        let (mut m, mut wst, mut a) = (0usize, 0.0f64, [0.0f64; 3]);
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let p = [
+                        -span + 2.0 * span * (ix as f64 + 0.2113248654) / n as f64,
+                        -3.0 + 6.0 * (iy as f64 + 0.5773502692) / n as f64,
+                        -6.0 + 6.5 * (iz as f64 + 0.7886751346) / n as f64,
+                    ];
+                    if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
+                        continue;
+                    }
+                    let u = dist_to_boxes_complement(&boxes, p, 160);
+                    let err = delta as f64 - u;
+                    if err <= 1e-3 {
+                        continue;
+                    }
+                    m += 1;
+                    if err > wst {
+                        wst = err;
+                        a = p;
+                    }
+                }
+            }
+        }
+        (m, wst, a)
+    };
+    if let Some(b) = promised_bound(&report) {
+        assert!(
+            worst <= b + 1e-3,
+            "Rippen-Kamm: {miss} Nullmengen-Fehler, größter {worst:.4} mm bei {at:?} — \
+             zugesagt sind aber nur {b:.3} mm. Reasons: {:?}",
+            report.reasons()
+        );
+    }
+}

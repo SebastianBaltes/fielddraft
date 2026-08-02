@@ -660,6 +660,35 @@ für Shell.
 * **Nichtkonvexe Normalkegel-Überlappung** bei großem δ: Restrisiko per
   Witness + Ball-Extremum prüfen (Phase C), keine Exaktheitsgarantie im
   Überlappungsgebiet.
+* **Kaskade sequenzieller Korrekturterme — GEMESSEN und GEBROCHEN
+  (#384 §8h, 2026-08-02).** Die Kanäle/Vertex-Kugeln eines Stopps werden
+  nacheinander angewandt, und jedes Gate rechnet gegen den LAUFENDEN Wert
+  (`gate = G ∓ d`). Verstärker ist die march-sichere Luftseiten-Klemme
+  `min(d, −w_geo)`: sie kippt kein Vorzeichen, darf `d` aber beliebig weit
+  senken — direkt außerhalb des Trust-Radius ist `−w_geo = de − K → 0⁺`.
+  Danach steht das Gate des nächsten Terms mit fast vollem `G` offen.
+  Gemessen an Platte + zweistufiger Nabe (beide Nähte KREISE, δ = 2):
+  **2.000 mm Nullmengen-Fehler bei zugesagten 0.01 mm**; am Rippen-Kamm
+  1.870 mm. Die Ein-Term-Schranke `G = (c−1)·δ + 4·tol` ist also KEINE
+  globale Schranke.
+  *Heute gedeckt* durch den erweiterten Randpunkt-Zeugen-Wächter
+  (`end_region_violation` sondiert seit §8h auch das Naht-INNERE und damit
+  geschlossene Spines) — ehrliches Downgrade auf `conservative`, kein
+  Feldwert ändert sich (Golden 35/35 byte-identisch).
+  *Sauberer Endzustand:* das Gate muss gegen den NAIVEN Stopp-Wert `d₀`
+  rechnen. Das ist beweisbar scharf, kostet keine legitime Korrektur und
+  stellt die Reihenfolge-Unabhängigkeit her — aber es ist eine
+  Opcode-Semantik-Änderung (Stack-Maschine: `d₀` ist nach dem ersten Term
+  weg). Minimalform: ein Payload-loser Opcode `base = top of stack` plus ein
+  Skalar-Register je Evaluator, sechs Spiegel + `tape_spec.h`. Eigenes Paket.
+* **Sicherheitsnetz der Kontakt-Prismen — gerichtet statt gerastert
+  (#384 §8h).** `prism_subset_of_union` / `prism_outside_inner` prüften auf
+  einem 7³-Gitter über der Prisma-AABB und waren für dünne
+  Verletzungsschichten prinzipiell blind (0.06 mm Schicht in 20-mm-AABB:
+  verpasst). Beide Bedingungen haben die Form `V = min(a,b) > 0`; das Gitter
+  liefert jetzt nur noch Saaten, von denen eine Koordinaten-Pattern-Search
+  bergauf läuft. Strikt schärfer, nie laxer (jeder alte Fund bleibt ein
+  Fund); belegt durch eine künstlich eingebaute Regression im Test.
 
 ## 10. Verweise
 

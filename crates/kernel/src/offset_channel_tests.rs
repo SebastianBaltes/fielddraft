@@ -2230,3 +2230,83 @@ fn junction_anchor_hits_the_true_corner_384() {
         "parallele Tangenten müssen auf den Mittelpunkt zurückfallen: {a:?}"
     );
 }
+
+// ─── #384 §8h: das Sicherheitsnetz der Kontakt-Prismen ───────────────────
+//
+// `prism_subset_of_union` / `prism_outside_inner` tasteten mit einem 7³-Gitter
+// über der Prisma-AABB ab. Eine dünne Verletzungsschicht — das Prisma ragt
+// hauchdünn ins verbotene Gebiet — fällt zwischen die Gitterebenen und wird
+// nicht bemerkt. Das ist ein Sicherheitsnetz-, kein Korrektheitsproblem: die
+// Prüfung ist eine Verweigerungs-Stichprobe, keine Feldrechnung. Seit §8h
+// liefert das Gitter nur noch SAATEN, und von den besten läuft eine
+// Koordinaten-Pattern-Search bergauf ([`max_violation`]).
+
+/// Die 7³-Saatpunkte über einer AABB — das ALTE Netz, wortgleich.
+fn seed_grid_max(bb: Aabb, v: &dyn Fn([f32; 3]) -> f32) -> f32 {
+    let n = 6usize;
+    let mut best = f32::NEG_INFINITY;
+    for ix in 0..=n {
+        for iy in 0..=n {
+            for iz in 0..=n {
+                let p = [
+                    bb.min[0] + (bb.max[0] - bb.min[0]) * ix as f32 / n as f32,
+                    bb.min[1] + (bb.max[1] - bb.min[1]) * iy as f32 / n as f32,
+                    bb.min[2] + (bb.max[2] - bb.min[2]) * iz as f32 / n as f32,
+                ];
+                best = best.max(v(p));
+            }
+        }
+    }
+    best
+}
+
+/// **§8h-Beleg (Verdacht B).** Eine künstliche, 0.06 mm dünne
+/// Verletzungsschicht in einer 20-mm-AABB — genau die Regression, gegen die
+/// das Netz schützen soll („Prisma ragt hauchdünn in verbotenes Gebiet").
+/// Sie ist als `min` zweier Halbräume gebaut, hat also dieselbe Form wie die
+/// echten Prüfungen (`min(Prisma-Tiefe, Außen-Bedingung)`), und liegt
+/// schräg im Raum, damit sie nicht achsenparallel „durchrutscht".
+///
+/// Das 7³-Gitter VERPASST sie (kein Stützpunkt liegt näher als 0.058 an der
+/// Schichtebene), die gerichtete Suche FINDET sie.
+#[test]
+fn thin_violation_layer_is_found_by_directed_probe_384() {
+    let bb = Aabb { min: [-10.0; 3], max: [10.0; 3] };
+    let l = (0.37f32 * 0.37 + 0.51 * 0.51 + 0.775 * 0.775).sqrt();
+    let nh = [0.37 / l, 0.51 / l, 0.775 / l];
+    let c = -4.931f32; // Ebenenlage, maximal weit von allen 343 Rasterwerten
+    let t = 0.03f32; // halbe Schichtdicke ⇒ 0.06 mm gesamt
+    // V = min(⟨x,n̂⟩ − (c−t), (c+t) − ⟨x,n̂⟩) > 0  ⟺  x in der Schicht.
+    let v = |p: [f32; 3]| -> f32 {
+        let s = dot(p, nh);
+        (s - (c - t)).min((c + t) - s)
+    };
+    let grid = seed_grid_max(bb, &v);
+    assert!(
+        grid < 0.0,
+        "die Sonde taugt nur, wenn das 7³-Gitter die Schicht wirklich VERPASST — \
+         größter Rasterwert {grid:.4} (Schicht wäre > 0)"
+    );
+    let (found, at) = max_violation(bb, &v);
+    assert!(
+        found > 0.0,
+        "die gerichtete Suche muss die 0.06-mm-Schicht finden (Gitter: {grid:.4}), \
+         bester Wert {found:.4} bei {at:?}"
+    );
+    assert!(
+        v(at) > 0.0 && (dot(at, nh) - c).abs() <= t,
+        "der gemeldete Ort muss wirklich IN der Schicht liegen: {at:?}"
+    );
+}
+
+/// Gegenprobe: wo keine Verletzung existiert, erfindet die gerichtete Suche
+/// auch keine. (Sonst wäre der Preis für das feinere Netz eine
+/// Verweigerungs-Lawine an gesunden Prismen.)
+#[test]
+fn directed_probe_invents_no_violation_384() {
+    let bb = Aabb { min: [-10.0; 3], max: [10.0; 3] };
+    // Überall negativ: der „Verletzungs"-Wert bleibt strikt unter −0.5.
+    let v = |p: [f32; 3]| -> f32 { -0.5 - 0.01 * dot(p, p) };
+    let (found, _) = max_violation(bb, &v);
+    assert!(found <= -0.5, "keine Verletzung, kein Fund: {found:.4}");
+}

@@ -71,10 +71,19 @@
 //! der Kurve im Kegelgebiet — dort gibt es keine Exaktheitsgarantie. Seit
 //! §8f ist der Anteil, der ÜBER DIE NAHTENDEN kam, per `s₃` geschlossen;
 //! unberührt bleibt Fremdgeometrie, die QUER zur Naht innerhalb des
-//! Normalkegels näher liegt, und die **Kaskade**: zwei Kanäle desselben
-//! Stopps können denselben Punkt nacheinander um je bis zu `G` auslenken
-//! (an Junctions nicht mehr — dort trennt der Bisektor —, aber im Feld
-//! zweier weit auseinander liegender Nähte weiterhin).
+//! Normalkegels näher liegt, und die **Kaskade** — seit #384 §8h gemessen
+//! statt vermutet: die Terme werden SEQUENZIELL angewandt, und jedes Gate
+//! rechnet gegen den LAUFENDEN Wert `d`. Verstärker ist die march-sichere
+//! Luftseiten-Klemme `min(d, −w_geo)`; sie kippt kein Vorzeichen, senkt `d`
+//! aber beliebig weit (direkt außerhalb des Trust-Radius ist
+//! `−w_geo = de − K → 0⁺`) und öffnet damit dem NÄCHSTEN Term das volle `G`.
+//! Gemessen an Platte + zweistufiger Nabe: 2.0 mm Nullmengen-Fehler bei
+//! zugesagten 0.01 mm. Die Ein-Term-Schranke `G` ist also KEINE globale
+//! Schranke; der Randpunkt-Zeugen-Wächter ([`end_region_violation`], seit
+//! §8h auch auf dem Naht-INNEREN und damit auf geschlossenen Spines) meldet
+//! das als ehrliches Downgrade. Der saubere Fix — `gate` gegen den NAIVEN
+//! Stopp-Wert statt gegen den laufenden — ist eine Opcode-Semantik-Änderung
+//! und ein eigenes Paket (docs/OFFSET-TREE-PLAN.md §9).
 //!
 //! ## Synthese
 //!
@@ -1166,12 +1175,20 @@ fn boundary_witness(
 /// Downgrade, falls doch ein Zeuge auftaucht (etwa an Geometrien, deren
 /// Naht-Trace vor dem echten Ende abbricht).
 ///
-/// Die Sonde tastet um jedes offene Ende den Wirkbereich ab (Kegel der
-/// Endpunkt-Gates, `δ < |x−E| < K`), wendet die Korrektur **vollständig**
-/// an (alle Kanäle, dann die Vertex-Kugeln — genau wie der Evaluator) und
-/// sucht ein **Gegenbeispiel**: einen Randpunkt des Körpers, der näher
-/// liegt, als das korrigierte Feld behauptet. Ein solcher Zeuge ist ein
-/// Beweis, kein Verdacht. Rückgabe: (Verletzung mm, Schranke, Ort).
+/// Die Sonde tastet den Wirkbereich ab (Kegel der lokalen Dualvektoren,
+/// `δ < |x−q| < K`), wendet die Korrektur **vollständig** an (alle Kanäle,
+/// dann die Vertex-Kugeln — genau wie der Evaluator) und sucht ein
+/// **Gegenbeispiel**: einen Randpunkt des Körpers, der näher liegt, als das
+/// korrigierte Feld behauptet. Ein solcher Zeuge ist ein Beweis, kein
+/// Verdacht. Rückgabe: (Verletzung mm, Schranke, Ort).
+///
+/// #384 §8h — **nicht mehr nur die Enden.** Bis hierher waren die
+/// Stationen ausschließlich die beiden Spine-Enden, und geschlossene Kurven
+/// wurden ganz übersprungen. Der Kaskaden-Effekt sitzt aber irgendwo AM
+/// Naht-Verlauf: ein Term legt die Luftseiten-Klemme auf `d` und öffnet dem
+/// nächsten das Gate. An zwei koaxialen Naben (beide Nähte Kreise) blieb der
+/// Wächter deshalb still, während das Feld 2.0 mm Phantom-Material
+/// behauptete. Jetzt kommen je Bogen drei innere Stationen dazu.
 fn end_region_violation(
     channels: &[OffsetChannel],
     verts: &[VertexSphere],
@@ -1192,17 +1209,36 @@ fn end_region_violation(
         let last = ch.arcs.last().unwrap();
         let start = arc_point_at(first, 0.0);
         let end = arc_point_at(last, 1.0);
-        if norm(sub(start, end)) < 1e-4 {
-            continue; // geschlossene Kurve — kein Ende, kein Kappen-Bereich
-        }
         // Der Kegel-Filter läuft auf den GEOMETRISCHEN Dualkegel-Vektoren der
         // Endpunkte (seit §8f sind sie unverbogen — das dritte Gate steckt im
         // Halbraum, nicht mehr in `m̂₂` eines abgespaltenen Kappen-Bogens).
-        let ends = [
-            (start, first.m1s, first.m2s),
-            (end, last.m1e, last.m2e),
-        ];
-        for (e, m1, m2) in ends {
+        //
+        // #384 §8h — **auch das Naht-INNERE, auch geschlossene Spines.** Bis
+        // hierher sondierte die Funktion ausschließlich die beiden Enden und
+        // übersprang geschlossene Kurven ganz (`continue`). Der Kaskaden-Effekt
+        // sitzt aber nicht am Ende: er entsteht, wo ein Term die Luftseiten-
+        // Klemme `min(d, −w_geo)` auf `d` legt und damit das `gate = G ∓ d`
+        // des NÄCHSTEN Terms öffnet — das kann überall am Naht-Verlauf
+        // passieren. An zwei koaxialen Naben (beide Nähte KREISE) blieb der
+        // Wächter deshalb still, während das Feld 2.0 mm Phantom-Material
+        // unter der Platte behauptete — bei zugesagten 0.01 mm.
+        let mut stations: Vec<([f32; 3], [f32; 3], [f32; 3])> = Vec::new();
+        if norm(sub(start, end)) >= 1e-4 {
+            stations.push((start, first.m1s, first.m2s));
+            stations.push((end, last.m1e, last.m2e));
+        }
+        // Innere Stationen: je Bogen bis zu drei, insgesamt gedeckelt.
+        let stride = (ch.arcs.len() / 8).max(1);
+        for arc in ch.arcs.iter().step_by(stride) {
+            for t in [0.25f32, 0.5, 0.75] {
+                stations.push((
+                    arc_point_at(arc, t),
+                    nlerp(arc.m1s, arc.m1e, t),
+                    nlerp(arc.m2s, arc.m2e, t),
+                ));
+            }
+        }
+        for (e, m1, m2) in stations {
             for dir in FIB_DIRS.iter() {
                 if dot(*dir, m1) <= 0.05 || dot(*dir, m2) <= 0.05 {
                     continue;
@@ -3487,37 +3523,103 @@ fn build_prism_component(
     Some(node)
 }
 
-/// Stichproben-Prüfung S ⊆ U: an einem groben Gitter über der Prisma-AABB
-/// darf kein Punkt mit `f_S < −guard` außerhalb der Union (`min f_i > guard`)
-/// liegen. (Design §4-Risiko: schräge Nachbarfläche.)
+/// #384 §8h — **das Sicherheitsnetz der Kontakt-Prismen, gerichtet statt
+/// gerastert.** Die beiden Prisma-Zeugen [`prism_subset_of_union`] und
+/// [`prism_outside_inner`] tasteten mit einem 7³-Gitter über der Prisma-AABB
+/// ab. Für DÜNNE Verletzungsschichten ist ein Gitter prinzipiell blind: ragt
+/// das Prisma nur um Bruchteile der Zellweite ins verbotene Gebiet, liegt
+/// zwischen zwei Gitterebenen kein einziger Stützpunkt, und die Verweigerung
+/// bleibt aus — die Prisma-Korrektur läuft dann unter der vollen Zusage.
+///
+/// Beide Prüfungen haben dieselbe Form „Verletzung = beide Bedingungen
+/// gleichzeitig erfüllt", also `V(x) = min(a(x), b(x)) > 0`. Statt zu hoffen,
+/// dass ein Rasterpunkt in `{V > 0}` fällt, MAXIMIERT diese Funktion `V`:
+/// das 7³-Gitter liefert nur noch die SAATEN (jeder alte Fund bleibt damit
+/// ein Fund), und von den besten Saaten läuft eine Koordinaten-Pattern-Search
+/// mit halbierender Schrittweite bergauf. Eine dünne Schicht wird so von
+/// außen angelaufen, statt zufällig getroffen: `V` wächst auf dem Weg zu ihr
+/// monoton, jeder Achsenschritt mit Komponente in Schichtnormale verbessert.
+///
+/// Rückgabe: `(größtes gefundenes V, Ort)`. `V > 0` ist ein BEWEIS der
+/// Verletzung (ein konkreter Punkt), `V ≤ 0` bleibt eine Stichprobe.
+fn max_violation(bb: Aabb, v: &dyn Fn([f32; 3]) -> f32) -> (f32, [f32; 3]) {
+    let n = 6usize;
+    let ext = [
+        bb.max[0] - bb.min[0],
+        bb.max[1] - bb.min[1],
+        bb.max[2] - bb.min[2],
+    ];
+    let diag = norm(ext).max(1e-6);
+    let mut seeds: Vec<(f32, [f32; 3])> = Vec::with_capacity((n + 1).pow(3));
+    for ix in 0..=n {
+        for iy in 0..=n {
+            for iz in 0..=n {
+                let p = [
+                    bb.min[0] + ext[0] * ix as f32 / n as f32,
+                    bb.min[1] + ext[1] * iy as f32 / n as f32,
+                    bb.min[2] + ext[2] * iz as f32 / n as f32,
+                ];
+                let val = v(p);
+                if val > 0.0 {
+                    return (val, p); // das alte Netz reicht schon
+                }
+                seeds.push((val, p));
+            }
+        }
+    }
+    seeds.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut best = seeds[0];
+    // Halbe Zellweite als Startschritt, hinab bis unter die Bau-Toleranz.
+    let step0 = 0.5 * diag / n as f32;
+    let step_min = (1e-4 * diag).min(1e-3);
+    for (val0, p0) in seeds.iter().take(8) {
+        let (mut val, mut p) = (*val0, *p0);
+        let mut step = step0;
+        while step > step_min {
+            let mut improved = false;
+            for axis in 0..3 {
+                for s in [-1.0f32, 1.0] {
+                    let mut q = p;
+                    q[axis] = (q[axis] + s * step).clamp(bb.min[axis], bb.max[axis]);
+                    if (q[axis] - p[axis]).abs() < 1e-9 {
+                        continue;
+                    }
+                    let vq = v(q);
+                    if vq > val {
+                        val = vq;
+                        p = q;
+                        improved = true;
+                    }
+                }
+            }
+            if val > 0.0 {
+                return (val, p); // Verletzung bewiesen
+            }
+            if !improved {
+                step *= 0.5;
+            }
+        }
+        if val > best.0 {
+            best = (val, p);
+        }
+    }
+    best
+}
+
+/// Prüfung S ⊆ U: kein Punkt mit `f_S < −guard` darf außerhalb der Union
+/// (`min f_i > guard`) liegen. (Design §4-Risiko: schräge Nachbarfläche.)
+/// Seit §8h gerichtet statt gerastert — siehe [`max_violation`].
 fn prism_subset_of_union(prism: &BoundedCsg, members: &[Member], guard: f32) -> bool {
     let bb = prism.aabb();
     if bb.is_empty() {
         return true;
     }
-    let n = 6;
-    for ix in 0..=n {
-        for iy in 0..=n {
-            for iz in 0..=n {
-                let p = [
-                    bb.min[0] + (bb.max[0] - bb.min[0]) * ix as f32 / n as f32,
-                    bb.min[1] + (bb.max[1] - bb.min[1]) * iy as f32 / n as f32,
-                    bb.min[2] + (bb.max[2] - bb.min[2]) * iz as f32 / n as f32,
-                ];
-                let fs = prism.sdf(p, EvalMode::Visual);
-                if fs < -guard {
-                    let fu = members
-                        .iter()
-                        .map(|m| m.value(p))
-                        .fold(f32::INFINITY, f32::min);
-                    if fu > guard {
-                        return false;
-                    }
-                }
-            }
-        }
-    }
-    true
+    let v = |p: [f32; 3]| -> f32 {
+        let fs = prism.sdf(p, EvalMode::Visual);
+        let fu = members.iter().map(|m| m.value(p)).fold(f32::INFINITY, f32::min);
+        (-fs - guard).min(fu - guard)
+    };
+    max_violation(bb, &v).0 <= 0.0
 }
 
 // ─── F395 Stufe 3: Kontakt-Prisma für den DILATIONS-Fall (Komplement-Dualität) ─
@@ -3566,29 +3668,12 @@ fn prism_outside_inner(prism: &BoundedCsg, members: &[Member], guard: f32) -> bo
     if bb.is_empty() {
         return true;
     }
-    let n = 6;
-    for ix in 0..=n {
-        for iy in 0..=n {
-            for iz in 0..=n {
-                let p = [
-                    bb.min[0] + (bb.max[0] - bb.min[0]) * ix as f32 / n as f32,
-                    bb.min[1] + (bb.max[1] - bb.min[1]) * iy as f32 / n as f32,
-                    bb.min[2] + (bb.max[2] - bb.min[2]) * iz as f32 / n as f32,
-                ];
-                let fs = prism.sdf(p, EvalMode::Visual);
-                if fs < -guard {
-                    let fi = members
-                        .iter()
-                        .map(|m| m.value(p))
-                        .fold(f32::NEG_INFINITY, f32::max);
-                    if fi < -guard {
-                        return false;
-                    }
-                }
-            }
-        }
-    }
-    true
+    let v = |p: [f32; 3]| -> f32 {
+        let fs = prism.sdf(p, EvalMode::Visual);
+        let fi = members.iter().map(|m| m.value(p)).fold(f32::NEG_INFINITY, f32::max);
+        (-fs - guard).min(-fi - guard)
+    };
+    max_violation(bb, &v).0 <= 0.0
 }
 
 /// Baut die Kontakt-Prismen für den DILATIONS-Fall (Design §1.4, Stufe 3): sign-
