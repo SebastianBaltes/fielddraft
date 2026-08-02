@@ -1,3 +1,7 @@
+## 0.56.10
+- fix(kernel) #384: An dünnen Ecken-Schalen entstehen jetzt ALLE konkaven Nähte des Offsets — bisher fehlte dort Material, das stehen bleiben musste.
+- fix(kernel) #384: Die Genauigkeits-Angabe eines Offsets sagt jetzt dazu, welche Richtung sie deckt: die genannte Toleranz gilt für überschüssiges Material; fehlendes Material ist ausdrücklich ausgenommen.
+
 # FieldDraft — Release Notes
 
 Die SSOT der In-App-Release-Notes. REINER TEXT, kein Code: ein Anführungszeichen,

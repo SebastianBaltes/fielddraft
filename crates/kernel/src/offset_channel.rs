@@ -1610,6 +1610,29 @@ fn set_end_plane_gates(channels: &mut [OffsetChannel], steps: &[f32]) {
         }
         if planes.is_empty() {
             // Kein Nachbar-Kanal: die Naht endet an fremder Geometrie.
+            //
+            // #384 §8k — **hier NICHT anzurühren, gemessen.** Diese Ebene hat
+            // zwei Rollen: sie begrenzt den Term ENTLANG der Naht, und ihr
+            // δ-Versatz nimmt die Endfläche als Distanz-Kandidaten ins
+            // `w_geo`-Minimum auf (§8f: „am notch zwingend"). Der δ-Versatz
+            // ist zugleich die Quelle eines UNTER-Claims: im δ-Band vor dem
+            // Nahtende schaltet er den Term ab, obwohl er dort exakt wäre
+            // (§8k misst 0.523 mm am notch 90°, 1.319 mm an der Ecken-Schale
+            // t/δ = 2). Beide Auswege wurden gemessen und VERWORFEN, weil sie
+            // die Seite nur tauschen:
+            //
+            // * Ebene ganz weg (das vierte Gate aus §8j trägt die Distanz-
+            //   Rolle): alle Unter-Claims auf 0 — aber der Randpunkt-Zeuge
+            //   weist am Ecken-Schalen-Nahtende (`[-1.87, -2.33, 38.81]`,
+            //   also an der äußeren Deckfläche z = 40, wo `set_face_plane_gates`
+            //   keine Ebene belegt) 0.868 mm ÜBER-Claim nach.
+            // * Ebene ohne δ-Versatz (Reichweiten-Rolle bleibt): Unter-Claims
+            //   fallen bis auf die kollabierende Schale — derselbe Zeuge
+            //   meldet dieselben 0.868 mm.
+            //
+            // Der saubere Ausweg ist nicht diese Ebene, sondern eine
+            // VOLLSTÄNDIGE Fremdflächen-Abdeckung (§8j-Gate ohne 4-Slot-Grenze
+            // und ohne Carrier-Lücken) — eigenes Paket.
             planes.push([t[0], t[1], t[2], dot(*e, *t) + ch_delta]);
         }
         for pl in planes {
@@ -4864,9 +4887,6 @@ fn synthesize_stop(
                                 tri.sort_unstable();
                                 triple_cands.push(TripleCand { tri, p: be.p });
                             }
-                            for p in &pts {
-                                claimed.push(p.p);
-                            }
                             // Exponierungs-Witness (Phase C): eine echte
                             // Komposit-Kante verlangt, dass BEIDE Flächen an
                             // der Naht frei liegen — der Schritt von der
@@ -5014,6 +5034,33 @@ fn synthesize_stop(
                                         &channels, &verts, inner, &prisms, delta, tol, report,
                                     );
                                     return (channels, verts, prisms, rims, capped);
+                                }
+                                // #384 §8k — **die Sperrliste erst JETZT.**
+                                // Sie verhindert, dass dieselbe Naht aus 64
+                                // SSI-Seeds 64-mal getract wird. Bis hierher
+                                // wurde sie direkt nach `trace_seam` gefüllt —
+                                // also AUCH von Traces, die der
+                                // Exponierungs-Witness gleich darauf verwirft.
+                                // Ein verworfener Trace nahm seine Sperre mit
+                                // ins Grab, und die Naht, über die er
+                                // gelaufen war, bekam nie einen Kanal.
+                                //
+                                // An der dünnen Ecken-Schale kostete das 8 von
+                                // 24 konkaven Nahtstrahlen: die Rand-Facetten
+                                // `x = ±40` liegen in der Paar-AABB des
+                                // ÄUSSEREN Union-Knotens und werden zuerst
+                                // abgearbeitet, ihre Seeds werden von
+                                // `project_to_seam` auf die echte Naht
+                                // gezogen, der Trace läuft an ihr entlang —
+                                // und stirbt, weil der Witness die Träger des
+                                // SEEDS auswertet (`x = 40` ist konvex, also
+                                // „begraben"). Das Feld behauptete dort
+                                // fehlendes Material bis 1.325 mm bei
+                                // zugesagten 0.01 (§8k). Ein Kanal, der
+                                // gebaut wurde, sperrt; einer, der es nicht
+                                // wurde, sperrt nichts.
+                                for p in &pts {
+                                    claimed.push(p.p);
                                 }
                                 channel_idx += 1;
                                 if !blocked.is_empty() {
@@ -5301,7 +5348,11 @@ pub fn synthesize_offset_channels_reported(
                 // und die ehrliche (weitere) Schranke bereits notiert — dann
                 // wäre diese Notiz ein Bound-Over-Claim.
                 report.note_tolerance(format!(
-                    "Duale Boolean-Kante über Arc-Spline-Kanäle toleranzbeschränkt korrigiert (Ziel-Toleranz ≤ {tol} mm)."
+                    "Duale Boolean-Kante über Arc-Spline-Kanäle toleranzbeschränkt korrigiert: \
+                     PHANTOM-Material ≤ {tol} mm (Ziel-Toleranz). FEHLENDES Material ist davon \
+                     NICHT gedeckt — wo ein Gate bindet (Ein-Term-Kappe G, δ-verschobene \
+                     End-Ebene), bleibt der naive Sliver stehen; für diese Richtung ist keine \
+                     Schranke belegbar (#384 §8k)."
                 ));
             }
             let aabb = Aabb::union(

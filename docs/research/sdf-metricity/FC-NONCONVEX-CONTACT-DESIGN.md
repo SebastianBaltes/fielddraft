@@ -1652,11 +1652,318 @@ bestehende Erwartung bewegt sich.
   über die volle Nullmenge. Das gehört ausgesprochen — und in ein eigenes
   Paket (ein Unter-Claim-Zeuge braucht eine UNTERE Distanzschranke, die kein
   Strahl liefern kann).
+  → gemessen in **§8k**, mit exakten statt Strahl-Referenzen. Die Zahlen
+  oben stimmten nur ungefähr (Schale 3.0: 367 Punkte / 0.768 mm statt
+  384 / 0.839; Nabe: 81 / 0.306 statt 41 / 0.198), und die grösste Ursache
+  war eine dritte, hier nicht genannte: acht von vierundzwanzig
+  Nahtstrahlen der Ecken-Schale wurden nie gebaut.
 * **Spitze Nähte** und **der Wächter als Stichprobe**: unverändert §8i.
+
+## 8k. Die UNTER-Seite — zum ersten Mal gemessen (#384, 2026-08-02)
+
+§8j hielt als Nebenbefund fest, dass der UNTER-Claim „nirgends gemessen und
+nirgends zugesagt" ist, und nannte zwei Verdächtige: die δ-verschobene
+End-Ebene (§8f) und die `G`-Kappe (§8i). Dieses Paket misst statt zu
+verdächtigen. Ergebnis: **beide Verdächtigen sind schuldig — aber der
+größte Posten war ein DRITTER, ungenannter: acht von vierundzwanzig
+Nahtstrahlen der Ecken-Schale wurden nie gebaut.**
+
+### Warum ein Strahl das nicht messen kann
+
+Alle Referenzen der §8-Reihe sind Strahl-Minima über Fibonacci-Richtungen:
+je Richtung exakt, über alle Richtungen minimiert. Das ist eine **OBERE**
+Schranke von `dist(x,∁Ω)` — genau die richtige Seite für einen Über-Claim
+(„das Feld behauptet Material, `u < δ` widerlegt es"), und die **falsche**
+für einen Unter-Claim, der `dist ≥ δ` zeigen müsste. §8j hat die Gegenprobe
+trotzdem mit einem dichten Strahl (2400 Richtungen) gefahren und deshalb
+Zahlen genannt, die nur ungefähr stimmten.
+
+Dieses Paket baut zwei **exakte** Referenzen. Sie zerlegen `∂Ω` analytisch,
+statt es zu sondieren:
+
+* `dist_obb_union_complement_exact` — beliebig viele orientierte Boxen. Für
+  jede Box-Fläche wird das Rechteck um die INNEREN der übrigen Boxen
+  beschnitten (konvexe Polygon-Subtraktion: `poly \ Q` zerfällt in die
+  Stücke `poly ∩ {h_i ≥ 0} ∩ ⋂_{j<i} {h_j ≤ 0}`, Sutherland–Hodgman), dann
+  Punkt-Polygon-Distanz je Stück, Pythagoras mit dem Lot.
+* `dist_hub_complement_exact` — Platte ∪ koaxiale z-Zylinder: Deckflächen
+  minus konzentrische Scheiben, Mäntel minus verdeckte z-Intervalle, Deckel
+  als Kreisringe, alles in geschlossener Form.
+
+Beide sind so gebaut, dass jede Degeneriertheit ein Randstück ZU VIEL behält
+(Entfernung nur bei STRIKTER Innenlage) — die Distanz wird also höchstens
+unterschätzt, ein Unter-Claim damit nie erfunden. Der Pin
+`exact_complement_reference_is_below_the_ray_bound_384` prüft dreierlei:
+`exakt ≤ Strahl` an jedem Punkt (sonst erfände die Zerlegung Distanz), die
+Konvergenz des Strahls gegen die Zerlegung am Punkt der größten Differenz
+(400 → 2000 → 40000 Richtungen), und eine Handrechnung am §8k-Referenzpunkt.
+
+### Die Landschaft, beidseitig (δ = 2, exakte Referenzen)
+
+**über** = Feld meldet `< 0`, `dist < δ` (Phantom-Material, Fehler `δ − dist`);
+**unter** = Feld meldet `≥ 0`, `dist > δ` (fehlendes Material, Fehler
+`dist − δ`). Gitter 26³ (Schale/Nabe/notch) bzw. 28³ (Kamm).
+
+| Fixture | §8j-Stand über | §8j-Stand **unter** | §8k über | §8k **unter** | Zusage |
+|---|---|---|---|---|---|
+| Ecken-Schale t/δ = 2.0 | 114 / 0.764 | 1759 / **1.319** | **0** | 2119 / 1.319 | ≤ 0.010 |
+| Ecken-Schale t/δ = 2.5 | 157 / 0.808 | 37 / 1.153 | **0** | **0** | ≤ 0.010 |
+| Ecken-Schale t/δ = 3.0 | 0 | 367 / **0.768** | **0** | **0** | ≤ 0.010 |
+| Ecken-Schale t/δ = 3.5 | 0 | 328 / 1.325 | **0** | **0** | ≤ 0.010 |
+| Ecken-Schale t/δ = 4.0 | 0 | 287 / 0.789 | **0** | **0** | ≤ 0.010 |
+| Ecken-Schale t/δ = 4.4 | 0 | 154 / 1.110 | **0** | **0** | ≤ 0.010 |
+| Ecken-Schale t/δ = 5.0 | 0 | 83 / 0.636 | **0** | **0** | ≤ 0.010 |
+| Ecken-Schale t/δ = 6.0 | 0 | 109 / 1.126 | **0** | **0** | ≤ 0.010 |
+| Stufen-Nabe | 0 | 81 / 0.306 | **0** | 81 / 0.306 | ≤ 0.010 |
+| Rippen-Kamm 4×1.5/0.8 | 644 / 0.820 | 0 | **336** / 0.820 | **0** | ≤ 0.868 |
+| Rippen-Kamm 4×2.0/1.0 | 616 / 0.820 | 0 | **280** / 0.820 | **0** | ≤ 0.868 |
+| notch_union α = 90° | 0 | 9 / 0.523 | **0** | 9 / 0.523 | ≤ 0.010 |
+| notch_union α = 60° | 0 | 14 / 0.559 | **0** | 14 / 0.559 | ≤ 0.010 |
+| Tasche `s ∈ {4,6}` (Dilation) | 0 | 0 | **0** | **0** | ≤ 0.010 |
+
+Zwei Korrekturen an §8j, beide aus der exakten statt der Strahl-Referenz:
+die Ecken-Schale 3.0 hat **367 Punkte bis 0.768 mm** (nicht 384/0.839), die
+Stufen-Nabe **81 bis 0.306 mm** (nicht 41/0.198). Die Größenordnung stimmte,
+die Zahlen nicht — genau das ist der Unterschied zwischen einer dichten
+Stichprobe und einer Zerlegung.
+
+**Der Rippen-Kamm ist die Gegenprobe zur Sonde selbst:** er hat 336 bzw. 280
+ÜBER-Claims und NULL Unter-Claims. Eine Sonde, die beide Richtungen
+verwechselt, könnte das nicht zeigen.
+
+### Term für Term am Worst-Punkt (Ecken-Schale t/δ = 3.0)
+
+Punkt `[−1.9956, −8.7779, −4.0813]` — im Material der x-Platte UND der
+z-Platte, 8.78 mm ausserhalb der y-Platte. Die exakte Referenz sagt
+`dist = 2.768409`; die Handrechnung bestätigt sie: die nächste Luft ist die
+konkave Kante `(x = 0, z = −6)`, also
+`√(1.9956² + 1.9187²) = 2.768409`. Der Strahl mit 2400 Richtungen liefert
+2.775727 — 7 µm daneben. Wahr ist damit `f = δ − dist = −0.768409`.
+
+Das Feld liefert `+0.004356`. Das ist auf sieben Stellen der **naive**
+Stoppwert `d₀`: keiner der 16 Kanäle und keine der 8 Vertex-Kugeln greift.
+
+| Term | `de` / `ρ` | woran es scheitert |
+|---|---|---|
+| ch4 (nächster Kanal) | 3.9224 zum Würfeleck `(0,−6,−6)` | `K − de = −0.0140` (knapp ausserhalb) UND `s₃ = −3.911` |
+| ch15 | 4.4403 | `K − de = −0.532` |
+| ch12 | 5.7177 | `K − de = −1.809` |
+| vs6 (Ecke `(0,−6,−6)`) | ρ = 3.9224, im Trust | Kegel-Gate `g₂ = −2.779` — der Punkt liegt NICHT im Trieder-Kegel |
+| alle übrigen 13 Kanäle / 7 Kugeln | `de ≥ 5.2` | weit ausserhalb |
+| Grenzwert-Klemme (§8j) | `lim = −1.9224` (aus vs6) | gültige UNTERE Schranke, hebt `d` nur an — hier wirkungslos |
+
+**Der Term, der greifen müsste, existiert nicht.** Die Naht `(x = 0, z = −6)`
+für `y ≤ −6` läuft in 2.768 mm Abstand an dem Punkt vorbei; kein Kanal hat
+sie. Der Spine-Dump zeigt: von den **24** konkaven Nahtstrahlen des Körpers
+(12 Würfelkanten von `[−6,0]³`, jede von der dritten Platte in zwei Strahlen
+zerschnitten) sind nur **16** synthetisiert. Vollständig ist ausgerechnet der
+INNERE Union-Knoten (`B1 ∪ B2`, alle 8 Strahlen entlang z); am ÄUSSEREN
+fehlen 8 von 16.
+
+Damit ist die Ursachen-Liste dieses Befunds abgeschlossen und, anders als
+§8j vermutete, dreiteilig:
+
+| Fixture | Ursache | Beleg |
+|---|---|---|
+| **Ecken-Schale** | **fehlende Nähte** (Synthese-Lücke) | 16 statt 24 Spines, kein Term am Worst-Punkt |
+| notch 90°/60° | **δ-verschobene End-Ebene** (§8f) | `de − δ = +0.5232` = exakt der wahre Fehler, aber `s₃ = −0.3831` |
+| Stufen-Nabe | **`G`-Kappe** (§8i) | `w_geo = +0.3055` = exakt der wahre Fehler, aber `gate = G − d₀ = −0.0261` |
+
+Bemerkenswert an den letzten beiden: der Term hat den **richtigen Wert schon
+ausgerechnet**. Beim notch ist `de = 2.5232` die exakte Distanz, bei der Nabe
+liefert das vierte Gate `s₄ = 0.3055` = `dist − δ` auf vier Stellen. Es ist
+nicht Unwissenheit, es ist ein Gate.
+
+### Die Synthese-Lücke: `claimed` wird zu früh gefüllt
+
+`synthesize_stop` führt eine Sperrliste `claimed` (Radius `1.5·step`), damit
+nicht dieselbe Naht aus 64 SSI-Seeds 64-mal getract wird. Sie wurde aus den
+Trace-Punkten gefüllt, **bevor** der Exponierungs-Witness den Trace prüft —
+und ein verworfener Trace nahm seine Sperre mit ins Grab.
+
+Am äusseren Union-Knoten der Ecken-Schale ist die Paar-AABB `x ∈ [−40,40]`,
+die Rand-Facetten `x = ±40` liegen also DRIN und werden wegen der
+Sub-Reihenfolge VOR den echten Nahtträgern abgearbeitet. Ihr Seed sitzt am
+Box-Eck, die Newton-Projektion zieht ihn auf die echte konkave Naht, der
+Trace läuft 28 Punkte an ihr entlang (am Trieder-Eck sogar um die Kurve
+herum) — und wird dann verworfen, weil der Witness die Träger des SEEDS
+auswertet (`x = 40` ist konvex, also „begraben"), nicht die Flächen, auf
+denen der Trace tatsächlich liegt. 28 Traces sterben so, alle nachdem sie
+`claimed` vergiftet haben; von den 64 Seeds des richtigen Branch-Paars werden
+63 mit „claimed" übersprungen und der 64. korrekt von der dritten Platte
+geblockt. Am inneren Knoten passiert das nicht: dessen Paar-AABB
+(`x,y ∈ [−6,0]`) schliesst die Rand-Facetten aus.
+
+Der Fix ist eine Zeile Reihenfolge: **`claimed` wird erst gefüllt, wenn
+`build_channel` einen Kanal geliefert hat.** Ein verworfener Trace sperrt
+dann nichts mehr. Die Ecken-Schale bekommt damit 24 statt 16 Kanäle.
+
+Nicht behoben, aber benannt: der Witness misst die Träger des Seeds statt
+die getracten Flächen, und `trace_seam` folgt am Trieder-Eck der
+Nachbar-Naht. Beides ist ohne den `claimed`-Effekt harmlos (der Trace wird
+verworfen, mehr nicht), gehört aber in dasselbe Paket wie die vollständige
+Fremdflächen-Abdeckung.
+
+### Die Kandidaten-Messtabelle (mit dem Verworfenen)
+
+Basis aller Zeilen: der `claimed`-Fix. Kandidaten b–e sind **Feld-Mutationen
+am kompilierten Baum** (kein Produktionscode) auf demselben Gitter.
+
+| Kandidat | Schale 2.0 über/unter | Schale ≥ 2.5 | Nabe | Kamm 1.5/0.8 | notch 90/60 unter | Tasche |
+|---|---|---|---|---|---|---|
+| **(a) `claimed` nach `build_channel`** | 0 / 2119·1.319 | **0 / 0** | 0 / 81·0.306 | 336·0.820 / 0 | 9·0.523, 14·0.559 | 0 |
+| (b) freie End-Ebene ohne δ-Versatz | 0 / 1044·1.319 | 0 / 0 | 0 / 81·0.306 | 336·0.820 / 0 | **0 / 0** | 0 |
+| (c) freie End-Ebene ganz aus | **0 / 0** | 0 / 0 | 0 / 81·0.306 | 336·0.820 / 0 | **0 / 0** | 0 |
+| (d) `G`-Kappe aus | 0 / 2119·1.319 | 0 / 0 | 0 / **1·0.113** | **448 · 1.987** | unverändert | 0 |
+| (e) End-Ebenen ALLE aus (auch Bisektoren) | 0 / 447·0.704 | 0 / 0 | 0 / 81·0.306 | 336·0.820 / 0 | 0 / 0 | **222 · 0.760** |
+
+**(a) ist gebaut.** Sie schliesst die Ecken-Schale ab `t/δ = 2.5` auf BEIDEN
+Seiten vollständig und halbiert nebenbei die Über-Claims des Rippen-Kamms
+(644 → 336, 616 → 280): mehr Nähte heisst mehr korrigierte Nähte, nicht mehr
+Fehler. Der Kamm steigt dadurch von `conservative` auf ein wahres ≤ 0.868
+(worst 0.820).
+
+**(b) und (c) sind gemessen und VERWORFEN — sie tauschen nur die Seite.** Im
+Gitter sahen beide makellos aus; in der Synthese meldet der Randpunkt-Zeuge
+aus §8e/§8g sofort **0.868 mm ÜBER-Claim** bei `[−1.87, −2.33, 38.81]`. Das
+ist die äussere Deckfläche der Platten (`z = 40`), wo `set_face_plane_gates`
+keine stützende Ebene belegt hat — dort trägt die δ-verschobene End-Ebene
+allein. Nachgerechnet: an dem Punkt ist die wahre Distanz 1.19 mm (die
+Deckfläche), das Feld behauptete Material. **Methodischer Nachtrag:** das
+Mess-Gitter der Kandidaten lag lokal um die Ecke und hat diesen Punkt nie
+gesehen — gefunden hat ihn der bestehende Über-Seiten-Wächter. Ein Gitter
+ist keine Sonde für das, was ausserhalb liegt.
+
+**(d) ist gemessen und VERWORFEN.** Sie ist der einzige Weg zur Nabe (81 → 1
+Punkt, 0.306 → 0.113 mm), verdreifacht aber den Fehler des Rippen-Kamms
+(0.820 → **1.987 mm**, 336 → 448 Punkte) und an der Ecken-Schale 2.0 den
+Über-Claim (§8j-Stand: 114 → 183 Punkte, 0.764 → 1.658 mm). Das ist genau der
+§8i-Satz von der anderen Seite: die Kappe IST die Schranke.
+
+**(e)** ist der Vollständigkeit halber die §8f-Gegenprobe: ohne Bisektoren
+bricht die Tasche wieder auf (0 → 222 Punkte / 0.760 mm), wie §8f es gemessen
+hatte.
+
+### Die Entscheidung: ein Fix, und danach eine ehrliche Zusage
+
+Nach (a) bleiben drei Fixturen mit fehlendem Material — Ecken-Schale 2.0
+(1.319 mm), Stufen-Nabe (0.306 mm), notch (0.523/0.559 mm) — und alle drei
+sagten „≤ 0.01 mm" zu. Ein sauberer Fix existiert für keine von ihnen:
+(b)/(c) und (d) sind gemessen und verworfen.
+
+**Also wird die Zusage ehrlich.** Sie war nie zweiseitig gemeint — alle
+Schranken der §8-Reihe (`G`, die Bau-Toleranz, der Randpunkt-Zeuge) messen
+Phantom-Material —, aber sie las sich so. Ab jetzt sagt sie, was sie deckt:
+
+    Duale Boolean-Kante über Arc-Spline-Kanäle toleranzbeschränkt korrigiert:
+    PHANTOM-Material ≤ 0.01 mm (Ziel-Toleranz). FEHLENDES Material ist davon
+    NICHT gedeckt — wo ein Gate bindet (Ein-Term-Kappe G, δ-verschobene
+    End-Ebene), bleibt der naive Sliver stehen; für diese Richtung ist keine
+    Schranke belegbar (#384 §8k).
+
+Warum keine Zahl statt der Ausnahme? Weil keine belegbar ist. Ein
+Unter-Claim-Zeuge müsste `dist(x,∁Ω) > δ` BEWEISEN, also eine **untere**
+Distanzschranke liefern; jede Quelle, die dieses Modul hat — Strahl-Minimum,
+`de`, jede stützende Ebene, die Grenzwert-Klemme aus §8j — liefert eine
+obere. Und eine strukturelle Konstante gibt es auch nicht: der naive
+Pushdown `∪ Erosion(P_k)` ist gegenüber `Erosion(∪ P_k)` um
+`dist − max_k depth_k` konservativ, und dieses Verhältnis ist an
+Member-ÜBERLAPPUNGEN unbeschränkt (an der Nabe misst es 2.086 — die
+Plattenoberseite ist unter dem Zylinder verdeckt, die wahre Distanz ist die
+Plattenunterseite). Eine Zahl wäre geraten. Geraten ist gelogen.
+
+**Verworfen wurde auch ein Wächter für die Unter-Seite** (Spiegel von
+`end_region_violation`: „ein Term verlangt `w_geo > 0`, das Gate hält es
+zurück, das Feld bleibt ≥ 0"). Er ist kein Wahrheits-Zeuge — `−w_geo` ist
+nach §8j eine UNTERE Schranke des Zielfelds, seine Verweigerung beweist also
+nichts —, und gemessen feuert er auch an Fixturen ohne jeden Unter-Claim
+(`offset_over_union_is_tolerance_bounded`, `transversal_union_erosion_is_not_degraded`,
+`penetrating_stack_unequal_cross_section_is_honestly_bounded_384`). Ein
+Wächter, der grundlos degradiert, ist genauso unehrlich wie einer, der
+schweigt.
+
+### Golden — was sich bewegt und warum
+
+| Szene | Tape | Feldwerte |
+|---|---|---|
+| 33 von 35 Szenen | byte-identisch | byte-identisch |
+| `arc_channel_notch` | 106 Zeilen, 9 verändert (gleiche Länge) | 7 von 514, größtes Δ = 0.099 |
+| `vertex_sphere_corner` | 1392 → **2492** Zeilen | 62 von 514, größtes Δ = 1.679 |
+
+`vertex_sphere_corner` ist die Ecken-Schale: sie bekommt 8 Kanäle mehr, das
+Tape wächst entsprechend, und die bewegten Feldwerte sind ausnahmslos
+AUSSENpunkte, deren Wert SINKT (`(2.7, 21, 2.7)`: 4.379 → 2.700). Das ist die
+richtige Richtung — der erodierte Körper ist gewachsen, also ist er von aussen
+näher, und ein sinkender Aussenwert bleibt march-sicher. `arc_channel_notch`
+behält seine Kanalzahl; dort hat der `claimed`-Fix die Reihenfolge geändert,
+welcher Seed zuerst getract wird, und der Bogen-Fit fällt minimal anders aus
+(≤ 0.099 mm im Fernfeld, ≤ 0.003 mm nahe der Naht). `arc_channel_steinmetz`
+ist byte-identisch.
+
+`check_interp` (Rust `eval_opcodes` ↔ C++ `sdf_interp.h`): **35 Szenen,
+17920 Checks, 0 Failures, worst_err 0.000002** (`sweep_open_twist`) —
+identisch zum Stand vor dem Paket. Kein Opcode, kein Format, kein Spiegel
+wurde angefasst: der Fix ist reine Synthese-Reihenfolge, die Prosa reine
+Capability.
+
+### Bilanz
+
+| Szene | §8j | §8k über | §8k unter | Zusage nachher |
+|---|---|---|---|---|
+| **Ecken-Schale** t/δ = 2.5 … 6.0 | über 0–157, unter 37–328 | **0** | **0** | ≤ 0.010, beidseitig wahr |
+| **Ecken-Schale** t/δ = 2.0 | 114 / 1759 | **0** | 2119 / 1.319 | ≤ 0.010 Phantom, Unter-Seite ausgenommen |
+| **Stufen-Nabe** | 0 / 81 | **0** | 81 / 0.306 | ≤ 0.010 Phantom, Unter-Seite ausgenommen |
+| **Rippen-Kamm** 4×1.5/0.8 | 644 / 0 | **336** / 0.820 | **0** | ≤ 0.868 (von `conservative` herauf) |
+| **Rippen-Kamm** 4×2.0/1.0 | 616 / 0 | **280** / 0.820 | **0** | ≤ 0.868 (von `conservative` herauf) |
+| **notch_union** 90°/60° | 0 / 9 bzw. 14 | **0** | 9 / 0.523, 14 / 0.559 | ≤ 0.010 Phantom, Unter-Seite ausgenommen |
+| Tasche (Dilation), Steinmetz, Zapfen, Prismen, Rims | — | **unverändert** | **unverändert** | — |
+| `cargo test --workspace` | 1546 | **1549** (drei neue Pins) | — | — |
+| `offset_fuzz` (`OFFSET_FUZZ_ITERS=200`) | 5/5 | **5/5** | — | — |
+
+Neue Pins: `exact_complement_reference_is_below_the_ray_bound_384` (die
+Referenz selbst — Ungleichung, Konvergenz, Handrechnung),
+`erosion_thin_corner_is_exact_on_both_sides_384` (die Schale ab `t/δ = 2.5`
+beidseitig fehlerfrei — der Naht-Vollständigkeits-Pin),
+`erosion_promise_names_the_side_it_covers_384` (die Doktrin, beidseitig:
+die genannte Schranke deckt den Über-Claim, und wo die exakte Referenz
+fehlendes Material nachweist, MUSS die Prosa die Unter-Seite ausnehmen).
+
+**Eine Pin-Bewegung, angesagt und begründet:**
+`erosion_collapsing_shell_promise_is_true_384` hatte die Vorbedingung
+`miss > 0` („die Sonde taugt nur, solange die kollabierende Erosion
+überhaupt noch Fehlklassifikationen erzeugt"). Sie erzeugt keine mehr — der
+`claimed`-Fix macht die Fixture bei beiden Dicken über-seitig exakt. Die
+Vorbedingung fror damit einen Fehler ein, den es nicht mehr gibt. An ihre
+Stelle tritt, was der Pin meint: die Sonde muss ein dichtes Gitter gegen eine
+exakte Referenz fahren, und was zugesagt wird, muss halten — jetzt auf beiden
+Seiten.
+
+### Was OFFEN bleibt
+
+* **Der Unter-Claim-Zeuge fehlt weiter.** Er bräuchte eine UNTERE Schranke
+  von `dist(x,∁Ω)`. Für Polytop-Member ist eine bezahlbar: `∁(P_a ∪ P_b)` ist
+  die Vereinigung von höchstens 6×6 konvexen Keilen, die Distanz dahin also
+  ein Minimum über 36 geschlossene Formeln — und `max_{a,b} dist(x, ∁(P_a∪P_b))`
+  ist eine gültige untere Schranke. Damit wäre die Unter-Seite genauso
+  wächterbar wie die Über-Seite. Eigenes Paket; die Halfspace-Karten dafür
+  hat das Modul bereits (`branch_halfspace_map`).
+* **Die drei Rest-Ursachen sind benannt, nicht geschlossen:** die
+  δ-verschobene End-Ebene dort, wo `set_face_plane_gates` keine stützende
+  Ebene belegt (Ecken-Schale 2.0, notch — der Ausweg ist eine VOLLSTÄNDIGE
+  Fremdflächen-Abdeckung ohne 4-Slot-Grenze, nicht das Streichen der Ebene);
+  die `G`-Kappe an der Nabe (kein Ausweg ohne den §8i-Satz zu brechen); und
+  die zwei Synthese-Defekte neben `claimed` (Witness gegen Seed-Träger statt
+  getracte Flächen, `trace_seam` biegt am Trieder-Eck auf die Nachbar-Naht).
+* **Naht gegen Naht**, **der konvexe Zweig ohne viertes Gate**, **spitze
+  Nähte** und **der Wächter als Stichprobe**: unverändert §8j.
 
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
+- `crates/kernel/src/offset_capability_tests.rs` — §8k: die exakten
+  Komplement-Referenzen (`dist_obb_union_complement_exact`,
+  `dist_hub_complement_exact`), die zweiseitige Sonde (`two_sided_scan`) und
+  die drei neuen Pins.
 - `crates/metricity-lab/tests/f_c_nonconvex_contact_spike.rs` — Machbarkeits-
   Prototyp (cavalier-Verschnitt L∩Rechteck, Zwei-Komponenten-Zerlegung,
   Loch-Kontakt), 3/3 grün.

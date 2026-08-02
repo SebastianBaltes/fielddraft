@@ -1882,6 +1882,18 @@ fn erosion_thin_corner_vertex_sphere_is_exact_384() {
 /// `≤ G` zu. Gemessen an der exakten Referenz (34³ Punkte, 240 Richtungen):
 /// t/δ = 2.0 → 0.841 mm, t/δ = 2.5 → 0.822 mm, beide unter den zugesagten
 /// 0.868 mm. Der Pin prüft deshalb ab jetzt die DOKTRIN statt des Status.
+///
+/// **Pin-Bewegung §8k — die angesagte.** Der alte Wortlaut hatte eine
+/// Vorbedingung: `miss > 0`, „die Sonde taugt nur, solange die kollabierende
+/// Erosion überhaupt noch Fehlklassifikationen erzeugt". Sie erzeugt keine
+/// mehr. Die Naht-Synthese lieferte an dieser Fixture nur 16 der 24 konkaven
+/// Nahtstrahlen (verworfene Traces hatten die Seed-Sperrliste `claimed`
+/// bereits gefüllt); seit `claimed` erst nach `build_channel` gefüllt wird,
+/// sind es 24 und der Über-Claim ist bei BEIDEN Dicken exakt null. Die
+/// Vorbedingung fror damit einen Fehler ein, den es nicht mehr gibt. An ihre
+/// Stelle tritt die Bedingung, die der Pin eigentlich meint: die Sonde muss
+/// ÜBERHAUPT etwas sehen (Punkte im Feld), und was der Stopp zusagt, muss
+/// gegen die exakte Referenz halten — jetzt auf BEIDEN Seiten.
 #[test]
 fn erosion_collapsing_shell_promise_is_true_384() {
     let delta = 2.0f32;
@@ -1889,30 +1901,48 @@ fn erosion_collapsing_shell_promise_is_true_384() {
         let t = tf * delta;
         let (field, report) = compile_for(thin_corner_node(t, 40.0, delta));
         let boxes = thin_corner_boxes(t as f64, 40.0);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
         let lo = -(t as f64 + delta as f64 + 1.0);
-        let (miss, worst, at) =
-            erosion_zero_set_error(&field, &boxes, delta, [lo; 3], [1.0; 3], 26, 200);
-        assert!(
-            miss > 0,
-            "Schale t/δ={tf}: die Sonde taugt nur, solange die kollabierende Erosion \
-             überhaupt noch Fehlklassifikationen erzeugt"
+        let r = two_sided_scan(
+            &field,
+            delta,
+            [lo; 3],
+            [1.0; 3],
+            26,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_boxes_complement(&boxes, p, 200),
         );
-        match promised_bound(&report) {
-            None => {}
-            Some(b) => {
-                assert!(
-                    b > CHANNEL_TOL_RENDER as f64 + 1e-9,
-                    "Schale t/δ={tf}: eine Bau-Toleranz-Zusage wäre hier eine Lüge \
-                     ({miss} Fehlklassifikationen bis {worst:.4} mm): {:?}",
-                    report.reasons()
-                );
-                assert!(
-                    worst <= b + 1e-3,
-                    "Schale t/δ={tf}: {miss} Fehlklassifikationen, größte {worst:.4} mm bei \
-                     {at:?} — zugesagt sind aber nur {b:.3} mm. Reasons: {:?}",
-                    report.reasons()
-                );
-            }
+        assert!(
+            r.pts > 1000 && r.xmax <= 1e-6,
+            "Schale t/δ={tf}: die Sonde muss ein dichtes Gitter gegen eine exakte Referenz \
+             fahren ({} Punkte, Referenz-Drift {:.6})",
+            r.pts,
+            r.xmax
+        );
+        if let Some(b) = promised_bound(&report) {
+            assert!(
+                r.over.1 <= b + 1e-3,
+                "Schale t/δ={tf}: {} Punkte Phantom-Material, größtes {:.4} mm bei {:?} — \
+                 zugesagt sind aber nur {b:.3} mm. Reasons: {:?}",
+                r.over.0,
+                r.over.1,
+                r.over.2,
+                report.reasons()
+            );
+        }
+        if r.under.1 > 1e-2 {
+            assert!(
+                report
+                    .reasons()
+                    .iter()
+                    .any(|s| s.contains("FEHLENDES Material") || s.contains("keine Schranke")),
+                "Schale t/δ={tf}: {} Punkte mit FEHLENDEM Material, größtes {:.4} mm bei {:?} — \
+                 der Report muss die Unter-Seite ausdrücklich ausnehmen. Reasons: {:?}",
+                r.under.0,
+                r.under.1,
+                r.under.2,
+                report.reasons()
+            );
         }
     }
 }
@@ -2814,4 +2844,651 @@ fn stop_limit_never_exceeds_the_naive_field_384() {
         "die Grenzwert-Klemme hebt den konkaven Stopp um {worst:.6} mm ÜBER den naiven \
          Wert bei {at:?} — sie darf nur Über-Claims zurücknehmen"
     );
+}
+// ─── #384 §8k: die UNTER-Seite — exakte Referenzen und die zweiseitige Sonde ──
+//
+// Alle Erosions-Sonden oben messen GENAU EINE Richtung: „das Feld behauptet
+// Material, die Referenz widerlegt es" (Über-Claim / Phantom-Material). Die
+// Gegenrichtung — „das Feld behauptet Luft, obwohl dort Material ist"
+// (Unter-Claim / fehlendes Material) — kann ein Strahl-Minimum GAR NICHT
+// beweisen: es ist eine OBERE Schranke von `dist(x,∁Ω)`, und ein Unter-Claim
+// braucht eine UNTERE. Dafür sind die folgenden Referenzen EXAKT statt
+// bloß beschränkend: sie zerlegen `∂Ω` analytisch in Flächenstücke.
+//
+// Beide Referenzen sind so gebaut, dass jede Degeneriertheit ein Randstück
+// ZU VIEL behält (statt eines zu wenig) — die Distanz wird also höchstens
+// unterschätzt, ein Unter-Claim damit nie erfunden.
+
+/// Eine orientierte Box (Mittelpunkt, Halbmaße, orthonormale Achsen).
+#[derive(Clone, Copy, Debug)]
+struct Obb {
+    c: [f64; 3],
+    he: [f64; 3],
+    u: [[f64; 3]; 3],
+}
+
+fn d3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn s3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn obb_aabb(lo: [f64; 3], hi: [f64; 3]) -> Obb {
+    Obb {
+        c: [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])],
+        he: [0.5 * (hi[0] - lo[0]), 0.5 * (hi[1] - lo[1]), 0.5 * (hi[2] - lo[2])],
+        u: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    }
+}
+
+fn obb_rot_z(c: [f64; 3], he: [f64; 3], rot: f64) -> Obb {
+    let (sn, cs) = rot.sin_cos();
+    Obb { c, he, u: [[cs, sn, 0.0], [-sn, cs, 0.0], [0.0, 0.0, 1.0]] }
+}
+
+/// Sutherland–Hodgman gegen die Halbebene `A·α + B·β ≤ C` (`keep_le`) bzw.
+/// `≥ C`. Konvexes Polygon rein, konvexes Polygon raus.
+fn clip_poly(poly: &[[f64; 2]], a: f64, b: f64, c: f64, keep_le: bool) -> Vec<[f64; 2]> {
+    let n = poly.len();
+    let mut out: Vec<[f64; 2]> = Vec::new();
+    if n == 0 {
+        return out;
+    }
+    let val = |p: &[f64; 2]| {
+        let v = a * p[0] + b * p[1] - c;
+        if keep_le {
+            -v
+        } else {
+            v
+        }
+    };
+    for i in 0..n {
+        let cur = poly[i];
+        let nxt = poly[(i + 1) % n];
+        let (vc, vn) = (val(&cur), val(&nxt));
+        if vc >= 0.0 {
+            out.push(cur);
+        }
+        if (vc >= 0.0) != (vn >= 0.0) {
+            let t = vc / (vc - vn);
+            out.push([cur[0] + t * (nxt[0] - cur[0]), cur[1] + t * (nxt[1] - cur[1])]);
+        }
+    }
+    out
+}
+
+/// `poly \ int(Q)` als disjunkte konvexe Stücke; `q` sind die Halbebenen von
+/// `Q` in der Form `(A,B,C)` mit „innen = `A·α + B·β ≤ C`".
+fn sub_halfplanes(poly: &[[f64; 2]], q: &[(f64, f64, f64)]) -> Vec<Vec<[f64; 2]>> {
+    let mut pieces: Vec<Vec<[f64; 2]>> = Vec::new();
+    let mut running: Vec<[f64; 2]> = poly.to_vec();
+    for &(a, b, c) in q {
+        if running.is_empty() {
+            break;
+        }
+        let outside = clip_poly(&running, a, b, c, false);
+        if outside.len() >= 3 {
+            pieces.push(outside);
+        }
+        running = clip_poly(&running, a, b, c, true);
+    }
+    pieces
+}
+
+fn sub_all(poly: Vec<[f64; 2]>, qs: &[Vec<(f64, f64, f64)>]) -> Vec<Vec<[f64; 2]>> {
+    let mut cur = vec![poly];
+    for q in qs {
+        let mut next: Vec<Vec<[f64; 2]>> = Vec::new();
+        for p in &cur {
+            next.extend(sub_halfplanes(p, q));
+        }
+        cur = next;
+        if cur.is_empty() {
+            break;
+        }
+    }
+    cur
+}
+
+fn dist_point_poly(q: [f64; 2], poly: &[[f64; 2]]) -> f64 {
+    let n = poly.len();
+    if n == 0 {
+        return f64::INFINITY;
+    }
+    let mut best = f64::INFINITY;
+    let mut all_pos = true;
+    let mut all_neg = true;
+    for i in 0..n {
+        let a = poly[i];
+        let b = poly[(i + 1) % n];
+        let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+        let ll = ex * ex + ey * ey;
+        let t = if ll > 0.0 { (((q[0] - a[0]) * ex + (q[1] - a[1]) * ey) / ll).clamp(0.0, 1.0) } else { 0.0 };
+        let (px, py) = (a[0] + t * ex - q[0], a[1] + t * ey - q[1]);
+        best = best.min((px * px + py * py).sqrt());
+        let cr = ex * (q[1] - a[1]) - ey * (q[0] - a[0]);
+        if cr < 0.0 {
+            all_pos = false;
+        }
+        if cr > 0.0 {
+            all_neg = false;
+        }
+    }
+    if n >= 3 && (all_pos || all_neg) {
+        return 0.0;
+    }
+    best
+}
+
+/// **EXAKTE** `dist(p, ∁(∪ Boxen))` für beliebig viele orientierte Boxen.
+/// `∂Ω` wird analytisch zerlegt: jede Box-Fläche minus den INNEREN der
+/// übrigen Boxen (konvexe Polygon-Subtraktion), Distanz je Stück in
+/// geschlossener Form. Anders als [`dist_to_boxes_complement`] ist das keine
+/// obere Schranke, sondern der Wert selbst — nur so lässt sich ein
+/// UNTER-Claim (`dist ≥ δ`, wo das Feld Luft behauptet) überhaupt beweisen.
+fn dist_obb_union_complement_exact(boxes: &[Obb], p: [f64; 3]) -> f64 {
+    let inside =
+        boxes.iter().any(|o| (0..3).all(|k| d3(s3(p, o.c), o.u[k]).abs() <= o.he[k] + 1e-12));
+    if !inside {
+        return 0.0;
+    }
+    let mut best = f64::INFINITY;
+    for (i, o) in boxes.iter().enumerate() {
+        for a in 0..3 {
+            let (i1, i2) = ((a + 1) % 3, (a + 2) % 3);
+            for s in [-1.0f64, 1.0] {
+                let pp = [
+                    o.c[0] + s * o.he[a] * o.u[a][0],
+                    o.c[1] + s * o.he[a] * o.u[a][1],
+                    o.c[2] + s * o.he[a] * o.u[a][2],
+                ];
+                let h = d3(s3(p, pp), o.u[a]).abs();
+                if h >= best {
+                    continue;
+                }
+                let (e1, e2) = (o.u[i1], o.u[i2]);
+                let rect = vec![
+                    [-o.he[i1], -o.he[i2]],
+                    [o.he[i1], -o.he[i2]],
+                    [o.he[i1], o.he[i2]],
+                    [-o.he[i1], o.he[i2]],
+                ];
+                let mut qs: Vec<Vec<(f64, f64, f64)>> = Vec::new();
+                for (j, ob) in boxes.iter().enumerate() {
+                    if j == i {
+                        continue;
+                    }
+                    let mut hp: Vec<(f64, f64, f64)> = Vec::new();
+                    for m in 0..3 {
+                        for sg in [1.0f64, -1.0] {
+                            let nv = [sg * ob.u[m][0], sg * ob.u[m][1], sg * ob.u[m][2]];
+                            hp.push((d3(e1, nv), d3(e2, nv), ob.he[m] - d3(s3(pp, ob.c), nv)));
+                        }
+                    }
+                    qs.push(hp);
+                }
+                let q2 = [d3(s3(p, pp), e1), d3(s3(p, pp), e2)];
+                for piece in sub_all(rect, &qs) {
+                    let d2 = dist_point_poly(q2, &piece);
+                    let d = (h * h + d2 * d2).sqrt();
+                    if d < best {
+                        best = d;
+                    }
+                }
+            }
+        }
+    }
+    best
+}
+
+fn subtract_intervals(lo: f64, hi: f64, cuts: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut ivs = vec![(lo, hi)];
+    for &(a, b) in cuts {
+        let mut next: Vec<(f64, f64)> = Vec::new();
+        for (x, y) in ivs {
+            if b <= x || a >= y {
+                next.push((x, y));
+                continue;
+            }
+            if a > x {
+                next.push((x, a));
+            }
+            if b < y {
+                next.push((b, y));
+            }
+        }
+        ivs = next;
+    }
+    ivs
+}
+
+/// **EXAKTE** `dist(p, ∁Ω)` der Stufen-Nabe: Platte `[−20,20]² × [−t,0]`
+/// vereinigt mit koaxialen z-Zylindern `(r, z_lo, z_hi)`, alle Radien < 20.
+/// `∂Ω` analytisch zerlegt: Plattenflächen minus konzentrische Scheiben,
+/// Zylinder-Mäntel minus verdeckte z-Intervalle, Deckel als Kreisringe.
+fn dist_hub_complement_exact(t: f64, cyls: &[(f64, f64, f64)], p: [f64; 3]) -> f64 {
+    let l = 20.0f64;
+    let rho = (p[0] * p[0] + p[1] * p[1]).sqrt();
+    let in_plate = p[0].abs() <= l && p[1].abs() <= l && p[2] >= -t && p[2] <= 0.0;
+    let in_cyl = cyls.iter().any(|&(r, zlo, zhi)| rho <= r && p[2] >= zlo && p[2] <= zhi);
+    if !in_plate && !in_cyl {
+        return 0.0;
+    }
+    let mut best = f64::INFINITY;
+    // 1) Platten-Deckflächen: Rechteck minus konzentrische Scheiben.
+    for zc in [0.0f64, -t] {
+        let mut rmax = 0.0f64;
+        for &(r, zlo, zhi) in cyls {
+            if zlo < zc && zc < zhi {
+                rmax = rmax.max(r);
+            }
+        }
+        let dz = (p[2] - zc).abs();
+        let d2 = if rho >= rmax {
+            let dx = (-l - p[0]).max(p[0] - l).max(0.0);
+            let dy = (-l - p[1]).max(p[1] - l).max(0.0);
+            (dx * dx + dy * dy).sqrt()
+        } else {
+            rmax - rho
+        };
+        best = best.min((dz * dz + d2 * d2).sqrt());
+    }
+    // 2) Platten-Seitenflächen (von Zylindern mit r < 20 nie berührt).
+    for (ax, sgn) in [(0usize, -1.0f64), (0, 1.0), (1, -1.0), (1, 1.0)] {
+        let other = 1 - ax;
+        let hh = (p[ax] - sgn * l).abs();
+        let dy = (-l - p[other]).max(p[other] - l).max(0.0);
+        let dz = (-t - p[2]).max(p[2]).max(0.0);
+        best = best.min((hh * hh + dy * dy + dz * dz).sqrt());
+    }
+    // 3) Zylinder-Mäntel minus Platten-/Nachbar-Inneres.
+    for (i, &(r, zlo, zhi)) in cyls.iter().enumerate() {
+        let mut cuts: Vec<(f64, f64)> = Vec::new();
+        if r < l {
+            cuts.push((-t, 0.0));
+        }
+        for (j, &(rj, zlj, zhj)) in cyls.iter().enumerate() {
+            if j != i && r < rj {
+                cuts.push((zlj, zhj));
+            }
+        }
+        let dr = (rho - r).abs();
+        for (a, b) in subtract_intervals(zlo, zhi, &cuts) {
+            let dz = (a - p[2]).max(p[2] - b).max(0.0);
+            best = best.min((dr * dr + dz * dz).sqrt());
+        }
+    }
+    // 4) Zylinder-Deckel als Kreisringe.
+    for (i, &(r, zlo, zhi)) in cyls.iter().enumerate() {
+        for zc in [zlo, zhi] {
+            if r < l && -t < zc && zc < 0.0 {
+                continue; // ganz im Platten-Inneren
+            }
+            let mut rin = 0.0f64;
+            for (j, &(rj, zlj, zhj)) in cyls.iter().enumerate() {
+                if j != i && zlj < zc && zc < zhj {
+                    rin = rin.max(rj);
+                }
+            }
+            if rin >= r {
+                continue;
+            }
+            let dz = (p[2] - zc).abs();
+            let dr = (rin - rho).max(rho - r).max(0.0);
+            best = best.min((dz * dz + dr * dr).sqrt());
+        }
+    }
+    best
+}
+
+/// Zweiseitige Nullmengen-Messung über ein versetztes Gitter.
+///
+/// * **über** (Phantom-Material): Feld meldet `< 0`, die exakte Referenz
+///   zeigt `dist < δ` ⇒ Fehler `δ − dist`.
+/// * **unter** (fehlendes Material): Feld meldet `≥ 0`, die exakte Referenz
+///   zeigt `dist > δ` ⇒ Fehler `dist − δ`.
+///
+/// `xmax` ist die größte beobachtete Abweichung `exakt − Strahlschranke`; sie
+/// MUSS `≤ 0` bleiben (die Strahl-Referenz ist eine obere Schranke) und ist
+/// damit der Selbsttest der exakten Referenz.
+struct TwoSided {
+    over: (usize, f64, [f64; 3]),
+    under: (usize, f64, [f64; 3]),
+    xmax: f64,
+    pts: usize,
+}
+
+fn two_sided_scan(
+    field: &BoundedCsg,
+    delta: f32,
+    lo: [f64; 3],
+    hi: [f64; 3],
+    n: usize,
+    exact: &dyn Fn([f64; 3]) -> f64,
+    ray: &dyn Fn([f64; 3]) -> f64,
+) -> TwoSided {
+    let mut r = TwoSided {
+        over: (0, 0.0, [0.0; 3]),
+        under: (0, 0.0, [0.0; 3]),
+        xmax: f64::NEG_INFINITY,
+        pts: 0,
+    };
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let f = [
+                    (ix as f64 + 0.2113248654) / n as f64,
+                    (iy as f64 + 0.5773502692) / n as f64,
+                    (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let p = [
+                    lo[0] + (hi[0] - lo[0]) * f[0],
+                    lo[1] + (hi[1] - lo[1]) * f[1],
+                    lo[2] + (hi[2] - lo[2]) * f[2],
+                ];
+                r.pts += 1;
+                let got = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+                let e = exact(p);
+                let u = ray(p);
+                r.xmax = r.xmax.max(e - u);
+                if got < 0.0 {
+                    let err = delta as f64 - u;
+                    if err > 1e-3 {
+                        r.over.0 += 1;
+                        if err > r.over.1 {
+                            r.over.1 = err;
+                            r.over.2 = p;
+                        }
+                    }
+                } else {
+                    let err = e - delta as f64;
+                    if err > 1e-3 {
+                        r.under.0 += 1;
+                        if err > r.under.1 {
+                            r.under.1 = err;
+                            r.under.2 = p;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    r
+}
+
+fn rib_comb_node(nribs: usize, w: f32, g: f32, delta: f32) -> (CsgNode, Vec<([f64; 3], [f64; 3])>, f64) {
+    let (embed, ylen) = (5.0f32, 22.0f32);
+    let (h, plate, l) = (8.0f32, 12.0f32, 20.0f32);
+    let pitch = w + g;
+    let x0 = -0.5 * (nribs as f32 * pitch - g);
+    let mut node = box_at(1, [0.0, 0.0, -0.5 * plate], [l, l, 0.5 * plate]);
+    let mut boxes: Vec<([f64; 3], [f64; 3])> =
+        vec![([-l as f64, -l as f64, -plate as f64], [l as f64, l as f64, 0.0])];
+    for i in 0..nribs {
+        let cx = x0 + 0.5 * w + i as f32 * pitch;
+        node = CsgNode::Union(
+            Box::new(node),
+            Box::new(box_at(
+                2 + i as u32,
+                [cx, 0.0, 0.5 * (h - embed)],
+                [0.5 * w, ylen, 0.5 * (h + embed)],
+            )),
+        );
+        boxes.push((
+            [(cx - 0.5 * w) as f64, -ylen as f64, -embed as f64],
+            [(cx + 0.5 * w) as f64, ylen as f64, h as f64],
+        ));
+    }
+    let span = (0.5 * (nribs as f32 * pitch - g) + 3.0) as f64;
+    (CsgNode::Offset(Box::new(node), -delta), boxes, span)
+}
+
+
+/// **§8k-Selbsttest der exakten Referenz.** Das Strahl-Minimum ist eine OBERE
+/// Schranke von `dist(x,∁Ω)`, die analytische Zerlegung liefert den Wert
+/// selbst — also muss `exakt ≤ Strahl` an JEDEM Punkt gelten. Ein Verstoß
+/// hieße, die Zerlegung erfindet Distanz, und dann wäre jeder Unter-Claim
+/// unten frei erfunden. Zusätzlich geprüft: die beiden kommen sich auch
+/// wirklich nahe (eine Referenz, die überall 0 liefert, bestünde den
+/// Ungleichungs-Test ebenfalls).
+#[test]
+fn exact_complement_reference_is_below_the_ray_bound_384() {
+    let boxes = thin_corner_boxes(6.0, 40.0);
+    let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+    let (mut worst_gap, mut inside, mut max_exact) = (0.0f64, 0usize, 0.0f64);
+    let n = 14usize;
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let p = [
+                    -9.0 + 10.0 * (ix as f64 + 0.2113248654) / n as f64,
+                    -9.0 + 10.0 * (iy as f64 + 0.5773502692) / n as f64,
+                    -9.0 + 10.0 * (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let e = dist_obb_union_complement_exact(&obbs, p);
+                let u = dist_to_boxes_complement(&boxes, p, 400);
+                assert!(
+                    e <= u + 1e-6,
+                    "die exakte Referenz {e:.6} übersteigt bei {p:?} die Strahl-Schranke \
+                     {u:.6} — dann erfindet sie Distanz"
+                );
+                if e > 1e-6 {
+                    inside += 1;
+                    worst_gap = worst_gap.max(u - e);
+                    max_exact = max_exact.max(e);
+                }
+            }
+        }
+    }
+    assert!(inside > 100, "zu wenige Innenpunkte gesondet: {inside}");
+    assert!(max_exact > 3.0, "die Referenz liefert nur Kleinkram: max {max_exact:.3}");
+    // Der Strahl konvergiert von OBEN gegen die Wahrheit — am Punkt der
+    // größten Restdifferenz muss ein dichteres Richtungsbündel sie also
+    // schließen. Täte es das nicht, läge die exakte Zerlegung zu tief.
+    let (mut gap_at, mut gap) = ([0.0f64; 3], 0.0f64);
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let p = [
+                    -9.0 + 10.0 * (ix as f64 + 0.2113248654) / n as f64,
+                    -9.0 + 10.0 * (iy as f64 + 0.5773502692) / n as f64,
+                    -9.0 + 10.0 * (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let e = dist_obb_union_complement_exact(&obbs, p);
+                if e <= 1e-6 {
+                    continue;
+                }
+                let d = dist_to_boxes_complement(&boxes, p, 400) - e;
+                if d > gap {
+                    gap = d;
+                    gap_at = p;
+                }
+            }
+        }
+    }
+    let e = dist_obb_union_complement_exact(&obbs, gap_at);
+    let (u1, u2) = (
+        dist_to_boxes_complement(&boxes, gap_at, 2_000),
+        dist_to_boxes_complement(&boxes, gap_at, 40_000),
+    );
+    assert!(
+        u2 <= u1 && u1 <= e + gap + 1e-9 && u2 - e < 0.4 * gap,
+        "am Punkt der größten Differenz {gap_at:?} konvergiert der Strahl nicht gegen die \
+         exakte Referenz {e:.4}: 400 → {:.4}, 2000 → {u1:.4}, 40000 → {u2:.4}",
+        e + gap
+    );
+    // Und die Handrechnung am §8k-Referenzpunkt: p liegt in der x-Platte und
+    // der z-Platte, die nächste Luft ist die konkave Kante (x=0, z=−6).
+    let p = [-1.9956442825384606f64, -8.777942204153845, -4.081278794384615];
+    let want = ((1.9956442825384606f64).powi(2) + (6.0 - 4.081278794384615f64).powi(2)).sqrt();
+    assert!(
+        (dist_obb_union_complement_exact(&obbs, p) - want).abs() < 1e-9,
+        "exakte Referenz {:.6} statt der Handrechnung {want:.6}",
+        dist_obb_union_complement_exact(&obbs, p)
+    );
+}
+
+/// **§8k-Kern-Pin: die Ecken-Schale ist BEIDSEITIG exakt.**
+///
+/// Bis §8j maß jede Erosions-Sonde nur Phantom-Material. Die Gegenprobe fand
+/// an dieser Fixture vorbestehend FEHLENDES Material — bei zugesagten 0.01 mm
+/// bis zu 0.768 mm (t/δ = 3.0), und die Zusage sagte darüber nichts. Ursache
+/// war weder die End-Ebene noch die `G`-Kappe, sondern eine Synthese-Lücke:
+/// von den 24 konkaven Nahtstrahlen des Körpers entstanden nur 16, weil
+/// verworfene Traces die Seed-Sperrliste `claimed` bereits gefüllt hatten.
+/// Seit `claimed` erst NACH `build_channel` gefüllt wird, sind es 24 — und
+/// die Fixture ist auf BEIDEN Seiten fehlerfrei.
+#[test]
+fn erosion_thin_corner_is_exact_on_both_sides_384() {
+    let delta = 2.0f32;
+    // `t/δ = 2` fehlt bewusst: die KOLLABIERENDE Schale behält einen
+    // Unter-Claim (1.32 mm), den die δ-verschobene End-Ebene verursacht —
+    // gemessen, benannt, und im Report ausgenommen (§8k). Sie wird von
+    // `erosion_promise_names_the_side_it_covers_384` geprüft.
+    for tf in [2.5f32, 3.0, 3.5, 4.0, 4.4, 5.0, 6.0] {
+        let t = tf * delta;
+        let (field, report) = compile_for(thin_corner_node(t, 40.0, delta));
+        let boxes = thin_corner_boxes(t as f64, 40.0);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let lo = -(t as f64 + delta as f64 + 1.0);
+        let r = two_sided_scan(
+            &field,
+            delta,
+            [lo; 3],
+            [1.0; 3],
+            22,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_boxes_complement(&boxes, p, 160),
+        );
+        assert_eq!(
+            r.under.0, 0,
+            "Schale t/δ={tf}: {} Punkte mit FEHLENDEM Material, größtes {:.4} mm bei {:?} — \
+             die Naht-Synthese muss alle 24 Strahlen liefern. Reasons: {:?}",
+            r.under.0,
+            r.under.1,
+            r.under.2,
+            report.reasons()
+        );
+        assert_eq!(
+            r.over.0, 0,
+            "Schale t/δ={tf}: {} Punkte Phantom-Material, größtes {:.4} mm bei {:?}",
+            r.over.0, r.over.1, r.over.2
+        );
+    }
+}
+
+/// **§8k-Doktrin-Pin, beidseitig.** Was ein Stopp zusagt, muss auf der Seite
+/// halten, für die er es zusagt — und über die ANDERE Seite darf er nicht
+/// schweigen. Konkret: die genannte Schranke muss den Über-Claim decken, und
+/// wo die exakte Referenz fehlendes Material nachweist, muss die Prosa die
+/// Unter-Seite ausdrücklich ausnehmen. (Ein Unter-Claim-ZEUGE ist mit den
+/// heutigen Mitteln unmöglich — er bräuchte eine UNTERE Distanzschranke, jede
+/// verfügbare Quelle liefert eine obere. Deshalb kann der Stopp die Richtung
+/// nur ausnehmen, nicht beziffern.)
+#[test]
+fn erosion_promise_names_the_side_it_covers_384() {
+    let delta = 2.0f32;
+    let mut cases: Vec<(String, TwoSided, CapabilityReport)> = Vec::new();
+    {
+        let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+        let (field, report) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+        let cyls = [(r1 as f64, -(e1 as f64), zh1 as f64), (r2 as f64, -(e2 as f64), 6.0f64)];
+        let r = two_sided_scan(
+            &field,
+            delta,
+            [-9.0, -9.0, -(t as f64) - 1.5],
+            [9.0, 9.0, 0.5],
+            22,
+            &|p| dist_hub_complement_exact(t as f64, &cyls, p),
+            &|p| dist_hub_complement(t as f64, &cyls, p, 160),
+        );
+        cases.push(("Stufen-Nabe".into(), r, report));
+    }
+    {
+        // Die KOLLABIERENDE Schale: Erosion frisst sie fast auf, die
+        // Ecken-Kegel überlappen einander vollständig.
+        let t = 2.0f32 * delta;
+        let (field, report) = compile_for(thin_corner_node(t, 40.0, delta));
+        let boxes = thin_corner_boxes(t as f64, 40.0);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let lo = -(t as f64 + delta as f64 + 1.0);
+        let r = two_sided_scan(
+            &field,
+            delta,
+            [lo; 3],
+            [1.0; 3],
+            22,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_boxes_complement(&boxes, p, 160),
+        );
+        cases.push(("Ecken-Schale t/δ=2".into(), r, report));
+    }
+    for (w, g) in [(1.5f32, 0.8f32), (2.0, 1.0)] {
+        let (node, boxes, span) = rib_comb_node(4, w, g, delta);
+        let (field, report) = compile_for(node);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let r = two_sided_scan(
+            &field,
+            delta,
+            [-span, -3.0, -6.0],
+            [span, 3.0, 0.5],
+            24,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_boxes_complement(&boxes, p, 160),
+        );
+        cases.push((format!("Rippen-Kamm 4×{w}/{g}"), r, report));
+    }
+    for alpha in [90.0f64, 60.0] {
+        let (field, report) = compile_for(notch_union_node(alpha, delta as f64));
+        let gamma = std::f64::consts::PI - alpha.to_radians();
+        let obbs = vec![
+            obb_rot_z([0.0, -50.0, 0.0], [100.0, 50.0, 50.0], 0.0),
+            obb_rot_z([50.0 * gamma.sin(), -50.0 * gamma.cos(), 0.0], [100.0, 50.0, 50.0], gamma),
+        ];
+        let r = two_sided_scan(
+            &field,
+            delta,
+            [-10.0, -10.0, 42.0],
+            [10.0, 10.0, 54.0],
+            22,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_notch_complement(alpha, p),
+        );
+        cases.push((format!("notch α={alpha}"), r, report));
+    }
+    for (name, r, report) in cases {
+        assert!(
+            r.xmax <= 1e-6,
+            "{name}: die exakte Referenz übersteigt die Strahl-Schranke um {:.6} — \
+             die Messung selbst ist kaputt",
+            r.xmax
+        );
+        if let Some(b) = promised_bound(&report) {
+            assert!(
+                r.over.1 <= b + 1e-3,
+                "{name}: {} Punkte Phantom-Material, größtes {:.4} mm bei {:?} — zugesagt sind \
+                 aber nur {b:.3} mm. Reasons: {:?}",
+                r.over.0,
+                r.over.1,
+                r.over.2,
+                report.reasons()
+            );
+        }
+        if r.under.1 > 1e-2 {
+            assert!(
+                report
+                    .reasons()
+                    .iter()
+                    .any(|s| s.contains("FEHLENDES Material") || s.contains("keine Schranke")),
+                "{name}: {} Punkte mit FEHLENDEM Material, größtes {:.4} mm bei {:?} — der Report \
+                 muss die Unter-Seite ausdrücklich ausnehmen, sonst liest sich die Zusage \
+                 zweiseitig. Reasons: {:?}",
+                r.under.0,
+                r.under.1,
+                r.under.2,
+                report.reasons()
+            );
+        }
+    }
 }

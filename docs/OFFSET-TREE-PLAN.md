@@ -704,6 +704,60 @@ für Shell.
   fehlendes Material (Ecken-Schale t/δ = 3.0: 384 Punkte bis 0.839 mm),
   Ursachen sind die um δ verschobene End-Ebene (§8f) und die `G`-Kappe
   (§8i). Details und Zahlen: §8j.
+* **Die UNTER-Seite — ERSTMALS GEMESSEN, ein Fix, eine ehrliche Zusage
+  (#384 §8k, 2026-08-02).** §8j hatte als Nebenbefund festgehalten, dass
+  fehlendes Material „nirgends gemessen und nirgends zugesagt" ist. Ein
+  Strahl-Minimum KANN es auch nicht messen: es ist eine OBERE Schranke von
+  `dist(x,∁Ω)`, ein Unter-Claim bräuchte eine untere. Dieses Paket baut
+  darum zwei **exakte** Referenzen, die `∂Ω` analytisch zerlegen —
+  `dist_obb_union_complement_exact` (Box-Flächen minus den Inneren der
+  übrigen Boxen per konvexer Polygon-Subtraktion) und
+  `dist_hub_complement_exact` (Platte ∪ koaxiale Zylinder in geschlossener
+  Form) — und vermisst ALLE §8c–§8j-Fixturen beidseitig.
+  *Der Befund:* die zwei von §8j benannten Verdächtigen sind schuldig
+  (notch: die δ-verschobene End-Ebene, `de − δ = +0.523` exakt richtig, aber
+  `s₃ = −0.383`; Stufen-Nabe: die `G`-Kappe, `w_geo = +0.306` exakt richtig,
+  aber `gate = G − d₀ = −0.026`) — der GRÖSSTE Posten war aber ein dritter,
+  ungenannter: **an der Ecken-Schale entstanden nur 16 der 24 konkaven
+  Nahtstrahlen.** Am Worst-Punkt greift kein einziger Term, weil die nächste
+  Naht gar nicht existiert.
+  *Ursache und Fix (eine Zeile Reihenfolge):* die Seed-Sperrliste `claimed`
+  wurde aus den Trace-Punkten gefüllt, BEVOR der Exponierungs-Witness den
+  Trace prüft — ein verworfener Trace nahm seine Sperre mit. Am äusseren
+  Union-Knoten liegen die Rand-Facetten in der Paar-AABB und werden zuerst
+  abgearbeitet; ihre Traces rutschen auf die echte Naht, sterben am Witness
+  und sperren sie. `claimed` wird jetzt erst nach `build_channel` gefüllt.
+  Ergebnis: Ecken-Schale 24 statt 16 Kanäle, ab `t/δ = 2.5` **beidseitig
+  fehlerfrei** (vorher bis 328 Punkte / 1.325 mm fehlendes Material bei
+  zugesagten 0.01), Rippen-Kamm-Über-Claims 644 → 336 bzw. 616 → 280 und
+  damit von `conservative` herauf auf ein wahres ≤ 0.868.
+  *VERWORFEN, gemessen:* die freie End-Ebene ohne δ-Versatz bzw. ganz
+  gestrichen (schliesst alle Unter-Claims, aber der Randpunkt-Zeuge weist
+  **0.868 mm ÜBER-Claim** an der äusseren Deckfläche `z = 40` nach, wo
+  `set_face_plane_gates` keine stützende Ebene belegt) und die `G`-Kappe
+  aufzuheben (Nabe 81 → 1 Punkt, aber Rippen-Kamm 0.820 → **1.987 mm**).
+  Ebenfalls verworfen: ein Wächter für die Unter-Seite — er wäre kein
+  Wahrheits-Zeuge und feuerte gemessen auch an Fixturen ohne jeden
+  Unter-Claim.
+  *Also die ehrliche Zusage:* die Kanal-Notiz sagt ab jetzt, welche Richtung
+  sie deckt — „PHANTOM-Material ≤ tol mm; FEHLENDES Material ist davon NICHT
+  gedeckt … für diese Richtung ist keine Schranke belegbar". Keine Zahl,
+  weil keine belegbar ist: der naive Pushdown `∪ Erosion(P_k)` ist gegenüber
+  `Erosion(∪ P_k)` um `dist − max_k depth_k` konservativ, und dieses
+  Verhältnis ist an Member-Überlappungen unbeschränkt (an der Nabe 2.086).
+  Golden 33/35 byte-identisch; `vertex_sphere_corner` wächst um 8 Kanäle und
+  bewegt 62 von 514 Feldwerten ausschliesslich nach UNTEN an Aussenpunkten
+  (der erodierte Körper ist gewachsen), `arc_channel_notch` 7 Werte ≤ 0.099 mm
+  aus geänderter Seed-Reihenfolge. Kein Opcode, kein Format, kein Spiegel:
+  `check_interp` 35 Szenen / 17920 Checks / 0 Failures, unverändert.
+  Drei neue Pins, EINE angesagte Pin-Bewegung
+  (`erosion_collapsing_shell_promise_is_true_384`: die Vorbedingung
+  `miss > 0` fror einen Fehler ein, den es nicht mehr gibt).
+  *Was NICHT dazugehört:* der Unter-Claim-ZEUGE. Er bräuchte eine untere
+  Distanzschranke; für Polytop-Member ist eine bezahlbar
+  (`∁(P_a ∪ P_b)` = Vereinigung von ≤ 36 konvexen Keilen, Distanz als
+  Minimum geschlossener Formeln, `max_{a,b}` davon ist gültig) — eigenes
+  Paket. Details und alle Zahlen: §8k.
 * **Kaskade sequenzieller Korrekturterme — ERLEDIGT (#384 §8i,
   2026-08-02).** §8h hatte den Bruch vermessen und den Fix spezifiziert; §8i
   hat ihn gebaut. Jedes Gate rechnet ab jetzt gegen den **naiven** Stoppwert
