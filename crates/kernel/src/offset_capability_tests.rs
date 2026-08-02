@@ -10732,3 +10732,356 @@ fn interval_prune_can_skip_even_the_first_arc_384() {
          Pin den Fix nicht"
     );
 }
+
+// ══════════════ #384 §8x / P5a — der Aussenzeugen-Kern ══════════════
+
+use crate::offset_witness as wit;
+
+/// `Ω` und die Kanäle eines Fixture-Feldes.
+fn omega_and_channels(field: &BoundedCsg) -> Vec<(&BoundedCsg, &Vec<OffsetChannel>)> {
+    let mut stops = Vec::new();
+    stop_nodes(field, &mut stops);
+    let mut out = Vec::new();
+    for st in stops {
+        if let BoundedCsg::ArcChannel { inner, channels, .. } = st {
+            if let Some(om) = wit::omega_of(inner) {
+                out.push((om, channels));
+            }
+        }
+    }
+    out
+}
+
+/// **§8x-Sonde: die Zeugen-Abdeckung der Nähte.**
+#[test]
+#[ignore]
+fn probe_384_witness_cover() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    println!(
+        "| Fixture | Kanäle | Stücke | gedeckt | Naht mm | ungedeckt mm | η_geo mm | Grund |"
+    );
+    println!("|---|---|---|---|---|---|---|---|");
+    for (name, field, _e, _lo, _hi, _n) in cert_matrix(delta) {
+        let (mut np, mut nc, mut sl, mut ul, mut nch) = (0usize, 0usize, 0.0f64, 0.0f64, 0usize);
+        let mut worst: Option<f64> = None;
+        let mut any_open = false;
+        for (om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                let c = wit::cover_channel(om, ch, cfg);
+                np += c.pieces;
+                nc += c.covered;
+                sl += c.seam_len;
+                ul += c.uncovered_len;
+                nch += 1;
+                match c.eta {
+                    Some(e) => {
+                        let g = e.total_geometric();
+                        worst = Some(worst.map_or(g, |w: f64| w.max(g)));
+                    }
+                    None => any_open = true,
+                }
+            }
+        }
+        let eta = match (any_open, worst) {
+            (false, Some(w)) => format!("{w:.5}"),
+            _ => "— (offen)".into(),
+        };
+        // Warum bleibt etwas offen? Zwei strukturelle Gründe sind zu trennen.
+        let mut curved = 0usize;
+        let mut unsupported_leaf = false;
+        for (om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                curved += ch.arcs.iter().filter(|a| !(a.sweep < 0.0)).count();
+            }
+            fn walk(n: &BoundedCsg, bad: &mut bool) {
+                match n {
+                    BoundedCsg::Leaf { primitive, .. } => {
+                        if !matches!(
+                            primitive,
+                            Primitive::Box { .. }
+                                | Primitive::Sphere { .. }
+                                | Primitive::Cylinder { .. }
+                        ) {
+                            *bad = true;
+                        }
+                    }
+                    BoundedCsg::Union { left, right, .. }
+                    | BoundedCsg::Difference { left, right, .. }
+                    | BoundedCsg::Intersection { left, right, .. } => {
+                        walk(left, bad);
+                        walk(right, bad);
+                    }
+                    BoundedCsg::Offset { inner, .. } | BoundedCsg::InnerWall { inner, .. } => {
+                        walk(inner, bad)
+                    }
+                    _ => *bad = true,
+                }
+            }
+            walk(om, &mut unsupported_leaf);
+        }
+        let reason = if !any_open {
+            "—".to_string()
+        } else if unsupported_leaf {
+            "Ω-Blatt nicht unterstützt (Extrude)".into()
+        } else if curved > 0 {
+            format!("{curved} gekrümmte Bögen (P4)")
+        } else {
+            "kein Zeuge gefunden".into()
+        };
+        println!(
+            "| {name} | {nch} | {np} | {nc} ({:.1} %) | {sl:.1} | {ul:.2} | {eta} | {reason} |",
+            100.0 * nc as f64 / np.max(1) as f64
+        );
+    }
+}
+
+/// Ein L aus zwei Boxen als Ω-Spielwiese.
+fn l_omega() -> BoundedCsg {
+    let n = CsgNode::Union(
+        Box::new(box_at(1, [0.0, -5.0, 0.0], [20.0, 5.0, 20.0])),
+        Box::new(box_at(2, [-5.0, 0.0, 0.0], [5.0, 20.0, 20.0])),
+    );
+    BoundedCsg::from_csg(&n)
+}
+
+fn ivp(y: [f64; 3]) -> [iv::Iv; 3] {
+    [iv::Iv::point(y[0]), iv::Iv::point(y[1]), iv::Iv::point(y[2])]
+}
+
+/// **§8x-Pin 1: die Aussenmitgliedschaft ist geometrisch — und strikt.**
+///
+/// Beweispflicht 1. Vier Richtungen, alle falsifizierend:
+///
+/// * klar aussen ⇒ bewiesen;
+/// * klar innen ⇒ NICHT bewiesen (das ist der Falsifikator „Zeuge auf der
+///   falschen Member-Seite");
+/// * **exakt auf der Fläche** ⇒ NICHT bewiesen — eine Berührung ist kein
+///   Beweis für „ausserhalb", und genau dafür steht die Marge;
+/// * eine Box, die den Rand ÜBERSPANNT ⇒ NICHT bewiesen.
+///
+/// Dazu die Rückdreh-Probe: mit NEGATIVER Marge fällt die Strenge weg, und der
+/// Randpunkt rutscht durch.
+#[test]
+fn witness_outside_membership_is_geometric_384() {
+    let om = l_omega();
+    let m = 1.0e-9;
+    let (mut outs, mut ins) = (0usize, 0usize);
+    // Klar aussen (jenseits beider Boxen).
+    for y in [
+        [10.0f64, 10.0, 0.0],
+        [0.5, 0.5, 0.0],
+        [-30.0, 0.0, 0.0],
+        [0.0, -30.0, 0.0],
+        [0.0, 0.0, 40.0],
+    ] {
+        assert!(
+            wit::box_outside_omega(&om, ivp(y), m),
+            "{y:?} liegt ausserhalb, wird aber nicht als aussen bewiesen"
+        );
+        outs += 1;
+    }
+    // Klar INNEN — der Falsifikator „falsche Member-Seite".
+    for y in [
+        [0.0f64, -5.0, 0.0],
+        [-5.0, 0.0, 0.0],
+        [-2.0, -2.0, 5.0],
+        [15.0, -9.0, -15.0],
+    ] {
+        assert!(
+            !wit::box_outside_omega(&om, ivp(y), m),
+            "{y:?} liegt IN Ω, wird aber als aussen „bewiesen“ — die Prüfung ist wertlos"
+        );
+        ins += 1;
+    }
+    // Exakt auf der Deckfläche der ersten Box (y = 0): Berührung, kein Beweis.
+    for y in [[0.0f64, 0.0, 0.0], [10.0, 0.0, 10.0], [-5.0, 20.0, 0.0]] {
+        assert!(
+            !wit::box_outside_omega(&om, ivp(y), m),
+            "der Randpunkt {y:?} wird als aussen bewiesen — die Marge trägt nicht"
+        );
+    }
+    // Eine Box, die den Rand überspannt.
+    let straddle = [
+        iv::Iv { lo: 8.0, hi: 12.0 },
+        iv::Iv { lo: -1.0, hi: 1.0 },
+        iv::Iv { lo: 0.0, hi: 1.0 },
+    ];
+    assert!(
+        !wit::box_outside_omega(&om, straddle, m),
+        "eine den Rand überspannende Box wird als ganz aussen bewiesen"
+    );
+    // Rückdreh: mit negativer Marge rutscht der Randpunkt durch.
+    assert!(
+        wit::box_outside_omega(&om, ivp([10.0, 0.0, 10.0]), -1.0),
+        "die Gegenprobe blieb still: ohne strikte Marge MUSS der Randpunkt durchrutschen — \
+         sonst belegt der Pin die Strenge nicht"
+    );
+    assert!(outs >= 5 && ins >= 4, "nur {outs}/{ins} Fälle geprüft");
+}
+
+/// **§8x-Pin 2: ein kleiner Feldwert ist KEIN Aussenzeuge.**
+///
+/// Der stehende Vorbehalt aus §8u, jetzt als Pin. Auf der Erosionsfläche ist
+/// `|f| ≈ 0` — und trotzdem liegen diese Punkte **tief in `Ω`** (nämlich `δ`
+/// vom Rand entfernt). Wer aus `|f| ≤ ε` auf Randzugehörigkeit oder gar auf
+/// Aussenlage schlösse, läge um die volle Wandstärke daneben.
+#[test]
+fn witness_small_field_value_is_not_outside_384() {
+    let delta = 2.0f32;
+    let (field, _) = compile_for(thin_corner_node(6.0 * delta, 40.0, delta));
+    let om = omega_and_channels(&field).first().map(|(o, _)| *o).expect("kein Ω");
+    let mut near_zero = 0usize;
+    for cell in fixture_cells([-15.0; 3], [1.0; 3], 26) {
+        use iv::CellDomain;
+        let c = cell.center();
+        let f = field.sdf([c[0] as f32, c[1] as f32, c[2] as f32], EvalMode::Visual);
+        // Nahe der Erosionsfläche: dort ist |f| klein UND der Punkt liegt δ tief
+        // in Ω — die schärfste Form des Missverständnisses.
+        if f.abs() > 0.2 {
+            continue;
+        }
+        near_zero += 1;
+        assert!(
+            !wit::box_outside_omega(om, ivp(c), 1.0e-9),
+            "der Punkt {c:?} hat |f| = {} ≈ 0 und wird trotzdem als AUSSERHALB von Ω \
+             bewiesen — dann verwechselt die Prüfung den Feldwert mit der Geometrie",
+            f.abs()
+        );
+    }
+    assert!(
+        near_zero >= 20,
+        "nur {near_zero} Punkte mit |f| ≈ 0 gefunden — der Pin misst nichts"
+    );
+}
+
+/// **§8x-Pin 3: die Abdeckung ist eine ABBILDUNG, keine Stichprobe.**
+///
+/// Beweispflichten 2 und 3. Für dicht gesetzte Naht-Punkte `q` — deutlich
+/// mehr als es Stücke gibt — wird der zugehörige Zeuge `y(q) = q + t·d`
+/// unabhängig nachgerechnet:
+///
+/// * `y(q)` liegt **einzeln** bewiesen in `∁Ω`;
+/// * `|q − y(q)| ≤ η`;
+/// * die Stück-Intervalle **kacheln** `[0,1]` lückenlos.
+///
+/// Rückdreh-Probe: wird ein Stück aus der Abdeckung gestrichen, MUSS ein
+/// dichter Naht-Punkt ohne Zeugen bleiben.
+#[test]
+fn witness_cover_is_a_map_not_a_sample_384() {
+    let delta = 2.0f32;
+    let (field, _) = compile_for(notch_union_node(90.0, delta as f64));
+    let cfg = wit::WitnessCfg::default();
+    let (mut checked, mut chans) = (0usize, 0usize);
+    for (om, channels) in omega_and_channels(&field) {
+        for ch in channels {
+            let c = wit::cover_channel(om, ch, cfg);
+            let Some(eta) = c.eta else { continue };
+            chans += 1;
+            let g = eta.total_geometric();
+            // Die Kachelung je Bogen ist lückenlos.
+            for ai in 0..ch.arcs.len() {
+                let mut ts: Vec<(f64, f64)> = c
+                    .covered_pieces
+                    .iter()
+                    .filter(|p| p.arc == ai)
+                    .map(|p| (p.t0, p.t1))
+                    .collect();
+                ts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                assert_eq!(ts.first().map(|x| x.0), Some(0.0), "Bogen {ai}: Kachelung beginnt nicht bei 0");
+                assert_eq!(ts.last().map(|x| x.1), Some(1.0), "Bogen {ai}: Kachelung endet nicht bei 1");
+                for w in ts.windows(2) {
+                    assert_eq!(w[0].1, w[1].0, "Bogen {ai}: Lücke zwischen {:?} und {:?}", w[0], w[1]);
+                }
+            }
+            // Dichte Naht-Punkte: jeder bekommt seinen Zeugen.
+            let dense = 24 * cfg.pieces_per_arc;
+            for (ai, arc) in ch.arcs.iter().enumerate() {
+                for i in 0..=dense {
+                    let s = i as f64 / dense as f64;
+                    let q = [
+                        arc.c[0] as f64 + arc.u[0] as f64 * (s * arc.r as f64),
+                        arc.c[1] as f64 + arc.u[1] as f64 * (s * arc.r as f64),
+                        arc.c[2] as f64 + arc.u[2] as f64 * (s * arc.r as f64),
+                    ];
+                    let piece = c
+                        .covered_pieces
+                        .iter()
+                        .find(|p| p.arc == ai && s >= p.t0 && s <= p.t1)
+                        .unwrap_or_else(|| panic!("Naht-Punkt s={s} ohne Stück"));
+                    let y = [
+                        q[0] + piece.offset * piece.dir[0],
+                        q[1] + piece.offset * piece.dir[1],
+                        q[2] + piece.offset * piece.dir[2],
+                    ];
+                    assert!(
+                        wit::box_outside_omega(om, ivp(y), 0.0),
+                        "der Zeuge {y:?} zu q={q:?} ist nicht einzeln als aussen belegt"
+                    );
+                    let d = ((y[0] - q[0]).powi(2) + (y[1] - q[1]).powi(2) + (y[2] - q[2]).powi(2))
+                        .sqrt();
+                    assert!(d <= g + 1e-12, "|q − y| = {d} übersteigt η = {g}");
+                    checked += 1;
+                }
+            }
+            // Rückdreh: ein gestrichenes Stück lässt Naht-Punkte ohne Zeugen.
+            let mut gapped = c.covered_pieces.clone();
+            let removed = gapped.remove(gapped.len() / 2);
+            let mid = 0.5 * (removed.t0 + removed.t1);
+            assert!(
+                !gapped.iter().any(|p| p.arc == removed.arc && mid >= p.t0 && mid <= p.t1),
+                "die Gegenprobe blieb still: nach dem Streichen eines Stücks MUSS der Punkt \
+                 s={mid} unbedeckt sein — sonst prüft die Kachelung nichts"
+            );
+        }
+    }
+    assert!(chans >= 1 && checked > 300, "{chans} Kanäle / {checked} Naht-Punkte");
+}
+
+/// **§8x-Pin 4: das Box-Ball-Lemma.**
+///
+/// Beweispflicht 4 (Baustein für P6a). `|x − y|²` ist über einer AABB
+/// separabel, jeder Summand als konvexe Funktion von `x_k` an einem Endpunkt
+/// maximal — das Maximum liegt also an einer ECKE. Der Pin prüft die Schranken
+/// gegen dichte Proben, an adversarialen Boxen (grosse Beträge, entartete
+/// Achsen), und weist nach, dass die obere Schranke wirklich an einer Ecke
+/// angenommen wird.
+#[test]
+fn witness_box_ball_lemma_384() {
+    let mut cases = 0usize;
+    let boxes: Vec<([f64; 3], [f64; 3], [f64; 3])> = vec![
+        ([0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [5.0, -4.0, 0.5]),
+        ([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]),
+        ([1e8, 1e8, 1e8], [1e8 + 1.0, 1e8 + 2.0, 1e8], [-1e8, 0.0, 1e8]),
+        ([3.0, 3.0, 3.0], [3.0, 3.0, 3.0], [0.0, 0.0, 0.0]),
+        ([-1e-9, 0.0, 0.0], [1e-9, 0.0, 0.0], [0.0, 1.0, 0.0]),
+    ];
+    for (lo, hi, y) in boxes {
+        let (dmin, dmax) = wit::box_point_dist_bounds(lo, hi, y);
+        assert!(dmin <= dmax, "Schranken verdreht: {dmin} > {dmax}");
+        let n = 6usize;
+        let mut worst = 0.0f64;
+        for i in 0..=n {
+            for j in 0..=n {
+                for k in 0..=n {
+                    let f = |a: f64, b: f64, t: usize| a + (b - a) * t as f64 / n as f64;
+                    let x = [f(lo[0], hi[0], i), f(lo[1], hi[1], j), f(lo[2], hi[2], k)];
+                    let d = ((x[0] - y[0]).powi(2) + (x[1] - y[1]).powi(2) + (x[2] - y[2]).powi(2))
+                        .sqrt();
+                    assert!(d <= dmax, "Probe {x:?}: {d} > obere Schranke {dmax}");
+                    assert!(d >= dmin, "Probe {x:?}: {d} < untere Schranke {dmin}");
+                    worst = worst.max(d);
+                }
+            }
+        }
+        // Das Maximum liegt an einer Ecke: das dichte Gitter enthält alle Ecken,
+        // also muss es die obere Schranke praktisch erreichen.
+        assert!(
+            worst >= dmax * (1.0 - 1e-9) - 1e-9,
+            "die obere Schranke {dmax} wird von keiner Ecke erreicht (bestes {worst}) — \
+             dann ist sie nicht die Ecken-Schranke des Lemmas"
+        );
+        cases += 1;
+    }
+    assert_eq!(cases, 5);
+}

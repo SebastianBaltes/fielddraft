@@ -14,6 +14,7 @@ pub mod offset_capability;
 pub mod offset_channel;
 pub mod offset_interval;
 pub mod offset_lb;
+pub mod offset_witness;
 pub mod offset_rim;
 pub mod offset_invariants;
 pub mod sdf_dual;

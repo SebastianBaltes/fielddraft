@@ -5745,6 +5745,193 @@ grün auf der ganzen Matrix und trotzdem falsch.
 * **Die Zusage selbst ist unverändert.** Die Unter-Seiten-Ausnahme steht
   wörtlich.
 
+## 8x. P5a — der Aussenzeugen-Kern für gerade Nähte (#384, 2026-08-02)
+
+§8j steht seit sechs Paketen auf einem Satz, der keiner ist: *„Jeder Naht-Punkt
+liegt auf `∂Ω`, also gilt `dist(x,∁Ω) ≤ de` bedingungslos."* §8s hat ihn als
+**Modell-Annahme auf Trace-Auflösung** benannt, §8u hat nachgetragen, warum er
+sich mit Feld-Mitteln nicht nachreichen lässt: **`|f| ≤ ε` beweist keine
+Randzugehörigkeit.**
+
+P5a liefert den fehlenden Zeugen — **geometrisch**. Zu jedem Punkt `q` der
+modellierten Naht `Q` eine Abbildung `y(q) ∈ ∁Ω` mit `|q − y(q)| ≤ η`, und
+damit `dist(q, ∁Ω) ≤ η`: die Aussage, die §8j braucht, nur mit einem ehrlichen
+`η` statt mit `0`.
+
+**Keine Feldänderung.** `channel_limit`, `channel_apply` und jeder Evaluator
+bleiben unangetastet; Golden byte-identisch, und **keine Zahl der
+Zertifizierungs-Matrix bewegt sich**. Die η-Klemme ist P5b, das gekoppelte
+Zell-Cover P6a.
+
+### Warum hier NICHT das f32-Modell gilt
+
+`offset_interval` schliesst den Wert ein, den der **f32-Auswerter liefert** —
+dort richtig, weil die Zusage über diesen Wert spricht. Hier ist der Gegenstand
+ein anderer: `Ω` ist eine **geometrische Menge**, kein Feldwert. Ob ein Punkt in
+`∁Ω` liegt, ist eine Aussage über reelle Koordinaten; sie durchs f32-Gitter zu
+schicken wäre schlicht die falsche Frage. `offset_witness` rechnet deshalb in
+**reeller** Intervall-Arithmetik: `next_down`/`next_up` nach jeder Schranke,
+aber **kein** f32-Schritt. Das ist die erste Stelle der ganzen Kette, an der die
+beiden Modelle auseinandergehen — und es ist wichtig, dass sie es tun.
+
+### Beweispflicht 1 — Aussenmitgliedschaft, rein geometrisch
+
+`box_outside_omega` beweist `b ∩ Ω = ∅` **ausschliesslich** aus der
+CSG-Struktur und den Member-Flächen:
+
+| Knoten | bewiesen aussen, wenn … |
+|---|---|
+| `Empty` | immer |
+| `Leaf` Box | eine Achse im lokalen Rahmen TRENNT: `min_b \|local_k\| > h_k` |
+| `Leaf` Sphere | `min_b \|y − c\| > r` |
+| `Leaf` Cylinder | radial `min_b √(dx²+dz²) > r` ODER axial `min_b \|dy\| > hh` |
+| `Union(A,B)` | `A` UND `B` beide bewiesen aussen |
+| `Intersection(A,B)` | `A` ODER `B` bewiesen aussen |
+| `Difference(A,B)` | `A` bewiesen aussen (rechts kann nur wegnehmen) |
+| `Offset(inner, δ)`, `δ ≤ 0` | `inner` bewiesen aussen (der erodierte Körper ist TEILMENGE) |
+| alles andere | **nicht bewiesen** ⇒ `false` |
+
+Verlangt wird eine **strikte** Trennung um mindestens `margin > 0`: eine
+Berührung ist kein Beweis für „ausserhalb". Die `δ > 0`-Richtung ist bewusst
+nicht implementiert — dort ist der Offset-Körper GRÖSSER als sein Kind, und die
+Schlussrichtung dreht sich um.
+
+### Beweispflicht 2 — das Distanzlemma
+
+Liegt `y ∈ ∁Ω`, so ist `dist(x, ∁Ω) ≤ |x − y|` für jedes `x` (das Infimum über
+`∁Ω` ist höchstens der Abstand zu einem seiner Punkte). Mit `y = y(q)` und
+`|q − y(q)| ≤ η` folgt `dist(q, ∁Ω) ≤ η`. ∎
+
+### Beweispflicht 3 — η, nach Quellen getrennt
+
+`EtaBudget` benennt vier Posten statt einer Fixture-Zahl:
+
+| Posten | Wert | Begründung |
+|---|---|---|
+| `offset` | gemessen, 10⁻⁴ … 2.3·10⁻³ mm | der Versatz `t` der Abbildung `y(q) = q + t·d` |
+| `cover` | **exakt 0** | s. u. — eine Aussage, kein Glück |
+| `coord` | 0 (in `offset` enthalten) | die f64-Rundung der Stück-Box wird von der Aussen-Rundung aufgefangen |
+| `dist_bridge` | **`None` — unbelegt** | die f32-Brücke `de_real → de_f32`; P5b |
+
+**Warum `cover` exakt null ist.** Die Zeugen sind **keine Punkte**, sondern eine
+ABBILDUNG über einem ganzen Naht-Stück: bewiesen wird, dass die **ganze**
+verschobene Stück-Box `P + t·d` in `∁Ω` liegt. Jedes `q ∈ P` hat damit seinen
+eigenen Zeugen `q + t·d` in derselben nachgewiesenen Aussen-Box, und
+`|q − y(q)| = t` — **unabhängig von der Stücklänge**. Eine Familie von
+Zeugen-PUNKTEN hätte hier `≥ Stücklänge/2` stehen müssen; bei 900 mm Naht und
+1152 Stücken wären das `≈ 0.4 mm` statt `10⁻³ mm`, und die Konstruktion wäre
+wertlos gewesen. Der Unterschied zwischen „Cover aus Bällen" und „Abbildung"
+ist hier der ganze Gewinn.
+
+**`total_for_clamp()` gibt `None` zurück**, solange `dist_bridge` unbelegt ist —
+fail-closed: kein Aufrufer bekommt eine Zahl, die er noch nicht verwenden darf.
+`total_geometric()` steht dagegen vollständig; die geometrische Aussage braucht
+die f32-Brücke nicht.
+
+### Beweispflicht 4 — das Box-Ball-Lemma (Baustein für P6a)
+
+**Lemma.** Für `C = ∏[lo_k, hi_k]` und festes `y` ist `|x − y|² = Σ_k (x_k − y_k)²`
+**separabel**, und jeder Summand ist als konvexe Funktion von `x_k` auf
+`[lo_k, hi_k]` an einem Endpunkt maximal. Das Maximum wird also **an einer
+Ecke** angenommen, komponentenweise an der je Achse weiter entfernten:
+`max(|lo_k − y_k|, |hi_k − y_k|)`. ∎
+
+Beide Schranken werden **gerichtet** gerundet — die obere aufwärts, die untere
+abwärts. Der Pin prüft nicht nur die Einschliessung, sondern auch, dass die
+obere Schranke von einer Ecke tatsächlich ERREICHT wird; eine beliebig grosse
+Schranke wäre sonst „richtig" und nutzlos.
+
+### Beweispflicht 5 — fail-closed
+
+Unbelegte Aussenlage, nicht unterstütztes Blatt, gekrümmter Bogen, fehlender
+Zeuge: alles endet in „nicht gedeckt", nie in einer Zusage. `WitnessCover::eta`
+ist `None`, sobald auch nur EIN Stück ohne Zeugen bleibt — eine Aussage über
+„die Naht" ist nur so viel wert wie ihr schlechtestes Stück.
+
+### Messung
+
+`WitnessCfg::default()`: 24 Stücke je Bogen, Versatz-Leiter 10⁻⁴ … 4 mm in 18
+Stufen, Marge 10⁻⁹ mm. Richtungs-Vorrat: 26 Gitter-Richtungen plus die aus den
+Dual-Vektoren des Kanals abgeleiteten (beide Vorzeichen) — **Hinweise, keine
+Annahmen**: die Gültigkeit hängt ausschliesslich am geometrischen Beweis.
+
+| Fixture | Kanäle | Stücke | gedeckt | Naht mm | ungedeckt mm | η_geo mm | Grund des Rests |
+|---|---|---|---|---|---|---|---|
+| Stufen-Nabe | 2 | 144 | 0 (0 %) | 30.0 | 30.00 | — | 6 gekrümmte Bögen (P4) |
+| Ecken-Schale `t/δ = 2` | 24 | 1152 | **1152 (100 %)** | 904.0 | 0 | **0.00065** | — |
+| Ecken-Schale `t/δ = 2.1` | 24 | 1152 | **1152 (100 %)** | 901.6 | 0 | **0.00010** | — |
+| Ecken-Schale `t/δ = 2.25` | 24 | 1152 | **1152 (100 %)** | 897.3 | 0 | **0.00010** | — |
+| Ecken-Schale `t/δ = 2.4` | 24 | 1152 | **1152 (100 %)** | 893.1 | 0 | **0.00010** | — |
+| Ecken-Schale `t/δ = 2.5` | 24 | 1152 | **1152 (100 %)** | 890.0 | 0 | **0.00010** | — |
+| Ecken-Schale `t/δ = 3` | 24 | 1152 | **1152 (100 %)** | 880.2 | 0 | **0.00226** | — |
+| Ecken-Schale `t/δ = 4` | 24 | 1152 | **1152 (100 %)** | 853.2 | 0 | **0.00010** | — |
+| Ecken-Schale `t/δ = 6` | 24 | 1152 | **1152 (100 %)** | 805.7 | 0 | **0.00121** | — |
+| Rippen-Kamm 4×1.5/0.8 | 19 | 456 | 0 (0 %) | 257.1 | 257.08 | — | `Ω`-Blatt nicht unterstützt (Extrude) |
+| Rippen-Kamm 4×2/1 | 22 | 528 | **528 (100 %)** | 268.6 | 0 | **0.00010** | — |
+| notch α = 90° | 1 | 24 | **24 (100 %)** | 98.4 | 0 | **0.00010** | — |
+| notch α = 60° | 2 | 48 | **48 (100 %)** | 196.8 | 0 | **0.00019** | — |
+
+**Zehn von dreizehn Fixturen sind zu 100 % gedeckt, mit `η_geo ≤ 2.3 µm`** über
+zusammen rund 6.7 Metern Naht. Für diese Fixturen ist die §8j-Annahme damit
+kein Postulat mehr, sondern ein Satz mit beziffertem Fehler.
+
+Die drei offenen Fälle sind **strukturell und benannt**, nicht diffus: die
+Stufen-Nabe hat gekrümmte Nähte (P4), und der Rippen-Kamm 4×1.5/0.8 hat
+`Extrude`-Blätter in `Ω`, für die es keinen trennenden Halbraum-Test gibt.
+Beide Gründe stehen schon in §8u/§8v auf der Liste.
+
+**Bemerkenswert ist die Streuung von `η`**: meist genau der kleinste
+Leiter-Schritt `10⁻⁴`, an drei Schalen aber 6.5·10⁻⁴ bis 2.3·10⁻³. Dort braucht
+mindestens ein Naht-Stück einen grösseren Versatz, um beweisbar aus `Ω`
+herauszukommen — ein Hinweis auf Stücke nahe einem Naht-ENDE, wo die
+verschobene Box sonst in einen Nachbar-Member ragt. Das ist genau die Gegend,
+in der §8r/§8s die Unter-Claims fanden; `η` misst sie jetzt.
+
+### Pflicht-Falsifikatoren
+
+* **Zeuge auf der falschen Member-Seite** (`witness_outside_membership_is_geometric_384`):
+  Punkte klar in `Ω` dürfen NICHT als aussen durchgehen; Punkte **exakt auf der
+  Fläche** ebenso wenig; eine den Rand überspannende Box ebenfalls nicht.
+  Rückdreh: mit NEGATIVER Marge rutscht der Randpunkt durch — die Strenge ist
+  also tragend.
+* **Kleiner Feldwert ist kein Aussenzeuge**
+  (`witness_small_field_value_is_not_outside_384`): auf der Erosionsfläche ist
+  `|f| ≈ 0` und der Punkt liegt trotzdem `δ` TIEF in `Ω`. Wer aus `|f| ≤ ε`
+  schlösse, läge um die volle Wandstärke daneben. Der Pin verlangt eine
+  Mindestzahl solcher Punkte, damit er nicht leer-grün laufen kann.
+* **Abdeckungs-Lücke** (`witness_cover_is_a_map_not_a_sample_384`): die
+  Stück-Intervalle müssen `[0,1]` lückenlos kacheln, und für dicht gesetzte
+  Naht-Punkte — 24-mal so viele wie es Stücke gibt — wird der Zeuge EINZELN
+  nachgerechnet. Rückdreh: ein gestrichenes Stück MUSS einen Naht-Punkt ohne
+  Zeugen zurücklassen.
+* **Box-Ball-Lemma** (`witness_box_ball_lemma_384`): dichte Proben gegen beide
+  Schranken, an adversarialen Boxen (10⁸-Beträge, entartete Achsen), plus der
+  Nachweis, dass die obere Schranke von einer Ecke erreicht wird.
+
+### Prüfungen
+
+* **Golden**: byte-identisch inkl. Tape — kein Evaluator, kein Opcode, kein
+  Payload-Wort, kein Spiegel.
+* Die Zertifizierungs-Matrix aus §8w bewegt sich **nicht** (P5a hat noch keinen
+  Konsumenten).
+* **`just test`**: Fast-Tier **1495** (Baseline 1491) / Web **2082**.
+  `cargo test --workspace` **1600** (Baseline 1596).
+* **`OFFSET_FUZZ_ITERS=200 … offset_fuzz --release`**: 5/5.
+
+### Was OFFEN bleibt
+
+* **P5b — die η-Klemme.** `δ − de − η` im Feld, plus die f32-Brücke
+  `de_real → de_f32` (`EtaBudget::dist_bridge`). Erst damit wird `η` wirksam;
+  P5a liefert nur die Zahl und den Beweis dahinter.
+* **P4 — Kreisbögen.** Der algebraische Rewrite ohne libm-Trig (A0), dann A1.
+  Er schaltet die Stufen-Nabe frei.
+* **P6a — das gekoppelte Zell-Cover** gegen die 4285 Vorzeichenwechsel-Zellen
+  aus §8w. Das Box-Ball-Lemma steht schon hier.
+* **`Ω`-Blätter jenseits Box/Sphere/Zylinder** — für `Extrude` bräuchte es einen
+  trennenden Halbraum aus dem 2D-Profil.
+* **Die Zusage selbst ist unverändert**; die Unter-Seiten-Ausnahme steht
+  wörtlich, und `channel_limit` steht bis P5b weiter auf der Modell-Annahme.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -5815,6 +6002,15 @@ grün auf der ganzen Matrix und trotzdem falsch.
   ihm fallen `at_vertex`/`at_face` und der `verts`-Parameter).
   **Kein Auswerter, kein Opcode, kein Payload-Wort, kein Spiegel** — Golden
   35/35 byte-identisch, `check_interp` 35 Szenen / 0 failures.
+- Produktionscode §8x/P5a: **neu** `crates/kernel/src/offset_witness.rs` —
+  reelle Intervall-Arithmetik (ohne f32-Schritt), `box_outside_omega`,
+  `box_point_dist_bounds` (Box-Ball-Lemma), `EtaBudget`, `cover_channel`,
+  `omega_of`; plus die Modul-Zeile in `lib.rs`. Pins in
+  `offset_capability_tests.rs`: `witness_outside_membership_is_geometric_384`,
+  `witness_small_field_value_is_not_outside_384`,
+  `witness_cover_is_a_map_not_a_sample_384`, `witness_box_ball_lemma_384`,
+  Sonde `probe_384_witness_cover`. **Kein Evaluator, kein Opcode, kein
+  Payload-Wort, kein Spiegel** — Golden byte-identisch.
 - Produktionscode §8w: `crates/kernel/src/offset_interval.rs` —
   `enc_channel_candidates` (Selektions-Lemma; ersetzt `enc_channel_nearest`),
   Hüll-Auswertung in `enclose_channel_apply`/`enclose_channel_limit`,
