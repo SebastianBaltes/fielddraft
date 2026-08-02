@@ -383,6 +383,11 @@ pub struct Knobs {
     /// als `first_arc_wins` und damit die schärfere Probe: sie trifft nur den
     /// Vereinigungs-Schritt, nicht die ganze Kandidaten-Bestimmung.
     pub drop_last_candidate: bool,
+    /// Annehmen, Bogen 0 werde IMMER ausgewertet (§8w-Korrektur-Gegenprobe).
+    /// Genau diese Annahme war der Blocker des sechsten Reviews: läuft `dbs₀`
+    /// nach `+∞` über, überspringt die Produktion auch den ersten Bogen und
+    /// liefert `None`.
+    pub assume_first_arc_evaluated: bool,
     /// Den `best.is_finite()`-Schalter in `lb_value` **weglassen**. Genau der
     /// fehlte in der ersten §8u-Fassung; ein modelliertes `+∞` wählt dann den
     /// `L`-Zweig, während die Produktion den `G`-Zweig nimmt.
@@ -1180,13 +1185,28 @@ struct NearestSeg {
 /// `best` (Start `+∞`) und aktualisiert `best`, `q*`, `m̂₁`, `m̂₂` **genau
 /// dann**, wenn `de_k < best` — ein STRIKTER Vergleich. Daraus folgt:
 ///
-/// * **An jedem Punkt wählt die Produktion genau EINEN Bogen** — den zuletzt
-///   aktualisierenden. Der Rückgabewert ist dessen vollständiger Downstream.
+/// * Wird ÜBERHAUPT ein Bogen ausgewertet, wählt die Produktion an jedem Punkt
+///   **genau EINEN** — den zuletzt aktualisierenden. Der Rückgabewert ist
+///   dessen vollständiger Downstream.
 /// * **Bei Gleichstand gewinnt der FRÜHERE Index.** `de_k < best` ist bei
 ///   `de_k == best` falsch, der spätere Bogen aktualisiert also nicht. Die
 ///   Kandidaten-Bestimmung muss das einschliessen — im Zweifel wird ein Bogen
 ///   AUFGENOMMEN (mehr Kandidaten = breiterer Hull = sound).
-/// * **Bogen 0 wird nie übersprungen**: der Prune vergleicht gegen `best = +∞`.
+/// * **Es kann aber auch GAR KEINER ausgewertet werden**, und dann liefert
+///   `channel_nearest` `None`. Die erste §8w-Fassung behauptete hier „Bogen 0
+///   wird nie übersprungen, der Prune vergleicht gegen `best = +∞`" — das ist
+///   unter f32-**Überlauf falsch** (Befund des sechsten Reviews): `dbs₀ ≥ best`
+///   ist für `dbs₀ = +∞` und `best = +∞` nach IEEE **wahr**. Eine geometrisch
+///   gültige, nur sehr lose Bogen-Kugel genügt: bei `bc = (2·10¹⁹, 2·10¹⁹, 0)`
+///   überläuft schon die Quadratsumme, `norm` wird `+∞`, und der EINZIGE Bogen
+///   wird übersprungen — obwohl `de₀` endlich und klein ist. `de` und `dbs`
+///   stammen aus verschiedenen Daten; ein endliches `de` schützt nicht.
+///
+/// Der `None`-Ausgang ist deshalb ein eigener Kandidat und wird MITGEHÜLLT
+/// (`channel_apply` gibt dann `d` zurück, `channel_limit` das neutrale
+/// `−1e30`). Ausgeschlossen ist er, sobald **irgendein** Bogen ein sicher
+/// endliches `dbs` hat: der erste ausgewertete Bogen trifft dann auf
+/// `best = +∞` und aktualisiert wegen `de < +∞` garantiert.
 ///
 /// Also liegt der Produktionswert in der VEREINIGUNG der Kandidaten-Ergebnisse,
 /// und die Hülle darüber ist eine gültige Einschliessung (§8u-Beweispflicht 4,
@@ -1205,7 +1225,9 @@ struct NearestSeg {
 /// Damit:
 ///
 /// * **Bogen `k` ist bewiesen AUSGEWERTET**, wenn `upper(dbs_k) < lower(best_before_k)`
-///   (der Prune greift dann sicher nicht). Bogen 0 immer.
+///   (der Prune greift dann sicher nicht). Für `k = 0` ist
+///   `lower(best_before_0) = +∞`, der Test lautet dort also
+///   `upper(dbs₀) < +∞` — und eben NICHT „immer wahr".
 /// * **Bogen `k` kann aktualisieren**, wenn `lower(de_k) < upper(best_before_k)`.
 ///   Ist das falsch, kann er `best` nie unterbieten und ist kein Kandidat.
 /// * **Bogen `k` aktualisiert SICHER**, wenn er bewiesen ausgewertet ist und
@@ -1227,11 +1249,18 @@ struct NearestSeg {
 /// `sin` und `cos`; das trigonometrische Enclosure ist Paket 4. Enthält ein
 /// Kanal auch nur einen gekrümmten Bogen, verweigert diese Funktion — auch für
 /// die Konkurrenz-Schranken, damit kein halber Beweis entsteht.
+struct Candidates {
+    segs: Vec<NearestSeg>,
+    /// Kann die Produktion über dieser Zelle `None` liefern (alle Bögen
+    /// übersprungen)? Dann gehört der neutrale Ausgang in die Hülle.
+    none_possible: bool,
+}
+
 fn enc_channel_candidates(
     c: &mut Ctx,
     p: [Iv; 3],
     ch: &OffsetChannel,
-) -> Result<Vec<NearestSeg>, Unknown> {
+) -> Result<Candidates, Unknown> {
     c.channel_evals += 1;
     if ch.arcs.is_empty() {
         return Err(Unknown("Kanal ohne Bogen"));
@@ -1268,20 +1297,27 @@ fn enc_channel_candidates(
             .filter(|&j| proven_eval[j])
             .map(|j| geo[j].0.hi)
             .fold(f64::INFINITY, f64::min);
-        proven_eval[k] = k == 0 || dbs[k].hi < lo_before;
+        // Für `k = 0` ist `lo_before = +∞`; der Test lautet dort `dbs₀ < +∞`
+        // und NICHT „immer wahr" — `dbs₀ ≥ best` ist bei beidseitigem `+∞`
+        // nach IEEE erfüllt, die Produktion überspringt dann auch den ersten
+        // Bogen (Blocker des sechsten Reviews).
+        proven_eval[k] = dbs[k].hi < lo_before;
         can_update[k] = geo[k].0.lo < hi_before;
         if proven_eval[k] && geo[k].0.hi < lo_before {
             last_forced = k;
         }
     }
+    // `None` ist ausgeschlossen, sobald IRGENDEIN Bogen ein sicher endliches
+    // `dbs` hat: der erste ausgewertete Bogen trifft dann auf `best = +∞` und
+    // aktualisiert wegen `de < +∞` garantiert. Sind dagegen alle `dbs`
+    // möglicherweise unendlich, kann die Schleife durchlaufen, ohne je zu
+    // aktualisieren — dann liefert `channel_nearest` `None`.
+    let none_possible =
+        !dbs.iter().any(|d| d.hi < f64::INFINITY) && !c.knobs.assume_first_arc_evaluated;
     let mut out = Vec::new();
     for k in last_forced..n {
         if !can_update[k] {
             continue;
-        }
-        if c.knobs.drop_last_candidate && !out.is_empty() {
-            // Gegenprobe: einen Kandidaten aus der Hülle streichen.
-            break;
         }
         let (de, q, t) = geo[k];
         let arc = &ch.arcs[k];
@@ -1292,11 +1328,18 @@ fn enc_channel_candidates(
             break;
         }
     }
-    if out.is_empty() {
+    if c.knobs.drop_last_candidate && out.len() > 1 {
+        // Gegenprobe: GENAU EINEN Kandidaten streichen — den letzten. (Die
+        // erste Fassung brach nach dem ersten aufgenommenen ab und strich bei
+        // drei oder mehr Kandidaten alle bis auf einen; das ist die stumpfere
+        // Mutation und trifft nicht mehr nur den Vereinigungs-Schritt.)
+        out.pop();
+    }
+    if out.is_empty() && !none_possible {
         return Err(Unknown("leere Kandidaten-Menge"));
     }
     c.max_candidates = c.max_candidates.max(out.len());
-    Ok(out)
+    Ok(Candidates { segs: out, none_possible })
 }
 
 /// [`crate::offset_channel::channel_limit`], eingeschlossen.
@@ -1311,8 +1354,10 @@ pub fn enclose_channel_limit(c: &mut Ctx, p: [Iv; 3], ch: &OffsetChannel) -> Enc
     // §8w: über ALLE möglichen Gewinner hüllen.
     let cands = enc_channel_candidates(c, p, ch)?;
     let s4 = enc_gate_planes(c, p, &ch.face_planes)?;
-    let mut inner: Option<Iv> = None;
-    for near in &cands {
+    // Der `None`-Ausgang von `channel_nearest`: `channel_limit` gibt dann das
+    // neutrale `−1e30` zurück.
+    let mut inner: Option<Iv> = if cands.none_possible { Some(neutral) } else { None };
+    for near in &cands.segs {
         let far = decide_ge(near.de, Iv::f32p(ch.trust));
         let de = near.de;
         let val = |c: &mut Ctx| -> Enc {
@@ -1393,8 +1438,9 @@ pub fn enclose_channel_apply(
         };
         let s3 = enc_gate_planes(c, p, &ch.end_planes)?;
         let s4 = enc_gate_planes(c, p, &ch.face_planes)?;
-        let mut out: Option<Iv> = None;
-        for near in &cands {
+        // Der `None`-Ausgang: `channel_apply` gibt dann `d` unverändert zurück.
+        let mut out: Option<Iv> = if cands.none_possible { Some(d) } else { None };
+        for near in &cands.segs {
             let dq = fsub3(c, p, near.q)?;
             let s1 = c.fdot(dq, near.m1)?;
             let s2 = c.fdot(dq, near.m2)?;

@@ -10439,14 +10439,16 @@ fn interval_tiling_of_the_plate_core_is_gapless_384() {
 /// Der Rest wird dreifach klassifiziert, weil die drei Fälle völlig
 /// verschiedene Dinge bedeuten:
 ///
-/// * **Vorzeichenwechsel** — das Feld ist über der Zelle teils Material, teils
-///   Luft. `sup_C f < 0` ist dort per Konstruktion unerreichbar, und Zweig 1
-///   greift nur, wenn `U(c) + ρ ≤ δ + tol`. Das ist die **Decke der beiden
-///   Kriterien**, keine Schwäche der Einschliessung.
-/// * **ganz Luft** (`f ≥ 0` an allen Proben) — hier könnte ein Unter-Claim
-///   SITZEN; das sind die wirklich offenen Zellen.
-/// * **ganz Material, aber nicht zertifiziert** — reine Breite; die
-///   Unterteilung ist das Mittel.
+/// * **Vorzeichenwechsel** — zwei Proben mit verschiedenem Vorzeichen BEZEUGEN,
+///   dass die Zelle Material UND Luft enthält. Der direkte Zweig-2-Test ist
+///   dort per Konstruktion unerreichbar, der direkte Zweig-1-Test scheitert mit
+///   dem heutigen `U` und der heutigen Zellgrösse. Das ist die Decke des
+///   DIREKTEN Tests auf diesen Zellen — nicht die der Kriterien schlechthin:
+///   die adaptive Unterteilung kann so eine Zelle in Material-Kinder (Zweig 2)
+///   und randnahe Kinder (Zweig 1) zerlegen, und tut das auch.
+/// * **ganz Luft** / **ganz Material** — reine STICHPROBEN-Klassen ohne
+///   Vorzeichen-Beweis: sie sagen nur, welches Vorzeichen die Proben hatten.
+///   Zur Orientierung brauchbar, als Aussage über die Zelle nicht.
 #[test]
 #[ignore]
 fn probe_384_interval_argmin_resolution() {
@@ -10632,4 +10634,101 @@ fn interval_exact_tie_and_depth_limit_384() {
         }
     }
     assert!(checked >= 5, "nur {checked} Vorzeichenwechsel-Zellen gefunden — der Pin misst nichts");
+}
+
+/// **§8w-Korrektur-Pin: der Prune kann auch den ERSTEN Bogen überspringen.**
+///
+/// Blocker des sechsten Reviews. Die erste §8w-Fassung behauptete „Bogen 0
+/// wird nie übersprungen, der Prune vergleicht gegen `best = +∞`". Nach IEEE
+/// ist `dbs₀ ≥ best` für `dbs₀ = +∞` und `best = +∞` aber **wahr** — und
+/// `dbs` überläuft schon bei einer geometrisch völlig gültigen, nur sehr losen
+/// Bogen-Kugel. `de` und `dbs` stammen aus verschiedenen Daten; ein endliches
+/// `de` schützt nicht.
+///
+/// Die Familie des Reviews, direkt übernommen: `p = (0,0,0)`, Segment
+/// `(0,0,0) → (1,0,0)` (also `de₀ = 0`), Kugel `bc = (2·10¹⁹, 2·10¹⁹, 0)`,
+/// `br = 3·10¹⁹` — die Kugel enthält das Segment, aber `(2·10¹⁹)²` überläuft
+/// in f32. Die Produktion überspringt damit den EINZIGEN Bogen,
+/// `channel_nearest` liefert `None`, und `channel_apply` gibt `d` zurück.
+///
+/// Zwei Richtungen: mit dem Fix enthält die Hülle diesen Wert, mit der alten
+/// Annahme (`Knobs::assume_first_arc_evaluated`) MUSS sie ihn verlieren.
+#[test]
+fn interval_prune_can_skip_even_the_first_arc_384() {
+    let far = 2.0e19f32;
+    let mut arc = seg_arc(
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0],
+    );
+    arc.bc = [far, far, 0.0];
+    arc.br = 3.0e19;
+    // Die Kugel enthält das Segment wirklich — sonst wäre die Fixture ungültig.
+    for e in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0]] {
+        let d = ((e[0] as f64 - far as f64).powi(2)
+            + (e[1] as f64 - far as f64).powi(2)
+            + (e[2] as f64).powi(2))
+        .sqrt();
+        assert!(d <= arc.br as f64, "die Bogen-Kugel enthält den Endpunkt {e:?} nicht");
+    }
+    // Und `dbs` läuft in f32 wirklich über, `de` bleibt endlich.
+    let p = [0.0f32, 0.0, 0.0];
+    let dbs = {
+        let v = [p[0] - arc.bc[0], p[1] - arc.bc[1], p[2] - arc.bc[2]];
+        (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt() - arc.br
+    };
+    assert!(dbs.is_infinite(), "dbs ist {dbs}, nicht +∞ — die Fixture trifft den Fall nicht");
+    let (de0, _, _) = crate::offset_channel::arc_closest(&arc, p);
+    assert!(de0.is_finite(), "de₀ ist {de0}, nicht endlich");
+
+    let mut ch = synth_channel(vec![arc], true);
+    // Die KANAL-Kugel muss normal bleiben — sonst greift schon `channel_skip`
+    // und der Test prüfte den falschen Ausgang (erste Fassung tat genau das:
+    // `synth_channel` erbt `bound_c`/`bound_r` von den Bögen).
+    ch.bound_c = [0.0, 0.0, 0.0];
+    ch.bound_r = 10.0;
+    assert!(
+        !crate::offset_channel::channel_skip(5.0, [0.0; 3], &ch),
+        "`channel_skip` greift bereits auf Kanal-Ebene — der Pin prüft dann nicht den \
+         Bogen-Prune"
+    );
+    let cell = iv::Box3::new([0.0; 3], [0.0; 3]);
+    let (base, d, extra) = (ivf(5.0, 5.0), ivf(5.0, 5.0), ivf(10.0, 10.0));
+    // Die Produktion liefert `d` — weil `channel_nearest` `None` ist.
+    let got = crate::offset_channel::channel_apply(5.0, 5.0, p, &ch, 10.0);
+    assert_eq!(got, 5.0, "die Produktion liefert {got}, erwartet war der unveränderte `d`");
+    let lim = crate::offset_channel::channel_limit(p, &ch);
+    assert_eq!(lim, -crate::offset_channel::END_PLANE_OFF, "channel_limit ist nicht neutral");
+
+    // (1) Mit dem Fix: die Hülle enthält beides.
+    let mut c = iv::Ctx::new();
+    let enc = iv::enclose_channel_apply(&mut c, cell.world_f32(), base, d, &ch, extra)
+        .expect("die Einschliessung verweigert");
+    assert!(
+        enc.contains(got as f64),
+        "der Produktionswert {got} fehlt in der Hülle {enc:?} — der `None`-Ausgang ist \
+         nicht mitgehüllt"
+    );
+    let mut c2 = iv::Ctx::new();
+    let encl = iv::enclose_channel_limit(&mut c2, cell.world_f32(), &ch)
+        .expect("channel_limit verweigert");
+    assert!(
+        encl.contains(lim as f64),
+        "der neutrale Grenzwert {lim} fehlt in {encl:?}"
+    );
+
+    // (2) Die Rückdreh-Gegenprobe: mit der alten Annahme reisst es.
+    let knobs = iv::Knobs { assume_first_arc_evaluated: true, ..Default::default() };
+    let mut c3 = iv::Ctx::with_knobs(knobs);
+    let bad = iv::enclose_channel_apply(&mut c3, cell.world_f32(), base, d, &ch, extra)
+        .expect("die Gegenprobe verweigert statt zu rechnen");
+    assert!(
+        !bad.contains(got as f64),
+        "die Gegenprobe blieb still: mit der Annahme „Bogen 0 wird immer ausgewertet\u{201c} \
+         MUSS der Produktionswert {got} aus der Hülle {bad:?} fallen — sonst belegt der \
+         Pin den Fix nicht"
+    );
 }

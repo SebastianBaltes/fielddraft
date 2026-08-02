@@ -5584,22 +5584,39 @@ Verschiedenes bedeuten:
 | notch α = 90° | 267 | 171 | 96 | 0 |
 | **Summe** | **5148** | **4285 (83 %)** | **737 (14 %)** | **126 (2 %)** |
 
-**83 % des Rests sind Zellen, über denen das Feld das Vorzeichen wechselt** —
-teils Material, teils Luft. Dort ist `sup_C f < 0` **per Konstruktion**
-unerreichbar, und Zweig 1 greift nur, wenn `U(c) + ρ ≤ δ + tol`, was an der
-Erosionsfläche `ρ ≤ tol` verlangen würde. Das ist keine Schwäche der
-Einschliessung und kein fehlendes Lemma, sondern **die Decke der beiden
-Kriterien**: sie prüfen die zwei Hälften der Unter-Claim-Bedingung getrennt und
-können deshalb nichts über eine Zelle sagen, in der beide Hälften an
-verschiedenen Punkten wahr sind. Der Ausweg ist ein DRITTES Kriterium, das
-beide Schranken auf derselben Zelle koppelt: „für jeden `x ∈ C` mit `f(x) ≥ 0`
-gilt `dist(x,∁Ω) ≤ δ + tol`" — und das braucht eine Einschliessung von
-`dist(·,∁Ω)` selbst, nicht nur von `f`.
+**83 % des Rests sind Zellen, über denen das Feld an den Proben das Vorzeichen
+wechselt** — teils Material, teils Luft. Für solche Zellen ist der DIREKTE
+Zweig-2-Test `sup_C f < 0` per Konstruktion unerreichbar, und der direkte
+Zweig-1-Test ist mit dem HEUTIGEN `U` und der heutigen Zellgrösse gescheitert.
+Das ist die **Decke des direkten Zweig-1/2-Tests auf diesen Zellen** — und
+bewusst NICHT „die Decke der beiden Kriterien" schlechthin. Die Präzisierung
+stammt aus dem sechsten Review, und sie ist an vier Stellen nötig:
 
-Die 737 „ganz Luft"-Zellen sind der eigentlich offene Rest: dort ist `f ≥ 0`,
-und ob `dist > δ + tol` gilt, sagt keines der beiden Kriterien. Die 126 „ganz
-Material"-Zellen sind reine Breite — dort ist die Unterteilung das Mittel, und
-sie hat schon 1245 davon geholt.
+* **Die adaptive Kombination ist damit nicht ausgereizt.** Eine
+  Vorzeichenwechsel-Zelle kann durchaus zerfallen in Kinder, die ganz im
+  Material liegen (Zweig 2) und randnahe Kinder, die Zweig 1 trägt. Genau das
+  passiert auch: von den hier gezählten Zellen holt die Unterteilung 1245.
+  Gezählt sind oben nur die, die bis Tiefe 4 keiner der beiden Wege nimmt.
+* **Aus dem Scheitern von Zweig 1 folgt nicht strukturell `ρ ≤ tol`.** Der Test
+  ist `U(c) + ρ ≤ δ + tol`; er scheitert hier mit dem konkreten `U` des
+  §8r-Fuss-Zeugen und der konkreten Zellgrösse, nicht aus einem Satz heraus.
+  Ein schärferes `U` oder kleinere Zellen verschieben die Grenze.
+* **Das gekoppelte dritte Kriterium ist ein sinnvoller nächster Baustein, nicht
+  der logisch einzige Ausweg.** Es lautete: „für jeden `x ∈ C` mit `f(x) ≥ 0`
+  gilt `dist(x,∁Ω) ≤ δ + tol`", und es bräuchte eine Einschliessung von
+  `dist(·,∁Ω)` selbst statt nur von `f`. Attraktiv ist es, weil es die beiden
+  Hälften der Unter-Claim-Bedingung auf DERSELBEN Zelle koppelt statt sie
+  getrennt zu prüfen.
+* **„ganz Luft" und „ganz Material" sind Stichproben-Klassen, kein Beweis.**
+  Sie sagen nur, welches Vorzeichen die 27 Proben hatten — anders als der
+  bezeugte Vorzeichenwechsel, für den zwei Proben mit verschiedenem Vorzeichen
+  ein Zeuge sind. Die Zahlen taugen zur Orientierung, nicht als Aussage über
+  die Zelle.
+
+Mit dieser Lesart: die 737 „ganz Luft"-Zellen sind der Bereich, in dem ein
+Unter-Claim überhaupt sitzen könnte und keines der beiden Kriterien etwas sagt;
+die 126 „ganz Material"-Zellen deuten auf reine Breite, und dort ist die
+Unterteilung das Mittel.
 
 ### Laufzeit
 
@@ -5651,11 +5668,76 @@ hierher (Release-Build, ein Kern):
 * Sonde `probe_384_interval_argmin_resolution` — die Auflösungs- und
   Rest-Tabelle oben samt Laufzeit.
 
+### §8w-Korrektur: das sechste Mathe-Review (v0.59.1)
+
+Bestätigt hat es die Kern-Herleitung (Selektions-Lemma-Richtungen nachgerechnet,
+Teilmengen-Argument, Tie-Richtung, Hull erst nach kandidatenspezifischem
+Downstream, mengenkompositionale und fail-closed Unterteilung, Kachel-Pin).
+**Ein Blocker blieb.**
+
+#### „Bogen 0 wird nie übersprungen" ist unter f32-Überlauf falsch
+
+Die Prune-Bedingung lautet `dbs_k ≥ best`. Für den ersten Bogen ist
+`best = +∞`, und die erste §8w-Fassung schloss daraus „`dbs₀ ≥ +∞` ist nie
+wahr, Bogen 0 wird also immer ausgewertet". Nach IEEE ist `+∞ ≥ +∞` aber
+**wahr** — und `dbs` läuft schon bei einer geometrisch völlig gültigen, nur
+sehr losen Bogen-Kugel über. Die Familie des Reviews, unverändert übernommen:
+
+```text
+p  = (0,0,0);  Segment (0,0,0) → (1,0,0)      ⇒ de₀ = 0, endlich
+arc.bc = (2·10¹⁹, 2·10¹⁹, 0),  arc.br = 3·10¹⁹   (die Kugel enthält das Segment)
+f32: (2·10¹⁹)² überläuft ⇒ norm = +∞ ⇒ dbs₀ = +∞ ⇒ der EINZIGE Bogen wird
+     übersprungen ⇒ channel_nearest = None
+```
+
+`de` und `dbs` stammen aus verschiedenen Daten; ein endliches `de` schützt
+nicht. Konkret: konkaver Kanal, `d = 5`, `δ = 2`, neutrale Ebenen, offenes Gate
+— die Produktion liefert wegen `None` den unveränderten Wert `5`, der
+modellierte Kandidat dagegen `min(5, 2) = 2`. Der Produktionswert lag
+**ausserhalb** der Hülle. Analog `channel_limit`: produktiv `−1e30`,
+modelliert `≈ 2`.
+
+**Gefixt** als eigener Kandidat statt als Sonderfall: `proven_eval[0]` ist jetzt
+derselbe Test wie für alle anderen Bögen (`upper(dbs₀) < lower(best_before_0)`,
+und `lower(best_before_0) = +∞`), und der `None`-Ausgang wird MITGEHÜLLT
+(`channel_apply` gibt dann `d` zurück, `channel_limit` das neutrale `−1e30`).
+Ausgeschlossen ist `None`, sobald **irgendein** Bogen ein sicher endliches
+`dbs` hat: der erste ausgewertete Bogen trifft dann auf `best = +∞` und
+aktualisiert wegen `de < +∞` garantiert.
+
+**Gegenprobe** `interval_prune_can_skip_even_the_first_arc_384`: die
+Review-Familie, mit der Kugel-Enthaltung, dem `dbs = +∞` und dem endlichen
+`de₀` als Vorbedingungen im Pin. Mit dem Fix enthält die Hülle den
+Produktionswert; mit der alten Annahme (`Knobs::assume_first_arc_evaluated`)
+verliert sie ihn nachweislich. *Beim Bau die Lehre:* die erste Fassung des Pins
+war grün aus dem falschen Grund — `synth_channel` erbt `bound_c`/`bound_r` von
+den Bögen, also griff schon `channel_skip` auf KANAL-Ebene, und der Bogen-Prune
+kam gar nicht dran. Der Pin normalisiert die Kanal-Kugel jetzt explizit und
+prüft mit einer Assertion, dass `channel_skip` NICHT greift.
+
+**Auf allen dreizehn Fixturen bewegt sich keine einzige Zahl** — der Fall ist
+konstruierbar, nicht messbar. Das ist dieselbe Signatur wie beim §8t-Budget:
+grün auf der ganzen Matrix und trotzdem falsch.
+
+#### Zwei Sollte-Punkte
+
+* **Das Decken-Argument war zu stark formuliert** — s. o., jetzt „Decke des
+  DIREKTEN Zweig-1/2-Tests auf diesen Zellen, mit heutigem `U` und heutiger
+  Tiefe" statt „Decke der beiden Kriterien". Vier Einschränkungen sind dort
+  ausbuchstabiert.
+* **`drop_last_candidate` war die stumpfere Mutation**: der Schalter brach nach
+  dem ersten aufgenommenen Kandidaten ab und strich bei drei oder mehr
+  Kandidaten alle bis auf einen. Jetzt werden erst alle gesammelt und dann
+  genau einer per `pop()` entfernt — die Probe trifft damit wirklich nur den
+  Vereinigungs-Schritt.
+
 ### Was OFFEN bleibt
 
 * **Das dritte Kriterium** — die gekoppelte Aussage über `{f ≥ 0} ∩ C`. Mit
-  4285 Zellen der grösste Einzelposten und ab jetzt der Flaschenhals. Es
-  braucht eine Einschliessung von `dist(·,∁Ω)`, nicht nur von `f`.
+  4285 Zellen der grösste Einzelposten und ab jetzt der aussichtsreichste
+  nächste Baustein (nicht der einzig mögliche: ein schärferes `U`, kleinere
+  Zellen oder tiefere Unterteilung greifen an derselben Menge an). Es braucht
+  eine Einschliessung von `dist(·,∁Ω)`, nicht nur von `f`.
 * **Paket 4 — Kreisbögen** (12 Zellen, Stufen-Nabe).
 * **Paket 5 — der geometrische Naht-Aussenzeuge und die η-Klemme.**
 * **`LbPiece::Rev`** (480), **Skizzen-Blätter** (1296),
