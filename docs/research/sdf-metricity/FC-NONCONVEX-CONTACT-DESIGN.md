@@ -6269,18 +6269,65 @@ C++/TSL/Rust-Tape-Parität, die dichte Referenz als Falsifikator und dass
 #### B1 — der fidget-Spiegel folgte dem ρ-Zweig nicht
 
 Die CPU liefert für `ρ < 1e-9` **zwingend** `(q₀, t = 0)`; fidget ersetzte nur
-`ρ` durch `max(ρ, 1e-9)` und projizierte weiter. Auf der Bogenachse
-(`x = y = 0`) sind dann BEIDE Diamant-Nenner null, `dm` wird `0/0 = NaN` — und
-**NaN wandert durch `select` hindurch**, ein toter Ast vergiftet den ganzen
-Baum. Auch abseits der Achse, bei `0 < ρ < 1e-9`, projizierte fidget auf den
-Kreis, während die CPU den Startpunkt nimmt.
+`ρ` durch `max(ρ, 1e-9)` und projizierte weiter.
 
-Gefixt mit einem **äusseren ρ-Select**, der `de`/`q`/`t` GEMEINSAM auf den
-Achsenzweig setzt, plus sicheren Nennern (auf der Achse wird `1` addiert), damit
-gar kein NaN-Ast entsteht. `check_interp` deckt fidget **nicht** ab; der neue
-Pin `arc_fidget_mirrors_the_rho_branch_384` ist der einzige Prüfpfad — 648
-Proben über `ρ ∈ {0, 0.5e-9, next_down(1e-9), 1e-9, next_up(1e-9), 1e-6}` und
-sechs Winkel, max `|CPU − fidget| = 6.3·10⁻⁷`.
+**Das brauchte ZWEI Runden**, und die zweite ist die lehrreichere.
+
+*Erste Runde (v0.61.1):* äusserer ρ-Select auf `de`/`q`/`t`, plus ein
+`guard`, der auf der Achse `1` zum Nenner addiert. **Zwei Defekte blieben** —
+gefunden bei der unabhängigen Verifikation:
+
+* **Der ρ-Select auf `t` war totes Recht.** Eine zweite `let t = …`
+  überschattete ihn unmittelbar; rustc meldete es sogar als „unused variable".
+  Für `0 < ρ < 1e-9` lieferte fidget also weiter `t_in` aus der Projektion,
+  während die CPU `t = 0` erzwingt. Der damalige Pin mass nur den FELDWERT und
+  sah `6.3·10⁻⁷` — die Wirkung war klein, die `t`-Parität trotzdem gebrochen.
+* **Der `guard` deckte nur die Achse.** Auf den **Diagonalen** blieb der
+  Defekt: bei `x = y > 0` (φ = 45°, ein ganz gewöhnlicher In-Sektor-Punkt) ist
+  der Q2-Nenner `y − x` exakt `+0`, bei `x = −y > 0` (φ = 135°) der Q1-Nenner
+  `x + y`. Exakte f32-Diagonalen sind auf Gittern und bei symmetrischen Szenen
+  real erreichbar.
+
+*Zweite Runde (v0.61.2):* die Shadowing-Zeile ist weg, und die Nenner werden
+**unbedingt geklemmt** statt selektiv bewacht. Dabei kam ein **zweiter,
+subtilerer Defekt derselben Familie** heraus, den erst der neue Diagonal-Pin
+zeigte:
+
+> `select_lt` ist kein Sprung, sondern ein arithmetischer **Blend**
+> `y + (x−y)·m`. Eine blosse Nenner-Klemme macht den toten Zweig zwar ENDLICH,
+> aber riesig — `0.15/10⁻³⁰ ≈ 1.5·10²⁸`. Der Blend rechnet dann
+> `dm_q1 + (dm_q2 − dm_q1)·1`, und in f64 löscht `1.5 − 1.5·10²⁸` den
+> lebendigen Wert vollständig aus. Heraus kam **kein NaN, sondern ein falsches
+> `t = 0`** — die stillere und gefährlichere Variante.
+
+Deshalb stehen jetzt **zwei** Klemmen: die Nenner auf `τ = 10⁻³⁰` (gegen `0/0`
+und `±inf`) und der Wertebereich auf `[0,2]` (gegen die Auslöschung). Beide
+sind auf dem GEWÄHLTEN Zweig No-ops: im Rumpf gilt `ρ ≥ 10⁻⁹`, also
+`x + y ≥ ρ/√2` bzw. `y − x ≥ ρ/√2` — zwanzig Grössenordnungen über `τ` —, und
+der Diamant-Parameter liegt per Definition in `[0,2]` (Q1 in `[0,1]`, Q2 in
+`[1,2]`).
+
+**Die Invariante, ehrlich formuliert:** kein Knoten des Baums evaluiert für
+irgendeinen endlichen Eingabepunkt zu `NaN` oder `±inf`, **und** kein toter
+Zweig kann den lebendigen durch Auslöschung verdrängen. Die erste Runde
+behauptete „damit gar kein NaN-Ast entsteht" — das war zu eng gedacht: NaN war
+nur die auffällige Hälfte des Problems.
+
+**Der Pin misst jetzt `t` und `de` DIREKT**, gegen dieselbe Funktion, die auch
+die Produktion baut (`arc_closest_tree`, dafür herausgezogen — eine Kopie im
+Test wäre genau der Weg, auf dem der Shadowing-Defekt durchgerutscht ist).
+952 strikt geprüfte Proben über Diagonalen, ρ-Schwelle und Translationen bis
+`10⁴`: `max |Δt| = 6.8·10⁻⁸`, `max |Δde| = 3.4·10⁻⁴`.
+
+*Zwei Klassen sind ausdrücklich ausgenommen und nicht wegtoleriert:* genau AN
+der ρ-Schwelle und bei einem Endpunkt-Gleichstand ist `t` eine **diskrete**
+Wahl, und CPU (f32) gegen fidget (f64) darf dort verschieden runden — eine
+`t`-Zusage wäre dort eine Zusage über Rundung, nicht über Struktur.
+NaN-Freiheit und `de` werden auch dort geprüft. Die `de`-Toleranz ist
+hergeleitet statt geraten: dominierend ist die f32-Darstellung von `p − c`,
+also `5·|c|·2⁻²³` plus ein radiusbezogener Sockel.
+
+`check_interp` deckt fidget **nicht** ab; diese Pins sind der einzige Prüfpfad.
 
 #### B2 — die Sehnen-Kugel war für die zugelassenen Daten nicht bewiesen
 
@@ -6323,6 +6370,11 @@ gemessenen Fehler. Die 264 Worte sind vollständig attribuiert:
   geht in die Reichweite `R` und damit in das `emax`-Budget **jedes**
   `Tri`-Stücks ein. `emax` ist dokumentiert reine Beschleunigung ohne
   Feldwert-Einfluss — konsistent mit den null bewegten PT-Werten.
+* **Die `AABB`-Zeile von `vertex_sphere_corner`** wächst um `4·10⁻⁶`. Sie
+  fehlte in der ersten Attribution und gehört dazu: die Kanal-AABB wird aus den
+  Bogen-Kugeln gebildet, und die neue Kugel ist konservativ grösser. Wachstum
+  in diese Richtung ist unkritisch (eine AABB darf überschätzen, nicht
+  unterschätzen).
 
 `check_interp` unverändert **35 / 17 920 / 0**.
 

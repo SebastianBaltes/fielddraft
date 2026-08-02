@@ -516,6 +516,161 @@ fn rev_dist_tree(
 /// Spiegel von [`crate::offset_channel::channel_apply`] als Tree.
 /// `base` ist der naive Stopp-Teilausdruck d₀ (#384 §8i) — im DAG die
 /// Entsprechung des `OP_STOP_BASE`-Registers der Stack-Maschinen.
+
+/// #384 §8y — **`arc_closest` als symbolischer Baum.**
+///
+/// Herausgezogen, damit der CPU↔fidget-Paritätspin `t` DIREKT vergleichen kann
+/// statt nur den Feldwert: eine Kopie im Test könnte vom echten Pfad
+/// abdriften, und genau so ist der Shadowing-Defekt der ersten Korrektur
+/// durchgerutscht.
+///
+/// ## NaN-Invariante des Baums
+///
+/// **Kein Knoten evaluiert zu `NaN` oder `±inf` für IRGENDEINEN endlichen
+/// Eingabepunkt.** Das ist schärfer als „auf der Achse geht es gut" und war in
+/// der ersten Korrektur verletzt.
+///
+/// `select_lt` ist kein Sprung, sondern ein arithmetischer **Blend**
+/// (`y + (x−y)·m`). Ein `±inf` im VERWORFENEN Zweig wird deshalb mit `m = 0`
+/// multipliziert — und `(±inf)·0 = NaN` vergiftet das Ergebnis, obwohl der
+/// richtige Zweig gewählt war. Die erste Korrektur addierte `1` nur bei
+/// `ρ < 1e-9` und deckte damit nur die Achse; auf den **Diagonalen** blieb der
+/// Defekt:
+///
+/// * `x = y > 0` (φ = 45°, ein ganz gewöhnlicher In-Sektor-Punkt): der
+///   Q2-Nenner `y − x` ist exakt `+0`, also `dm_q2 = −inf` im toten Zweig.
+/// * `x = −y > 0` (φ = 135°): der Q1-Nenner `x + y` ist exakt `+0`, also
+///   `dm_q1 = +inf`.
+///
+/// Exakte f32-Diagonalen sind auf Gittern und bei symmetrischen Szenen real
+/// erreichbar (Steinmetz!).
+///
+/// Deshalb werden **zwei** Klemmen gesetzt, und beide sind nötig:
+///
+/// 1. **Die Nenner**, unbedingt: `max(x+y, τ)` und `max(y−x, τ)` mit
+///    `τ = 10⁻³⁰`. Das beseitigt `0/0` und `±inf`.
+/// 2. **Der Wertebereich**, auf `[0,2]`. Ohne ihn bleibt ein zweiter, subtilerer
+///    Defekt: die Nenner-Klemme macht den toten Zweig zwar ENDLICH, aber
+///    riesig (`0.15/10⁻³⁰ ≈ 1.5·10²⁸`). Der Blend `y + (x−y)·m` rechnet dann
+///    `dm_q1 + (dm_q2 − dm_q1)·1`, und in f64 löscht `1.5 − 1.5·10²⁸` den
+///    lebendigen Wert vollständig aus — heraus kommt `0`, ein **falsches
+///    `t = 0`** statt eines NaN. Genau das hat der Diagonal-Pin gefunden.
+///
+/// *Warum beide Klemmen auf dem GEWÄHLTEN Zweig No-ops sind:* der äussere
+/// ρ-Select behandelt `ρ < 10⁻⁹` separat, im Rumpf gilt also `ρ ≥ 10⁻⁹`. Im
+/// Sektor ist `y ≥ 0`. Für Q1 (`x ≥ 0`) ist `x + y ≥ max(x,y) ≥ ρ/√2`, für Q2
+/// (`x < 0`) ist `y − x = y + |x| ≥ ρ/√2` — beide zwanzig Grössenordnungen über
+/// `τ`. Und der Diamant-Parameter liegt per Definition in `[0,2]` (Q1 liefert
+/// `[0,1]`, Q2 liefert `[1,2]`), die Bereichsklemme greift dort also nie. Auf
+/// den TOTEN Zweigen bindet sie den Wert, und `beschränkt · 0 = 0`. ∎
+fn arc_closest_tree(
+    arc: &crate::offset_channel::ChannelArc,
+    p: &[Tree; 3],
+) -> (Tree, [Tree; 3], Tree) {
+    if arc.sweep < 0.0 {
+        // Segment c → c + u·r.
+        let c = t_const3(arc.c);
+        let u = t_const3(arc.u);
+        let len = (arc.r as f64).max(1e-12);
+        let t = (t_dot(&t_sub(p, &c), &u) * (1.0 / len)).max(0.0).min(1.0);
+        let q = [
+            c[0].clone() + u[0].clone() * t.clone() * len,
+            c[1].clone() + u[1].clone() * t.clone() * len,
+            c[2].clone() + u[2].clone() * t.clone() * len,
+        ];
+        return (t_norm(&t_sub(p, &q)), q, t);
+    }
+    let c = t_const3(arc.c);
+    let u = t_const3(arc.u);
+    let v = t_const3(arc.v);
+    let dc = t_sub(p, &c);
+    let x = t_dot(&dc, &u);
+    let y = t_dot(&dc, &v);
+    let (e0, e1) = (arc.e[0] as f64, arc.e[1] as f64);
+    let r = arc.r as f64;
+    let zero = Tree::from(0.0);
+    let rho_raw = (x.clone() * x.clone() + y.clone() * y.clone()).sqrt();
+    let tiny = Tree::from(1.0e-9);
+    let rho = rho_raw.clone().max(1e-9);
+    // Start- und Endpunkt, algebraisch.
+    let q0 = [
+        c[0].clone() + u[0].clone() * r,
+        c[1].clone() + u[1].clone() * r,
+        c[2].clone() + u[2].clone() * r,
+    ];
+    let q1 = [
+        c[0].clone() + (u[0].clone() * e0 + v[0].clone() * e1) * r,
+        c[1].clone() + (u[1].clone() * e0 + v[1].clone() * e1) * r,
+        c[2].clone() + (u[2].clone() * e0 + v[2].clone() * e1) * r,
+    ];
+    let cs = x.clone() / rho.clone();
+    let sn = y.clone() / rho.clone();
+    let q_in = [
+        c[0].clone() + (u[0].clone() * cs.clone() + v[0].clone() * sn.clone()) * r,
+        c[1].clone() + (u[1].clone() * cs.clone() + v[1].clone() * sn.clone()) * r,
+        c[2].clone() + (u[2].clone() * cs.clone() + v[2].clone() * sn.clone()) * r,
+    ];
+    // Unbedingt geklemmte Nenner UND geklemmter Wertebereich — s. die
+    // NaN-/Blend-Invariante oben. Beides ist nötig, und zwar aus zwei
+    // verschiedenen Gründen.
+    let tau = 1.0e-30;
+    let den_q1 = (x.clone() + y.clone()).max(tau);
+    let den_q2 = (y.clone() - x.clone()).max(tau);
+    // Der Diamant-Parameter liegt PER DEFINITION in [0,2]. Auf dem jeweils
+    // gewählten Zweig ist die Klemme deshalb ein No-op (Q1 liefert [0,1],
+    // Q2 liefert [1,2]); auf dem TOTEN Zweig bindet sie den Wert.
+    let dm_q1 = (y.clone() / den_q1).max(0.0).min(2.0);
+    let dm_q2 = (Tree::from(1.0) + (-x.clone()) / den_q2).max(0.0).min(2.0);
+    let dm = select_lt(&x, &zero, &dm_q2, &dm_q1);
+    let t_in = (dm * (1.0 / arc.d_e as f64)).max(0.0).min(1.0);
+    let d_in = t_norm(&t_sub(p, &q_in));
+    let d0 = t_norm(&t_sub(p, &q0));
+    let d1 = t_norm(&t_sub(p, &q1));
+    // Endpunkt-Fall: näherer der beiden Enden, Gleichstand → Start.
+    let d_end = d0.clone().min(d1.clone());
+    let t_end = select_lt(&d1, &d0, &Tree::from(1.0), &Tree::from(0.0));
+    let q_end = [
+        select_lt(&d1, &d0, &q1[0], &q0[0]),
+        select_lt(&d1, &d0, &q1[1], &q0[1]),
+        select_lt(&d1, &d0, &q1[2], &q0[2]),
+    ];
+    // Sektor: `a = y ≥ 0 ∧ b = x·e₁ − y·e₀ ≥ 0`.
+    let bcr = x.clone() * e1 - y.clone() * e0;
+    let pick = |x_in: &Tree, x_out: &Tree| {
+        let after_a = select_lt(&y, &zero, x_out, x_in);
+        select_lt(&bcr, &zero, x_out, &after_a)
+    };
+    // Der äussere ρ-Select setzt de/q/t GEMEINSAM auf den Achsenzweig — genau
+    // wie die CPU. (In der ersten Korrektur war die `t`-Zeile durch eine
+    // zweite `let t = …` sofort überschattet und damit totes Recht; rustc hat
+    // das als „unused variable" gemeldet.)
+    let on_axis = |x_ax: &Tree, x_body: &Tree| select_lt(&rho_raw, &tiny, x_ax, x_body);
+    let de = on_axis(&d0, &pick(&d_in, &d_end));
+    let q = [
+        on_axis(&q0[0], &pick(&q_in[0], &q_end[0])),
+        on_axis(&q0[1], &pick(&q_in[1], &q_end[1])),
+        on_axis(&q0[2], &pick(&q_in[2], &q_end[2])),
+    ];
+    let t = on_axis(&Tree::from(0.0), &pick(&t_in, &t_end));
+    (de, q, t)
+}
+
+/// #384 §8y — der `t`-Zweig von [`arc_closest_tree`], für den Paritätspin.
+pub(crate) fn arc_t_tree(
+    arc: &crate::offset_channel::ChannelArc,
+    p: &[Tree; 3],
+) -> Tree {
+    arc_closest_tree(arc, p).2
+}
+
+/// #384 §8y — die Distanz aus [`arc_closest_tree`], für den Paritätspin.
+pub(crate) fn arc_de_tree(
+    arc: &crate::offset_channel::ChannelArc,
+    p: &[Tree; 3],
+) -> Tree {
+    arc_closest_tree(arc, p).0
+}
+
 fn channel_to_tree(
     base: &Tree,
     lb: &Tree,
@@ -530,97 +685,7 @@ fn channel_to_tree(
     let mut best_m2 = t_const3([0.0; 3]);
 
     for arc in &ch.arcs {
-        let (de, q, t) = if arc.sweep < 0.0 {
-            // Segment c → c + u·r.
-            let c = t_const3(arc.c);
-            let u = t_const3(arc.u);
-            let len = (arc.r as f64).max(1e-12);
-            let t = (t_dot(&t_sub(p, &c), &u) * (1.0 / len)).max(0.0).min(1.0);
-            let q = [
-                c[0].clone() + u[0].clone() * t.clone() * len,
-                c[1].clone() + u[1].clone() * t.clone() * len,
-                c[2].clone() + u[2].clone() * t.clone() * len,
-            ];
-            (t_norm(&t_sub(p, &q)), q, t)
-        } else {
-            // #384 §8y: verzweigungsfrei UND trigonometrie-frei. Der Sektor ist
-            // ein Kreuzprodukt-Paar, der Fusspunkt die normierte Projektion,
-            // der Parameter der Diamant-Quotient.
-            let c = t_const3(arc.c);
-            let u = t_const3(arc.u);
-            let v = t_const3(arc.v);
-            let dc = t_sub(p, &c);
-            let x = t_dot(&dc, &u);
-            let y = t_dot(&dc, &v);
-            let (e0, e1) = (arc.e[0] as f64, arc.e[1] as f64);
-            let r = arc.r as f64;
-            let zero = Tree::from(0.0);
-            // #384 §8y-Korrektur (zehntes Review): der ρ-Zweig war NICHT
-            // gespiegelt. Die CPU liefert für ρ < 1e-9 zwingend (q₀, t = 0);
-            // fidget ersetzte nur ρ durch max(ρ, 1e-9) und projizierte weiter.
-            // Auf der Bogenachse (x = y = 0) sind dann BEIDE Diamant-Nenner
-            // null, `dm` wird 0/0 = NaN — und NaN wandert durch `select`
-            // hindurch, ein toter Ast vergiftet also den ganzen Baum.
-            let rho_raw = (x.clone() * x.clone() + y.clone() * y.clone()).sqrt();
-            let tiny = Tree::from(1.0e-9);
-            let rho = rho_raw.clone().max(1e-9);
-            // Sichere Nenner: auf der Achse (und nur dort) wird `1` addiert,
-            // damit kein NaN entsteht. Der Wert ist dann bedeutungslos — der
-            // äussere ρ-Select verwirft ihn ohnehin.
-            let guard = select_lt(&rho_raw, &tiny, &Tree::from(1.0), &zero);
-            // Start- und Endpunkt, algebraisch.
-            let q0 = [
-                c[0].clone() + u[0].clone() * r,
-                c[1].clone() + u[1].clone() * r,
-                c[2].clone() + u[2].clone() * r,
-            ];
-            let q1 = [
-                c[0].clone() + (u[0].clone() * e0 + v[0].clone() * e1) * r,
-                c[1].clone() + (u[1].clone() * e0 + v[1].clone() * e1) * r,
-                c[2].clone() + (u[2].clone() * e0 + v[2].clone() * e1) * r,
-            ];
-            let cs = x.clone() / rho.clone();
-            let sn = y.clone() / rho.clone();
-            let q_in = [
-                c[0].clone() + (u[0].clone() * cs.clone() + v[0].clone() * sn.clone()) * r,
-                c[1].clone() + (u[1].clone() * cs.clone() + v[1].clone() * sn.clone()) * r,
-                c[2].clone() + (u[2].clone() * cs.clone() + v[2].clone() * sn.clone()) * r,
-            ];
-            let dm_q1 = y.clone() / (x.clone() + y.clone() + guard.clone());
-            let dm_q2 =
-                Tree::from(1.0) + (-x.clone()) / (y.clone() - x.clone() + guard.clone());
-            let dm = select_lt(&x, &zero, &dm_q2, &dm_q1);
-            let t_in = (dm * (1.0 / arc.d_e as f64)).max(0.0).min(1.0);
-            let d_in = t_norm(&t_sub(p, &q_in));
-            let d0 = t_norm(&t_sub(p, &q0));
-            let d1 = t_norm(&t_sub(p, &q1));
-            // Endpunkt-Fall: näherer der beiden Enden, Gleichstand → Start.
-            let d_end = d0.clone().min(d1.clone());
-            let t_end = select_lt(&d1, &d0, &Tree::from(1.0), &Tree::from(0.0));
-            let q_end = [
-                select_lt(&d1, &d0, &q1[0], &q0[0]),
-                select_lt(&d1, &d0, &q1[1], &q0[1]),
-                select_lt(&d1, &d0, &q1[2], &q0[2]),
-            ];
-            // Sektor: `a = y ≥ 0 ∧ b = x·e₁ − y·e₀ ≥ 0`.
-            let bcr = x.clone() * e1 - y.clone() * e0;
-            let pick = |x_in: &Tree, x_out: &Tree| {
-                let after_a = select_lt(&y, &zero, x_out, x_in);
-                select_lt(&bcr, &zero, x_out, &after_a)
-            };
-            // **Der äussere ρ-Select** setzt de/q/t GEMEINSAM auf den
-            // Achsenzweig — genau wie die CPU.
-            let on_axis = |x_ax: &Tree, x_body: &Tree| select_lt(&rho_raw, &tiny, x_ax, x_body);
-            let de = on_axis(&d0, &pick(&d_in, &d_end));
-            let q = [
-                on_axis(&q0[0], &pick(&q_in[0], &q_end[0])),
-                on_axis(&q0[1], &pick(&q_in[1], &q_end[1])),
-                on_axis(&q0[2], &pick(&q_in[2], &q_end[2])),
-            ];
-            let t = on_axis(&Tree::from(0.0), &pick(&t_in, &t_end));
-            let t = pick(&t_in, &t_end);
-            (de, q, t)
-        };
+        let (de, q, t) = arc_closest_tree(arc, p);
         // m-Vektoren am Fußpunkt (nlerp) — Normierung symbolisch.
         let lerp3 = |a: [f32; 3], b: [f32; 3]| -> [Tree; 3] {
             let a = t_const3(a);

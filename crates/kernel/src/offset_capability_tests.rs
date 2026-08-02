@@ -11948,3 +11948,158 @@ fn arc_bounding_sphere_covers_skew_frames_384() {
     assert!(cases >= 15, "nur {cases} Fälle");
     println!("§8y Bogen-Kugel: schlechteste Ausnutzung {worst:.4} (≤ 1 = umfassend)");
 }
+
+/// **§8y-Korrektur-2-Pin: `t` und `de` direkt gegen fidget — inklusive der
+/// Diagonalen.**
+///
+/// Zwei Defekte der ersten Korrektur, die der Feld-Pin NICHT gefangen hat:
+///
+/// * **Der äussere ρ-Select auf `t` war totes Recht** — eine zweite
+///   `let t = …` überschattete ihn sofort (rustc meldete es als „unused
+///   variable"). Für `0 < ρ < 1e-9` lieferte die CPU `t = 0`, fidget aber
+///   `t_in` aus der Projektion. Dass der Feld-Pin nur `6.3·10⁻⁷` mass, heisst
+///   bloss, dass die WIRKUNG an den gesampelten Punkten klein war — die
+///   `t`-Parität war trotzdem gebrochen. Deshalb vergleicht dieser Pin `t`
+///   **direkt**, gegen dieselbe Funktion, die auch die Produktion baut.
+/// * **Die „sicheren Nenner" deckten nur die Achse.** `select_lt` ist ein
+///   arithmetischer Blend, kein Sprung: ein `±inf` im VERWORFENEN Zweig wird
+///   mit `0` multipliziert und ergibt `NaN`. Auf `x = y > 0` (φ = 45°, ein
+///   gewöhnlicher In-Sektor-Punkt) ist der Q2-Nenner exakt `+0`, auf
+///   `x = −y > 0` (φ = 135°) der Q1-Nenner. Exakte f32-Diagonalen sind auf
+///   Gittern und bei symmetrischen Szenen real erreichbar.
+#[test]
+fn arc_fidget_t_and_diagonals_are_exact_384() {
+    use fidget::context::Tree;
+    let (mut checked, mut worst_t, mut worst_de) = (0usize, 0.0f64, 0.0f64);
+    for alpha in [0.7854f64, 1.5708, 2.3562, 3.1415] {
+        for r in [0.5f32, 2.0, 37.0] {
+            for shift in [[0.0f64, 0.0, 0.0], [1.0e4, -2.5e3, 7.0e3]] {
+                let mut arc = synth_arc(r, alpha, [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+                arc.c = [shift[0] as f32, shift[1] as f32, shift[2] as f32];
+                let mut probes: Vec<[f32; 3]> = Vec::new();
+                // (a) EXAKTE Diagonalen: x = y und x = −y, in-Sektor und
+                //     ausserhalb, in mehreren Abständen.
+                for m in [0.3f32, 1.0, 2.5, 9.0] {
+                    for (sx, sy) in [(1.0f32, 1.0f32), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
+                        probes.push([
+                            arc.c[0] + sx * m * r,
+                            arc.c[1] + sy * m * r,
+                            arc.c[2],
+                        ]);
+                    }
+                }
+                // (b) Die ρ-Familie — hier fällt der `t`-Shadowing-Defekt auf.
+                for rho in [
+                    0.0f32,
+                    0.5e-9,
+                    f32::from_bits(1.0e-9f32.to_bits() - 1),
+                    1.0e-9,
+                    f32::from_bits(1.0e-9f32.to_bits() + 1),
+                    1.0e-6,
+                    1.0e-3,
+                ] {
+                    for k in 0..5 {
+                        let ang = k as f32 * 0.9;
+                        probes.push([
+                            arc.c[0] + ang.cos() * rho,
+                            arc.c[1] + ang.sin() * rho,
+                            arc.c[2] + 0.4,
+                        ]);
+                    }
+                }
+                // Bäume für `t` und `de` — dieselbe Funktion, die auch
+                // `channel_to_tree` benutzt.
+                let pv = [Tree::x(), Tree::y(), Tree::z()];
+                let tt = crate::fidget_bridge::arc_t_tree(&arc, &pv);
+                let td = crate::fidget_bridge::arc_de_tree(&arc, &pv);
+                let mut ctx = fidget::Context::new();
+                let rt = ctx.import(&tt);
+                let rd = ctx.import(&td);
+                for p in &probes {
+                    let (de_cpu, _, t_cpu) = crate::offset_channel::arc_closest(&arc, *p);
+                    let t_fid = ctx
+                        .eval_xyz(rt, p[0] as f64, p[1] as f64, p[2] as f64)
+                        .expect("fidget-t schlägt fehl");
+                    let de_fid = ctx
+                        .eval_xyz(rd, p[0] as f64, p[1] as f64, p[2] as f64)
+                        .expect("fidget-de schlägt fehl");
+                    // **NaN-Freiheit gilt IMMER** — das ist die Invariante des
+                    // Baums, ohne Ausnahme und ohne Toleranz.
+                    assert!(
+                        t_fid.is_finite() && de_fid.is_finite(),
+                        "α={alpha} r={r} p={p:?}: fidget liefert t={t_fid}, de={de_fid} — \
+                         ein NaN-/inf-Ast im Baum (Diagonal-Nenner!)"
+                    );
+                    assert!(t_cpu.is_finite() && de_cpu.is_finite());
+                    let dt = (t_cpu as f64 - t_fid).abs();
+                    let dd = (de_cpu as f64 - de_fid).abs();
+                    // **Die Toleranz ist hergeleitet, nicht geraten.** Die CPU
+                    // rechnet in f32, fidget in f64 — das ist Absicht (der
+                    // Mesher-Arm ist f64). Der dominierende Term ist die
+                    // f32-Darstellung von `p − c`: bei Beträgen `|c|` liegt der
+                    // ulp bei `|c|·2⁻²³`, und die Kette aus Subtraktion,
+                    // Projektion und Norm summiert einige davon. Angesetzt:
+                    // `5·|c|·2⁻²³` plus ein radiusbezogener Sockel.
+                    let cmag = (arc.c[0].abs()).max(arc.c[1].abs()).max(arc.c[2].abs()) as f64;
+                    let tol_de = 5.0 * cmag * (2.0f64).powi(-23) + 1.0e-4 * (r as f64).max(1.0);
+                    assert!(
+                        dd < tol_de,
+                        "α={alpha} r={r} p={p:?}: de CPU={de_cpu} fidget={de_fid} \
+                         (Δ={dd:.3e}, Toleranz {tol_de:.3e})"
+                    );
+                    // Geometrie des Punktes, in f64 nachgerechnet.
+                    let dx = (p[0] - arc.c[0]) as f64;
+                    let dy = (p[1] - arc.c[1]) as f64;
+                    let rho = (dx * dx + dy * dy).sqrt();
+                    let d0 = ((p[0] - (arc.c[0] + arc.r * arc.u[0])) as f64).powi(2)
+                        + ((p[1] - (arc.c[1] + arc.r * arc.u[1])) as f64).powi(2)
+                        + ((p[2] - (arc.c[2] + arc.r * arc.u[2])) as f64).powi(2);
+                    let qe = [
+                        arc.c[0] + arc.r * (arc.u[0] * arc.e[0] + arc.v[0] * arc.e[1]),
+                        arc.c[1] + arc.r * (arc.u[1] * arc.e[0] + arc.v[1] * arc.e[1]),
+                        arc.c[2] + arc.r * (arc.u[2] * arc.e[0] + arc.v[2] * arc.e[1]),
+                    ];
+                    let d1 = ((p[0] - qe[0]) as f64).powi(2)
+                        + ((p[1] - qe[1]) as f64).powi(2)
+                        + ((p[2] - qe[2]) as f64).powi(2);
+                    let tie = (d0.sqrt() - d1.sqrt()).abs() < 1.0e-6 * (r as f64).max(1.0);
+                    if rho <= 5.0e-10 {
+                        // **Der Achsen-Zweig — hier greift Defekt 1.** Die CPU
+                        // erzwingt `t = 0`; fidget muss das EXAKT auch tun.
+                        assert_eq!(
+                            t_cpu, 0.0,
+                            "CPU liefert auf der Achse t={t_cpu} statt 0"
+                        );
+                        assert!(
+                            t_fid.abs() < 1.0e-12,
+                            "α={alpha} r={r} p={p:?} (ρ={rho:.3e}): fidget liefert t={t_fid} \
+                             statt 0 — der ρ-Select auf `t` greift nicht"
+                        );
+                        checked += 1;
+                    } else if rho < 2.0e-9 || tie {
+                        // Genau AN der ρ-Schwelle bzw. bei einem
+                        // Endpunkt-Gleichstand ist `t` eine DISKRETE Wahl, und
+                        // CPU (f32) und fidget (f64) dürfen dort verschieden
+                        // runden. NaN-Freiheit und `de` sind oben trotzdem
+                        // geprüft; die `t`-Zusage wäre hier eine Zusage über
+                        // Rundung, nicht über Struktur.
+                    } else {
+                        assert!(
+                            dt < 1.0e-6,
+                            "α={alpha} r={r} p={p:?}: t CPU={t_cpu} fidget={t_fid} \
+                             (Δ={dt:.3e})"
+                        );
+                        worst_t = worst_t.max(dt);
+                        checked += 1;
+                    }
+                    worst_de = worst_de.max(dd);
+                }
+            }
+        }
+    }
+    assert!(checked > 900, "nur {checked} strikt geprüfte Proben");
+    println!(
+        "§8y-K2 fidget-Parität: {checked} Proben, max |Δt| = {worst_t:.3e}, \
+         max |Δde| = {worst_de:.3e}"
+    );
+}
