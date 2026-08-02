@@ -3856,16 +3856,57 @@ vier Enden zusätzlich „Voronoi-Bisektoren" zu Nähten, mit denen sie nichts
 teilen: `s₃ = 0.4186` bzw. `0.7800` statt der nötigen `0.5108`.
 
 **Der Fix ist eine Streichung.** Eine Junction ist ein Punkt, in dem sich zwei
-Naht-GERADEN treffen. Parallele Geraden treffen sich nicht — `junction_anchor`
-liefert dort `None` statt eines Ersatzes. Dazu die Beweispflicht, die dem
-gesamten Aufbau zugrunde liegt und die niemand geprüft hatte:
+Naht-GERADEN treffen. `junction_anchor` liefert `None`, wo das nicht der Fall
+ist — in ZWEI Formen:
 
-> **Jeder Spine-Punkt liegt auf `∂Ω`.** `junction_of` tastet beide
-> Verlängerungen `E_i → a` ab und verwirft die Junction, sobald ein Punkt tiefer
-> als `gate_eps` im Material liegt — dieselbe Schwelle, mit der
-> `blocking_member` im Trace entscheidet, ob ein Punkt noch auf dem
-> Composite-Rand liegt. Der Snap gehorcht damit exakt der Regel des Traces, den
-> er verlängert.
+* **parallel/antiparallel** (`|d̂₁·d̂₂| = 1`): kein Schnittpunkt, der
+  Mittelpunkt-Rückfall ist ersatzlos gestrichen. Das ist der Schalen-Fund.
+* **windschief**: für nicht parallele Geraden liefert die Rechnung die
+  Fusspunkte `q₁`, `q₂` der kürzesten Verbindung und deren Mittelpunkt. Ohne
+  Test auf `|q₁ − q₂|` ist das exakt dieselbe Phantom-Klasse, eine Stufe
+  subtiler — der „Treffpunkt" liegt dann auf KEINER der beiden Geraden. (Diesen
+  Rest hat erst das externe Mathe-Review von §8s gefunden; die erste Fassung
+  strich nur den Parallel-Fall.)
+
+**Die Skew-Schranke, hergeleitet.** Der Anker behauptet, Punkt BEIDER Nähte zu
+sein, und liegt als Mittelpunkt `gap/2` neben jeder von ihnen. Die Synthese
+verlangt von jedem Punkt, den sie als Naht-Punkt behandelt, `∂Ω`-Nähe innerhalb
+`gate_eps` — der Schwelle, mit der `blocking_member` im Trace entscheidet. Also
+
+    gap/2 ≤ gate_eps   ⟺   |q₁ − q₂| ≤ 2·gate_eps
+
+Der Faktor 2 ist die Geometrie des Mittelpunkts, `gate_eps` die schon
+vorhandene Rand-Toleranz; kalibriert ist daran nichts. Gemessen über alle
+Fixturen (21760 Anker) liegt die Schwelle in einer **leeren Lücke der
+Verteilung**: grösster akzeptierter Rest **0.003728**, kleinster verworfener
+**0.004230**, bei `2·gate_eps = 0.004`. Verworfen werden **4100 von 21760**
+Ankern, mit Resten bis 4.80 mm — der Test ist alles andere als eine tote
+Ausnahme. Golden bleibt byte-identisch.
+
+**Dazu die Randprüfung der Verlängerung — und was sie NICHT ist.** `junction_of`
+tastet beide Verlängerungen `E_i → a` an Stützstellen im Abstand des
+Trace-Schritts ab und verwirft die Junction, sobald das naive Vereinigungsfeld
+dort betragsmässig über `gate_eps` liegt.
+
+> Das ist eine **Heuristik auf Trace-Niveau, kein Satz.** Zwischen zwei
+> Stützstellen kann das Segment ins Material eintauchen und zurückkehren, ohne
+> dass eine Probe es sieht; die 1-Lipschitz-Eigenschaft des naiven Feldes
+> beschränkt den FELDWERT zwischen den Proben, nicht die geometrische Tiefe
+> eines Extremums dazwischen. Die Abtastung hat deshalb bewusst genau die
+> Auflösung, mit der der Trace selbst `∂Ω` etabliert (auch `project_to_seam` und
+> `blocking_member` werten nur an den Trace-Punkten aus): **die Verlängerung ist
+> so vertrauenswürdig wie die Naht, die sie verlängert — nicht mehr.** Eine
+> echte Zertifizierung bräuchte eine Intervall-Auswertung der Member-Felder über
+> dem Segment; das ist dasselbe fehlende Werkzeug wie in §8r Intervall-Zweig 2
+> und steht unten unter „Was OFFEN bleibt".
+
+Fehlerrichtungen, damit die Lücke bewertbar bleibt: ein fälschlich AKZEPTIERTER
+Anbau führt durchs Innere, macht `de` zu klein und lässt `OP_STOP_LIMIT` zu weit
+anheben ⇒ **fehlendes Material**. Eine fälschlich VERWORFENE Junction lässt
+`δ − de` gültig, aber lose — es fehlt der Bisektor, der Term läuft bis zu seiner
+reinen End-Ebene ⇒ ohne Stück-Schranke `L` nur `G`-begrenzt, mit `L` durch den
+§8p-Satz gedeckt. Der §8s-Fund selbst war KEIN Aliasing-Fall: der Anbau lag über
+seine ganze Länge im Material (bis 1.126 mm tief) und fällt bei jeder Auflösung.
 
 **Handrechnung nachher**, am selben Punkt. Die Spine endet wieder bei
 `E = [0,0,−38.5064]`; der nächste Naht-Punkt ist `[0, 0, −37.4817]` (gleiches
@@ -3886,7 +3927,8 @@ Schalen-Dicke). Nichts anderes bleibt übrig.
 ### Die zweite Ursache: der δ-Versatz war eine Distanz-Behauptung ohne Beweis
 
 Der Kamm bleibt nach dem Junction-Fix stehen (0.112 / 0.199 mm) — dort ist die
-§8r-Vermutung richtig, und sie lässt sich schärfer fassen als „zu stumpf".
+§8r-Vermutung richtig, und sie lässt sich schärfer fassen als „zu stumpf": nicht
+„zu stumpf", sondern **unbegründet**.
 
 Die freie End-Ebene hatte seit §8f zwei Rollen (§8l benennt sie):
 
@@ -3904,24 +3946,84 @@ stützend** ist —
 geprüft. Er nahm an, das Trace-Ende sitze auf einer stützenden Ebene quer zur
 Naht.
 
-**Die geschlossene Form macht sichtbar, dass er beides nicht sein kann.** Sei `F`
-die echte Trägerebene mit `h(x) = ⟨x−F, n̂⟩` und `g = ⟨E−F, t̂⟩ ≥ 0` der
-Trace-Rückstand (der Prädiktor-Korrektor bleibt am `on_composite_boundary`-Gate
-einen Schritt vor der Fläche stehen). Ist `H` stützend, dann ist `n̂ = t̂` und
+**Erst die Vorzeichen, sonst dreht sich das Argument um.** `w_geo` ist ein
+`min` über Distanz-Kandidaten, und `f = −w`. Ein KLEINERER Kandidat gewinnt das
+`min`, senkt `w` und HEBT damit `f` — er nimmt Material weg. Ein grösserer
+Kandidat lässt mehr Korrektur zu und riskiert Phantom-Material. Soundness gegen
+Phantom-Material verlangt, dass mindestens ein Kandidat die Wahrheit trifft
+(`min_k U_k = dist`); jeder zusätzliche GÜLTIGE Kandidat macht die Schranke
+schärfer, jeder gestrichene macht sie loser.
+
+Daraus folgt sofort, dass die naheliegende Formulierung „der δ-Versatz ist
+redundant" **falsch** ist. Sei `F` die echte Trägerebene mit
+`h(x) = ⟨x−F, n̂⟩` und `g = ⟨E−F, t̂⟩ ≥ 0` der Trace-Rückstand (der
+Prädiktor-Korrektor bleibt am `on_composite_boundary`-Gate einen Schritt vor der
+Fläche stehen). Für `n̂ = t̂` ist
 
     s₃^alt = ⟨x−E, t̂⟩ − δ = (h(x) − g) − δ = s₄ − g   ≤ s₄
 
-Der δ-Versatz ist dann **`s₄` minus dem Rückstand** — er kann nichts beitragen,
-was `s₄` nicht schärfer schon hat, und liegt um genau `g` darunter. §8l hat diese
-Identität unwissentlich schon vermessen: am notch `s₃ = −0.238` gegen
-`s₄ = +0.661` bei einem gemessenen Rückstand von 0.9 mm; die Differenz ist
-`0.899`. Ist `H` NICHT stützend, existiert `s₄` gar nicht — und `s₃^alt`
-behauptet Distanz zu einer Fläche, die es nicht gibt. Also:
+— also der KLEINERE der beiden und damit der im `min` BINDENDE. Er war
+tragend, nicht redundant. §8l hat genau das gemessen: am notch `s₃ = −0.238`
+gegen `s₄ = +0.661`; der Term war aus, weil `s₃` gewann. (Die erste Fassung
+dieses Abschnitts las die Ungleichung in die falsche Richtung; der Fehler kam
+aus dem externen Mathe-Review zurück.)
 
-> **Der δ-Versatz ist entweder redundant oder falsch. Die freie End-Ebene trägt
-> nur noch die Reichweite:** `s₃ = ⟨x−E, t̂⟩`. Die Distanz-Rolle gehört den
-> bewiesenen Stützebenen (`s₄`, §8j) und der Vertex-Kugel (§8g) — beide am
-> ECHTEN Rand verankert statt am Trace-Ende. ∎
+**Die richtige Streichungs-Begründung ist eine andere: `s₃^alt` war
+UNBEGRÜNDET.** Ein Distanz-Kandidat muss eine obere Schranke von
+`dist(x,∁Ω)` sein, und `⟨x−E,t̂⟩` ist das nur, wenn der Halbraum
+`H_E = {⟨x−E,t̂⟩ ≥ 0}` lokal stützend ist. Für `g > 0` ist er es nicht: die
+Ebene durch `E` ist die Trägerebene, um den Rückstand `g` INS MATERIAL
+verschoben, und der echte Randpunkt `F` erfüllt
+
+    h_E(F) = ⟨F − E, t̂⟩ = −g < 0
+
+`Ω` ragt also nachweislich über `H_E` hinaus, und `s₃^alt` unterschreitet die
+Wahrheit um bis zu `g` — bzw. um `δ`, wo `H_E` gar keine Trägerebene ist. Für
+`g = 0` fallen `s₃^alt` und `s₄` zusammen; dort ist die Streichung wertneutral.
+
+**Drei Fälle, und der dritte ist eine echte Lücke.** Am freien Naht-Ende gilt
+genau einer von:
+
+| Fall | `s₄` zertifiziert? | `H_E` stützend? | alter δ-Versatz | Streichung |
+|---|---|---|---|---|
+| **A** | ja | ja (`g ≈ 0`) | `= s₄` bzw. `s₄ − g` | wertneutral bis material-gewinnend; `s₄` trägt weiter |
+| **B** | nein | **nein** | unbegründet, zu klein um bis zu `δ` | **richtig** — das ist der Rippen-Kamm |
+| **C** | **nein** | **ja** | gültig und bindend | **verliert einen gültigen Kandidaten** |
+
+Fall C existiert strukturell, nicht bloss theoretisch: `set_face_plane_gates`
+belegt `s₄` nur über eine **hinreichende, nicht notwendige** Prüfung — die
+Stützebenen-Bedingung wird an den Member-AABBs getestet (eine echte Obermenge
+von `Ω`, also konservativ ablehnend), Kandidaten sind ausschliesslich planare
+Carrier (ein rotierter oder nicht-planarer Member liefert keinen), es gibt nur
+vier Slots, und Relevanz-Schwellen (`h_seam ≤ reach`, `h_max > 8·gate_eps`)
+sieben zusätzlich. Wo C eintritt, ist die Streichung ein Verlust: der Term
+gatet dort loser als vorher und kann zusätzliches Phantom-Material zulassen.
+**Wodurch ist das gedeckt?**
+
+* Trägt der Stopp eine Stück-Schranke `L`, gar nicht durch die Geometrie,
+  sondern durch den §8p-Satz: jeder addierende Term erfüllt
+  `f ≥ δ − L ≥ δ − dist(x,∁Ω)`, unabhängig von jedem einzelnen
+  Geometrie-Kandidaten. Alle dreizehn Fixturen liegen in diesem Fall, und ihre
+  Über-Seite misst `0 / 0.0000`.
+* Ohne `L` bleibt nur die Ein-Term-Kappe `G` — dort ist der zusätzliche
+  Über-Claim also `G`-begrenzt, aber nicht ausgeschlossen.
+
+Das ist eine **benannte Lücke, keine ausgeschlossene**. Sie steht so im
+Zusagen-Text beider Zweige (mit und ohne `L`), und sie ist der Preis dafür,
+dass Fall B nicht länger Material kostet. Die saubere Auflösung wäre, `H_E`
+selbst durch den §8j-Stützebenen-Test laufen zu lassen und bei bestandener
+Prüfung als regulären `s₄`-Kandidaten (am ECHTEN Rand, nicht am Trace-Ende)
+einzutragen — dann verschwände Fall C. Gemessen tritt er an keiner der
+dreizehn Fixturen auf; ein Paket dafür zu bauen, ohne einen Fall zu haben, an
+dem es sich zeigt, wäre §8o-Bau ohne Bedarf. Er steht deshalb unter „Was OFFEN
+bleibt".
+
+> **Zusammengefasst:** Die freie End-Ebene trägt ab §8s nur noch die
+> Reichweite, `s₃ = ⟨x−E, t̂⟩`. Die Distanz-Rolle gehört den bewiesenen
+> Stützebenen (`s₄`, §8j) und der Vertex-Kugel (§8g) — beide am ECHTEN Rand
+> verankert statt am Trace-Ende. Für `g > 0` war der δ-Versatz unbegründet
+> (Fall B), für `g = 0` wertgleich mit `s₄` (Fall A); nur im unzertifizierten
+> Fall C war er ein echter Verlust, und der ist benannt statt bestritten.
 
 **Der Kamm ist der Fall „nicht stützend".** Die Naht Rippen-Flanke `x = −5.5` ∩
 Platten-Stirn `y = 20` endet auf der Rippen-UNTERSEITE `z = −5`; darunter läuft
@@ -3978,10 +4080,21 @@ gemessen hat. Es bleibt nichts Geometrisches übrig.
 | Status / `promised_bound` | `ToleranceBounded` / `0.010` | unverändert |
 | Naht-Ende-Gitter 40³ (Schale 2 / 2.1 / 2.25) | Unter-Claims bis 0.511 | **leer** |
 
-Die Über-Seite bewegt sich an keiner Fixture. Das ist kein Zufall und auch nicht
-nur Messung: wo `L` gatet, ist `f ≥ δ − L ≥ δ − dist` ein SATZ (§8p), und `L`
-hat sich nicht geändert. Was sich geändert hat, sind zwei Masken, die dem Term
-Korrektur WEGNAHMEN — beide können nur in Material-Richtung wirken.
+Die Über-Seite bewegt sich an keiner Fixture. Das ist kein Zufall: **an allen
+dreizehn Fixturen gatet `L`, und dort ist `f ≥ δ − L ≥ δ − dist(x,∁Ω)` ein
+SATZ** (§8p) — er hängt an keinem Geometrie-Kandidaten, und `L` hat sich nicht
+geändert. Phantom-Material ist damit unabhängig davon ausgeschlossen, was die
+Masken tun.
+
+Die naheliegende Kurzfassung „beide Änderungen wirken nur in Material-Richtung"
+gilt dagegen **nicht allgemein** und steht deshalb so nicht in der Zusage. Sie
+trifft nur den addierenden, positiv gegateten Zweig (`w > 0 ⇒ f = min(d, −w)`):
+dort hebt ein grösseres `w_geo` die Korrektur, also Material. `channel_apply`
+hat aber drei Zweige — die Luftseiten-Klemme `w_geo ≤ 0 ⇒ f = min(d, −w_geo)`
+senkt `f`, wenn `w_geo` STEIGT, wirkt also in die Gegenrichtung; und ein
+gestrichener Bisektor kann einen Punkt aus dem einen Zweig in den anderen
+schieben. Ohne `L` wäre der Nettoeffekt daher nicht vorzeichenbestimmt. Was ihn
+hier bestimmt, ist der §8p-Satz, nicht die Monotonie einer Maske.
 
 ### Verifikation
 
@@ -3998,9 +4111,12 @@ Korrektur WEGNAHMEN — beide können nur in Material-Richtung wirken.
   Payload-Länge und Auswerter-Semantik sind identisch; es ändern sich nur die
   WERTE, die in `end_planes` geschrieben werden (und an drei Fixturen die
   Bogenliste).
-* **`just test`**: Fast-Tier **1468** (Baseline 1466, zwei neue Pins) / Web
-  **2082** (unverändert). `cargo test --workspace` **1573** (Baseline 1571).
+* **`just test`**: Fast-Tier **1469** (Baseline 1466, drei neue Pins) / Web
+  **2082** (unverändert). `cargo test --workspace` **1574** (Baseline 1571).
 * **`OFFSET_FUZZ_ITERS=200 … offset_fuzz`**: 5/5.
+* Die Korrektur-Runde (Skew-Test, Trace-Schritt-Abtastung, Zusagen-Text) hält
+  das Golden ebenfalls byte-identisch — der Skew-Test bewegt keine der 35
+  Szenen, obwohl er an den Fixturen 4100 Anker verwirft.
 
 ### Pins — eine Transformation und zwei Neue
 
@@ -4023,11 +4139,21 @@ Korrektur WEGNAHMEN — beide können nur in Material-Richtung wirken.
   darüber laufen: **0.2268 mm bewiesen fehlendes Material** bei
   `[−4.4808, 18.0005, −4.0054]`, jeder Fund gegen die exakte Referenz
   gegengeprüft. Am ausgelieferten Feld schweigt derselbe Zeuge (0 Funde).
-* `every_seam_point_lies_on_the_boundary_384` — die **Invariante als Pin**:
-  jeder Bogen jedes Kanals wird abgetastet, die Eindringtiefe im naiven
-  Vereinigungsfeld muss unter `fit_tol + f32` bleiben. 5082 Naht-Punkte über
-  neun Fixturen. Dieser Pin wäre §8g–§8r durchgefallen; er ist das Netz, das den
-  Fund beim nächsten Mal am Tag seiner Entstehung fängt.
+* `every_seam_point_lies_on_the_boundary_384` — die **Modell-Annahme als Pin**:
+  jeder Bogen jedes Kanals wird an 21 Stützstellen abgetastet, die
+  Eindringtiefe im naiven Vereinigungsfeld muss unter `fit_tol + f32` bleiben.
+  5082 Naht-Punkte über neun Fixturen. Eine Stichprobe, kein Beweis (Aliasing,
+  s. o.) — aber der §8s-Fund lag über die GANZE Länge des Anbaus im Material und
+  fällt bei jeder Auflösung. Dieser Pin wäre §8g–§8r durchgefallen.
+* `junction_anchor_refuses_skew_lines_384` — der **Skew-Test**: vier windschiefe
+  Paare (Rest 0.01 … 4.0) müssen verworfen werden, ein Paar knapp unter der
+  Schranke muss angenommen werden (keine Pauschal-Verweigerung), die
+  Rückdreh-Rechnung zeigt, dass der ungetestete Mittelpunkt `gap/2` neben BEIDEN
+  Geraden läge — und auf ECHTER Geometrie (Nabe, Schale, Kamm, notch) muss es
+  mindestens ein windschiefes Paar im Kopplungs-Fenster geben, das der Test
+  verwirft (sonst wäre er eine tote Ausnahme). Gemessen: 4100 von 21760 Ankern.
+  Die Assertion des §8g-Pins `junction_anchor_hits_the_true_corner_384` bekommt
+  die Schranke als Parameter; ihre bestehenden Zusicherungen bleiben.
 
 ### Was OFFEN bleibt
 
@@ -4041,6 +4167,24 @@ Korrektur WEGNAHMEN — beide können nur in Material-Richtung wirken.
   Trace-Ende, nicht an der echten Fläche; als reine Reichweiten-Grenze kostet
   das nur dort etwas, wo weder `s₄` noch eine Vertex-Kugel greift. Gemessen ist
   das an keiner der dreizehn Fixturen mehr der Fall.
+* **Fall C — stützend, aber unzertifiziert.** `set_face_plane_gates` belegt `s₄`
+  über eine hinreichende, nicht notwendige Prüfung (AABB-Test, nur planare
+  Carrier, vier Slots, Relevanz-Schwellen). Wo die End-Ebene geometrisch stützt,
+  aber unzertifiziert bleibt, verliert der Term durch §8s einen GÜLTIGEN
+  Kandidaten; ohne Stück-Schranke `L` ist der zusätzliche Über-Claim dann nur
+  `G`-begrenzt. An allen dreizehn Fixturen gatet `L`, also deckt der §8p-Satz.
+  Die saubere Auflösung — `H_E` durch den §8j-Stützebenen-Test schicken und bei
+  Bestehen als regulären `s₄`-Kandidaten am ECHTEN Rand eintragen — wartet auf
+  eine Fixture, an der sich der Fall zeigt.
+* **Die Randprüfung der Verlängerung ist abgetastet.** `junction_of` prüft
+  `∂Ω`-Nähe an Stützstellen im Abstand des Trace-Schritts; zwischen ihnen kann
+  ein Segment ein- und wieder auftauchen (Aliasing). Dasselbe gilt für den Pin
+  `every_seam_point_lies_on_the_boundary_384` (21 Proben je Bogen) und, das ist
+  der Punkt, **für den Trace selbst**. Eine echte Zertifizierung verlangt eine
+  Intervall-Auswertung der Member-Felder über Segment bzw. Bogen — derselbe
+  fehlende Baustein wie in §8r Intervall-Zweig 2. Bis dahin ist „die Naht liegt
+  auf `∂Ω`" eine Modell-Annahme auf Trace-Auflösung, kein Satz, und wird im Code
+  und in den Pins auch so benannt.
 * **Der konvexe Zweig** (Dilations-Stopp) bekommt weiterhin keine
   Stützebenen-Kandidaten (§8j) — dort ist die freie End-Ebene ab §8s ebenfalls
   ohne δ-Versatz, und die Fixturen (Tasche, Prisma-Dilation) bleiben

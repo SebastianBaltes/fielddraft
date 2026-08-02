@@ -2192,6 +2192,8 @@ fn channel_term_is_off_beyond_the_seam_end_384() {
 /// Ebenen-Versatz) — und prüft, dass beide Nachbarn denselben Anker sehen.
 #[test]
 fn junction_anchor_hits_the_true_corner_384() {
+    // `2·gate_eps` bei δ = 2 (die Schranke, die `junction_of` in Produktion setzt).
+    const SKEW: f32 = 0.004;
     let corner = [12.0f32, -7.0, 3.0];
     // Zwei orthogonale Nähte, die in `corner` zusammenlaufen; `t` zeigt ins
     // jeweilige Spine-Innere.
@@ -2208,14 +2210,14 @@ fn junction_anchor_hits_the_true_corner_384() {
             corner[1] + t2[1] * g2,
             corner[2] + t2[2] * g2,
         ];
-        let a = junction_anchor(e1, t1, e2, t2).expect("Ecke muss gefunden werden");
+        let a = junction_anchor(e1, t1, e2, t2, SKEW).expect("Ecke muss gefunden werden");
         assert!(
             norm(sub(a, corner)) < 1e-4,
             "Rückstände ({g1}, {g2}): Anker {a:?} statt Ecke {corner:?}"
         );
         // Symmetrie: beide Nachbarn MÜSSEN dieselbe Ebene aufspannen, sonst
         // bekommt die Voronoi-Zerlegung ein Loch oder eine Überlappung.
-        let b = junction_anchor(e2, t2, e1, t1).expect("Ecke muss gefunden werden");
+        let b = junction_anchor(e2, t2, e1, t1, SKEW).expect("Ecke muss gefunden werden");
         assert!(
             norm(sub(a, b)) < 1e-4,
             "Rückstände ({g1}, {g2}): Anker nicht symmetrisch ({a:?} vs {b:?})"
@@ -2229,12 +2231,12 @@ fn junction_anchor_hits_the_true_corner_384() {
     // Parallele Geraden treffen sich nicht — es gibt dort keine Ecke,
     // also auch keinen Anker.
     assert!(
-        junction_anchor([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 0.0, 0.0])
+        junction_anchor([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 0.0, 0.0], SKEW)
             .is_none(),
         "parallele Tangenten dürfen KEINE Junction liefern"
     );
     assert!(
-        junction_anchor([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [-1.0, 0.0, 0.0])
+        junction_anchor([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [-1.0, 0.0, 0.0], SKEW)
             .is_none(),
         "antiparallele Tangenten dürfen KEINE Junction liefern"
     );

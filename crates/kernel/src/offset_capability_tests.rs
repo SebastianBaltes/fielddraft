@@ -6967,7 +6967,7 @@ fn seam_end_fix_is_load_bearing_384() {
     );
     // Und genau dafür gibt es ihn nicht mehr.
     assert!(
-        oc::junction_anchor([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [4.5, 0.0, 0.0], [0.0, 0.0, 1.0])
+        oc::junction_anchor([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [4.5, 0.0, 0.0], [0.0, 0.0, 1.0], 0.004)
             .is_none(),
         "parallele Naht-Enden dürfen keine Junction bilden"
     );
@@ -7068,6 +7068,159 @@ fn seam_end_fix_is_load_bearing_384() {
         prod_hits, 0,
         "am AUSGELIEFERTEN Kamm-Feld weist der Zeuge {prod_hits} Unter-Claims nach —          §8s hat das Naht-Ende geschlossen"
     );
+}
+
+/// **§8s-Skew-Pin: windschiefe Geraden treffen sich so wenig wie parallele.**
+///
+/// Die erste Fassung von §8s strich nur den PARALLEL-Rückfall. Für nicht
+/// parallele Geraden rechnete `junction_anchor` weiter die Fusspunkte `q₁`, `q₂`
+/// der kürzesten Verbindung aus und lieferte deren Mittelpunkt — ohne zu prüfen,
+/// ob die Geraden sich überhaupt schneiden. Bei windschiefen Geraden liegt
+/// dieser Mittelpunkt auf KEINER der beiden: dieselbe Phantom-Junction-Klasse,
+/// nur eine Stufe subtiler. (Befund des externen Mathe-Reviews zu §8s.)
+///
+/// **Die Schranke ist hergeleitet, nicht kalibriert.** Der Anker behauptet,
+/// Punkt BEIDER Nähte zu sein, und liegt als Mittelpunkt `gap/2` neben jeder;
+/// die Synthese verlangt von jedem Punkt, den sie als Naht-Punkt behandelt,
+/// `∂Ω`-Nähe innerhalb `gate_eps` (die Schwelle des Traces). Also
+/// `gap/2 ≤ gate_eps`, d. h. `gap ≤ 2·gate_eps` — bei δ = 2 sind das 0.004 mm.
+/// Gemessen über alle Fixturen liegt die Schwelle in einer LEEREN Lücke der
+/// Verteilung: grösster akzeptierter Rest 0.003728, kleinster verworfener
+/// 0.004230; verworfen werden 4100 von 21760 Ankern, mit Resten bis 4.80 mm.
+///
+/// Der Pin prüft drei Dinge: die Verwerfung eines windschiefen Paars, die
+/// ANNAHME eines Paars knapp unterhalb der Schranke (der Test ist keine
+/// Pauschal-Verweigerung) und — als Rückdreh-Gegenprobe — dass der ungetestete
+/// Mittelpunkt tatsächlich neben beiden Geraden liegt.
+#[test]
+fn junction_anchor_refuses_skew_lines_384() {
+    use crate::offset_channel as oc;
+    // δ = 2 ⇒ gate_eps = max(δ·1e−3, 1e−4) = 2e−3 ⇒ Schranke 2·gate_eps.
+    const SKEW: f32 = 0.004;
+
+    // Zwei windschiefe Geraden: x-Achse durch den Ursprung, y-Achse um `gap`
+    // in z versetzt. Sie schneiden sich nie; die Fusspunkte der kürzesten
+    // Verbindung sind (0,0,0) und (0,0,gap).
+    for gap in [0.01f32, 0.05, 0.5, 4.0] {
+        let e1 = [3.0f32, 0.0, 0.0];
+        let t1 = [1.0f32, 0.0, 0.0]; // Innen-Tangente ⇒ Gerade läuft nach −x
+        let e2 = [0.0f32, 3.0, gap];
+        let t2 = [0.0f32, 1.0, 0.0];
+        assert!(
+            oc::junction_anchor(e1, t1, e2, t2, SKEW).is_none(),
+            "windschiefes Paar mit Rest {gap} wurde als Junction akzeptiert"
+        );
+        // Rückdrehung: ohne Skew-Test ist der Anker der Mittelpunkt der
+        // Fusspunkte — und der liegt `gap/2` neben BEIDEN Geraden.
+        let phantom = [0.0f32, 0.0, 0.5 * gap];
+        let off1 = phantom[2].abs(); // Abstand zur x-Achse (y=z=0)
+        let off2 = (phantom[2] - gap).abs(); // Abstand zur versetzten y-Achse
+        assert!(
+            (off1 - 0.5 * gap).abs() < 1e-6 && (off2 - 0.5 * gap).abs() < 1e-6,
+            "die Rückdreh-Rechnung stimmt nicht: {off1} / {off2} statt {}",
+            0.5 * gap
+        );
+        assert!(
+            off1 > SKEW,
+            "Rest {gap}: der Phantom-Anker läge nur {off1} neben der Naht — dann \
+             misst der Pin nicht, was er behauptet"
+        );
+    }
+
+    // Und knapp UNTERHALB der Schranke wird angenommen: der Test verweigert
+    // nicht pauschal, er trennt.
+    let ok = oc::junction_anchor(
+        [3.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 3.0, 0.5 * SKEW],
+        [0.0, 1.0, 0.0],
+        SKEW,
+    );
+    assert!(ok.is_some(), "ein Paar mit Rest {} unter der Schranke muss eine Junction sein", 0.5 * SKEW);
+
+    // Auf ECHTER Geometrie: unter den Naht-Enden der Matrix-Fixturen gibt es
+    // Paare im Kopplungs-Fenster, die nicht parallel sind UND windschief —
+    // ohne den Test bekämen sie einen Phantom-Anker.
+    let delta = 2.0f32;
+    let mut cases: Vec<BoundedCsg> = vec![
+        compile_for(stepped_hub_node(3.0, 6.0, 4.0, 0.5, 1.2, 1.8, delta)).0,
+        compile_for(thin_corner_node(2.25 * delta, 40.0, delta)).0,
+        compile_for(rib_comb_node(4, 2.0, 1.0, delta).0).0,
+    ];
+    cases.push(compile_for(notch_union_node(90.0, delta as f64)).0);
+    let mut skew_pairs = 0usize;
+    let mut worst = 0.0f32;
+    for field in cases.iter() {
+        let mut stops = Vec::new();
+        stop_nodes(field, &mut stops);
+        for node in stops.iter() {
+            let BoundedCsg::ArcChannel { channels, .. } = node else { continue };
+            let mut ends: Vec<([f32; 3], [f32; 3])> = Vec::new();
+            for ch in channels.iter() {
+                if ch.arcs.is_empty() {
+                    continue;
+                }
+                let s0 = oc::arc_point_at(&ch.arcs[0], 0.0);
+                let e0 = oc::arc_point_at(ch.arcs.last().unwrap(), 1.0);
+                if norm3(sub3(s0, e0)) < 1e-4 {
+                    continue;
+                }
+                if let Some(tg) = oc::arc_tangent_at(&ch.arcs[0], 0.0) {
+                    ends.push((s0, tg));
+                }
+                if let Some(tg) = oc::arc_tangent_at(ch.arcs.last().unwrap(), 1.0) {
+                    ends.push((e0, [-tg[0], -tg[1], -tg[2]]));
+                }
+            }
+            for (e1, t1) in ends.iter() {
+                for (e2, t2) in ends.iter() {
+                    if norm3(sub3(*e1, *e2)) < 1e-6 || norm3(sub3(*e1, *e2)) > 4.8 {
+                        continue;
+                    }
+                    if (dot3(*t1, *t2).abs() - 1.0).abs() < 1e-3 {
+                        continue; // parallel — das war der erste §8s-Fund
+                    }
+                    let Some(gap) = skew_gap(*e1, *t1, *e2, *t2) else { continue };
+                    if gap > SKEW {
+                        skew_pairs += 1;
+                        worst = worst.max(gap);
+                        assert!(
+                            oc::junction_anchor(*e1, *t1, *e2, *t2, SKEW).is_none(),
+                            "windschiefes Paar (Rest {gap:.6}) an echter Geometrie akzeptiert"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        skew_pairs > 0 && worst > 0.05,
+        "nur {skew_pairs} windschiefe Paare (schlimmster Rest {worst:.6}) an echter \
+         Geometrie — dann wäre der Skew-Test eine tote Ausnahme"
+    );
+}
+
+/// Rest der kürzesten Verbindung zweier Spine-Geraden (`t` zeigt ins
+/// Spine-Innere, die Gerade läuft also nach `−t`). `None` bei (anti)parallel.
+fn skew_gap(e1: [f32; 3], t1: [f32; 3], e2: [f32; 3], t2: [f32; 3]) -> Option<f32> {
+    let d1 = [-t1[0], -t1[1], -t1[2]];
+    let d2 = [-t2[0], -t2[1], -t2[2]];
+    let b = dot3(d1, d2);
+    let den = 1.0 - b * b;
+    if den.abs() < 1e-6 {
+        return None;
+    }
+    let w0 = sub3(e1, e2);
+    let dd = dot3(d1, w0);
+    let ee = dot3(d2, w0);
+    let s = (b * ee - dd) / den;
+    let u = (ee - b * dd) / den;
+    let q1 = [e1[0] + d1[0] * s, e1[1] + d1[1] * s, e1[2] + d1[2] * s];
+    let q2 = [e2[0] + d2[0] * u, e2[1] + d2[1] * u, e2[2] + d2[2] * u];
+    if !q1.iter().chain(q2.iter()).all(|c| c.is_finite()) {
+        return None;
+    }
+    Some(norm3(sub3(q1, q2)))
 }
 
 fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -7296,10 +7449,24 @@ fn probe_384_seam_end_grid() {
     }
 }
 
-/// **§8s-Invarianten-Pin: JEDER Naht-Punkt liegt auf `∂Ω`.**
+/// **§8s-Invarianten-Pin: die abgetasteten Naht-Punkte liegen auf `∂Ω`.**
 ///
-/// Das ist keine Kosmetik, sondern die Voraussetzung, auf der zwei Aussagen
-/// dieses Stopps stehen:
+/// **Was der Pin misst — und was nicht.** Er tastet jeden Bogen an 21
+/// Stützstellen ab und verlangt dort `|naives Vereinigungsfeld| ≤ fit_tol`.
+/// Das ist eine STICHPROBE, kein Beweis: zwischen zwei Stützstellen kann die
+/// Kurve ins Material eintauchen, ohne dass eine Probe es sieht (die
+/// 1-Lipschitz-Eigenschaft des naiven Feldes beschränkt den FELDWERT zwischen
+/// den Proben, nicht die geometrische Tiefe eines Extremums dazwischen). Ein
+/// echter Beweis bräuchte eine Intervall-Auswertung der Member-Felder über dem
+/// Bogen — dasselbe fehlende Werkzeug wie in §8r Intervall-Zweig 2.
+///
+/// Was er trotzdem leistet: der §8s-Fund war kein Aliasing-Artefakt, sondern
+/// ein Anbau, der über seine GANZE Länge im Material lag (bis 1.126 mm tief).
+/// Solche Brüche fängt die Stichprobe zuverlässig — und genau sie sind
+/// §8g–§8r zwölf Pakete lang unbemerkt geblieben.
+///
+/// Geprüft wird die Modell-Annahme, auf der zwei Aussagen dieses Stopps
+/// stehen:
 ///
 /// * [`crate::offset_channel::channel_limit`] (§8j) macht aus `de` die untere
 ///   Feld-Schranke `δ − de`. Sie gilt, weil `q*` auf `∂Ω` liegt und damit
@@ -7308,15 +7475,15 @@ fn probe_384_seam_end_grid() {
 ///   erzeugt fehlendes Material, statt Phantom-Material zu tilgen.
 /// * Der Term selbst liest `de − δ` als Distanz-Kandidaten in `w_geo`.
 ///
-/// Der Trace hält die Invariante von sich aus ein (`project_to_seam` +
-/// `blocking_member`). Gebrochen haben sie die SNAPS: bis §8r verlängerte
+/// Der Trace hält die Annahme von sich aus ein — ebenfalls nur an seinen
+/// Punkten (`project_to_seam` + `blocking_member` werten dort aus, nicht
+/// dazwischen). Gebrochen haben sie die SNAPS: bis §8r verlängerte
 /// `snap_channel_ends_to_junctions` ein Ende bis zum Mittelpunkt zweier
 /// PARALLELER Naht-Enden — an der Ecken-Schale `t/2` mm ins Material hinein
 /// (gemessen 1.126 mm bei `t/δ = 2.25`), an jedem einzelnen der 24 Kanäle.
 ///
-/// Der Pin tastet jeden Bogen jedes Kanals ab und misst die Eindringtiefe im
-/// naiven Vereinigungsfeld des Stopps. Erlaubt ist nur, was der Bogen-Fit
-/// selbst kostet (`fit_tol = tol/2`, plus f32-Rauschen).
+/// Erlaubt ist nur, was der Bogen-Fit selbst kostet (`fit_tol = tol/2`, plus
+/// f32-Rauschen).
 #[test]
 fn every_seam_point_lies_on_the_boundary_384() {
     let delta = 2.0f32;

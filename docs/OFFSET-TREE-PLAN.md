@@ -1071,6 +1071,23 @@ für Shell.
   `L` (5.67·10⁻⁴ Schale, 3.07·10⁻⁴ Kamm). Golden 35/35 byte-identisch (keine
   der Szenen hat parallel endende Nähte oder eine freie End-Ebene ohne `s₄`),
   `check_interp` 0 failures, kein Spiegel berührt.
+  Nach externem Mathe-Review nachgezogen: (a) `junction_anchor` bekommt den
+  fehlenden SKEW-Test — für nicht parallele Geraden lieferte es weiter den
+  Mittelpunkt der Fusspunkte, ohne `|q₁−q₂|` zu prüfen; Schranke `2·gate_eps`
+  (der Anker liegt als Mittelpunkt `gap/2` neben jeder Geraden, und `gate_eps`
+  ist die Rand-Toleranz des Traces), gemessen in einer leeren Verteilungs-Lücke
+  (grösster akzeptierter Rest 0.003728, kleinster verworfener 0.004230),
+  4100 von 21760 Ankern verworfen. (b) Die `∂Ω`-Prüfung der Verlängerung tastet
+  jetzt im Abstand des TRACE-Schritts ab und heisst im Text, was sie ist: eine
+  Heuristik auf Trace-Auflösung, kein Satz — zwischen zwei Proben kann ein
+  Segment ein- und wieder auftauchen. (c) Die Streichungs-Begründung des
+  δ-Versatzes ist korrigiert: `s₃^alt = s₄ − g ≤ s₄` macht ihn im `min` gerade
+  BINDEND, nicht redundant; richtig ist, dass er für `g > 0` UNBEGRÜNDET war
+  (die um den Rückstand ins Material verschobene Ebene durch `E` ist nicht
+  stützend, `h_E(F) = −g < 0`). Der dritte Fall — geometrisch stützend, von
+  `set_face_plane_gates` aber nicht zertifiziert — ist als LÜCKE benannt (ohne
+  `L` nur `G`-begrenzt; an allen dreizehn Fixturen gatet `L`, dort deckt der
+  §8p-Satz) und steht so im Zusagen-Text.
   Herleitung, Handrechnungen und Vorher/Nachher-Tabelle:
   `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8s.
 

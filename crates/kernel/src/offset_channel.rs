@@ -1880,8 +1880,9 @@ fn end_region_violation(
 /// #384 §8s korrigiert beide Hälften dieses Satzes:
 ///
 /// * „im selben Punkt enden" ist nicht dasselbe wie „sich treffen".
-///   [`junction_of`] verlangt jetzt den Beweis (die Naht-Geraden schneiden
-///   sich, und die Verlängerung bleibt auf `∂Ω`) — an der Ecken-Schale
+///   [`junction_of`] prüft es jetzt: die Naht-Geraden müssen sich schneiden
+///   (exakt), und die Verlängerung muss die abgetastete `∂Ω`-Prüfung des
+///   Traces bestehen (Heuristik auf Trace-Auflösung). An der Ecken-Schale
 ///   endeten VIER paarweise PARALLELE Reflex-Kanten an derselben Stirnfläche
 ///   und bekamen einen „Bisektor", der keiner ist.
 /// * Die freie End-Ebene trägt nur noch die REICHWEITE, ohne δ-Versatz. Der
@@ -1961,12 +1962,23 @@ fn set_end_plane_gates(
                 continue; // gleiche Richtung — kein trennender Bisektor
             }
             // #384 §8s — **erst die Junction, dann der Bisektor.** Dieselbe
-            // Beweispflicht wie beim Snap ([`junction_of`]): treffen sich die
+            // Prüfung wie beim Snap ([`junction_of`]): treffen sich die
             // beiden Naht-Geraden nicht, ist das kein Eckpunkt, sondern zwei
             // Nähte, die zufällig nebeneinander enden. Die Ecken-Schale hat
             // davon vier Paare je Stirnfläche, und ihr „Bisektor" schnitt dem
             // Term genau die Korrektur weg, die er am freien Ende braucht.
-            let Some(a) = junction_of(*e, *t, *e2, *t2, members, union_form, gate_eps) else {
+            let Some(a) = junction_of(
+                *e,
+                *t,
+                *e2,
+                *t2,
+                BoundaryProbe {
+                    members,
+                    union_form,
+                    eps: gate_eps,
+                    step: step_of(steps, *ci).min(step_of(steps, *cj)),
+                },
+            ) else {
                 continue;
             };
             let n = [n[0] / l, n[1] / l, n[2] / l];
@@ -2270,6 +2282,7 @@ pub(crate) fn junction_anchor(
     t1: [f32; 3],
     e2: [f32; 3],
     t2: [f32; 3],
+    skew_tol: f32,
 ) -> Option<[f32; 3]> {
     let d1 = [-t1[0], -t1[1], -t1[2]];
     let d2 = [-t2[0], -t2[1], -t2[2]];
@@ -2298,6 +2311,22 @@ pub(crate) fn junction_anchor(
     if !p.iter().all(|c| c.is_finite()) || norm(sub(p, mid)) > 2.0 * norm(sub(e1, e2)) + 1e-3 {
         return None; // Lösung außerhalb des Suchfensters — konservativ
     }
+    // #384 §8s — **der Skew-Test.** `q1` und `q2` sind die Fusspunkte der
+    // kürzesten Verbindung; `p` ist ihr Mittelpunkt und liegt damit `gap/2`
+    // NEBEN jeder der beiden Geraden. Windschiefe Geraden treffen sich so
+    // wenig wie parallele — ohne diesen Test entsteht dieselbe Klasse
+    // Phantom-Junction, nur eine Stufe subtiler.
+    //
+    // Die Schranke ist hergeleitet, nicht kalibriert: die Synthese verlangt
+    // von JEDEM Punkt, den sie als Naht-Punkt behandelt, dass er innerhalb
+    // `gate_eps` auf `∂Ω` liegt (die Schwelle, mit der `blocking_member` im
+    // Trace entscheidet). Der Anker behauptet, Punkt BEIDER Nähte zu sein,
+    // und liegt `gap/2` daneben — also `gap/2 ≤ gate_eps`. Der Faktor 2 ist
+    // die Geometrie des Mittelpunkts, `gate_eps` die schon vorhandene
+    // Rand-Toleranz; erfunden ist daran nichts.
+    if norm(sub(q1, q2)) > skew_tol {
+        return None; // windschief — kein gemeinsamer Punkt, also keine Junction
+    }
     Some(p)
 }
 
@@ -2307,6 +2336,22 @@ pub(crate) fn junction_anchor(
 /// [`blocking_member`] entscheidet, ob ein Punkt noch auf dem
 /// Composite-Rand liegt — der Snap gehorcht damit exakt der Regel des
 /// Traces, den er verlängert.
+#[inline]
+fn step_of(steps: &[f32], ci: usize) -> f32 {
+    steps.get(ci).copied().unwrap_or(0.0)
+}
+
+/// #384 §8s — der Kontext der abgetasteten `∂Ω`-Prüfung einer
+/// Junction-Verlängerung: die Member des Stopps, seine Normalform, die
+/// Rand-Toleranz und die Trace-Schrittweite (der Abstand der Stützstellen).
+#[derive(Clone, Copy)]
+struct BoundaryProbe<'a, 'b> {
+    members: &'a [Member<'b>],
+    union_form: bool,
+    eps: f32,
+    step: f32,
+}
+
 fn on_union_boundary(members: &[Member], p: [f32; 3], union_form: bool, eps: f32) -> bool {
     let mut u = if union_form { f32::INFINITY } else { f32::NEG_INFINITY };
     for m in members {
@@ -2319,40 +2364,82 @@ fn on_union_boundary(members: &[Member], p: [f32; 3], union_form: bool, eps: f32
     u.is_finite() && u.abs() <= eps
 }
 
-/// Stützstellen je Verlängerungs-Segment im [`junction_of`]-Randtest.
-const JUNCTION_SAMPLES: usize = 4;
+/// #384 §8s — Untergrenze und Kappe der Stützstellenzahl im
+/// [`junction_of`]-Randtest. Die Schrittweite ist die des TRACES (`step`); die
+/// Untergrenze hält die Dichte auch bei grobem Schritt auf dem Stand von §8r,
+/// die Kappe begrenzt die Kosten bei sehr feiner Toleranz (dort ist der
+/// Abstand ohnehin `ℓ/64`).
+const JUNCTION_SAMPLES_MIN: usize = 4;
+const JUNCTION_SAMPLES_MAX: usize = 64;
 
-/// #384 §8s — **die Junction zweier Naht-Enden, mit Beweispflicht.**
+/// #384 §8s — **die Junction zweier Naht-Enden, zweifach geprüft.**
 ///
-/// Zwei Bedingungen, beide strukturell, beide symmetrisch in den Rollen der
-/// zwei Enden (sonst bekäme die Bisektor-Zerlegung ein Loch — §8f):
+/// Zwei Bedingungen, beide symmetrisch in den Rollen der zwei Enden (sonst
+/// bekäme die Bisektor-Zerlegung ein Loch — §8f):
 ///
-/// 1. Die beiden Naht-GERADEN treffen sich ([`junction_anchor`]).
-/// 2. Beide Verlängerungen `e_i → a` liegen ganz auf `∂Ω`. Das ist die
-///    Invariante, auf der ALLES weiter unten ruht: `channel_nearest` liefert
-///    `de` als obere Schranke von `dist(x,∁Ω)`, und [`channel_limit`] macht
-///    daraus die untere Feld-Schranke `δ − de`. Ein Spine-Punkt der Tiefe `u`
-///    im Material hebt das Feld um bis zu `u` über die Wahrheit — genau der
-///    §8s-Fund.
+/// 1. Die beiden Naht-GERADEN treffen sich ([`junction_anchor`]: nicht
+///    (anti)parallel, und der Rest der kürzesten Verbindung bleibt unter
+///    `2·gate_eps`). Das ist eine exakte Aussage über die beiden Geraden.
+/// 2. Beide Verlängerungen `e_i → a` bestehen eine ABGETASTETE `∂Ω`-Prüfung:
+///    an Stützstellen im Abstand des Trace-Schritts muss das naive
+///    Vereinigungsfeld betragsmässig unter `gate_eps` bleiben.
+///
+/// **Bedingung 2 ist eine Heuristik auf Trace-Niveau, kein Satz.** Zwischen
+/// zwei Stützstellen kann das Segment ins Material eintauchen und
+/// zurückkehren, ohne dass eine Stichprobe es sieht; die 1-Lipschitz-Eigenschaft
+/// des naiven Feldes beschränkt den FELDWERT zwischen den Stützstellen, nicht
+/// die geometrische Tiefe eines dazwischenliegenden Extremums. Die Abtastung
+/// hat deshalb bewusst genau die Auflösung, mit der der Trace selbst `∂Ω`
+/// etabliert (`project_to_seam` + `blocking_member` prüfen ebenfalls nur an
+/// den Trace-Punkten): die Verlängerung ist so vertrauenswürdig wie die Naht,
+/// die sie verlängert — nicht mehr, aber auch nicht weniger.
+///
+/// Worum es geht: `channel_nearest` liefert `de` als obere Schranke von
+/// `dist(x,∁Ω)`, und [`channel_limit`] macht daraus die untere Feld-Schranke
+/// `δ − de`. Ein Spine-Punkt der Tiefe `u` im Material hebt das Feld um bis zu
+/// `u` über die Wahrheit — genau der §8s-Fund (dort 0.825 mm, an einem
+/// Anbau, den KEINE Prüfung überstanden hätte).
+///
+/// **Fehlerrichtungen, damit die Lücke bewertbar bleibt:**
+///
+/// * Ein fälschlich AKZEPTIERTER Anbau (Aliasing zwischen Stützstellen) führt
+///   durchs Innere, macht `de` zu klein und lässt `OP_STOP_LIMIT` zu weit
+///   anheben ⇒ fehlendes Material.
+/// * Eine fälschlich VERWORFENE Junction lässt `δ − de` gültig, aber lose: es
+///   fehlt der Bisektor, der Term läuft bis zu seiner reinen End-Ebene ⇒ ohne
+///   Stück-Schranke `L` nur `G`-begrenzt, mit `L` durch den §8p-Satz gedeckt.
+///
+/// Eine echte Zertifizierung bräuchte eine Intervall-Auswertung der
+/// Member-Felder über dem Segment — dasselbe fehlende Werkzeug wie in
+/// §8r Intervall-Zweig 2. Bis dahin steht die Lücke im Doc (§8s, „Was OFFEN
+/// bleibt") und nicht in einer Zusage.
 fn junction_of(
     e1: [f32; 3],
     t1: [f32; 3],
     e2: [f32; 3],
     t2: [f32; 3],
-    members: &[Member],
-    union_form: bool,
-    eps: f32,
+    pr: BoundaryProbe,
 ) -> Option<[f32; 3]> {
-    let a = junction_anchor(e1, t1, e2, t2)?;
+    let (eps, step) = (pr.eps, pr.step);
+    let a = junction_anchor(e1, t1, e2, t2, 2.0 * eps)?;
     for e in [e1, e2] {
-        for k in 1..=JUNCTION_SAMPLES {
-            let s = k as f32 / JUNCTION_SAMPLES as f32;
+        let len = norm(sub(a, e));
+        // Stützstellen im Abstand des TRACE-Schritts: die Verlängerung wird
+        // damit genau so dicht abgetastet, wie der Trace selbst `∂Ω` etabliert
+        // hat. Feiner wäre eine Genauigkeit, die die Naht gar nicht hat.
+        let n = if step > 0.0 {
+            ((len / step).ceil() as usize).clamp(JUNCTION_SAMPLES_MIN, JUNCTION_SAMPLES_MAX)
+        } else {
+            JUNCTION_SAMPLES_MIN
+        };
+        for k in 1..=n {
+            let s = k as f32 / n as f32;
             let q = [
                 e[0] + (a[0] - e[0]) * s,
                 e[1] + (a[1] - e[1]) * s,
                 e[2] + (a[2] - e[2]) * s,
             ];
-            if !on_union_boundary(members, q, union_form, eps) {
+            if !on_union_boundary(pr.members, q, pr.union_form, eps) {
                 return None;
             }
         }
@@ -2419,9 +2506,20 @@ fn snap_channel_ends_to_junctions(
             if d > join_of[ci].max(join_of[cj]) {
                 continue;
             }
-            let Some(a) = junction_of(e, t, e2, t2, members, union_form, gate_eps) else {
+            let Some(a) = junction_of(
+                e,
+                t,
+                e2,
+                t2,
+                BoundaryProbe {
+                    members,
+                    union_form,
+                    eps: gate_eps,
+                    step: step_of(steps, ci).min(step_of(steps, cj)),
+                },
+            ) else {
                 continue; // keine Junction — die Geraden treffen sich nicht, oder
-                          // die Verlängerung verließe `∂Ω` (§8s)
+                          // die Verlängerung verliesse die abgetastete `∂Ω`-Prüfung (§8s)
             };
             if best.map_or(true, |(bd, _)| d < bd) {
                 best = Some((d, a));
@@ -5963,16 +6061,27 @@ pub fn synthesize_offset_channels_reported(
                          strukturell ausgeschlossen, weil jeder addierende Term \
                          f ≥ δ − L ≥ δ − dist(x,∁Ω) erfüllt. FEHLENDES Material ist davon NICHT \
                          gedeckt: dafür ist die geometrische Klemme massgeblich, nicht das Gate; \
-                         für diese Richtung ist keine Schranke belegbar (#384 §8k). {}",
+                         für diese Richtung ist keine Schranke belegbar (#384 §8k). Benannte \
+                         Lücke (#384 §8s): die freie End-Ebene begrenzt nur noch die Reichweite. \
+                         Existiert am Nahtende eine stützende Ebene quer zur Naht, die \
+                         set_face_plane_gates nicht zertifiziert (die AABB-Prüfung ist \
+                         hinreichend, nicht notwendig), fehlt dem Term dieser Distanz-Kandidat. \
+                         Hier ist das folgenlos — es gatet L, und der §8p-Satz schliesst \
+                         Phantom-Material unabhängig von jedem Geometrie-Kandidaten aus. {}",
                         b.pieces.len(),
                         under_sentence(&audit)
                     ),
                     None => format!(
                         "Duale Boolean-Kante über Arc-Spline-Kanäle toleranzbeschränkt korrigiert: \
                          PHANTOM-Material ≤ {tol} mm (Ziel-Toleranz). FEHLENDES Material ist davon \
-                         NICHT gedeckt — wo ein Gate bindet (Ein-Term-Kappe G, δ-verschobene \
+                         NICHT gedeckt — wo ein Gate bindet (Ein-Term-Kappe G, Kegel-Gates, freie \
                          End-Ebene), bleibt der naive Sliver stehen; für diese Richtung ist keine \
-                         Schranke belegbar (#384 §8k)."
+                         Schranke belegbar (#384 §8k). Benannte Lücke in der GEGENrichtung \
+                         (#384 §8s): seit §8s trägt die freie End-Ebene keinen δ-Versatz mehr. \
+                         Existiert am Nahtende eine stützende Ebene quer zur Naht, die \
+                         set_face_plane_gates nicht zertifiziert (die AABB-Prüfung ist \
+                         hinreichend, nicht notwendig), fehlt dem Term dieser Distanz-Kandidat — \
+                         und ohne Stück-Schranke L bindet dort nur noch die Ein-Term-Kappe G."
                     ),
                 });
             }
