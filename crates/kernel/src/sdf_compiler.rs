@@ -2292,9 +2292,10 @@ pub fn eval_opcodes_with_volumes(
                 let s1 = dq[0] * best_m1[0] + dq[1] * best_m1[1] + dq[2] * best_m1[2];
                 let s2 = dq[0] * best_m2[0] + dq[1] * best_m2[1] + dq[2] * best_m2[2];
                 // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d₀).
-                // §8o: zweite Gate-Basis `L − δ` (neutral ohne OP_STOP_LB).
+                // §8o/§8p: ist `L` verfügbar, gatet `L − δ` ALLEIN; sonst
+                // bleibt die `G`-Kappe (Spiegel von `concave_gate`).
                 let gate = if concave {
-                    (gate_w - base).max(stop_lb - delta)
+                    crate::offset_channel::concave_gate(gate_w, base, stop_lb - delta)
                 } else {
                     gate_w + base
                 };
@@ -2345,9 +2346,10 @@ pub fn eval_opcodes_with_volumes(
                 let s2 = dq[0] * g2[0] + dq[1] * g2[1] + dq[2] * g2[2];
                 let s3 = dq[0] * g3[0] + dq[1] * g3[1] + dq[2] * g3[2];
                 // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d₀).
-                // §8o: zweite Gate-Basis `L − δ` (neutral ohne OP_STOP_LB).
+                // §8o/§8p: ist `L` verfügbar, gatet `L − δ` ALLEIN; sonst
+                // bleibt die `G`-Kappe (Spiegel von `concave_gate`).
                 let gate = if concave {
-                    (gate_w - base).max(stop_lb - delta)
+                    crate::offset_channel::concave_gate(gate_w, base, stop_lb - delta)
                 } else {
                     gate_w + base
                 };

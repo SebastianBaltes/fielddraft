@@ -760,8 +760,10 @@ fn contained(p: &WPiece, e: &LbExit, tol: f64) -> bool {
 /// `∂Ω`, und ein fehlendes Randstück ist der eine Fehler, den `L` nicht machen
 /// darf).
 fn lb_solid(node: &BoundedCsg) -> Option<LbSolid> {
-    let BoundedCsg::Leaf { primitive, world_transform, .. } = node else {
-        return None;
+    let world_transform = match node {
+        BoundedCsg::Leaf { world_transform, .. }
+        | BoundedCsg::Extrude { world_transform, .. } => world_transform,
+        _ => return None,
     };
     let s = world_transform.scale;
     if (s[0] - s[1]).abs() > 1e-4 * s[0].abs().max(1.0)
@@ -786,72 +788,185 @@ fn lb_solid(node: &BoundedCsg) -> Option<LbSolid> {
         let r = quat_rotate(rot, [p[0] as f32, p[1] as f32, p[2] as f32]);
         fu([r[0] as f64, r[1] as f64, r[2] as f64])
     };
-    match primitive {
-        Primitive::Box { center, half_extents } => {
-            let c = [center[0] as f64, center[1] as f64, center[2] as f64];
-            let h = [
-                half_extents[0] as f64,
-                half_extents[1] as f64,
-                half_extents[2] as f64,
-            ];
-            if h[0] <= 0.0 || h[1] <= 0.0 || h[2] <= 0.0 {
+    match node {
+        BoundedCsg::Leaf { primitive, .. } => match primitive {
+            Primitive::Box { center, half_extents } => {
+                let c = [center[0] as f64, center[1] as f64, center[2] as f64];
+                let h = [
+                    half_extents[0] as f64,
+                    half_extents[1] as f64,
+                    half_extents[2] as f64,
+                ];
+                if h[0] <= 0.0 || h[1] <= 0.0 || h[2] <= 0.0 {
+                    return None;
+                }
+                let unit = |k: usize| {
+                    let mut e = [0.0f64; 3];
+                    e[k] = 1.0;
+                    e
+                };
+                let mut faces = Vec::with_capacity(6);
+                for k in 0..3 {
+                    let (a, b) = ((k + 1) % 3, (k + 2) % 3);
+                    for sgn in [1.0f64, -1.0] {
+                        let nl = [
+                            unit(k)[0] * sgn,
+                            unit(k)[1] * sgn,
+                            unit(k)[2] * sgn,
+                        ];
+                        let n = rot_dir(nl);
+                        let fc = [
+                            c[0] + nl[0] * h[k],
+                            c[1] + nl[1] * h[k],
+                            c[2] + nl[2] * h[k],
+                        ];
+                        let (ea, eb) = (unit(a), unit(b));
+                        let mut ring = Vec::with_capacity(4);
+                        for (sa, sb) in [(1.0f64, 1.0f64), (1.0, -1.0), (-1.0, -1.0), (-1.0, 1.0)] {
+                            ring.push(l2w([
+                                fc[0] + ea[0] * sa * h[a] + eb[0] * sb * h[b],
+                                fc[1] + ea[1] * sa * h[a] + eb[1] * sb * h[b],
+                                fc[2] + ea[2] * sa * h[a] + eb[2] * sb * h[b],
+                            ]));
+                        }
+                        let cw = fd(n, l2w(fc));
+                        faces.push(LbFace { n, c: cw, ring });
+                    }
+                }
+                Some(LbSolid::Poly { faces })
+            }
+            Primitive::Cylinder { center, radius, half_height } => {
+                if *radius <= 0.0 || *half_height <= 0.0 {
+                    return None;
+                }
+                // `Primitive::Cylinder` hat die Achse in LOKAL-Y (s. `sdf_eval`).
+                let ax = rot_dir([0.0, 1.0, 0.0]);
+                let o = l2w([center[0] as f64, center[1] as f64, center[2] as f64]);
+                let hh = *half_height as f64 * scl;
+                Some(LbSolid::Cyl {
+                    o,
+                    ax,
+                    r: *radius as f64 * scl,
+                    z0: -hh,
+                    z1: hh,
+                })
+            }
+            _ => None,
+        },
+        // #384 §8p — **konvexes Geraden-Prisma.** Damit fällt die letzte
+        // Member-Form, an der die §8o-Synthese am Rippen-Kamm scheiterte: die
+        // drei Kontakt-Prismen sind Extrudes.
+        //
+        // Die Bedingungen sind keine Bequemlichkeit, sondern die Voraussetzung
+        // der Austritts-Aufzählung: `LbSolid::Poly` setzt
+        // `int P = ⋂{n_i·q < c_i}` an. Für ein NICHT-konvexes Profil ist
+        // `⋂{h_i ≤ 0} ⊋ P` — ein Randstück ausserhalb `P`, aber innerhalb des
+        // Schnitts, würde für vergraben gehalten und fiele aus dem `min`.
+        // Genau das ist der eine tödliche Fehler (Regel 1 oben): `L` würde die
+        // Distanz ÜBERschätzen und das Gate Phantom-Material erlauben. Also:
+        // jedes Segment eine Gerade, das Polygon konvex, sonst `None`.
+        BoundedCsg::Extrude { sketch, half_height, .. } => {
+            let hh = *half_height as f64;
+            if !(hh > 1e-9) {
                 return None;
             }
-            let unit = |k: usize| {
-                let mut e = [0.0f64; 3];
-                e[k] = 1.0;
-                e
+            let crate::sketch2d::BoundedSketch2d::Prim { primitive, .. } = &**sketch else {
+                // Zusammengesetztes Profil (Vereinigung/Loch/Offset) — nie
+                // sicher konvex, und der Rand wäre unvollständig.
+                return None;
             };
-            let mut faces = Vec::with_capacity(6);
-            for k in 0..3 {
-                let (a, b) = ((k + 1) % 3, (k + 2) % 3);
-                for sgn in [1.0f64, -1.0] {
-                    let nl = [
-                        unit(k)[0] * sgn,
-                        unit(k)[1] * sgn,
-                        unit(k)[2] * sgn,
-                    ];
-                    let n = rot_dir(nl);
-                    let fc = [
-                        c[0] + nl[0] * h[k],
-                        c[1] + nl[1] * h[k],
-                        c[2] + nl[2] * h[k],
-                    ];
-                    let (ea, eb) = (unit(a), unit(b));
-                    let mut ring = Vec::with_capacity(4);
-                    for (sa, sb) in [(1.0f64, 1.0f64), (1.0, -1.0), (-1.0, -1.0), (-1.0, 1.0)] {
-                        ring.push(l2w([
-                            fc[0] + ea[0] * sa * h[a] + eb[0] * sb * h[b],
-                            fc[1] + ea[1] * sa * h[a] + eb[1] * sb * h[b],
-                            fc[2] + ea[2] * sa * h[a] + eb[2] * sb * h[b],
-                        ]));
-                    }
-                    let cw = fd(n, l2w(fc));
-                    faces.push(LbFace { n, c: cw, ring });
+            let segs = crate::offset_channel::profile_segments(primitive)?;
+            if segs.len() < 3 {
+                return None;
+            }
+            let mut ring2: Vec<[f64; 2]> = Vec::with_capacity(segs.len());
+            for sg in &segs {
+                if !matches!(sg, crate::offset_channel::ProfileSeg::Line { .. }) {
+                    return None; // Bogen/Bézier → kein Polytop
                 }
+                ring2.push(sg.start());
+            }
+            let n = ring2.len();
+            let sc = ring2
+                .iter()
+                .map(|v| v[0].abs().max(v[1].abs()))
+                .fold(1.0f64, f64::max);
+            // Orientierung aus der signierten Fläche (das Profil kann CW oder
+            // CCW ankommen); ein entartetes Polygon fliegt raus.
+            let mut a2 = 0.0f64;
+            for i in 0..n {
+                let (a, b) = (ring2[i], ring2[(i + 1) % n]);
+                a2 += a[0] * b[1] - b[0] * a[1];
+            }
+            if a2.abs() < 1e-9 * sc * sc {
+                return None;
+            }
+            let sgn = a2.signum();
+            // Konvexitäts-Nachweis, ZWEI Bedingungen. Kollinear (`cr == 0`)
+            // ist erlaubt — zwei koplanare Facetten sind eine harmlose
+            // Doppelung, keine Lücke.
+            //
+            // (a) Jede Ecke dreht in dieselbe Richtung.
+            // (b) Die GESAMTDREHUNG ist genau ±2π. Ohne (b) wäre (a) zu
+            //     schwach: ein Sternpolygon (Pentagramm) dreht an jeder Ecke
+            //     gleichsinnig und ist trotzdem nicht einfach — sein
+            //     Halbraum-Schnitt hätte mit `P` wenig zu tun, und genau darauf
+            //     steht das Vergraben-Urteil.
+            let mut turn = 0.0f64;
+            for i in 0..n {
+                let (a, b, c) = (ring2[i], ring2[(i + 1) % n], ring2[(i + 2) % n]);
+                let (e1, e2) = ([b[0] - a[0], b[1] - a[1]], [c[0] - b[0], c[1] - b[1]]);
+                let cr = e1[0] * e2[1] - e1[1] * e2[0];
+                if cr * sgn < -1e-12 * sc * sc {
+                    return None;
+                }
+                turn += cr.atan2(e1[0] * e2[0] + e1[1] * e2[1]);
+            }
+            if (turn.abs() - std::f64::consts::TAU).abs() > 1e-6 {
+                return None;
+            }
+            let mut faces = Vec::with_capacity(n + 2);
+            // Mantel: je Segment eine Rechteck-Facette mit der ÄUSSEREN
+            // In-Ebenen-Normalen (aus der Umlaufrichtung, nicht aus einer
+            // SDF-Stichprobe — bei einem konvexen Ring ist sie exakt bestimmt).
+            for i in 0..n {
+                let (a, b) = (ring2[i], ring2[(i + 1) % n]);
+                let e = [b[0] - a[0], b[1] - a[1]];
+                let el = (e[0] * e[0] + e[1] * e[1]).sqrt();
+                if el < 1e-12 * sc {
+                    continue; // entartete Kante trägt keine Facette
+                }
+                let nl = if sgn > 0.0 {
+                    [e[1] / el, -e[0] / el]
+                } else {
+                    [-e[1] / el, e[0] / el]
+                };
+                let nw = rot_dir([nl[0], nl[1], 0.0]);
+                let ring = vec![
+                    l2w([a[0], a[1], -hh]),
+                    l2w([b[0], b[1], -hh]),
+                    l2w([b[0], b[1], hh]),
+                    l2w([a[0], a[1], hh]),
+                ];
+                let c = fd(nw, ring[0]);
+                faces.push(LbFace { n: nw, c, ring });
+            }
+            // Deckel und Boden (`Primitive::Extrude` extrudiert LOKAL-Z).
+            for cap in [1.0f64, -1.0] {
+                let nw = rot_dir([0.0, 0.0, cap]);
+                let ring: Vec<[f64; 3]> =
+                    ring2.iter().map(|v| l2w([v[0], v[1], cap * hh])).collect();
+                let c = fd(nw, ring[0]);
+                faces.push(LbFace { n: nw, c, ring });
+            }
+            if faces.len() < 4 {
+                return None;
             }
             Some(LbSolid::Poly { faces })
-        }
-        Primitive::Cylinder { center, radius, half_height } => {
-            if *radius <= 0.0 || *half_height <= 0.0 {
-                return None;
-            }
-            // `Primitive::Cylinder` hat die Achse in LOKAL-Y (s. `sdf_eval`).
-            let ax = rot_dir([0.0, 1.0, 0.0]);
-            let o = l2w([center[0] as f64, center[1] as f64, center[2] as f64]);
-            let hh = *half_height as f64 * scl;
-            Some(LbSolid::Cyl {
-                o,
-                ax,
-                r: *radius as f64 * scl,
-                z0: -hh,
-                z1: hh,
-            })
         }
         _ => None,
     }
 }
-
 /// Flacht die Union-Kette des Stopps in seine Member — identisch zu
 /// `offset_channel::flatten_members` im `union_form`-Zweig (dort sind alle
 /// Vorzeichen `+1`, und NUR dieser Zweig hat einen konkaven Stopp).

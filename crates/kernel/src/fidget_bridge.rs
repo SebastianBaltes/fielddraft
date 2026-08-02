@@ -361,6 +361,21 @@ fn t_norm(a: &[Tree; 3]) -> Tree {
     t_dot(a, a).sqrt()
 }
 
+/// #384 §8p — die konkave Gate-Basis als Tree: `L − δ`, wo `L` verfügbar ist,
+/// sonst `G − d₀`. Spiegel von [`crate::offset_channel::concave_gate`].
+///
+/// Die Fallunterscheidung läuft als MULTIPLIKATIVE Maske
+/// `m·(L−δ) + (1−m)·(G−d₀)` — dieselbe Bauart wie in [`lb_to_tree`] und aus
+/// demselben Grund: `select_lt` addiert intern `(x−y)`, und mit `y = −1e30`
+/// löscht das in f32 die Mantisse des anderen Zweigs (Präzedenzfall 1.435 mm).
+/// `0 · (−1e30) = −0` ist dagegen exakt.
+fn lb_gate_tree(lb: &Tree, gate_w: f32, delta: f32, base: &Tree) -> Tree {
+    // `m = 1`, wenn `L > LB_AVAIL` — also eine echte Stück-Distanz vorliegt.
+    let m = relu(lb.clone().compare(Tree::from(crate::offset_channel::LB_AVAIL as f64)));
+    (lb.clone() - delta as f64) * m.clone()
+        + (Tree::from(gate_w as f64) - base.clone()) * (Tree::from(1.0) - m)
+}
+
 /// #384 §8o — Spiegel von [`crate::offset_lb::lb_value`] als Tree.
 ///
 /// Im DAG ist das billig: die Stück-Koordinaten sind KONSTANTEN, also sind
@@ -614,10 +629,13 @@ fn channel_to_tree(
     let dq = t_sub(p, &best_q);
     let s1 = t_dot(&dq, &best_m1);
     let s2 = t_dot(&dq, &best_m2);
-    // #384 §8o: zweite Gate-Basis `L − δ` (neutral ohne `L`-Block).
+    // #384 §8o/§8p: ist `L` verfügbar, gatet `L − δ` ALLEIN (Spiegel von
+    // `concave_gate`); sonst bleibt die `G`-Kappe aus §8i. Die Maske läuft
+    // MULTIPLIKATIV, nicht über `select_lt`: dessen `y + (x−y)·m` löscht bei
+    // einem 1e30-Sentinel die Mantisse (Präzedenzfall 1.435 mm), während
+    // `0 · (−1e30) = −0` exakt ist.
     let gate = if ch.concave {
-        (Tree::from(ch.gate as f64) - base.clone())
-            .max(lb.clone() - ch.delta as f64)
+        lb_gate_tree(&lb, ch.gate, ch.delta, &base)
     } else {
         Tree::from(ch.gate as f64) + base.clone()
     };
@@ -694,10 +712,9 @@ fn vertex_to_tree(
     let s1 = t_dot(&dq, &t_const3(vs.gates[0]));
     let s2 = t_dot(&dq, &t_const3(vs.gates[1]));
     let s3 = t_dot(&dq, &t_const3(vs.gates[2]));
-    // #384 §8o: zweite Gate-Basis, s. `channel_to_tree`.
+    // #384 §8o/§8p: Gate-Basis, s. `channel_to_tree` (`lb_gate_tree`).
     let gate = if vs.concave {
-        (Tree::from(vs.gate as f64) - base.clone())
-            .max(lb.clone() - vs.delta as f64)
+        lb_gate_tree(&lb, vs.gate, vs.delta, &base)
     } else {
         Tree::from(vs.gate as f64) + base.clone()
     };

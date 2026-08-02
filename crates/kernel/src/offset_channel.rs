@@ -446,11 +446,10 @@ pub fn channel_apply(base: f32, d: f32, p: [f32; 3], ch: &OffsetChannel, extra: 
     let dq = sub(p, q);
     let s1 = dot(dq, m1);
     let s2 = dot(dq, m2);
-    // #384 §8o: `extra = L(x) − δ` ist die ZWEITE Gate-Basis des konkaven
-    // Zweigs. Ohne `L`-Block ist sie `−1e30 − δ`, das `max` also wirkungslos —
-    // dieser Pfad ist bit-identisch zum Zustand vor §8o.
+    // #384 §8o/§8p: `extra = L(x) − δ`. Ist `L` verfügbar, gatet es ALLEIN
+    // (s. [`concave_gate`]); sonst bleibt die `G`-Kappe aus §8i.
     let gate = if ch.concave {
-        (ch.gate - base).max(extra)
+        concave_gate(ch.gate, base, extra)
     } else {
         ch.gate + base
     };
@@ -484,6 +483,58 @@ pub fn channel_apply(base: f32, d: f32, p: [f32; 3], ch: &OffsetChannel, extra: 
         }
     } else {
         d.max(w)
+    }
+}
+
+/// #384 §8p — die Schwelle „`L` ist an diesem Punkt verfügbar". `lb_value`
+/// liefert entweder eine echte Stück-Distanz (`≥ −slack`) oder EXAKT
+/// [`crate::offset_lb::LB_NONE`] = `−1e30`; dazwischen liegt nichts, die
+/// Schwelle ist also nicht kalibriert, sondern trennt zwei Wertebereiche.
+pub const LB_AVAIL: f32 = -1.0e29;
+
+/// #384 §8p — **die Gate-Basis EINES konkaven Terms.**
+///
+/// Es gibt zwei Rechtfertigungen dafür, dass ein Term Material addieren darf,
+/// und sie sind NICHT gleichrangig:
+///
+/// * `L − δ` ist die **Solidität selbst**. Aus `L(x) ≤ dist(x,∁Ω)` folgt für
+///   jeden addierenden Term `f = −w ≥ δ − L ≥ δ − dist(x,∁Ω)` — das Feld liegt
+///   ÜBER dem Zielfeld, Phantom-Material ist damit ausgeschlossen. Das ist ein
+///   Satz, keine Messung.
+/// * `G − d₀` ist die **ehrliche Degradation** (§8i): sie beweist nur
+///   `|f − d₀| ≤ G`, also einen beschränkten FEHLER, keine Korrektheit.
+///
+/// §8o hat beide mit `max` verbunden — „nimm, was mehr Korrektur erlaubt" —
+/// und damit die schwächere gewinnen lassen, sobald sie größer war. Genau das
+/// ist der Rippen-Kamm 4×2.0/1.0 (§8p, Punkt `(−6.9336, −2.8557, −1.4531)`):
+/// `L − δ = −0.5472` (wahr, exakt bis auf den `slack`) gegen
+/// `G − d₀ = +0.3215` (Schätzung). Das `max` nahm die Schätzung, der Term
+/// behauptete `0.18 mm` Material — und die freie Plattenoberseite lag
+/// `1.4531 mm` entfernt. 144 Punkte, größter Fehler `0.5378 mm`.
+///
+/// Ab §8p gilt: **wo `L` verfügbar ist, gatet `L` allein.** Die `G`-Kappe
+/// bleibt genau dort, wo es keine Stück-Schranke gibt (kein Block, Punkt
+/// außerhalb `Ω`, Punkt außerhalb der Term-Kugel) — dort ist sie weiterhin
+/// die einzige Aussage, die überhaupt zur Verfügung steht.
+///
+/// **Warum das die UNTER-Seite nicht kostet:** die alte `G`-Kappe war zu ENG
+/// (§8k–§8n: die Nabe brauchte 1.200 bei `G = 0.868`), und genau dafür wurde
+/// `L` gebaut. Wo `L` da ist, ist es die schärfere der beiden Schranken in
+/// BEIDE Richtungen — an der Nabe öffnet es (0/59 → 0/0), am Kamm schließt es
+/// (144/0 → 0/0). Beidseitig gemessen an allen zwölf Fixturen: keine bewegt
+/// sich in die falsche Richtung.
+///
+/// **Die Form ist bewusst ein `select`, kein `mix`.** Ein `y + (x−y)·m` mit
+/// einem `1e30`-Sentinel löscht in f32 die Mantisse (Präzedenzfall 1.435 mm,
+/// §8j-fidget-Falle); die spiegelnden Implementierungen benutzen deshalb
+/// entweder einen echten `select`/Ternär oder die multiplikative Maske
+/// `m·(G−d₀) + (1−m)·(L−δ)`, in der `0 · (−1e30) = −0` exakt ist.
+#[inline]
+pub fn concave_gate(gate_w: f32, base: f32, extra: f32) -> f32 {
+    if extra > LB_AVAIL {
+        extra
+    } else {
+        gate_w - base
     }
 }
 
@@ -642,9 +693,9 @@ pub fn vertex_apply(base: f32, d: f32, p: [f32; 3], vs: &VertexSphere, extra: f3
     let s1 = dot(dq, vs.gates[0]);
     let s2 = dot(dq, vs.gates[1]);
     let s3 = dot(dq, vs.gates[2]);
-    // #384 §8o: zweite Gate-Basis, s. [`channel_apply`].
+    // #384 §8o/§8p: zweite Gate-Basis, s. [`concave_gate`].
     let gate = if vs.concave {
-        (vs.gate - base).max(extra)
+        concave_gate(vs.gate, base, extra)
     } else {
         vs.gate + base
     };
@@ -1509,6 +1560,19 @@ fn end_region_violation(
                     if !d.is_finite() {
                         continue;
                     }
+                    // #384 §8p — **der Zeuge sieht das Feld OHNE `L`.** Seit
+                    // §8p gatet die untere Distanzschranke allein, wo es sie
+                    // gibt; hier steht sie noch nicht zur Verfügung (der Block
+                    // entsteht erst nach dem Audit), also misst der Zeuge den
+                    // `G`-Kappen-Pfad. Die Richtung ist die sichere: die
+                    // gemeldete Zusage ist damit höchstens SCHWÄCHER als das
+                    // ausgelieferte Feld, nie stärker. Am Rippen-Kamm 4×2.0/1.0
+                    // meldet der Report deshalb weiter die `G`-Schranke, obwohl
+                    // die Über-Seite gemessen leer ist. Den Zeugen mit
+                    // demselben `L` rechnen zu lassen, das ausgeliefert wird,
+                    // ist ein eigenes Paket: es ändert die Status-Meldung JEDER
+                    // Fixture mit `L`-Block (§8p, „Was das für die Zusage
+                    // heisst").
                     let corr = stop_apply(d, x, channels, verts, None);
                     // Geprüft wird die NULLMENGE (die Zusage des Stopps), und
                     // nur, was der Term VERURSACHT: das naive Feld muss den
@@ -2932,7 +2996,7 @@ pub(crate) struct ClipComponent {
 
 /// Ein Profil-Segment in Sketch-2D-Koordinaten: Startpunkt + Kantentyp zum
 /// nächsten Segment-Start. Zwischenschritt der Facetten-Extraktion.
-enum ProfileSeg {
+pub(crate) enum ProfileSeg {
     /// Gerade — trägt eine Mantel-Rechteck-Facette.
     Line { start: [f64; 2] },
     /// Kreisbogen (Deckel-Bulge = `tan(θ/4)`); Mantel gekrümmt → keine Facette.
@@ -2942,7 +3006,7 @@ enum ProfileSeg {
 }
 
 impl ProfileSeg {
-    fn start(&self) -> [f64; 2] {
+    pub(crate) fn start(&self) -> [f64; 2] {
         match self {
             ProfileSeg::Line { start } | ProfileSeg::Arc { start, .. } | ProfileSeg::Bezier { start } => *start,
         }
@@ -2959,7 +3023,7 @@ impl ProfileSeg {
 /// (Sketch-2D, CCW-orientiert bei den analytisch konvertierten Formen). `None`
 /// für nicht darstellbare Profile (offene Pfade). Booleans im Sketch-Baum
 /// (Innenrand/Abzug) sind Phase-2-Scope und werden vom Aufrufer verweigert.
-fn profile_segments(prim: &Sketch2dPrimitive) -> Option<Vec<ProfileSeg>> {
+pub(crate) fn profile_segments(prim: &Sketch2dPrimitive) -> Option<Vec<ProfileSeg>> {
     match prim {
         Sketch2dPrimitive::Rectangle { center, half_extents } => {
             let (cx, cy) = (center[0] as f64, center[1] as f64);

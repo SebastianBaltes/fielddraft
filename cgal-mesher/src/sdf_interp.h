@@ -86,6 +86,9 @@ enum : uint32_t {
 };
 
 constexpr float FD_FLT_MAX = 3.40282347e38f;  // mirrors Rust f32::MAX
+// #384 §8p: Schwelle "L ist verfuegbar" — das Register traegt entweder
+// eine echte Stueck-Distanz oder exakt -1e30 (Spiegel von LB_AVAIL).
+constexpr float FD_LB_AVAIL = -1.0e29f;
 constexpr int VSTACK_SIZE = 8;
 constexpr int PSTACK_SIZE = 4;
 
@@ -1397,8 +1400,10 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float s2 = dq[0] * best_m2[0] + dq[1] * best_m2[1] +
                    dq[2] * best_m2[2];
         // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d0).
-        // §8o: zweite Gate-Basis L - delta (neutral ohne OP_STOP_LB).
-        float gate = concave ? fmaxf_(gate_w - stop_base, stop_lb - delta)
+        // §8o/§8p: ist L verfuegbar, gatet L - delta ALLEIN; sonst bleibt die
+        // G-Kappe (Spiegel von offset_channel::concave_gate).
+        float gate = concave ? (stop_lb > FD_LB_AVAIL ? stop_lb - delta
+                                                      : gate_w - stop_base)
                              : gate_w + stop_base;
         // Rollen-Trennung (C4, CPU-Referenz channel_apply): Geometrie-
         // Klemme (Luft-Distanzschranke) vs. Add-Gate.
@@ -1444,8 +1449,10 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float s2 = dq[0] * g2[0] + dq[1] * g2[1] + dq[2] * g2[2];
         float s3 = dq[0] * g3[0] + dq[1] * g3[1] + dq[2] * g3[2];
         // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d0).
-        // §8o: zweite Gate-Basis L - delta (neutral ohne OP_STOP_LB).
-        float gate = concave ? fmaxf_(gate_w - stop_base, stop_lb - delta)
+        // §8o/§8p: ist L verfuegbar, gatet L - delta ALLEIN; sonst bleibt die
+        // G-Kappe (Spiegel von offset_channel::concave_gate).
+        float gate = concave ? (stop_lb > FD_LB_AVAIL ? stop_lb - delta
+                                                      : gate_w - stop_base)
                              : gate_w + stop_base;
         // Rollen-Trennung (C4, CPU-Referenz vertex_apply).
         float w_geo = fminf_(fminf_(fminf_(s1, s2), fminf_(s3, rho - delta)),

@@ -111,6 +111,9 @@ export function buildVmSdfEvalFn(
     // aus der zugeschnittenen Vereinigungs-B-Rep. OP_STOP_BASE setzt es
     // neutral, OP_STOP_LB füllt es, die konkaven Gates lesen es.
     const stopLb = float(-1e30).toVar();
+    // #384 §8p: Schwelle „`L` ist verfügbar" — das Register trägt entweder eine
+    // echte Stück-Distanz oder exakt −1e30 (Spiegel von `LB_AVAIL`).
+    const LB_AVAIL = float(-1e29);
 
     const ps0x = float(0).toVar(), ps0y = float(0).toVar(), ps0z = float(0).toVar();
     const ps1x = float(0).toVar(), ps1y = float(0).toVar(), ps1z = float(0).toVar();
@@ -1015,10 +1018,15 @@ export function buildVmSdfEvalFn(
             const s1 = dq.dot(bestM1);
             const s2 = dq.dot(bestM2);
             // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d₀).
-            // §8o: zweite Gate-Basis `L − δ` (neutral ohne OP_STOP_LB).
+            // §8o/§8p: ist `L` verfügbar, gatet `L − δ` ALLEIN; sonst bleibt
+            // die `G`-Kappe (Spiegel von `concave_gate`). `select` statt `mix`:
+            // ein `y + (x−y)·m` löscht am −1e30-Sentinel die Mantisse.
             const gate = concave
               .greaterThan(0.5)
-              .select(max(gateW.sub(stopBase), stopLb.sub(delta)), gateW.add(stopBase));
+              .select(
+                stopLb.greaterThan(LB_AVAIL).select(stopLb.sub(delta), gateW.sub(stopBase)),
+                gateW.add(stopBase),
+              );
             // Rollen-Trennung (C4, CPU-Referenz channel_apply):
             // Geometrie-Klemme (Luft-Distanzschranke) vs. Add-Gate.
             const wGeo = min(min(min(min(s1, s2), s3), s4), min(best.sub(delta), trust.sub(best)));
@@ -1067,11 +1075,13 @@ export function buildVmSdfEvalFn(
           const s1 = dq.dot(g1);
           const s2 = dq.dot(g2);
           const s3 = dq.dot(g3);
-          // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d₀).
-          // §8o: zweite Gate-Basis `L − δ` (neutral ohne OP_STOP_LB).
+          // §8i/§8o/§8p — Spiegel von `concave_gate` (s. Kanal-Arm).
           const gate = concave
             .greaterThan(0.5)
-            .select(max(gateW.sub(stopBase), stopLb.sub(delta)), gateW.add(stopBase));
+            .select(
+              stopLb.greaterThan(LB_AVAIL).select(stopLb.sub(delta), gateW.sub(stopBase)),
+              gateW.add(stopBase),
+            );
           // Rollen-Trennung (C4, CPU-Referenz vertex_apply).
           const wGeo = min(
             min(min(s1, s2), min(s3, rho.sub(delta))),

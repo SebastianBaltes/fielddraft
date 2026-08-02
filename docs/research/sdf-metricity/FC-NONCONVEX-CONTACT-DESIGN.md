@@ -2950,6 +2950,345 @@ Produktion unabhängig).
   **spitze Nähte**, **der Wächter als Stichprobe**, **die latente
   `safe_sqrt`-Entartung**: unverändert §8j/§8k/§8m/§8n.
 
+## 8p. Naht gegen Naht — das `max` verlor die Wahrheit gegen die Schätzung (#384, 2026-08-02)
+
+§8j hatte den Weg für die Über-Seite der Rippen-Kämme benannt: „die Terme
+müssen sich EINE Distanzschranke teilen (`U = min_j de_j`)". §8p hat zuerst
+gemessen. Zwei Ergebnisse, beide gegen die Erwartung:
+
+1. **`U = min_j de_j` ist seit §8j gebaut** — es heisst `OP_STOP_LIMIT` — und
+   am Worst-Punkt reicht es um 0.5378 mm nicht.
+2. **Die richtige Schranke lag seit §8o im Tape und wurde weggeworfen.** Das
+   Gate `max(G − d₀, L − δ)` nimmt, was mehr Korrektur erlaubt; am Kamm ist das
+   die SCHÄTZUNG `G − d₀ = +0.3215` gegen die WAHRHEIT `L − δ = −0.5472`.
+
+Der Fix ist eine Fallunterscheidung in sechs Spiegeln, kein neuer Opcode, kein
+neues Payload-Wort: **wo `L` verfügbar ist, gatet `L` allein.** Dazu fällt der
+letzte offene §8o-Posten, der den zweiten Kamm blockierte: konvexe
+Geraden-Extrudes sind jetzt darstellbare `L`-Member.
+
+Ergebnis: **beide Rippen-Kämme von `168 · 0.8103` bzw. `144 · 0.5378` auf
+`0 / 0`** — und damit ist die gesamte Fixture-Matrix zum ersten Mal beidseitig
+leer, bei enger Zusage.
+
+### Der Über-Seiten-Worst-Punkt, Term für Term
+
+Kamm 4×2.0/1.0, δ = 2, 22 Kanäle (alle `G = 0.8684`, `K = 3.9084`), ein
+`L`-Block mit 140 Stücken. Worst-Punkt des 24³-Scans:
+`x = (−6.933645, −2.855662, −1.453067)`.
+
+| Grösse | Wert | Herkunft |
+|---|---|---|
+| `dist(x,∁Ω)` | **1.453067** | exakte Zerlegung (§8k) |
+| Strahl-Schranke | 1.462206 | 160 Richtungen |
+| Zielfeld `δ − dist` | **+0.546933** | — |
+| naives `d₀` | **0.546933** | `δ + min_k f_k` — am Worst-Punkt EXAKT |
+| `L(x)` | 1.452760 | 140 Stücke, `= dist − 3.1·10⁻⁴` (`slack`) |
+| Feld (Produktion §8o) | **−0.041288** | Phantom-Material |
+| Über-Fehler `δ − ray` | **0.537794** | — |
+
+Der Punkt liegt 1.4531 mm unter der freien Plattenoberseite, ausserhalb jeder
+Rippe (die linkeste Rippe ist `x ∈ [−5.5, −3.5]`). Das naive Feld sagt genau
+die Wahrheit; **der Fehler wird von einem Kanal-Term ERZEUGT.** Von welchem:
+
+| Term | `de` | `s₁` | `s₂` | `s₃` | `s₄` | `de−δ` | `K−de` | `w_geo` | `G−d₀` | `L−δ` | `gate` | `w` | `d` danach |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **K5** (Naht `x=−3.5, z=0`) | 3.7285 | 1.4531 | 3.4337 | 11.0954 | 17.1443 | 1.7285 | **0.1800** | **0.1800** | +0.3215 | −0.5472 | **+0.3215** | **0.1800** | **−0.1800** |
+| K6 (Naht `x=−5.5, z=0`) | 2.0413 | 1.4531 | −1.4337 | 11.2869 | 17.1443 | 0.0413 | 1.8671 | −1.4337 | +0.3215 | −0.5472 | +0.3215 | −1.4337 | −0.1800 |
+| übrige 20 | ≥ 3.73 | | | | | | < 0 | < 0 | | | | | −0.1800 |
+| `OP_STOP_LIMIT` (§8j) | | | | | | | | | | | | | **−0.0413** |
+
+Vier Ablesungen, jede eine Widerlegung:
+
+* **Der bindende Anteil von `w_geo` ist `K − de`** — die Trust-Radius-Flanke.
+  Nicht `de − δ`, nicht ein Kegel-Gate, nicht `s₃`/`s₄`. K5 sitzt mit
+  `de = 3.7285` fast am Rand seiner Trust-Region `K = 3.9084` und behauptet
+  dort noch den Rest-Sliver von 0.18 mm.
+* **Die Geometrie IST Naht-gegen-Naht** — aber nicht so, wie vermutet. Die
+  Rippe ist mit `w = 2.0` schmaler als der Trust-Radius 3.91, also greift K5
+  über die ganze Rippe hinweg auf deren Rückseite, wo K6 sitzt und dahinter die
+  Plattenoberseite frei liegt. Der Term rechnet mit dem lokalen Drei-Quadranten-
+  Modell seiner eigenen Naht; ausserhalb der Rippe gilt es nicht mehr.
+* **`U = min_j de_j` löst es nicht.** `U = 2.0413` liegt ÜBER der wahren
+  Distanz 1.4531 — als Schranke ist es stumpfer als das, was schon da ist. Und
+  es ist bereits gebaut: `OP_STOP_LIMIT` klemmt `d ≥ δ − min_j min(de_j, s₄+δ)`,
+  also genau `δ − U`. Im Protokoll ist das die letzte Zeile: sie hebt −0.1800
+  auf −0.0413 und bleibt 0.5378 unter der Wahrheit. **Die §8j-Hypothese ist
+  nicht unzureichend, sie ist seit §8j in Produktion.**
+* **`L` hatte die Antwort.** `L − δ = −0.5472` hätte `w ≤ −0.5472 < 0` erzwungen,
+  der Term wäre in den dritten Zweig gefallen (`w ≤ 0`, `w_geo > 0` ⇒ `d`
+  unverändert) und das Feld bei `d₀ = 0.546933` geblieben — dem exakten Wert.
+
+Der zweite Kamm, 4×1.5/0.8 (19 Kanäle; zum Zeitpunkt dieser Zerlegung **kein**
+`L`-Block — drei Member sind für die §8o-Synthese nicht darstellbar, s. u.),
+zeigt dieselbe Mechanik ohne die Rettung: Worst-Punkt `(−5.873205, −2.855662, −1.182234)`, `dist = 1.182234`,
+`d₀ = 0.817766` (wieder exakt), Binder K5 mit `de = 3.3863` und
+`w_geo = K − de = 0.5221`, gekappt vom Gate `G − d₀ = 0.0507`; `lim = −0.0488`
+(`U = 2.0488`), Feld −0.048757, Fehler 0.810331. **Dort bindet die `G`-Kappe
+selbst** — der Fehler ist genau die zugesagte ehrliche Degradation. Er bleibt
+es, bis auch dieser Stopp eine Stück-Schranke bekommt; das ist der zweite Teil
+dieses Pakets.
+
+### Der Satz
+
+Sei ein konkaver Stopp mit Termen `T_j` (Kanäle/Kugeln) und einem `L`-Block mit
+`L(x) ≤ dist(x,∁Ω)` für alle `x ∈ Ω`. Wird das Gate auf `gate = L(x) − δ`
+gesetzt, so erzeugt **kein Term Phantom-Material**:
+
+> Jeder Term liefert einen von drei Beiträgen. (a) `w > 0` ⇒ `−w ≥ −gate =
+> δ − L ≥ δ − dist`. (b) `w ≤ 0 ∧ w_geo ≤ 0` ⇒ `−w_geo ≥ 0`. (c) sonst kein
+> Beitrag. Der Stoppwert ist `d = min(d₀, alle Beiträge)`, und `d₀ ≥ δ − dist`
+> gilt für jedes naive Vereinigungsfeld (`min_k f_k ≥ −dist(x,∁Ω)`, weil
+> `∁Ω ⊆ ∁P_k`). Ist also `dist < δ` — die Voraussetzung eines Über-Claims —,
+> dann sind `δ − dist > 0`, `δ − L > 0` und `d₀ > 0`, und alle drei Schranken
+> sind `≥ 0`: **`d ≥ 0`, das Feld behauptet kein Material.** ∎
+
+Der Satz ist konstruktiv genau so scharf wie `L`: der Rest-Über-Claim ist
+`≤ dist − L`, an den gemessenen Fixturen der `slack` (3·10⁻⁴ mm). Er gilt für
+die Kanal-/Kugel-Terme; die `∂P`-Rand-Fillets (`apply_rims_*`, §8-Phase-4)
+laufen danach und tragen ihre eigenen Masken.
+
+Die Gegenrichtung — **warum das die UNTER-Seite nicht kostet** — ist kein Satz,
+sondern eine Messung, und sie musste es sein: `L − δ` ist die schärfere Schranke
+NUR dort, wo `L` scharf ist; ein konservativ zu gross gebliebenes Randstück
+macht `L` klein und drosselt die Korrektur, die §8k–§8n gerade freikämpfen
+mussten. Gemessen an zwölf Fixturen beidseitig: keine bewegt sich in die
+falsche Richtung (Tabelle unten). Die alte `G`-Kappe war zu ENG (die Nabe
+brauchte 1.200 bei `G = 0.868`) — wo `L` da ist, ist es in BEIDE Richtungen die
+richtige Schranke: an der Nabe öffnet es (§8o: 0/59 → 0/0), am Kamm schliesst
+es (§8p: 144/0 → 0/0).
+
+### Die Form — `select`, nicht `mix`
+
+```text
+gate_konkav = (L > LB_AVAIL) ? (L − δ) : (G − d₀)      LB_AVAIL = −1e29
+```
+
+`lb_value` liefert entweder eine echte Stück-Distanz (`≥ −slack`) oder EXAKT
+`−1e30`; dazwischen liegt nichts, die Schwelle ist also nicht kalibriert,
+sondern trennt zwei Wertebereiche. Der zweite Zweig deckt drei Fälle ab, alle
+drei erwünscht: kein Block (Member nicht darstellbar), `x ∉ Ω` (dort ist
+`d₀ = δ + dist(x,Ω)` ohnehin exakt), und ausserhalb der Term-Kugel (dort ist
+jeder Term wegen `w_geo ≤ K − de < 0` neutral).
+
+In fidget gibt es keinen Zweig; dort läuft die MULTIPLIKATIVE Maske
+`m·(L−δ) + (1−m)·(G−d₀)`. Der Grund ist derselbe Präzedenzfall wie in §8j: ein
+`select_lt` der Form `y + (x−y)·m` löscht mit `y = −1e30` in f32 die Mantisse
+des anderen Zweigs (damals 1.435 mm Abweichung), während `0 · (−1e30) = −0`
+exakt ist.
+
+### Die Spiegel (sechs, keine Formatstelle)
+
+| # | Spiegel | Stelle | Datei |
+|---|---|---|---|
+| 1 | CPU-Referenz | `concave_gate` + zwei Aufrufer | `crates/kernel/src/offset_channel.rs` |
+| 2 | Opcode-Interpreter | `OP_ARC_CHANNEL`/`OP_VERTEX_SPHERE` | `crates/kernel/src/sdf_compiler.rs` |
+| 3 | Dual (D3) | beide Gate-Arme | `crates/kernel/src/sdf_dual.rs` |
+| 4 | fidget-Baum | `lb_gate_tree` (multiplikative Maske) | `crates/kernel/src/fidget_bridge.rs` |
+| 5 | WebGPU/TSL-VM | `LB_AVAIL` + zwei `select` | `web/src/sdfVmInterpreter.ts` |
+| 6 | C++-Port | `FD_LB_AVAIL` + zwei Ternäre | `cgal-mesher/src/sdf_interp.h` |
+
+`bvh.rs` delegiert an `channel_apply`/`vertex_apply` und braucht keine Änderung.
+**Tape-Format, Opcodes und Payload-Längen bleiben unangetastet** — `tape_spec.h`
+und `sdfRenderer.ts` (Konstanten/Layout-Kommentar) sind nicht betroffen.
+
+### Messtabelle, beidseitig, vorher/nachher
+
+Gitter und Grenzen wie im Doktrin-Pin (Nabe/Schale/notch 22³, Kamm 24³).
+**über** = Phantom-Material gegen die Strahl-Schranke, **unter** = fehlendes
+Material gegen die exakte Referenz (§8k). Beide Spalten aus DERSELBEN Harness
+(`probe_384_lb_only_gate`), nur der Gate-Modus wechselt.
+
+| Fixture | §8o (`max`, ohne Extrude-`L`) | §8p Gate allein | §8p Gate + Extrude-`L` | `L`-Stücke |
+|---|---|---|---|---|
+| **Rippen-Kamm 4×1.5/0.8** | **168 · 0.8103** / 0 | 168 · 0.8103 / 0 (kein `L`) | **0 / 0** | 0 → **296** |
+| **Rippen-Kamm 4×2.0/1.0** | **144 · 0.5378** / 0 | **0 / 0** | **0 / 0** | 140 |
+| Stufen-Nabe | 0 / 0 | 0 / 0 | 0 / 0 | 15 |
+| Ecken-Schale `t/δ = 2.0` | 0 / 0 | 0 / 0 | 0 / 0 | 72 |
+| Ecken-Schale `t/δ = 2.1, 2.25, 2.4, 2.5, 3.0, 4.0, 6.0` | 0 / 0 | 0 / 0 | 0 / 0 | 72 |
+| notch_union 90° / 60° | 0 / 0 | 0 / 0 | 0 / 0 | 28 |
+
+Die mittlere Spalte trennt die beiden Anteile sauber: der Kamm 4×1.5/0.8 hat
+mit dem neuen 296-Stück-Block im `max`-Gate **immer noch 168 · 0.8103** — der
+Block allein bringt NICHTS, es ist die Gate-Regel. Umgekehrt bringt die
+Gate-Regel dort nichts, wo es keinen Block gibt. Beides zusammen schliesst
+beide Kämme.
+
+Kontroll-Äquivalenz des Harness-Auswerters gegen die Produktion: **0 von 4000**
+Bit-Abweichungen an fünf Fixturen (`probe_384_p8p_control`; derselbe Lauf zählt
+mit, wie viele der 4000 Punkte sich gegen §8o BEWEGT haben: Nabe 2, Schale 105,
+notch 11, Kamm 1.5/0.8 80, Kamm 2.0/1.0 102 — die Änderung ist also nicht
+kosmetisch, sie trifft nur nirgends die falsche Richtung). Der Auswerter
+musste dafür die AABB-Prunes der Produktion mitführen — ohne sie wich er an
+genau den Punkten ab, an denen der Prune greift (gemessen: 2 von 4000 am Kamm
+4×1.5/0.8). Ein Kontroll-Pfad, der die Prunes weglässt, misst eine andere
+Maschine.
+
+### Kandidaten, gemessen — und was daran scheiterte
+
+| Kandidat | Kamm 2.0/1.0 über | Begründung |
+|---|---|---|
+| **`gate = L − δ`, wo `L` da ist** (gebaut) | **0 / 0.0000** | Solidität statt Schätzung |
+| `U = min_j de_j` als geteilte `de`-Schranke in `w_geo` | 144 · 0.5378 | am Worst-Punkt `U = 2.0413 > dist = 1.4531` — stumpfer als `L`; UND: `OP_STOP_LIMIT` klemmt bereits `d ≥ δ − U` (die Zeile `lim = −0.0413` im Protokoll), der Kandidat ist seit §8j in Produktion |
+| `gate = min(G − d₀, L − δ)` | 0 / 0.0000, aber die Nabe reisst auf **≥ 59 · 0.3156** | kein Experiment nötig, das ist eine Ableitung: `min ≤ G − d₀`, der Term darf also höchstens so viel addieren wie unter der reinen `G`-Kappe — und die misst `stop_lb_absent_reproduces_the_g_cap_384` an der Nabe mit `0 / 59 · 0.3156`. §8o wäre rückgängig |
+| `gate = w_geo` („`G`-Kappe aus") | 448 · 1.9866 | §8k Kandidat d / §8l Kandidat f, unverändert verworfen |
+| Trust-Radius `K` verkleinern | **nicht gemessen, aus Prinzip verworfen** | es verschiebt den Fehler nur: `w_geo ≤ K − de` wird kleiner, aber der Term stirbt dann auch dort, wo er gebraucht wird (an der Nabe liegt der Worst-Punkt 2.32 mm von seiner Naht, `K` müsste also gross bleiben) — und ein kalibriertes `K` wäre wieder eine Zahl statt eines Satzes. Genau diese Sorte Kalibrierung hat §8g als Zirkelschluss entlarvt |
+
+### Was das für die Zusage heisst
+
+Die Zusage des Stopps entsteht in `audit_channel_end_caps` aus einem
+Randpunkt-Zeugen, und der ruft `stop_apply(..., lb = None)` — er sieht also
+**das Feld OHNE `L`**. Am Kamm 4×2.0/1.0 meldet der Report deshalb weiterhin
+`tolerance_bounded` mit der `G`-Schranke, obwohl die Über-Seite jetzt leer ist.
+Das ist ehrlich (die Zusage ist SCHWÄCHER als die Wirklichkeit, nie stärker),
+aber stumpf. **Offen, benannt, nicht gebaut:** den Zeugen mit demselben `L`
+rechnen zu lassen, das ausgeliefert wird. Der Umbau ist klein (der `L`-Block
+müsste vor dem Audit gebaut werden statt danach), sein Blast-Radius ist es
+nicht — er ändert die Status-Meldung jeder Fixture mit `L`-Block, und das ist
+ein eigenes Paket mit eigener Pin-Runde.
+
+### Und der zweite Kamm: konvexe Extrude-Member im `L`-Block
+
+§8o hat den Kamm 4×1.5/0.8 als „ehrlich degradiert" abgelegt: drei seiner acht
+Union-Member sind **Extrude-Kontaktprismen**, `lb_solid` kannte nur Box und
+Zylinder, also verweigerte die Synthese den ganzen Block — und ohne Block
+bindet die `G`-Kappe, an der §8p nichts ändert. Das war der teuerste der
+offenen §8o-Posten, und er ist klein: ein Extrude mit **Geraden-Profil und
+konvexem Polygon** ist ein konvexes Polytop, und dessen Facetten sind zwei
+Deckel plus je Segment ein Mantel-Rechteck.
+
+Die zwei Bedingungen sind keine Bequemlichkeit:
+
+* **Nur Geraden.** Ein Bogen- oder Bézier-Segment ist keine Facette; das Stück
+  wäre keine der zwei Formen, die `LbPiece` exakt messen kann.
+* **Konvex.** `LbSolid::Poly` setzt `int P = ⋂{n_i·q < c_i}` an. Für ein
+  L-Profil ist der Schnitt der Facetten-Halbräume die konvexe HÜLLE, also echt
+  grösser als `P`: ein Randstück im fehlenden Quadranten läge im Schnitt und
+  würde für vergraben gehalten. Es fiele aus dem `min`, `L` überschätzte die
+  Distanz — und seit §8p steht das Gate ALLEIN auf `L`. Der einzige sichere
+  Ausgang ist die Verweigerung des ganzen Blocks; ein Pin misst genau das
+  (`non_convex_extrude_member_refuses_the_lb_block_384`), samt der Gegenprobe,
+  dass ein konvexes Rechteck-Extrude sehr wohl einen Block bekommt.
+
+Der Konvexitäts-Test besteht aus ZWEI Bedingungen, und die zweite war beim
+Gegenlesen nachzurüsten: „jede Ecke dreht gleichsinnig" allein ist zu schwach,
+denn ein **Sternpolygon** (Pentagramm) tut das auch und ist trotzdem nicht
+einfach. Geprüft wird deshalb zusätzlich die **Gesamtdrehung `= ±2π`** — bei
+einem Stern ist sie ein Vielfaches davon. Ohne diesen Zusatz hätte ein
+Stern-Profil einen Block bekommen, dessen Halbraum-Schnitt mit `P` wenig zu tun
+hat; das wäre die eine tödliche Sorte Fehler.
+
+Die Umlaufrichtung des Profils kommt aus der signierten Fläche, nicht aus einer
+SDF-Stichprobe: bei einem konvexen Ring ist die äussere In-Ebenen-Normale
+dadurch exakt bestimmt (`+` ⇒ `(e_y, −e_x)`, `−` ⇒ `(−e_y, e_x)`).
+
+Gemessen: der Kamm 4×1.5/0.8 bekommt aus acht Membern (fünf Boxen, drei
+Prismen) einen **296-Stück-Block**; `L ≤ dist` hält gegen die exakte
+Box-Referenz an über 500 Gitterpunkten (`lb_block_covers_convex_extrude_members_384`).
+Die Prismen liegen in der Box-Vereinigung und ragen nur um ihre f32-Kantenrundung
+(5·10⁻⁷ mm) hinaus — die Box-Referenz ist damit bis auf diese Grössenordnung
+auch die Referenz des Feld-Körpers.
+
+### Verifikation
+
+**Die Golden-Erwartung, vor dem Diff benannt:** das Tape kann sich nicht
+bewegen (kein Opcode, kein Payload-Wort, keine Längenfunktion geändert; ein
+neuer `L`-Block entstünde nur in einer Szene mit Extrude-Union-Membern unter
+einem konkaven Stopp). Feldwerte können sich nur dort bewegen, wo ein
+`L`-Block existiert UND `G − d₀ > L − δ` gilt UND ein Term bindet — und dann
+**nur nach OBEN**: `gate_neu = L − δ ≤ max(G − d₀, L − δ) = gate_alt`, also
+`w` kleiner, `−w` grösser, `d` grösser.
+
+Gemessen (Koordinaten-Join über die `PT`-Zeilen, `LC_ALL=C`):
+
+| | Ergebnis |
+|---|---|
+| Tape (`NOPS`/`OP`) | **35 von 35 Szenen byte-identisch** |
+| Feldwerte | **eine** Szene bewegt sich: `vertex_sphere_corner`, **16 von 512** Punkten |
+| Richtung | **16 hoch, 0 runter** — wie hergeleitet |
+| grösstes Δ | **0.000328** mm (`(−18, −1.1, −1.1)`: −0.055663 → −0.055335) |
+| `arc_channel_notch` (28 Stücke `L`) | unverändert — dort band `L − δ` schon vorher |
+
+**`check_interp`** (frisch gebaut, Golden-Pfad als ARGUMENT): **35 Szenen,
+17920 Prüfungen, worst_err 2·10⁻⁶, 0 Failures.**
+
+**Tests**: `just test` grün — Fast-Tier **1460** (Baseline 1456, vier neue
+Pins) / Web **2082** (unverändert); `cargo test --workspace` **1565**
+(Baseline 1561). `OFFSET_FUZZ_ITERS=200 … offset_fuzz` **5/5**.
+
+### Kosten
+
+Worst-Case-Punkt (im Material, innerhalb der Term-Kugel), release, f32, skalar
+— dieselbe Messung wie §8o, damit die Zeilen vergleichbar bleiben:
+
+| Fixture | Stücke | `L`-Worte | Tape gesamt | `L` ns/Punkt | Feld ns/Punkt |
+|---|---|---|---|---|---|
+| Stufen-Nabe | 15 | 173 | 467 | 195 | 578 |
+| Ecken-Schale `t/δ = 2` | 72 | 800 | 3614 | 1018 | 2144 |
+| notch 90° | 28 | 316 | 420 | 407 | 469 |
+| **Rippen-Kamm 4×1.5/0.8** | **0 → 296** | 3264 | 1583 → **4847** | **4142** | 374 → **4616** |
+| Rippen-Kamm 4×2.0/1.0 | 140 | 1548 | 3173 | 2003 | 2374 |
+
+Die Gate-Regel selbst kostet nichts (ein Vergleich statt eines `max`); der
+Aufschlag steht vollständig beim neuen Block des 1.5/0.8-Kamms, der vorher gar
+keinen hatte. Das ist der WORST CASE: ausserhalb `Ω` und ausserhalb der
+Term-Kugel kostet der Block zwei Vergleiche. Das räumliche Pruning der
+Stück-Liste bleibt unverändert ungebaut (§8o: jedes weggelassene Stück braucht
+erst einen Trust-Region-Beweis).
+
+### Bilanz
+
+| Fixture / Prüfung | §8o | §8p |
+|---|---|---|
+| Rippen-Kamm 4×1.5/0.8 (über / unter) | 168 · 0.8103 / 0 | **0 / 0** |
+| Rippen-Kamm 4×2.0/1.0 (über / unter) | 144 · 0.5378 / 0 | **0 / 0** |
+| Stufen-Nabe, Ecken-Schale (8 Dicken), notch 90°/60° | 0 / 0 | **0 / 0** |
+| Golden: Tape | — | 35/35 byte-identisch |
+| Golden: Feld | — | 1 Szene, 16/512 Punkte, alle nach oben, max 0.000328 |
+| `check_interp` | 35 / 17920 / 0 | **35 / 17920 / 0** |
+
+### Neue und umgeformte Pins
+
+* `concave_gate_prefers_the_lower_bound_384` — der Term-Vertrag: `L` da ⇒ `L`
+  gatet (auch wenn `G − d₀` grösser ist), `L` weg ⇒ `G`-Kappe **bit-identisch**
+  zum Zustand vor §8p (`to_bits()`-Vergleich gegen `g − base`, also auch kein
+  einziges ULP Sentinel-Drift).
+* `field_never_undercuts_the_lower_bound_384` — der Satz am Feld: an über 500
+  Gitterpunkten mit gültigem `L` liegt der Feldwert nie unter
+  `min(d₀, δ − L, 0)`. Eine erste Fassung forderte `f ≥ δ − L` und schlug prompt
+  fehl — die Luftseiten-Klemme, nicht das Gate, war der Grund; die Notiz steht
+  im Pin.
+* `lb_block_covers_convex_extrude_members_384` — der Kamm 4×1.5/0.8 bekommt
+  einen 296-Stück-Block, und `L ≤ dist` hält gegen die exakte Box-Referenz.
+* `non_convex_extrude_member_refuses_the_lb_block_384` — ein L-Profil bekommt
+  GAR KEINEN Block, samt Gegenprobe, dass konvexe Extrude-Member sehr wohl
+  einen bekommen.
+* **Umgeformt:** `lb_gate_leaves_the_over_side_fixtures_unmoved_384` →
+  `lb_only_gate_closes_the_comb_over_side_384`. Der alte Pin hielt fest, dass
+  §8o die Kamm-Über-Seiten NICHT bewegt (168 · 0.8103 und 144 · 0.5378) — genau
+  diese Zahlen waren der Befund, den §8p auflöst. Der neue Pin misst 0/0 für
+  beide Kämme, mit dem Satz statt der Messung als Begründung. Das ist die
+  EINZIGE bestehende Pin-Zeile, die sich bewegt; deshalb liegt das Paket auf
+  `fix/384-seam-vs-seam` und nicht auf `main`.
+
+### Was OFFEN bleibt
+
+* **Die Zusage sieht das Feld ohne `L`** (s. o.) — der Randpunkt-Zeuge ruft
+  `stop_apply(..., None)`, weil der Block erst nach dem Audit entsteht. Ehrlich
+  (die Zusage ist schwächer als die Wirklichkeit), aber stumpf: der Kamm meldet
+  weiter `tolerance_bounded` mit der `G`-Schranke, obwohl seine Über-Seite leer
+  ist. Der Umbau ist klein, sein Blast-Radius nicht.
+* **Kosten.** Der Kamm 4×1.5/0.8 trägt jetzt 296 Stücke; das räumliche Pruning
+  der Stück-Liste ist unverändert nicht gebaut (§8o: jedes weggelassene Stück
+  braucht erst einen Trust-Region-Beweis).
+* **Member-Formen jenseits Box/Zylinder/konvexem Geraden-Extrude**: Revolve,
+  Sweep, Loft und nicht-konvexe oder bogenführende Profile verweigern den Block
+  weiterhin — dort bindet die `G`-Kappe, und die Zusage bleibt die ehrliche
+  Degradation.
+* **Der konvexe Zweig** hat weiterhin kein `L` (`∁Ω` ist dort unbeschränkt),
+  **spitze Nähte**, **der Wächter als Stichprobe**, **die latente
+  `safe_sqrt`-Entartung**: unverändert §8j/§8m/§8n.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -2985,6 +3324,20 @@ Produktion unabhängig).
   `web/src/sdfRenderer.ts` (Konstante), `web/src/sdfVmInterpreter.ts`
   (Register + Arm), `cgal-mesher/src/sdf_interp.h` (Arm),
   `cgal-mesher/src/tape_spec.h` (`payload_len` + `value_pops`).
+- Produktionscode §8p: `offset_channel.rs` (`LB_AVAIL`, `concave_gate` und die
+  beiden Aufrufer in `channel_apply`/`vertex_apply`; Ehrlichkeits-Notiz am
+  Randpunkt-Zeugen; `profile_segments`/`ProfileSeg` `pub(crate)`),
+  `offset_lb.rs` (`lb_solid` nimmt jetzt `BoundedCsg::Extrude` mit konvexem
+  Geraden-Profil), `sdf_compiler.rs`, `sdf_dual.rs`, `fidget_bridge.rs`
+  (`lb_gate_tree`, multiplikative Maske), `web/src/sdfVmInterpreter.ts`
+  (`LB_AVAIL` + zwei `select`), `cgal-mesher/src/sdf_interp.h`
+  (`FD_LB_AVAIL` + zwei Ternäre). **Kein Tape-Format, keine Opcodes, keine
+  Payload-Längen** — `tape_spec.h` und `sdfRenderer.ts` sind unberührt.
+- Sonden §8p in `offset_capability_tests.rs`: `probe_384_seam_vs_seam`
+  (Term-für-Term-Zerlegung), `probe_384_lb_only_gate` (A/B über alle
+  Fixturen), `probe_384_p8p_control` (Kontroll-Äquivalenz),
+  `probe_384_lb_refusal` (Member-Formen eines Stopps) samt dem
+  modus-fähigen Auswerter `eval_p8p`/`p8p_gate`/`eval_term`.
 
 ## 10. Verweise
 

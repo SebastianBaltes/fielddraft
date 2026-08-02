@@ -472,11 +472,15 @@ fn eval_bounded_d3_open(
                 let s2 = dq[0] * D3::from(m2[0] as f64)
                     + dq[1] * D3::from(m2[1] as f64)
                     + dq[2] * D3::from(m2[2] as f64);
+                // §8p: ist `L` verfügbar, gatet `L − δ` ALLEIN (Spiegel von
+                // `concave_gate`); sonst bleibt die `G`-Kappe aus §8i.
                 let gate = if ch.concave {
-                    max_d3(
-                        D3::from(ch.gate as f64) - d0,
-                        lb_d3 - D3::from(ch.delta as f64),
-                    )
+                    let extra = lb_d3 - D3::from(ch.delta as f64);
+                    if extra.re > crate::offset_channel::LB_AVAIL as f64 {
+                        extra
+                    } else {
+                        D3::from(ch.gate as f64) - d0
+                    }
                 } else {
                     D3::from(ch.gate as f64) + d0
                 };
@@ -557,11 +561,14 @@ fn eval_bounded_d3_open(
                 let s1 = sdot(vs.gates[0]);
                 let s2 = sdot(vs.gates[1]);
                 let s3 = sdot(vs.gates[2]);
+                // §8p — Spiegel von `concave_gate` (s. Kanal-Arm).
                 let gate = if vs.concave {
-                    max_d3(
-                        D3::from(vs.gate as f64) - d0,
-                        lb_d3 - D3::from(vs.delta as f64),
-                    )
+                    let extra = lb_d3 - D3::from(vs.delta as f64);
+                    if extra.re > crate::offset_channel::LB_AVAIL as f64 {
+                        extra
+                    } else {
+                        D3::from(vs.gate as f64) - d0
+                    }
                 } else {
                     D3::from(vs.gate as f64) + d0
                 };

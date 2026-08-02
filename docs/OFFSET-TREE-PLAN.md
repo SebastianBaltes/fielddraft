@@ -938,6 +938,38 @@ für Shell.
   Messtabellen und Kosten:
   `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8o.
 
+* **Naht gegen Naht: das `max` verlor die Wahrheit gegen die Schätzung
+  (#384 §8p, v0.56.14, 2026-08-02).** §8j hatte für die Über-Seite der
+  Rippen-Kämme `U = min_j de_j` als geteilte Schranke empfohlen. Die Messung
+  zuerst: **`U` ist seit §8j gebaut** — `OP_STOP_LIMIT` klemmt genau
+  `d ≥ δ − U` — und es reicht am Worst-Punkt um 0.5378 mm nicht
+  (`U = 2.0413` gegen `dist = 1.4531`). Die Term-für-Term-Zerlegung zeigt
+  stattdessen: der bindende Anteil von `w_geo` ist `K − de` (die
+  Trust-Radius-Flanke, `de = 3.7285` bei `K = 3.9084`) — der Kanal greift über
+  die ganze, nur 2 mm breite Rippe hinweg —, und die richtige Schranke lag seit
+  §8o im Tape: `L − δ = −0.5472` gegen `G − d₀ = +0.3215`. Das `max` in
+  `gate = max(G − d₀, L − δ)` nahm die SCHÄTZUNG statt der WAHRHEIT.
+  **Der Fix ist eine Fallunterscheidung, kein Opcode: wo `L` verfügbar ist,
+  gatet `L` allein** (`crate::offset_channel::concave_gate`). Damit ist die
+  Über-Seite ein Satz statt einer Messung: `f ≥ min(d₀, δ − L, 0)`, und unter
+  `dist < δ` sind alle drei Schranken `> 0` — kein Phantom-Material.
+  Dazu fällt der letzte offene §8o-Posten: **konvexe Geraden-Extrudes sind
+  jetzt darstellbare `L`-Member** (Konvexitäts-Nachweis am Profil-Umlauf; ein
+  nicht-konvexes Profil verweigert den GANZEN Block, weil `⋂{h_i ≤ 0} ⊋ P`
+  jedes Vergraben-Urteil ungültig machte). Damit bekommt auch der Kamm
+  4×1.5/0.8 einen Block (296 Stücke aus acht Membern).
+  **Ergebnis: beide Rippen-Kämme von `168 · 0.8103` bzw. `144 · 0.5378` auf
+  `0 / 0`** — die ganze Fixture-Matrix ist zum ersten Mal beidseitig leer.
+  Stufen-Nabe, Ecken-Schale (acht Dicken) und notch bleiben 0/0,
+  Kontroll-Äquivalenz 0 von 4000 Bit-Abweichungen. Die A/B-Messung trennt
+  beide Anteile: mit Block, aber altem `max`-Gate bleibt der 1.5/0.8-Kamm bei
+  168 · 0.8103 — der Block allein bringt nichts, es ist die Gate-Regel. Tape-Format, Opcodes und Payload-Längen sind UNVERÄNDERT; die
+  Änderung läuft durch sechs Rechen-Spiegel (CPU, Interpreter, Dual, fidget,
+  TSL, C++), in fidget als multiplikative Maske, weil ein `y + (x−y)·m` am
+  −1e30-Sentinel die Mantisse löscht. Herleitung, Zerlegung, Kandidaten und
+  Messtabellen: `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md`
+  §8p.
+
 ## 10. Verweise
 
 * SYNTHESIS.md: §1 (Fehler-Taxonomie), §5 (2×2-Pushdown-Messung,

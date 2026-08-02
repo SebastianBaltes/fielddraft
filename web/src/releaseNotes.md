@@ -1,3 +1,6 @@
+## 0.56.14
+- fix(kernel) #384: Erodierte Körper mit dicht stehenden Rippen behaupten kein Material mehr dort, wo die freie Nachbarfläche näher liegt als die Naht, die es behauptet — bis zu 0.81 mm Phantom-Material an einer Rippenreihe verschwinden. Trägt der Stopp eine untere Distanzschranke aus dem zugeschnittenen Körperrand, entscheidet ab sofort nur noch sie über die Korrektur; die alte pauschale Kappe bleibt nur dort, wo es keine solche Schranke gibt. Neu erkannt werden dabei auch gerade, konvexe Extrusionen als Rand-Quelle — damit bekommen auch Rippenreihen mit Kontaktkörpern diese Schranke. Nabe, Ecken-Schalen und Kerben bleiben Punkt für Punkt unverändert.
+
 ## 0.56.13
 - fix(kernel) #384: Erodierte Boolean-Körper mit gestuften Naben zeigen die Erosion jetzt dort, wo sie wirklich massiv ist — bisher blieb an solchen Stufen bis zu 0.32 mm Material unsichtbar, weil die Kanal-Korrektur an einer Ein-Term-Kappe hängenblieb. Das Feld kennt jetzt eine echte untere Distanzschranke aus dem zugeschnittenen Körperrand und lässt den Term durch. Kein zusätzliches Phantom-Material: an Rippen-Kämmen, Ecken-Schalen und Kerben ändert sich kein einziger Punkt.
 

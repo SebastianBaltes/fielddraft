@@ -4778,17 +4778,33 @@ fn stop_lb_absent_reproduces_the_g_cap_384() {
     }
 }
 
-/// **§8o-Nichtregressions-Pin: die ÜBER-Seiten bewegen sich um NULL Punkte.**
+/// **§8p-Kern-Pin: wo `L` da ist, ist die ÜBER-Seite leer.**
 ///
-/// Der Rippen-Kamm ist die Fixture, an der „`G`-Kappe aus" (§8k Kandidat d,
-/// §8l Kandidat f) mit 448 Punkten / 1.9866 mm zerbrach. §8o darf sie nicht
-/// anfassen — und kann es strukturell nicht: wo `L − δ` bindet, liegt das Feld
-/// ÜBER dem Zielfeld. Der Pin misst genau das, statt es zu glauben.
+/// Der Vorgänger dieses Pins (`lb_gate_leaves_the_over_side_fixtures_unmoved_384`,
+/// §8o) hat festgehalten, dass §8o die Kamm-Über-Seiten um NULL Punkte bewegt —
+/// 144 · 0.5378 beim Kamm 4×2.0/1.0, und das mit einem AKTIVEN 140-Stück-Block.
+/// Genau diese Zahl war der Befund: `L` lag im Tape, wusste am Worst-Punkt die
+/// Wahrheit (`L = 1.4528` gegen `dist = 1.4531`) — und das Gate
+/// `max(G − d₀, L − δ)` warf sie weg, weil die Schätzung `G − d₀ = +0.3215`
+/// grösser war als die Wahrheit `L − δ = −0.5472`.
+///
+/// §8p dreht das um: wo `L` verfügbar ist, gatet `L` allein. Damit ist die
+/// Über-Seite kein Messergebnis mehr, sondern ein Satz
+/// (`f ≥ δ − L ≥ δ − dist`, s. [`crate::offset_channel::concave_gate`]) — der
+/// Pin misst, dass der Satz auch im gebauten Feld gilt.
+///
+/// Die zweite Zeile war bis zur Hälfte dieses Pakets die ehrliche Gegenprobe:
+/// der Kamm 4×1.5/0.8 trägt drei Extrude-Kontaktprismen, `lb_solid` kannte nur
+/// Box und Zylinder, also verweigerte die Synthese den GANZEN Block (§8o-Regel
+/// 3) und die `G`-Kappe blieb bei 168 · 0.8103. Seit §8p sind konvexe
+/// Geraden-Extrudes darstellbar (296 Stücke), und damit fällt auch diese Zeile
+/// auf 0/0. Die Gegenprobe „ohne `L` bleibt die `G`-Kappe" hält jetzt
+/// `non_convex_extrude_member_refuses_the_lb_block_384`.
 #[test]
-fn lb_gate_leaves_the_over_side_fixtures_unmoved_384() {
+fn lb_only_gate_closes_the_comb_over_side_384() {
     let delta = 2.0f32;
     for ((w, g), want_over, want_worst) in
-        [((1.5f32, 0.8f32), 168usize, 0.8103f64), ((2.0, 1.0), 144, 0.5378)]
+        [((1.5f32, 0.8f32), 0usize, 0.0f64), ((2.0, 1.0), 0, 0.0)]
     {
         let (node, boxes, span) = rib_comb_node(4, w, g, delta);
         let (field, _) = compile_for(node);
@@ -4802,14 +4818,14 @@ fn lb_gate_leaves_the_over_side_fixtures_unmoved_384() {
         );
         assert_eq!(
             r.over.0, want_over,
-            "Rippen-Kamm {w}/{g}: {} statt {want_over} Über-Claim-Punkte — §8o hat die \
-             Kappe aufgerissen, obwohl der Satz das ausschliesst",
+            "Rippen-Kamm {w}/{g}: {} statt {want_over} Über-Claim-Punkte. 0 ist hier ein \
+             SATZ, keine Messung: wo L bindet, ist f ≥ δ − L ≥ δ − dist. War vor §8p \
+             168 · 0.8103 (1.5/0.8) bzw. 144 · 0.5378 (2.0/1.0)",
             r.over.0
         );
         assert!(
             (r.over.1 - want_worst).abs() < 1e-3,
-            "Rippen-Kamm {w}/{g}: größter Über-Claim {:.4} statt {want_worst} \
-             (conservative ≤ 0.868·δ bleibt die Zusage)",
+            "Rippen-Kamm {w}/{g}: größter Über-Claim {:.4} statt {want_worst}",
             r.over.1
         );
         assert_eq!(r.under.0, 0, "Rippen-Kamm {w}/{g}: unter-Seite aufgerissen");
@@ -4918,3 +4934,835 @@ fn probe_384_lb_cost() {
     }
 }
 
+
+// ══════════════ #384 §8p — Naht gegen Naht: erst messen ══════════════
+//
+// Verdächtig ist laut §8j/§8o, dass zwei Nähte näher beieinander liegen als
+// ihre Trust-Regionen und jeder Kanal rechnet, als wäre seine Naht das nächste
+// Feature. Diese Sonde misst statt zu verdächtigen: sie zerlegt den
+// Über-Seiten-Worst-Punkt beider Kamm-Fixtures Term für Term.
+
+/// Alle Stopp-Knoten eines Baums (Referenzen, damit `inner` auswertbar bleibt).
+fn stop_nodes<'a>(n: &'a BoundedCsg, out: &mut Vec<&'a BoundedCsg>) {
+    match n {
+        BoundedCsg::ArcChannel { inner, .. } => {
+            out.push(n);
+            stop_nodes(inner, out);
+        }
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. } => {
+            stop_nodes(left, out);
+            stop_nodes(right, out);
+        }
+        BoundedCsg::Offset { inner, .. } | BoundedCsg::Shell { inner, .. } => {
+            stop_nodes(inner, out)
+        }
+        _ => {}
+    }
+}
+
+/// EIN Kanal-Term im gewählten Gate-Modus — Spiegel von `channel_apply`, damit
+/// die Zerlegung auch den §8o-Zustand nachstellen kann (die Zahlen im Doc).
+fn eval_term(
+    d0: f32,
+    d: f32,
+    p: [f32; 3],
+    ch: &crate::offset_channel::OffsetChannel,
+    lbv: f32,
+    mode: P8pMode,
+) -> f32 {
+    use crate::offset_channel as oc;
+    if oc::channel_skip(d, p, ch) {
+        return d;
+    }
+    let Some((de, q, m1, m2)) = oc::channel_nearest(p, ch) else { return d };
+    let dt = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let dq = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+    let w_geo = dt(dq, m1)
+        .min(dt(dq, m2))
+        .min(oc::end_plane_gate(p, ch))
+        .min(oc::face_plane_gate(p, ch))
+        .min(de - ch.delta)
+        .min(ch.trust - de);
+    let w = w_geo.min(p8p_gate(ch.gate, d0, lbv - ch.delta, mode));
+    if w > 0.0 {
+        d.min(-w)
+    } else if w_geo <= 0.0 {
+        d.min(-w_geo)
+    } else {
+        d
+    }
+}
+
+/// Term-für-Term-Zerlegung EINES Punktes; gibt `(feld, zeilen)` zurück.
+fn decompose_at(field: &BoundedCsg, pf: [f32; 3], mode: P8pMode) -> String {
+    use crate::offset_channel as oc;
+    let mut s = String::new();
+    let mut stops = Vec::new();
+    stop_nodes(field, &mut stops);
+    s += &format!("  Stopps: {}\n", stops.len());
+    for (si, node) in stops.iter().enumerate() {
+        let BoundedCsg::ArcChannel { inner, channels, verts, rims, lb, .. } = node else {
+            continue;
+        };
+        let d0 = inner.sdf(pf, EvalMode::Visual);
+        let delta = channels
+            .first()
+            .map(|c| c.delta)
+            .or_else(|| verts.first().map(|v| v.delta))
+            .unwrap_or(0.0);
+        let lbv = oc::stop_lb_value(d0, pf, lb.as_ref());
+        s += &format!(
+            "  Stopp #{si}: d0={d0:.6} δ={delta:.3} L={} (L−δ={}) Kanäle={} Kugeln={} Rims={}\n",
+            if lbv <= -1.0e29 { "—".into() } else { format!("{lbv:.6}") },
+            if lbv <= -1.0e29 { "—".into() } else { format!("{:.6}", lbv - delta) },
+            channels.len(),
+            verts.len(),
+            rims.len()
+        );
+        let mut d = d0;
+        let mut lim = -oc::END_PLANE_OFF;
+        let mut best_de = f32::INFINITY;
+        for (ci, ch) in channels.iter().enumerate() {
+            let skip = oc::channel_skip(d, pf, ch);
+            let lc = oc::channel_limit(pf, ch);
+            lim = lim.max(lc);
+            let before = d;
+            d = eval_term(d0, d, pf, ch, lbv, mode);
+            let Some((de, q, m1, m2)) = oc::channel_nearest(pf, ch) else {
+                s += &format!("   K{ci}: kein nearest\n");
+                continue;
+            };
+            best_de = best_de.min(de);
+            let dq = [pf[0] - q[0], pf[1] - q[1], pf[2] - q[2]];
+            let dt = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            let (s1, s2) = (dt(dq, m1), dt(dq, m2));
+            let e3 = oc::end_plane_gate(pf, ch);
+            let e4 = oc::face_plane_gate(pf, ch);
+            let w_geo = s1.min(s2).min(e3).min(e4).min(de - ch.delta).min(ch.trust - de);
+            let gate = p8p_gate(ch.gate, d0, lbv - ch.delta, mode);
+            let w = w_geo.min(gate);
+            s += &format!(
+                "   K{ci}{}: de={de:.4} q=({:.3},{:.3},{:.3}) s1={s1:.4} s2={s2:.4} \
+                 s3={} s4={} de−δ={:.4} K−de={:.4} | w_geo={w_geo:.4} G−d0={:.4} \
+                 L−δ={} gate={} w={} | lim={} d:{before:.4}→{d:.4}\n",
+                if skip { "(skip)" } else { "" },
+                q[0], q[1], q[2],
+                if e3 > 1.0e29 { "∞".into() } else { format!("{e3:.4}") },
+                if e4 > 1.0e29 { "∞".into() } else { format!("{e4:.4}") },
+                de - ch.delta,
+                ch.trust - de,
+                ch.gate - d0,
+                if lbv <= -1.0e29 { "—".into() } else { format!("{:.4}", lbv - ch.delta) },
+                if gate < -1.0e29 { "—".into() } else { format!("{gate:.4}") },
+                if w < -1.0e29 { "—".into() } else { format!("{w:.4}") },
+                if lc <= -1.0e29 { "—".into() } else { format!("{lc:.4}") },
+            );
+        }
+        for (vi, vs) in verts.iter().enumerate() {
+            let lc = oc::vertex_limit(pf, vs);
+            lim = lim.max(lc);
+            let before = d;
+            d = oc::vertex_apply(d0, d, pf, vs, lbv - vs.delta);
+            let _ = mode; // Kugeln tragen an den Kamm-Fixturen nichts bei
+            let rho = ((pf[0] - vs.v[0]).powi(2)
+                + (pf[1] - vs.v[1]).powi(2)
+                + (pf[2] - vs.v[2]).powi(2))
+            .sqrt();
+            s += &format!(
+                "   V{vi}: ρ={rho:.4} K−ρ={:.4} d:{before:.4}→{d:.4} lim={}\n",
+                vs.trust - rho,
+                if lc <= -1.0e29 { "—".into() } else { format!("{lc:.4}") }
+            );
+        }
+        let concave = channels.first().map(|c| c.concave).or_else(|| verts.first().map(|v| v.concave));
+        let after = match concave {
+            Some(true) => d.max(lim),
+            Some(false) => d.min(-lim),
+            None => d,
+        };
+        s += &format!(
+            "  ⇒ nach Termen {d:.6}, lim={} ⇒ {after:.6}  (min_j de_j = {best_de:.4})\n",
+            if lim <= -1.0e29 { "—".into() } else { format!("{lim:.4}") }
+        );
+    }
+    s += &format!(
+        "  Feld gesamt: {:.6} (Produktion {:.6})\n",
+        eval_p8p(field, pf, mode),
+        field.sdf(pf, EvalMode::Visual)
+    );
+    s
+}
+
+#[test]
+#[ignore]
+fn probe_384_seam_vs_seam() {
+    let delta = 2.0f32;
+    for (w, g) in [(1.5f32, 0.8f32), (2.0f32, 1.0f32)] {
+        let (node, boxes, span) = rib_comb_node(4, w, g, delta);
+        let (field, _rep) = compile_for(node);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let exact = |p: [f64; 3]| dist_obb_union_complement_exact(&obbs, p);
+        let ray = |p: [f64; 3]| dist_to_boxes_complement(&boxes, p, 160);
+        let (lo, hi) = ([-span, -3.0, -6.0], [span, 3.0, 0.5]);
+        let n = 24usize;
+        let mut over: Vec<([f64; 3], f64, f32)> = Vec::new();
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let f = [
+                        (ix as f64 + 0.2113248654) / n as f64,
+                        (iy as f64 + 0.5773502692) / n as f64,
+                        (iz as f64 + 0.7886751346) / n as f64,
+                    ];
+                    let p = [
+                        lo[0] + (hi[0] - lo[0]) * f[0],
+                        lo[1] + (hi[1] - lo[1]) * f[1],
+                        lo[2] + (hi[2] - lo[2]) * f[2],
+                    ];
+                    let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                    // Gemessen wird der §8o-Zustand — die Zerlegung, die §8p
+                    // erklärt. Produktion (LB-ONLY) hat hier 0 Punkte.
+                    let got = eval_p8p(&field, pf, P8pMode::Basis);
+                    if got < 0.0 {
+                        let err = delta as f64 - ray(p);
+                        if err > 1e-3 {
+                            over.push((p, err, got));
+                        }
+                    }
+                }
+            }
+        }
+        over.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        println!("\n════ Kamm 4×{w}/{g}: {} Über-Punkte, worst {:.4}", over.len(), over[0].1);
+        // Statistik über ALLE Über-Punkte: Feldwert, ray, exakt.
+        let mut stops = Vec::new();
+        stop_nodes(&field, &mut stops);
+        println!("  Stopp-Knoten: {}", stops.len());
+        for (i, nd) in stops.iter().enumerate() {
+            if let BoundedCsg::ArcChannel { channels, verts, rims, lb, .. } = nd {
+                println!(
+                    "   #{i}: {} Kanäle (concave {:?}), {} Kugeln, {} Rims, L-Block {}",
+                    channels.len(),
+                    channels.first().map(|c| c.concave),
+                    verts.len(),
+                    rims.len(),
+                    lb.as_ref().map(|b| b.pieces.len()).map_or("—".into(), |k| k.to_string())
+                );
+                for (ci, ch) in channels.iter().enumerate().take(30) {
+                    println!(
+                        "      K{ci}: δ={:.2} G={:.4} K={:.4} bc=({:.2},{:.2},{:.2}) br={:.3} \
+                         arcs={} s3-Slots={} s4-Slots={}",
+                        ch.delta, ch.gate, ch.trust, ch.bound_c[0], ch.bound_c[1], ch.bound_c[2],
+                        ch.bound_r, ch.arcs.len(),
+                        ch.end_planes.iter().filter(|p| p[3] > -1.0e29).count(),
+                        ch.face_planes.iter().filter(|p| p[3] > -1.0e29).count(),
+                    );
+                }
+            }
+        }
+        for (k, (p, err, got)) in over.iter().take(3).enumerate() {
+            println!(
+                "\n  ── Über-Punkt #{k}: ({:.6},{:.6},{:.6}) err={err:.6} feld={got:.6} \
+                 ray={:.6} exakt={:.6}",
+                p[0], p[1], p[2], ray(*p), exact(*p)
+            );
+            print!(
+                "{}",
+                decompose_at(&field, [p[0] as f32, p[1] as f32, p[2] as f32], P8pMode::Basis)
+            );
+        }
+    }
+}
+
+/// §8p-Experiment: der Gate-Zweig, den der Term nimmt.
+#[derive(Clone, Copy, PartialEq)]
+enum P8pMode {
+    /// Produktion: `gate = max(G − d₀, L − δ)`.
+    Basis,
+    /// Kandidat A: wo `L` VERFÜGBAR ist, gatet `L` ALLEIN
+    /// (`gate = L − δ`); sonst wie bisher `G − d₀`.
+    LbOnly,
+}
+
+fn p8p_gate(g: f32, base: f32, extra: f32, mode: P8pMode) -> f32 {
+    match mode {
+        P8pMode::Basis => (g - base).max(extra),
+        // Die multiplikative Maske ist die Form, die auch im Tape trägt:
+        // `0 · (−1e30) = −0` ist exakt, `x + 1e30` löscht die Mantisse.
+        P8pMode::LbOnly => {
+            let m = if extra < -1.0e29 { 1.0f32 } else { 0.0f32 };
+            m * (g - base) + (1.0 - m) * extra
+        }
+    }
+}
+
+fn eval_p8p(n: &BoundedCsg, p: [f32; 3], mode: P8pMode) -> f32 {
+    use crate::offset_channel as oc;
+    match n {
+        BoundedCsg::ArcChannel { inner, channels, verts, rims, lb, .. } => {
+            let d0 = eval_p8p(inner, p, mode);
+            let lbv = oc::stop_lb_value(d0, p, lb.as_ref());
+            let mut d = d0;
+            let mut lim = -oc::END_PLANE_OFF;
+            for ch in channels {
+                lim = lim.max(oc::channel_limit(p, ch));
+                if oc::channel_skip(d, p, ch) {
+                    continue;
+                }
+                let Some((de, q, m1, m2)) = oc::channel_nearest(p, ch) else { continue };
+                let dt = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+                let dq = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+                let w_geo = dt(dq, m1)
+                    .min(dt(dq, m2))
+                    .min(oc::end_plane_gate(p, ch))
+                    .min(oc::face_plane_gate(p, ch))
+                    .min(de - ch.delta)
+                    .min(ch.trust - de);
+                let w = w_geo.min(p8p_gate(ch.gate, d0, lbv - ch.delta, mode));
+                d = if w > 0.0 {
+                    d.min(-w)
+                } else if w_geo <= 0.0 {
+                    d.min(-w_geo)
+                } else {
+                    d
+                };
+            }
+            for vs in verts {
+                lim = lim.max(oc::vertex_limit(p, vs));
+                let dq = [p[0] - vs.v[0], p[1] - vs.v[1], p[2] - vs.v[2]];
+                let rho = (dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2]).sqrt();
+                if vs.trust - rho <= if vs.concave { -d } else { d } {
+                    continue;
+                }
+                let dt = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+                let w_geo = dt(dq, vs.gates[0])
+                    .min(dt(dq, vs.gates[1]))
+                    .min(dt(dq, vs.gates[2]))
+                    .min(rho - vs.delta)
+                    .min(vs.trust - rho);
+                let w = w_geo.min(p8p_gate(vs.gate, d0, lbv - vs.delta, mode));
+                d = if w > 0.0 {
+                    d.min(-w)
+                } else if w_geo <= 0.0 {
+                    d.min(-w_geo)
+                } else {
+                    d
+                };
+            }
+            let concave =
+                channels.first().map(|c| c.concave).or_else(|| verts.first().map(|v| v.concave));
+            d = match concave {
+                Some(true) => d.max(lim),
+                Some(false) => d.min(-lim),
+                None => d,
+            };
+            for block in rims {
+                d = crate::offset_rim::apply_rims_f32(d, p, block.concave, &block.recs);
+                d = crate::offset_rim::apply_rims_arc_f32(d, p, block.concave, &block.arc_recs);
+            }
+            d
+        }
+        // Die AABB-Prunes der Produktion MÜSSEN mitlaufen — ohne sie weicht
+        // der Kontroll-Pfad an genau den Punkten ab, an denen der Prune
+        // greift (gemessen: 2 von 4000 am Kamm 1.5/0.8).
+        BoundedCsg::Union { left, right, .. } => {
+            let dl = crate::bvh::distance_point_to_aabb(p, left.aabb());
+            let dr = crate::bvh::distance_point_to_aabb(p, right.aabb());
+            let (first, second, bound) =
+                if dl <= dr { (&**left, &**right, dr) } else { (&**right, &**left, dl) };
+            let d_first = eval_p8p(first, p, mode);
+            if bound > 0.0 && d_first < bound {
+                d_first
+            } else {
+                d_first.min(eval_p8p(second, p, mode))
+            }
+        }
+        BoundedCsg::Intersection { left, right, .. } => {
+            eval_p8p(left, p, mode).max(eval_p8p(right, p, mode))
+        }
+        BoundedCsg::Difference { left, right, .. } => {
+            let d_left = eval_p8p(left, p, mode);
+            let dr = crate::bvh::distance_point_to_aabb(p, right.aabb());
+            if dr > 0.0 && d_left >= -dr {
+                d_left
+            } else {
+                d_left.max(-eval_p8p(right, p, mode))
+            }
+        }
+        BoundedCsg::Offset { inner, delta, .. } => eval_p8p(inner, p, mode) - delta,
+        _ => n.sdf(p, EvalMode::Visual),
+    }
+}
+
+/// Beidseitiger Scan mit dem §8p-Auswerter.
+#[allow(clippy::too_many_arguments)]
+fn scan_p8p(
+    field: &BoundedCsg,
+    delta: f32,
+    lo: [f64; 3],
+    hi: [f64; 3],
+    n: usize,
+    exact: &dyn Fn([f64; 3]) -> f64,
+    ray: &dyn Fn([f64; 3]) -> f64,
+    mode: P8pMode,
+) -> (usize, f64, [f64; 3], usize, f64, [f64; 3]) {
+    let (mut oc, mut ow, mut op) = (0usize, 0.0f64, [0.0f64; 3]);
+    let (mut uc, mut uw, mut up) = (0usize, 0.0f64, [0.0f64; 3]);
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let f = [
+                    (ix as f64 + 0.2113248654) / n as f64,
+                    (iy as f64 + 0.5773502692) / n as f64,
+                    (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let p = [
+                    lo[0] + (hi[0] - lo[0]) * f[0],
+                    lo[1] + (hi[1] - lo[1]) * f[1],
+                    lo[2] + (hi[2] - lo[2]) * f[2],
+                ];
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let got = eval_p8p(field, pf, mode);
+                if got < 0.0 {
+                    let err = delta as f64 - ray(p);
+                    if err > 1e-3 {
+                        oc += 1;
+                        if err > ow {
+                            ow = err;
+                            op = p;
+                        }
+                    }
+                } else {
+                    let err = exact(p) - delta as f64;
+                    if err > 1e-3 {
+                        uc += 1;
+                        if err > uw {
+                            uw = err;
+                            up = p;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (oc, ow, op, uc, uw, up)
+}
+
+#[test]
+#[ignore]
+fn probe_384_lb_only_gate() {
+    let delta = 2.0f32;
+    println!(
+        "\n{:<20} {:>7} {:>5} {:>9} {:>5} {:>9}",
+        "Fixture/Modus", "Stücke", "über", "worst", "unter", "worst"
+    );
+    let mut run = |name: &str,
+                   field: &BoundedCsg,
+                   lo: [f64; 3],
+                   hi: [f64; 3],
+                   n: usize,
+                   exact: &dyn Fn([f64; 3]) -> f64,
+                   ray: &dyn Fn([f64; 3]) -> f64| {
+        let mut bs = Vec::new();
+        collect_lb(field, &mut bs);
+        let np: usize = bs.iter().map(|b| b.pieces.len()).sum();
+        for (tag, mode) in [("BASIS", P8pMode::Basis), ("LB-ONLY", P8pMode::LbOnly)] {
+            let r = scan_p8p(field, delta, lo, hi, n, exact, ray, mode);
+            println!(
+                "{:<20} {np:>7} {:>5} {:>9.4} {:>5} {:>9.4}   über@{:?} unter@{:?}",
+                format!("{name} {tag}"),
+                r.0,
+                r.1,
+                r.3,
+                r.4,
+                r.2.map(|v| (v * 1e4).round() / 1e4),
+                r.5.map(|v| (v * 1e4).round() / 1e4)
+            );
+        }
+    };
+    // Stufen-Nabe
+    {
+        let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+        let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+        let cyls = [(r1 as f64, -(e1 as f64), zh1 as f64), (r2 as f64, -(e2 as f64), 6.0f64)];
+        let exact = |p: [f64; 3]| dist_hub_complement_exact(t as f64, &cyls, p);
+        let ray = |p: [f64; 3]| dist_hub_complement(t as f64, &cyls, p, 160);
+        run("Nabe", &field, [-9.0, -9.0, -(t as f64) - 1.5], [9.0, 9.0, 0.5], 22, &exact, &ray);
+    }
+    // Ecken-Schale, ganzer Dicken-Fächer
+    for tf in [2.0f32, 2.1, 2.25, 2.4, 2.5, 3.0, 4.0, 6.0] {
+        let t = tf * delta;
+        let (field, _) = compile_for(thin_corner_node(t, 40.0, delta));
+        let boxes = thin_corner_boxes(t as f64, 40.0);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let exact = |p: [f64; 3]| dist_obb_union_complement_exact(&obbs, p);
+        let ray = |p: [f64; 3]| dist_to_boxes_complement(&boxes, p, 160);
+        let lo = -(t as f64 + delta as f64 + 1.0);
+        run(&format!("Schale {tf}"), &field, [lo; 3], [1.0; 3], 22, &exact, &ray);
+    }
+    // Rippen-Kämme
+    for (w, g) in [(1.5f32, 0.8f32), (2.0f32, 1.0f32)] {
+        let (node, boxes, span) = rib_comb_node(4, w, g, delta);
+        let (field, _) = compile_for(node);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let exact = |p: [f64; 3]| dist_obb_union_complement_exact(&obbs, p);
+        let ray = |p: [f64; 3]| dist_to_boxes_complement(&boxes, p, 160);
+        run(&format!("Kamm {w}/{g}"), &field, [-span, -3.0, -6.0], [span, 3.0, 0.5], 24, &exact, &ray);
+    }
+    // notch
+    for alpha in [90.0f64, 60.0] {
+        let (field, _) = compile_for(notch_union_node(alpha, delta as f64));
+        let gamma = std::f64::consts::PI - alpha.to_radians();
+        let obbs = vec![
+            obb_rot_z([0.0, -50.0, 0.0], [100.0, 50.0, 50.0], 0.0),
+            obb_rot_z([50.0 * gamma.sin(), -50.0 * gamma.cos(), 0.0], [100.0, 50.0, 50.0], gamma),
+        ];
+        let exact = |p: [f64; 3]| dist_obb_union_complement_exact(&obbs, p);
+        let ray = |p: [f64; 3]| dist_to_notch_complement(alpha, p);
+        run(&format!("notch {alpha}"), &field, [-10.0, -10.0, 42.0], [10.0, 10.0, 54.0], 22, &exact, &ray);
+    }
+}
+
+/// Kontroll-Äquivalenz des §8p-Auswerters: `Basis` MUSS die Produktion
+/// bit-genau reproduzieren, sonst misst das Experiment zwei Maschinen.
+#[test]
+#[ignore]
+fn probe_384_p8p_control() {
+    let delta = 2.0f32;
+    let cases: Vec<(String, CsgNode)> = vec![
+        ("Nabe".into(), stepped_hub_node(3.0, 6.0, 4.0, 0.5, 1.2, 1.8, delta)),
+        ("Schale 2".into(), thin_corner_node(4.0, 40.0, delta)),
+        ("notch 90".into(), notch_union_node(90.0, delta as f64)),
+        ("Kamm 1.5/0.8".into(), rib_comb_node(4, 1.5, 0.8, delta).0),
+        ("Kamm 2/1".into(), rib_comb_node(4, 2.0, 1.0, delta).0),
+    ];
+    for (name, node) in cases {
+        let (field, _) = compile_for(node);
+        let mut rng = 4242u64;
+        let (mut bad, mut moved) = (0usize, 0usize);
+        for _ in 0..4000 {
+            let mut nx = || {
+                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                ((rng >> 33) as f64 / (1u64 << 31) as f64 - 0.5) as f32
+            };
+            let p = [nx() * 26.0, nx() * 26.0, nx() * 18.0];
+            // Seit §8p IST die Produktion der LB-ONLY-Modus; `Basis` bleibt der
+            // §8o-Vergleichspfad der A/B-Messung.
+            if field.sdf(p, EvalMode::Visual).to_bits()
+                != eval_p8p(&field, p, P8pMode::LbOnly).to_bits()
+            {
+                bad += 1;
+            }
+            if field.sdf(p, EvalMode::Visual) != eval_p8p(&field, p, P8pMode::Basis) {
+                moved += 1;
+            }
+        }
+        println!("{name:<14} Kontroll-Abweichungen: {bad} / 4000, gegen §8o bewegt: {moved}");
+    }
+}
+
+/// §8p: WARUM bekommt der Kamm 4×1.5/0.8 keinen `L`-Block? Die Member des
+/// Stopps, benannt.
+#[test]
+#[ignore]
+fn probe_384_lb_refusal() {
+    fn name(n: &BoundedCsg) -> String {
+        match n {
+            BoundedCsg::Leaf { primitive, .. } => format!("Leaf({})", match primitive {
+                Primitive::Box { .. } => "Box",
+                Primitive::Cylinder { .. } => "Cylinder",
+                Primitive::Sphere { .. } => "Sphere",
+                _ => "andere",
+            }),
+            BoundedCsg::Union { .. } => "Union".into(),
+            BoundedCsg::Intersection { .. } => "Intersection".into(),
+            BoundedCsg::Difference { .. } => "Difference".into(),
+            BoundedCsg::Offset { .. } => "Offset".into(),
+            BoundedCsg::Extrude { .. } => "Extrude".into(),
+            BoundedCsg::Revolve { .. } => "Revolve".into(),
+            BoundedCsg::ArcChannel { .. } => "ArcChannel".into(),
+            other => format!("{:?}", std::mem::discriminant(other)),
+        }
+    }
+    fn flat<'a>(n: &'a BoundedCsg, out: &mut Vec<&'a BoundedCsg>) {
+        match n {
+            BoundedCsg::Union { left, right, .. } => {
+                flat(left, out);
+                flat(right, out);
+            }
+            // Die L-Synthese sieht den Baum INNERHALB des Offset-Stopps.
+            BoundedCsg::Offset { inner, .. } => flat(inner, out),
+            other => out.push(other),
+        }
+    }
+    let delta = 2.0f32;
+    for (w, g) in [(1.5f32, 0.8f32), (2.0f32, 1.0f32)] {
+        let (node, _b, _s) = rib_comb_node(4, w, g, delta);
+        let (field, rep) = compile_for(node);
+        let mut stops = Vec::new();
+        stop_nodes(&field, &mut stops);
+        println!("\n── Kamm {w}/{g}: {} Stopp(s), Status {:?}", stops.len(), rep.status());
+        for nd in &stops {
+            if let BoundedCsg::ArcChannel { inner, lb, .. } = nd {
+                let mut ms = Vec::new();
+                flat(inner, &mut ms);
+                println!(
+                    "   L-Block: {}, {} Union-Member:",
+                    lb.as_ref().map_or("—".into(), |b| format!("{} Stücke", b.pieces.len())),
+                    ms.len()
+                );
+                for m in ms {
+                    println!("     {} aabb={:?}", name(m), m.aabb());
+                }
+            }
+        }
+    }
+}
+
+// ══════════════ #384 §8p — die Gate-Basis: `L` schlägt `G` ══════════════
+//
+// Die Zerlegung des Kamm-Worst-Punktes (Sonde `probe_384_seam_vs_seam`) hat
+// zwei Vermutungen widerlegt und eine Ursache gefunden:
+//
+// * Der bindende Anteil von `w_geo` ist `K − de` (die Trust-Radius-Flanke),
+//   nicht `de − δ` und kein Kegel-Gate: der Term sitzt mit `de = 3.7285` fast
+//   am Rand seiner Trust-Region `K = 3.9084` und behauptet dort noch 0.18 mm.
+// * `U = min_j de_j` (die §8j-Empfehlung) ist bereits gebaut — `OP_STOP_LIMIT`
+//   klemmt genau `d ≥ δ − U` — und reicht am Worst-Punkt um 0.5378 mm nicht
+//   (`U = 2.0413` gegen `dist = 1.4531`).
+// * Die Ursache ist das `max` in `gate = max(G − d₀, L − δ)`: es nimmt die
+//   Schätzung (+0.3215) statt der Wahrheit (−0.5472).
+
+/// **§8p-Vertrags-Pin von [`crate::offset_channel::concave_gate`].**
+///
+/// Drei Aussagen, jede eine eigene Fehlerklasse:
+/// 1. Ist `L` verfügbar, gilt `gate = L − δ` — AUCH wenn `G − d₀` grösser ist.
+///    Genau dieser Fall ist der Kamm (0.3215 gegen −0.5472).
+/// 2. Ist `L` nicht verfügbar (`−1e30`), gilt `gate = G − d₀` — bit-identisch
+///    zum Zustand vor §8p. Das ist die Kontroll-Äquivalenz auf Term-Ebene.
+/// 3. Die Sentinel-Arithmetik ist EXAKT: kein `x + 1e30`, das die Mantisse
+///    löscht (Präzedenzfall 1.435 mm, §8j-fidget-Falle).
+#[test]
+fn concave_gate_prefers_the_lower_bound_384() {
+    use crate::offset_channel::{concave_gate, LB_AVAIL};
+    let (g, d0, delta) = (0.8684f32, 0.546933f32, 2.0f32);
+    // (1) L da, aber KLEINER als die G-Kappe → L gewinnt trotzdem.
+    let l = 1.452760f32;
+    assert_eq!(
+        concave_gate(g, d0, l - delta),
+        l - delta,
+        "L verfügbar, aber das Gate nahm die G-Kappe — genau der §8o-Fehler, der \
+         am Rippen-Kamm 144 Punkte Phantom-Material erzeugte"
+    );
+    assert!(g - d0 > l - delta, "die Sonde misst den falschen Fall");
+    // (2) L da und GRÖSSER als die G-Kappe (Stufen-Nabe) → L gewinnt auch da.
+    assert_eq!(concave_gate(g, 2.884f32, 2.3156 - delta), 2.3156 - delta);
+    // (3) kein L → G-Kappe, exakt wie vor §8p.
+    let none = crate::offset_lb::LB_NONE - delta;
+    assert!(none < LB_AVAIL, "der Sentinel muss unter der Schwelle liegen");
+    assert_eq!(concave_gate(g, d0, none), g - d0);
+    assert_eq!(concave_gate(g, -3.5, none), g + 3.5);
+    // (3b) und keine Mantissen-Löschung: der Sentinel darf das Ergebnis nicht
+    // um ein einziges ULP verschieben.
+    assert_eq!(concave_gate(g, d0, none).to_bits(), (g - d0).to_bits());
+}
+
+/// **§8p-Satz-Pin: `f ≥ min(d₀, δ − L, 0)`, gemessen statt geglaubt.**
+///
+/// Der Satz aus [`crate::offset_channel::concave_gate`] listet genau drei
+/// untere Schranken für den Stoppwert, eine je Term-Zweig: `d₀` (kein Term
+/// bindet), `δ − L` (der addierende Zweig, gekappt vom Gate) und `0` (die
+/// Luftseiten-Klemme `min(d, −w_geo)`, die nie unter Null geht). Der Stoppwert
+/// ist ein `min` über diese drei.
+///
+/// **Die Über-Seiten-Leere ist die Folgerung, nicht die Ungleichung selbst:**
+/// ist `dist < δ`, so sind alle drei Schranken `≥ 0` (`d₀ ≥ δ − dist > 0`,
+/// `δ − L ≥ δ − dist > 0`), also `f ≥ 0` — kein Phantom-Material. Umgekehrt
+/// darf `f` sehr wohl unter `δ − L` liegen, wo `L < δ` ist: dort greift die
+/// Luftseiten-Klemme, und die ist absichtlich pessimistisch (march-sicher).
+/// Eine erste Fassung dieses Pins forderte `f ≥ δ − L` und schlug prompt fehl —
+/// die Klemme, nicht das Gate, war der Grund.
+///
+/// Der Pin prüft die Ungleichung direkt am Feld — an der Fixture, an der das
+/// Gate 144 Punkte gerettet hat.
+#[test]
+fn field_never_undercuts_the_lower_bound_384() {
+    let delta = 2.0f32;
+    let (node, _boxes, span) = rib_comb_node(4, 2.0, 1.0, delta);
+    let (field, _) = compile_for(node);
+    let mut bs = Vec::new();
+    collect_lb(&field, &mut bs);
+    assert_eq!(bs.len(), 1, "der Kamm 4×2.0/1.0 muss GENAU EINEN L-Block tragen");
+    let blk = &bs[0];
+    let mut stops = Vec::new();
+    stop_nodes(&field, &mut stops);
+    assert_eq!(stops.len(), 1);
+    let BoundedCsg::ArcChannel { inner, .. } = stops[0] else { unreachable!() };
+    let (mut worst, mut checked) = (0.0f32, 0usize);
+    let n = 22usize;
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let p = [
+                    (-span + 2.0 * span * (ix as f64 + 0.2113248654) / n as f64) as f32,
+                    (-3.0 + 6.0 * (iy as f64 + 0.5773502692) / n as f64) as f32,
+                    (-6.0 + 6.5 * (iz as f64 + 0.7886751346) / n as f64) as f32,
+                ];
+                let d0 = inner.sdf(p, EvalMode::Visual);
+                let l = crate::offset_lb::lb_value(p, d0, blk);
+                if l <= -1.0e29 {
+                    continue; // ausserhalb Ω oder ausserhalb der Term-Kugel
+                }
+                checked += 1;
+                let bound = d0.min(delta - l).min(0.0);
+                worst = worst.max(bound - field.sdf(p, EvalMode::Visual));
+            }
+        }
+    }
+    assert!(checked > 500, "zu wenige Punkte mit gültigem L: {checked}");
+    assert!(
+        worst <= 1e-4,
+        "das Feld unterschreitet min(d₀, δ − L, 0) um {worst:.3e} mm an {checked} geprüften \
+         Punkten — der §8p-Satz gilt im Feld nicht, und damit ist die Über-Seiten-Zusage keine"
+    );
+}
+
+// ══════════════ #384 §8p — konvexe Extrude-Member im `L`-Block ══════════════
+
+/// Ein L-förmiges (NICHT konvexes) Extrude-Profil als Union-Member.
+fn l_shape_extrude(fid: u32, hh: f32) -> CsgNode {
+    let v = [
+        [0.0f32, 0.0],
+        [6.0, 0.0],
+        [6.0, 2.0],
+        [2.0, 2.0],
+        [2.0, 6.0],
+        [0.0, 6.0],
+    ];
+    let segments: Vec<SketchSegment> = (0..v.len())
+        .map(|i| SketchSegment::Line { start: v[i], end: v[(i + 1) % v.len()] })
+        .collect();
+    CsgNode::Extrude {
+        id: id(fid),
+        sketch: Box::new(Sketch2d::Prim(Sketch2dPrimitive::Path { segments, closed: true })),
+        half_height: hh,
+        wall_subs: None,
+    }
+}
+
+/// **§8p-Sicherheits-Pin: ein NICHT-konvexes Extrude-Profil verweigert den
+/// ganzen Block.**
+///
+/// Die Austritts-Aufzählung von `LbSolid::Poly` setzt
+/// `int P = ⋂{n_i·q < c_i}` voraus. Für ein L-Profil ist der Schnitt der sechs
+/// Facetten-Halbräume die konvexe HÜLLE, also echt grösser als `P` — ein
+/// Randstück im fehlenden Quadranten läge im Schnitt und würde für vergraben
+/// gehalten. Es fiele aus dem `min`, `L` überschätzte die Distanz, und das
+/// §8p-Gate (das jetzt ALLEIN auf `L` steht) erlaubte Phantom-Material. Der
+/// einzige sichere Ausgang ist die Verweigerung des GANZEN Blocks — dann
+/// bindet wie vor §8p die `G`-Kappe.
+#[test]
+fn non_convex_extrude_member_refuses_the_lb_block_384() {
+    let delta = 2.0f32;
+    let node = CsgNode::Offset(
+        Box::new(CsgNode::Union(
+            Box::new(box_at(1, [0.0, 0.0, -6.0], [20.0, 20.0, 6.0])),
+            Box::new(l_shape_extrude(2, 5.0)),
+        )),
+        -delta,
+    );
+    let (field, _) = compile_for(node);
+    let mut blocks = Vec::new();
+    collect_lb(&field, &mut blocks);
+    assert!(
+        blocks.is_empty(),
+        "ein L-förmiges Extrude-Profil hat einen L-Block bekommen ({} Stücke) — die \
+         Konvexitäts-Prüfung greift nicht, und `⋂{{h_i ≤ 0}} ⊋ P` macht jedes \
+         Vergraben-Urteil ungültig",
+        blocks.first().map_or(0, |b| b.pieces.len())
+    );
+    // Gegenprobe, damit der Pin nicht bloss „Extrudes werden generell
+    // verweigert" misst: derselbe Syntheseweg baut sehr wohl einen Block, wenn
+    // die Extrude-Member KONVEX sind — der Rippen-Kamm 4×1.5/0.8 trägt drei
+    // konvexe Kontakt-Prismen und bekommt 296 Stücke
+    // (`lb_block_covers_convex_extrude_members_384` misst dort zusätzlich die
+    // Sicherheits-Ungleichung).
+    let (comb, _b, _s) = rib_comb_node(4, 1.5, 0.8, delta);
+    let (cf, _) = compile_for(comb);
+    let mut cb = Vec::new();
+    collect_lb(&cf, &mut cb);
+    assert_eq!(
+        cb.len(),
+        1,
+        "der Kamm mit KONVEXEN Extrude-Prismen bekommt keinen Block — dann prüft die \
+         Verweigerung oben nur, dass Extrudes generell scheitern"
+    );
+}
+
+/// **§8p-Sicherheits-Pin: der Block mit Extrude-Membern lügt nicht.**
+///
+/// Der Rippen-Kamm 4×1.5/0.8 trägt acht Union-Member — fünf Boxen und drei
+/// Extrude-Kontaktprismen. Seit §8p baut die Synthese daraus einen Block; die
+/// eine Ungleichung, an der alles hängt, ist unverändert `L ≤ dist(x,∁Ω)`.
+/// Überschätzt `L` die Distanz, öffnet das Gate (das seit §8p ALLEIN auf `L`
+/// steht) weiter, als die Geometrie erlaubt.
+///
+/// Referenz ist die exakte Zerlegung über die fünf BOXEN. Die Prismen liegen
+/// in deren Vereinigung (`prism_subset_of_union`, geprüft bei der Synthese)
+/// und ragen nur um die f32-Rundung ihrer Kanten hinaus (gemessen: 5·10⁻⁷ mm),
+/// also ist die Box-Referenz bis auf diese Grössenordnung auch die Referenz
+/// des Feld-Körpers.
+#[test]
+fn lb_block_covers_convex_extrude_members_384() {
+    let delta = 2.0f32;
+    let (node, boxes, span) = rib_comb_node(4, 1.5, 0.8, delta);
+    let (field, _) = compile_for(node);
+    let mut blocks = Vec::new();
+    collect_lb(&field, &mut blocks);
+    assert_eq!(
+        blocks.len(),
+        1,
+        "der Kamm 4×1.5/0.8 muss seit §8p GENAU EINEN L-Block tragen (fünf Boxen + drei \
+         konvexe Extrude-Prismen sind darstellbar) — sonst misst dieser Pin nichts"
+    );
+    let blk = &blocks[0];
+    assert!(
+        blk.pieces.len() > 200,
+        "nur {} Stücke — acht Member liefern deutlich mehr; ein zu kleiner Satz heisst \
+         fehlende Randstücke",
+        blk.pieces.len()
+    );
+    let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+    let mut stops = Vec::new();
+    stop_nodes(&field, &mut stops);
+    let BoundedCsg::ArcChannel { inner, .. } = stops[0] else { unreachable!() };
+    let (mut worst, mut checked) = (0.0f64, 0usize);
+    let n = 20usize;
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let p = [
+                    -span + 2.0 * span * (ix as f64 + 0.2113248654) / n as f64,
+                    -3.0 + 6.0 * (iy as f64 + 0.5773502692) / n as f64,
+                    -6.0 + 6.5 * (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let d0 = inner.sdf(pf, EvalMode::Visual);
+                let l = crate::offset_lb::lb_value(pf, d0, blk) as f64;
+                if l <= -1.0e29 {
+                    continue;
+                }
+                checked += 1;
+                worst = worst.max(l - dist_obb_union_complement_exact(&obbs, p));
+            }
+        }
+    }
+    assert!(checked > 500, "zu wenige Punkte mit gültigem L: {checked}");
+    assert!(
+        worst <= 1e-3,
+        "die Stück-Schranke übersteigt die exakte Distanz um {worst:.3e} mm an {checked} \
+         Punkten — sie ERFINDET Distanz, und das §8p-Gate steht allein auf ihr"
+    );
+}
