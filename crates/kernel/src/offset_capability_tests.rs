@@ -10042,6 +10042,8 @@ fn seg_arc(
         v: [0.0; 3],
         r: len,
         sweep: -1.0,
+        e: [1.0, 0.0],
+        d_e: 0.0,
         bc: [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1]), 0.5 * (a[2] + b[2])],
         br: 0.5 * len,
         m1s,
@@ -11299,4 +11301,432 @@ fn witness_outside_rules_cover_primitives_and_nesting_384() {
     );
     checked += 2;
     assert!(checked >= 20, "nur {checked} Fälle geprüft");
+}
+
+// ══════════════ #384 §8y / P4-A0 — der algebraische Bogen ══════════════
+
+use crate::offset_channel::{arc_data_valid, diamond, diamond_dir};
+
+/// Ein gekrümmter Bogen von Hand: Radius `r` um den Ursprung in der xy-Ebene,
+/// Startrichtung `+x`, Öffnungswinkel `alpha`.
+fn synth_arc(r: f32, alpha: f64, m1s: [f32; 3], m1e: [f32; 3]) -> ChannelArc {
+    let e = [alpha.cos() as f32, alpha.sin() as f32];
+    let en = (e[0] * e[0] + e[1] * e[1]).sqrt();
+    let e = [e[0] / en, e[1] / en];
+    let d_e = diamond(e[0], e[1]);
+    let a = [r, 0.0, 0.0];
+    let b = [r * e[0], r * e[1], 0.0];
+    ChannelArc {
+        c: [0.0; 3],
+        u: [1.0, 0.0, 0.0],
+        v: [0.0, 1.0, 0.0],
+        r,
+        sweep: alpha as f32,
+        e,
+        d_e,
+        bc: [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1]), 0.0],
+        br: 0.5 * ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt() + 1e-4,
+        m1s,
+        m2s: [0.0, 0.0, 1.0],
+        m1e,
+        m2e: [0.0, 0.0, 1.0],
+    }
+}
+
+/// **§8y-Pin 1: das Diamant-Lemma.**
+///
+/// Streng monoton auf `[0,π]`, an der Quadranten-Naht `x = 0` konsistent,
+/// Nenner bewiesen nullfrei, und die Inverse liefert DENSELBEN Strahl.
+/// Dazu die geschlossene Form `D(φ) = (1 + tan(φ − π/4))/2` auf `[0,π/2]`,
+/// die die Analyse analytisch statt abgetastet macht.
+#[test]
+fn arc_diamond_is_monotone_and_invertible_384() {
+    let n = 4000;
+    let mut prev = -1.0f64;
+    let mut min_den = f64::INFINITY;
+    for i in 0..=n {
+        let phi = std::f64::consts::PI * i as f64 / n as f64;
+        let (x, y) = (phi.cos() as f32, phi.sin() as f32);
+        let d = diamond(x, y) as f64;
+        assert!(d.is_finite() && (0.0..=2.0).contains(&d), "D({phi}) = {d} ausserhalb [0,2]");
+        assert!(d > prev - 1e-6, "D nicht monoton bei φ={phi}: {prev} → {d}");
+        prev = d;
+        min_den = min_den.min(if x >= 0.0 { (x + y) as f64 } else { (y - x) as f64 });
+        // Inverse: derselbe Strahl.
+        let w = diamond_dir(d as f32);
+        let wn = (w[0] * w[0] + w[1] * w[1]).sqrt();
+        let (cx, cy) = (w[0] / wn, w[1] / wn);
+        assert!(
+            ((cx - x).abs() as f64) < 2e-3 && ((cy - y).abs() as f64) < 2e-3,
+            "Inverse bei φ={phi}: ({cx},{cy}) statt ({x},{y})"
+        );
+    }
+    assert!(min_den > 0.9, "kleinster Nenner {min_den} — das Nullfrei-Lemma trägt nicht");
+    // Quadranten-Naht: beide Zweige liefern exakt 1.
+    assert_eq!(diamond(0.0, 1.0), 1.0);
+    assert_eq!(diamond(0.0, 7.5), 1.0);
+    assert_eq!(diamond(-0.0, 1.0), 1.0);
+    // Endpunkte.
+    assert_eq!(diamond(1.0, 0.0), 0.0);
+    assert_eq!(diamond(-1.0, 0.0), 2.0);
+    // Geschlossene Form auf [0, π/2].
+    for i in 0..=200 {
+        let phi = std::f64::consts::FRAC_PI_2 * i as f64 / 200.0;
+        let cf = (1.0 + (phi - std::f64::consts::FRAC_PI_4).tan()) / 2.0;
+        let d = diamond(phi.cos() as f32, phi.sin() as f32) as f64;
+        assert!((d - cf).abs() < 1e-5, "geschlossene Form bricht bei φ={phi}: {d} vs {cf}");
+    }
+}
+
+/// **§8y-Pin 2: das Sektorlemma und der nächste Punkt.**
+///
+/// `innen ⟺ a = y ≥ 0 ∧ b = x·e₁ − y·e₀ ≥ 0` für Minor-Bögen. Geprüft gegen
+/// eine unabhängige Referenz: der wahre nächste Punkt eines Kreisbogens,
+/// per dichter Abtastung des Bogens berechnet.
+#[test]
+fn arc_closest_matches_a_dense_reference_384() {
+    let (mut cases, mut worst) = (0usize, 0.0f64);
+    for alpha in [0.02f64, 0.4, 1.0, 1.5707963, 2.2, 3.0, 3.14159265] {
+        for r in [0.05f32, 1.0, 40.0] {
+            let arc = synth_arc(r, alpha, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]);
+            assert!(arc_data_valid(&arc), "α={alpha}, r={r}: Dateninvariante verletzt");
+            for i in 0..23 {
+                for j in 0..23 {
+                    for k in 0..3 {
+                        let p = [
+                            (i as f32 - 11.0) * 0.37 * r.max(1.0),
+                            (j as f32 - 11.0) * 0.41 * r.max(1.0),
+                            (k as f32 - 1.0) * 0.9 * r.max(1.0),
+                        ];
+                        let (de, q, t) = crate::offset_channel::arc_closest(&arc, p);
+                        // Unabhängige Referenz: dichte Abtastung des Bogens.
+                        let n = 20000;
+                        let mut best = f64::INFINITY;
+                        for s in 0..=n {
+                            let ph = alpha * s as f64 / n as f64;
+                            let qq = [
+                                r as f64 * ph.cos(),
+                                r as f64 * ph.sin(),
+                                0.0,
+                            ];
+                            let d = ((p[0] as f64 - qq[0]).powi(2)
+                                + (p[1] as f64 - qq[1]).powi(2)
+                                + (p[2] as f64 - qq[2]).powi(2))
+                            .sqrt();
+                            best = best.min(d);
+                        }
+                        let err = (de as f64 - best).abs();
+                        worst = worst.max(err);
+                        assert!(
+                            err < 1e-3 * (r as f64).max(1.0),
+                            "α={alpha} r={r} p={p:?}: arc_closest {de} vs Referenz {best}"
+                        );
+                        assert!((0.0..=1.0).contains(&t), "t={t} ausserhalb [0,1]");
+                        // Der Fusspunkt liegt auf dem Kreis.
+                        let rq = ((q[0] * q[0] + q[1] * q[1]).sqrt() - r).abs();
+                        assert!(rq < 1e-3 * r.max(1.0), "Fusspunkt nicht auf dem Kreis: {rq}");
+                        cases += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(cases > 30_000, "nur {cases} Proben");
+    println!("§8y: max |arc_closest − dichte Referenz| = {worst:.3e}");
+}
+
+/// **§8y-Pin 3: die Randfälle — Strahlen, ρ-Schwelle, Tie, Massstab.**
+#[test]
+fn arc_closest_edge_families_384() {
+    let eps = 1e-4f32;
+    for alpha in [1e-4f64, 0.5, 1.5707963, 3.14159, 3.14159265358979] {
+        let arc = synth_arc(2.0, alpha, [0.0, 1.0, 0.0], [0.0, 1.0, 0.0]);
+        assert!(arc_data_valid(&arc));
+        // Auf dem Startstrahl und knapp beidseits.
+        let on_start = [3.0f32, 0.0, 0.0];
+        let (_, _, t0) = crate::offset_channel::arc_closest(&arc, on_start);
+        assert_eq!(t0, 0.0, "α={alpha}: Startstrahl liefert t={t0}");
+        let just_below = [3.0f32, -eps, 0.0];
+        let (_, _, tb) = crate::offset_channel::arc_closest(&arc, just_below);
+        assert_eq!(tb, 0.0, "knapp unter dem Startstrahl muss auf den Start klemmen");
+        // Auf dem Endstrahl.
+        let (ex, ey) = (arc.e[0], arc.e[1]);
+        let on_end = [3.0 * ex, 3.0 * ey, 0.0];
+        let (_, _, te) = crate::offset_channel::arc_closest(&arc, on_end);
+        assert!((te - 1.0).abs() < 2e-3, "α={alpha}: Endstrahl liefert t={te}");
+        // ρ unter und über der Schwelle.
+        for rho in [0.0f32, 5e-10, 2e-9, 1e-6] {
+            let p = [rho, 0.0, 1.0];
+            let (de, q, t) = crate::offset_channel::arc_closest(&arc, p);
+            assert!(de.is_finite() && q.iter().all(|v| v.is_finite()) && t.is_finite(),
+                "ρ={rho}: nicht endlich");
+        }
+        // Bitgleiche Endpunkt-Distanzen (Tie): der Punkt auf der
+        // Winkelhalbierenden JENSEITS des Bogens.
+        let mid = [(1.0 + ex) * 0.5, (0.0 + ey) * 0.5, 0.0];
+        let ml = (mid[0] * mid[0] + mid[1] * mid[1]).sqrt();
+        if ml > 1e-6 && alpha > 0.1 {
+            let far = [-mid[0] / ml * 50.0, -mid[1] / ml * 50.0, 0.0];
+            let (_, _, tt) = crate::offset_channel::arc_closest(&arc, far);
+            assert!(tt == 0.0 || tt == 1.0, "ausserhalb muss ein Endpunkt gewinnen, t={tt}");
+        }
+    }
+    // Grosse Translation, kleiner Radius.
+    let mut arc = synth_arc(0.01, 1.0, [0.0, 1.0, 0.0], [0.0, 1.0, 0.0]);
+    arc.c = [1.0e6, -3.0e5, 7.0e5];
+    let (de, q, t) = crate::offset_channel::arc_closest(&arc, [1.0e6 + 0.02, -3.0e5, 7.0e5]);
+    assert!(de.is_finite() && q.iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(&t));
+}
+
+/// **§8y-Pin 4: Major- und Vollbögen werden fail-closed verweigert.**
+///
+/// Kein toter Beweis-Code. Die Invariante läuft über die DATEN (`e₁ ≥ 0`,
+/// `0 < D_e ≤ 2`), nicht über das alte `sweep ≤ π`-Laufzeitkriterium — `sweep`
+/// ist keine Autorität mehr.
+#[test]
+fn arc_major_and_full_are_refused_384() {
+    // Major (α > π) ⇒ e₁ < 0 ⇒ Invariante verletzt.
+    for alpha in [3.3f64, 4.0, 5.0, 6.0] {
+        let arc = synth_arc(1.0, alpha, [0.0, 1.0, 0.0], [0.0, 1.0, 0.0]);
+        assert!(
+            !arc_data_valid(&arc),
+            "Major-Bogen α={alpha} (e₁={}) wird als gültig akzeptiert",
+            arc.e[1]
+        );
+    }
+    // Beschädigte Werte.
+    let good = synth_arc(1.0, 1.0, [0.0, 1.0, 0.0], [0.0, 1.0, 0.0]);
+    assert!(arc_data_valid(&good));
+    for (tag, mut bad) in [
+        ("r = 0", { let mut a = good.clone(); a.r = 0.0; a }),
+        ("r NaN", { let mut a = good.clone(); a.r = f32::NAN; a }),
+        ("e NaN", { let mut a = good.clone(); a.e[0] = f32::NAN; a }),
+        ("e nicht normiert", { let mut a = good.clone(); a.e = [0.5, 0.5]; a }),
+        ("D_e = 0", { let mut a = good.clone(); a.d_e = 0.0; a }),
+        ("D_e > 2", { let mut a = good.clone(); a.d_e = 2.5; a }),
+        ("D_e NaN", { let mut a = good.clone(); a.d_e = f32::NAN; a }),
+        ("c inf", { let mut a = good.clone(); a.c[1] = f32::INFINITY; a }),
+    ] {
+        assert!(!arc_data_valid(&bad), "{tag}: wird als gültig akzeptiert");
+        bad.sweep = 1.0;
+    }
+    // Und die ECHTE Synthese emittiert nie einen Major-/Vollbogen.
+    let delta = 2.0f32;
+    let mut checked = 0usize;
+    for node in [stepped_hub_node(3.0, 6.0, 4.0, 0.5, 1.2, 1.8, delta)] {
+        let (field, _) = compile_for(node);
+        let mut stops = Vec::new();
+        stop_nodes(&field, &mut stops);
+        for st in stops {
+            let BoundedCsg::ArcChannel { channels, .. } = st else { continue };
+            for ch in channels {
+                for arc in &ch.arcs {
+                    assert!(
+                        arc_data_valid(arc),
+                        "die Synthese hat einen ungültigen Bogen emittiert: {arc:?}"
+                    );
+                    if arc.sweep >= 0.0 {
+                        assert!(arc.e[1] >= 0.0, "Major-Bogen aus der Synthese");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked >= 4, "nur {checked} echte gekrümmte Bögen geprüft");
+}
+
+/// **§8y-Pin 5: die Mutationen müssen reissen.**
+///
+/// AND↔OR im Sektortest, fehlender Endpunktzweig, gedrehte Tie-Richtung —
+/// jede Mutation muss an der Familie messbar falsch werden. Sonst prüft
+/// `arc_closest_matches_a_dense_reference_384` die Struktur nicht.
+#[test]
+fn arc_mutations_break_the_reference_384() {
+    let alpha = 1.0f64;
+    let r = 2.0f32;
+    let arc = synth_arc(r, alpha, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]);
+    let reference = |p: [f32; 3]| -> f64 {
+        let n = 20000;
+        let mut best = f64::INFINITY;
+        for s in 0..=n {
+            let ph = alpha * s as f64 / n as f64;
+            let q = [r as f64 * ph.cos(), r as f64 * ph.sin(), 0.0];
+            best = best.min(
+                ((p[0] as f64 - q[0]).powi(2)
+                    + (p[1] as f64 - q[1]).powi(2)
+                    + (p[2] as f64 - q[2]).powi(2))
+                .sqrt(),
+            );
+        }
+        best
+    };
+    // Die drei Mutationen, lokal nachgebaut.
+    let mutant = |p: [f32; 3], mode: u8| -> f32 {
+        let d = [p[0] - arc.c[0], p[1] - arc.c[1], p[2] - arc.c[2]];
+        let x = d[0] * arc.u[0] + d[1] * arc.u[1] + d[2] * arc.u[2];
+        let y = d[0] * arc.v[0] + d[1] * arc.v[1] + d[2] * arc.v[2];
+        let rho = (x * x + y * y).sqrt().max(1e-9);
+        let q0 = [arc.c[0] + arc.r * arc.u[0], arc.c[1] + arc.r * arc.u[1], arc.c[2]];
+        let q1 = [
+            arc.c[0] + arc.r * (arc.u[0] * arc.e[0] + arc.v[0] * arc.e[1]),
+            arc.c[1] + arc.r * (arc.u[1] * arc.e[0] + arc.v[1] * arc.e[1]),
+            arc.c[2],
+        ];
+        let nd = |q: [f32; 3]| {
+            ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+        };
+        let a = y;
+        let b = x * arc.e[1] - y * arc.e[0];
+        let inside = match mode {
+            0 => a >= 0.0 || b >= 0.0, // Mutation: OR statt AND
+            _ => a >= 0.0 && b >= 0.0,
+        };
+        if inside {
+            let q = [
+                arc.c[0] + arc.r * (arc.u[0] * (x / rho) + arc.v[0] * (y / rho)),
+                arc.c[1] + arc.r * (arc.u[1] * (x / rho) + arc.v[1] * (y / rho)),
+                arc.c[2],
+            ];
+            nd(q)
+        } else if mode == 1 {
+            nd(q0) // Mutation: Endpunktzweig fehlt, immer der Start
+        } else {
+            let (d0, d1) = (nd(q0), nd(q1));
+            if mode == 2 {
+                if d0 < d1 { d1 } else { d0 } // Mutation: falsche Tie-Richtung/Auswahl
+            } else if d0 <= d1 {
+                d0
+            } else {
+                d1
+            }
+        }
+    };
+    let mut broke = [0usize; 3];
+    let mut ok_ref = 0usize;
+    for i in 0..40 {
+        for j in 0..40 {
+            let p = [(i as f32 - 20.0) * 0.31, (j as f32 - 20.0) * 0.29, 0.0];
+            let want = reference(p);
+            let got = crate::offset_channel::arc_closest(&arc, p).0 as f64;
+            assert!((got - want).abs() < 2e-3, "Produktion weicht ab: {got} vs {want}");
+            ok_ref += 1;
+            for m in 0..3u8 {
+                if (mutant(p, m) as f64 - want).abs() > 2e-3 {
+                    broke[m as usize] += 1;
+                }
+            }
+        }
+    }
+    assert!(ok_ref > 1000, "nur {ok_ref} Referenzproben");
+    for (m, tag) in ["OR statt AND", "kein Endpunktzweig", "falsche Endpunkt-Auswahl"]
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (i, *t))
+    {
+        assert!(
+            broke[m] > 0,
+            "die Mutation „{tag}“ blieb still — dann prüft die Familie die Struktur nicht"
+        );
+    }
+}
+
+/// **§8y-Pin 6: das Abweichungslemma — analytisch, nicht nur Fixture-Delta.**
+///
+/// Der Parameterwechsel `φ/α → D(φ)/D_e` verschiebt nur den nlerp-Parameter.
+/// Die Kette:
+///
+/// 1. `ε_D(α) = sup_φ |D(φ)/D(α) − φ/α|` — mit der geschlossenen Form
+///    `D(φ) = (1+tan(φ−π/4))/2` analytisch fassbar; das Maximum über ALLE
+///    `α ∈ (0,π]` liegt bei `α ≈ 49°` und beträgt **0.0911**.
+/// 2. `|N(a,b,t₁) − N(a,b,t₂)| ≤ 2·√((1−c)/(1+c))·|t₁−t₂|` mit `c = a·b`
+///    (nlerp-Lipschitz; die Wurzel explodiert bei fast antipodalen `a`,`b`).
+/// 3. `|Δs_i| ≤ K · 2√((1−c)/(1+c)) · ε_D(α)` im Trust-Radius. `min`/`max`
+///    sind nicht-expansiv, also ist das zugleich die **Feldabweichungs-Schranke**
+///    des reinen Parameterwechsels.
+///
+/// Der Pin misst `c` an den ECHTEN Bögen, rechnet die Schranke aus und hält
+/// fest, dass sie das gemessene Golden-Delta (0.031 mm an der Steinmetz)
+/// dominiert. Ausserdem: die Schranke explodiert nachweislich bei `c → −1`.
+#[test]
+fn arc_parameter_deviation_bound_384() {
+    // (1) ε_D analytisch über α, geschlossene Form.
+    let d_of = |phi: f64| -> f64 {
+        let (x, y) = (phi.cos(), phi.sin());
+        if x >= 0.0 { y / (x + y) } else { 1.0 + (-x) / (y - x) }
+    };
+    let mut eps_max = 0.0f64;
+    let mut at = 0.0f64;
+    for i in 1..=2000 {
+        let a = std::f64::consts::PI * i as f64 / 2000.0;
+        let da = d_of(a);
+        let mut m = 0.0f64;
+        for j in 0..=400 {
+            let p = a * j as f64 / 400.0;
+            m = m.max((d_of(p) / da - p / a).abs());
+        }
+        if m > eps_max {
+            eps_max = m;
+            at = a;
+        }
+    }
+    assert!(
+        (0.085..0.095).contains(&eps_max),
+        "ε_D = {eps_max} — erwartet ≈ 0.0911 bei α ≈ 0.859 rad, gemessen bei {at}"
+    );
+    // (2)/(3) an den ECHTEN gekrümmten Bögen.
+    let delta = 2.0f32;
+    let (field, _) = compile_for(stepped_hub_node(3.0, 6.0, 4.0, 0.5, 1.2, 1.8, delta));
+    let mut stops = Vec::new();
+    stop_nodes(&field, &mut stops);
+    let (mut arcs, mut worst_bound, mut worst_c) = (0usize, 0.0f64, 1.0f64);
+    for st in stops {
+        let BoundedCsg::ArcChannel { channels, .. } = st else { continue };
+        for ch in channels {
+            for a in &ch.arcs {
+                if a.sweep < 0.0 {
+                    continue;
+                }
+                arcs += 1;
+                for (p, q) in [(a.m1s, a.m1e), (a.m2s, a.m2e)] {
+                    let c = (p[0] * q[0] + p[1] * q[1] + p[2] * q[2]) as f64;
+                    let c = c.clamp(-1.0, 1.0);
+                    worst_c = worst_c.min(c);
+                    let lip = 2.0 * ((1.0 - c) / (1.0 + c).max(1e-12)).sqrt();
+                    worst_bound = worst_bound.max(ch.trust as f64 * lip * eps_max);
+                }
+            }
+        }
+    }
+    assert!(arcs >= 4, "nur {arcs} gekrümmte Bögen");
+    println!(
+        "§8y-Abweichung: ε_D = {eps_max:.4} (α ≈ {at:.3} rad) | schlechtestes c = {worst_c:.4} \
+         | Feldschranke = {worst_bound:.4} mm | gemessenes Golden-Delta = 0.0315 mm"
+    );
+    assert!(
+        worst_bound >= 0.0315,
+        "die analytische Schranke {worst_bound} unterschreitet das GEMESSENE Golden-Delta \
+         0.0315 mm — dann ist die Herleitung falsch"
+    );
+    // Die Schranke explodiert bei fast antipodalen nlerp-Endvektoren — genau
+    // deshalb ist ein Änderungsbudget nötig.
+    let blow = |c: f64| 2.0 * ((1.0 - c) / (1.0 + c)).sqrt() * eps_max * 3.91;
+    assert!(blow(-0.9) > 2.0 * blow(-0.5), "die Schranke wächst bei c → −1 nicht");
+    assert!(blow(-0.999) > 20.0, "die Schranke explodiert bei c → −1 nicht: {}", blow(-0.999));
+    println!(
+        "§8y-Budget: c = −0.5 ⇒ {:.3} mm, c = −0.9 ⇒ {:.3} mm, c = −0.999 ⇒ {:.1} mm",
+        blow(-0.5),
+        blow(-0.9),
+        blow(-0.999)
+    );
+    // Das A0-Änderungsbudget sitzt im EXPLOSIONS-Regime, nicht als scharfe
+    // Schranke: die echten Bögen liegen bei c = −0.835 (Schranke 2.37 mm), das
+    // Gate bei c = −0.95. Ein schärferes Budget würde gesunde Bögen verwerfen,
+    // ein weicheres den antipodalen Fall durchlassen.
+    assert!(
+        worst_c > crate::offset_channel::ARC_NLERP_COS_MIN as f64,
+        "die echten Bögen ({worst_c}) unterschreiten das Explosions-Gate ({}) — dann ist \
+         das Gate falsch gesetzt",
+        crate::offset_channel::ARC_NLERP_COS_MIN
+    );
 }

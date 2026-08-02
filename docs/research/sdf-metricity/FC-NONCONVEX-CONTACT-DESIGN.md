@@ -6010,6 +6010,216 @@ ungedeckt, `eta = None`.
 * **Die Zusage selbst ist unverändert**; die Unter-Seiten-Ausnahme steht
   wörtlich, und `channel_limit` steht bis P5b weiter auf der Modell-Annahme.
 
+## 8y. P4-A0 — der Bogen ohne Trigonometrie (#384, 2026-08-02)
+
+**Das erste Paket der Kette, das die Produktion ändert.** Golden bewegt sich —
+dokumentiert, vollständig bogen-attributierbar.
+
+### Warum
+
+Rusts `sin`/`cos`/`atan2` sind **nicht korrekt gerundet und
+plattformabhängig**: auf x86-64 die System-libm, auf `wasm32` ein
+einkompilierter Port. Der produzierte Wert ist nicht `fl(sin_exakt(x))`. Die
+f32-Modell-Doktrin aus §8u kann sie deshalb **nie** einschliessen, und ein
+ulp-Budget wäre genau der Fudge-Faktor, den diese Kette verbietet. Der Umweg
+über den Winkel ist unnötig: Sektor-Zuordnung und nächster Punkt sind rein
+algebraisch.
+
+### Die Konstruktion
+
+In der Bogenebene `(u,v)`, mit `z = (x,y)`, Startvektor `s = (1,0)` und
+gespeichertem Endvektor `e = (cos α, sin α)`:
+
+* **Sektor** über zwei Kreuzprodukte: `a = ⟨s,z⟩_⊥ = y` und
+  `b = ⟨z,e⟩_⊥ = x·e₁ − y·e₀`.
+* **Fusspunkt innen**: `q = c + r·(u·(x/ρ) + v·(y/ρ))`.
+* **Endpunkte**: `q₀ = c + r·u` (denn `e_start = (1,0)`) und
+  `q₁ = c + r·(u·e₀ + v·e₁)` — beide ohne Trigonometrie.
+* **Parameter**: `t = D(z)/D_e`, geklemmt auf `[0,1]`.
+
+#### Sektorlemma
+
+Mit `z = ρ(cos φ, sin φ)` und `e` bei Winkel `α`:
+`a = ρ sin φ ≥ 0 ⟺ φ ∈ [0,π]`, und
+`b = ρ sin(α − φ) ≥ 0 ⟺ φ ∈ [α−π, α]`. Für einen **Minor**-Bogen
+(`0 < α ≤ π`) ist der Schnitt genau `[0, α]`. ∎
+
+Die Ränder sind eingeschlossen: bei `φ = 0` ist `a = 0` und
+`b = ρ·e₁ = ρ sin α ≥ 0`; bei `φ = α` ist `b = 0` und `a = ρ sin α ≥ 0`. Für
+`α = π` ist `e = (−1,0)`, also `b = y` — der Test wird zu `y ≥ 0`, die ganze
+obere Halbebene, wie es sein muss.
+
+#### Diamantlemma
+
+```text
+x ≥ 0:  D = y / (x + y)        ∈ [0,1]
+x < 0:  D = 1 + (−x)/(y − x)   ∈ [1,2]
+```
+
+**Geschlossene Form** — sie macht die Analyse analytisch statt abgetastet:
+`D(φ) = (1 + tan(φ − π/4))/2` auf `[0, π/2]`, und `D(φ) = 2 − D(π − φ)` auf
+`[π/2, π]`.
+
+* **Streng monoton**: `d/dφ [sin/(cos+sin)] = 1/(cos+sin)² > 0` im ersten,
+  `1/(sin−cos)² > 0` im zweiten Quadranten.
+* **Nenner bewiesen nullfrei**: `x + y = √2 ρ sin(φ + π/4) ≥ ρ` auf `[0,π/2]`
+  und `y − x = √2 ρ sin(φ − π/4) ≥ ρ` auf `[π/2,π]`. `ρ > 0` sichert der
+  unveränderte `1e-9`-Schalter.
+* **Naht bei `x = 0` konsistent**: beide Zweige liefern `1`.
+* **Inverse**: `D ≤ 1 ↦ (1−D, D)`, `D ≥ 1 ↦ (−(D−1), 2−D)`, normalisiert —
+  derselbe Strahl, aus dem `D` kam.
+
+#### Eine Autorität, nie zwei
+
+`e` kommt **direkt aus dem gefitteten Endpunkt** relativ zu `(u,v)`, nicht über
+`sin_cos(sweep)`; `D_e` wird aus GENAU diesem `e` gebildet. `sweep` ist ab §8y
+nur noch **Diskriminator** (`< 0` = Segment) und Provenienz — die Auswertung
+liest ihn nicht mehr. Zwei unabhängig gerundete Autoritäten wären verboten.
+
+#### Dateninvariante und fail-closed
+
+`c,u,v,r,e,D_e` endlich, `r > 0`, `e` Einheitsvektor, **`e₁ ≥ 0`** (orientierter
+Minor-Bogen) und `0 < D_e ≤ 2`. Major- und Vollbögen werden
+**fail-closed verweigert** statt mit totem Beweis-Code bedient — die Invariante
+läuft über die DATEN, nicht über das alte `sweep ≤ π`-Laufzeitkriterium.
+
+Verletzt auch nur EIN Bogen die Invariante, wird der **ganze Kanal** verworfen.
+Einen einzelnen Bogen still aus dem Argmin zu nehmen wäre je nach Konkavität
+nicht neutral: der Kanal würde gegen eine andere Naht messen.
+
+#### `t` hat projektweit Diamant-Semantik
+
+Das war die Lücke des Konsultations-Entwurfs, und sie ist material: `t` speist
+`nlerp(m1s, m1e, t)`, also die Dual-Gate-Richtungen. `arc_point_at`,
+`arc_tangent_at` und der Bounding-Sphere-Aufbau folgen mit — `t = 0.5` darf
+nicht zwei Bedeutungen haben.
+
+**Die Bounding-Sphere musste deshalb neu bewiesen werden.** Bis §8x nahm
+`finish_arc` drei Punkte bei `t ∈ {0, 0.5, 1}` und deren Schwerpunkt; das stand
+auf der Annahme, `t = 0.5` sei der WINKEL-Mittelpunkt. Ist es nicht mehr.
+Jetzt die **Sehnen-Kugel**: Mittelpunkt `(A+B)/2`, Radius `|A−B|/2`.
+*Lemma:* mit `M − c = r cos(α/2)(cos(α/2), sin(α/2))` ist
+`|P−M|² = r²(1 + cos²(α/2)) − 2r² cos(α/2) cos(φ − α/2)`, monoton wachsend in
+`|φ − α/2|`, also über `φ ∈ [0,α]` an den ENDPUNKTEN maximal. ∎ Sie braucht den
+Winkelmittelpunkt gar nicht.
+
+### Das Abweichungslemma
+
+Der Parameterwechsel `φ/α → D(φ)/D_e` verschiebt nur den nlerp-Parameter:
+
+1. `ε_D(α) = sup_φ |D(φ)/D(α) − φ/α|`; das Maximum über ALLE `α ∈ (0,π]` liegt
+   bei `α ≈ 0.859 rad (49.2°)` und beträgt **0.0911**.
+2. nlerp-Lipschitz: `|N(a,b,t₁) − N(a,b,t₂)| ≤ 2√((1−c)/(1+c))·|t₁−t₂|`,
+   `c = a·b`.
+3. Damit `|Δs_i| ≤ K · 2√((1−c)/(1+c)) · ε_D` im Trust-Radius; `min`/`max` sind
+   nicht-expansiv, also ist das zugleich die **Feldabweichungs-Schranke**.
+
+**Gemessen an den echten Bögen** (Stufen-Nabe): schlechtestes `c = −0.8348`,
+Schranke **2.37 mm** — gegen ein tatsächliches Golden-Delta von **0.0315 mm**.
+Die Schranke ist also rund 75-fach locker; das ist ehrlich zu sagen und hat eine
+Konsequenz: **sie taugt nicht als scharfes Änderungsbudget.** Ein Budget, das
+die 0.03 mm einfängt, würde jeden gesunden Bogen verwerfen.
+
+Was sie kann, ist die **Explosion** abfangen: bei `c → −1` wächst sie über alle
+Grenzen (`c = −0.9 ⇒ 3.1 mm`, `c = −0.999 ⇒ 31.9 mm`). Das A0-Budget sitzt
+deshalb dort — `ARC_NLERP_COS_MIN = −0.95` (Schranke ≈ 4.5 mm). Die echten
+Bögen liegen bei `−0.835`, das Gate hat echten Abstand und ist trotzdem
+wirksam: ein Bogen mit fast antipodalen Dual-Endvektoren wird von der Synthese
+abgelehnt statt mit unbezifferbarer Abweichung ausgeliefert.
+
+**Zweifach ausgewiesen**, wie verlangt:
+* **mathematisch** gegen das ideale `φ/α`, mit bewiesenem `ε_D` (oben);
+* **empirisch** gegen die bisher ausgelieferten Werte: 0.0315 mm an neun
+  Golden-Punkten der Steinmetz.
+* Gegen die ALTE libm-Ausgabe ist **keine beweisbare Schranke möglich** — genau
+  das ist der Grund für den Umbau. `sin`/`cos`/`atan2` haben keinen
+  Rundungsvertrag; was sie lieferten, lässt sich nicht einschliessen, nur
+  messen.
+
+### Golden-Diff, vollständig attribuiert
+
+| | vorher (v0.60.1) | nachher (v0.61.0) |
+|---|---|---|
+| Zeilen | 25 019 | 25 274 |
+| Szenen **byte-identisch** | — | **32 von 35** |
+| Szenen mit Tape-Änderung | — | 3 (alle Bogen-Kanäle) |
+| **Feldwert**-Zeilen bewegt | — | **9**, alle in `arc_channel_steinmetz` |
+| grösstes Feld-Delta | — | **0.0315 mm** |
+
+Die 255 neuen Zeilen sind exakt `85 Bögen × 3 Worte` (`e₀`, `e₁`, `D_e`):
+`arc_channel_steinmetz` +108 (36 Bögen), `vertex_sphere_corner` +144
+(48 Bögen), `arc_channel_notch` +3 (1 Bogen).
+
+**`arc_channel_notch` und `vertex_sphere_corner` bewegen KEINEN Feldwert** —
+ihre Bögen sind alle Segmente (`sweep < 0`), die drei neuen Worte werden
+geschrieben und nie gelesen. Nur die Steinmetz hat gekrümmte Nähte, und genau
+dort und nur dort bewegt sich das Feld. Die Attribution ist damit lückenlos:
+**jede** Bewegung ist bogen-bedingt.
+
+**Bewegte Pins: keine.** Die volle Workspace-Suite (1602) läuft unverändert
+durch. Die 9 bewegten Golden-Punkte werden von keinem Pin behauptet.
+
+### Spiegel — alle sechs, atomar
+
+| Spiegel | Stelle |
+|---|---|
+| Rust-CPU | `offset_channel.rs::arc_closest`, `arc_point_at`, `arc_tangent_at`, `finish_arc` |
+| Rust-Tape | `sdf_compiler.rs` Emitter + `OP_ARC_CHANNEL`-Interpreter |
+| fidget | `fidget_bridge.rs::channel_to_tree` (verzweigungsfrei, `select_lt`, f64) |
+| C++ | `cgal-mesher/src/sdf_interp.h` + `tape_spec.h` |
+| GPU/TSL | `web/src/sdfVmInterpreter.ts` |
+| Dual | `sdf_dual.rs` friert `q`/`m̂` aus der CPU ein — automatisch mit |
+
+**Die 27 war eine Magic Number an fünf Stellen.** Jetzt: `ARC_STRIDE = 30`
+(Rust, vom Emitter UND vom Interpreter benutzt), `FD_ARC_STRIDE` (C++, im
+Basis-Header `sdf_interp.h`, von `tape_spec.h` mitgezogen), `ARC_STRIDE`
+(TypeScript).
+
+**Nicht angefasst**: die Rim-Familie (`offset_rim.rs`, `OP_RIM_FILLET`) — sie
+rechnet eine andere, clamp-basierte Formel und behält ihr `atan2`.
+
+### Prüfungen
+
+* **`check_interp`**: **35 Szenen / 17 920 Checks / 0 Failures**,
+  `worst_err = 2·10⁻⁶`. Der C++-Spiegel stimmt mit dem neuen Tape überein.
+* **`just test`**: Fast-Tier / Web unverändert grün; `cargo test --workspace`
+  **1602**, null Fehler, null bewegte Pins.
+* **§8w-Zertifizierungs-Matrix**: **unverändert** in allen Zeilen.
+* **P5a-Zeugen-Abdeckung**: **unverändert** (die Nabe bleibt bei 0 % — ihre
+  Bögen sind gekrümmt, und P5a verweigert die weiterhin).
+* **`offset_interval`** traversiert das neue Format korrekt und verweigert
+  Krümmung unverändert bis A1.
+
+### Neue Pins
+
+* `arc_diamond_is_monotone_and_invertible_384` — Monotonie, Quadranten-Naht,
+  nullfreie Nenner, Inverse, geschlossene Form.
+* `arc_closest_matches_a_dense_reference_384` — 33 327 Proben gegen eine
+  **unabhängige** dichte Abtastung des Bogens; max. Abweichung `1.9·10⁻⁵`.
+* `arc_closest_edge_families_384` — Start-/Endstrahl und knapp beidseits,
+  `ρ`-Schwelle, Tie, grosse Translation bei kleinem Radius.
+* `arc_major_and_full_are_refused_384` — Dateninvariante, acht beschädigte
+  Wert-Familien, und der Nachweis, dass die ECHTE Synthese nie einen
+  Major-/Vollbogen emittiert.
+* `arc_mutations_break_the_reference_384` — AND↔OR, fehlender Endpunktzweig,
+  falsche Endpunkt-Auswahl: jede Mutation reisst.
+* `arc_parameter_deviation_bound_384` — `ε_D`, nlerp-Lipschitz, Feldschranke,
+  und das Explosions-Gate.
+
+### Was OFFEN bleibt
+
+* **A1 — die Intervall-Einschliessung der NEUEN Op-Kette.** A0 hat die
+  Zielfunktion geändert; sie einzuschliessen ist ausdrücklich das nächste
+  Paket. Erst danach fallen die 12 `Kanal-Bogen mit Krümmung`-Zellen aus der
+  §8w-Restliste, und P5a kann die Nabe decken.
+* **Die Rim-Familie** rechnet weiter mit `atan2` — andere Formel, eigenes
+  Paket.
+* **Der geometrische Gegencheck** des interpolierten `m̂` gegen den aus den
+  Member-Gradienten berechneten `dual_cone` an den Trace-Stützstellen: nicht
+  gebaut. Die Abweichung ist über das Lemma beziffert (2.37 mm Schranke,
+  0.03 mm gemessen), aber ein direkter Vergleich an den Stützstellen fehlt.
+* **P5b, P6a**: unverändert.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -6080,6 +6290,15 @@ ungedeckt, `eta = None`.
   ihm fallen `at_vertex`/`at_face` und der `verts`-Parameter).
   **Kein Auswerter, kein Opcode, kein Payload-Wort, kein Spiegel** — Golden
   35/35 byte-identisch, `check_interp` 35 Szenen / 0 failures.
+- Produktionscode §8y/P4-A0 (**erste Feldänderung der Kette**):
+  `offset_channel.rs` (`ChannelArc.e`/`.d_e`, `diamond`/`diamond_dir`,
+  `arc_closest`, `arc_point_at`, `arc_tangent_at`, `finish_arc` als
+  Sehnen-Kugel, `arc_data_valid`, `ARC_NLERP_COS_MIN`, das Gate in
+  `build_channel`), `sdf_compiler.rs` (`ARC_STRIDE`, Emitter, Interpreter),
+  `fidget_bridge.rs` (`channel_to_tree`), `cgal-mesher/src/sdf_interp.h` +
+  `tape_spec.h` (`FD_ARC_STRIDE`), `web/src/sdfVmInterpreter.ts`
+  (`ARC_STRIDE`). Pins: die sechs `arc_*_384` in
+  `offset_capability_tests.rs`.
 - Produktionscode §8x/P5a: **neu** `crates/kernel/src/offset_witness.rs` —
   reelle Intervall-Arithmetik (ohne f32-Schritt), `box_outside_omega`,
   `box_point_dist_bounds` (Box-Ball-Lemma), `EtaBudget`, `cover_channel`,

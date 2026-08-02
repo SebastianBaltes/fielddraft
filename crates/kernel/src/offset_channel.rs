@@ -140,8 +140,26 @@ pub struct ChannelArc {
     pub u: [f32; 3],
     pub v: [f32; 3],
     pub r: f32,
-    /// Bogen-Winkel in rad (`> 0`), oder `-1.0` für ein Liniensegment.
+    /// **Nur noch Diskriminator und Provenienz** (#384 §8y): `< 0` heisst
+    /// Liniensegment, sonst Bogen. Der gespeicherte Winkel dient der Diagnose;
+    /// **die Auswertung liest ihn nicht mehr**. Autoritativ sind [`Self::e`]
+    /// und [`Self::d_e`].
     pub sweep: f32,
+    /// **Der Endrichtungs-Vektor `(cos α, sin α)` in der Bogenebene `(u,v)`** —
+    /// autoritativ, direkt aus der gefitteten Trace-Geometrie übernommen und
+    /// NICHT über `sin_cos(sweep)` erzeugt.
+    ///
+    /// Er ersetzt jede Laufzeit-Trigonometrie: der Endpunkt ist
+    /// `c + r·(u·e₀ + v·e₁)`, der Startpunkt `c + r·u`, und der Sektor-Test
+    /// ist ein Kreuzprodukt-Paar. Rusts `sin`/`cos`/`atan2` sind nicht korrekt
+    /// gerundet und plattformabhängig (System-libm gegen einkompilierten
+    /// wasm32-Port); ein Tape, dessen Auswertung davon abhängt, ist
+    /// plattformübergreifend nicht zertifizierbar.
+    pub e: [f32; 2],
+    /// Der **Diamant-Parameter** von [`Self::e`], `D_e ∈ (0, 2]` — die
+    /// algebraische Ersatz-Parametrisierung des Bogens (s. [`diamond`]).
+    /// Bit-identisch aus `e` erzeugt, nie unabhängig davon gerundet.
+    pub d_e: f32,
     /// Bounding-Sphere des Bogens (Pruning des argmin-Scans).
     pub bc: [f32; 3],
     pub br: f32,
@@ -272,11 +290,84 @@ fn norm(a: [f32; 3]) -> f32 {
 
 // ─── Auswertung (f32; CPU-Referenz — GPU/C++/fidget spiegeln das 1:1) ────────
 
-/// Nächster Punkt eines [`ChannelArc`] zu `p`: (Distanz, Fußpunkt, t∈[0,1]).
+/// #384 §8y — **Der Diamant-Parameter.** Eine streng monotone, rein
+/// algebraische Ersatz-Parametrisierung des Halbkreises `φ ∈ [0,π]` nach
+/// `D ∈ [0,2]`, ohne jede Trigonometrie.
+///
+/// ```text
+/// x ≥ 0 (erster Quadrant):   D = y / (x + y)          ∈ [0,1]
+/// x < 0 (zweiter Quadrant):  D = 1 + (−x) / (y − x)   ∈ [1,2]
+/// ```
+///
+/// **Geschlossene Form** (macht die Analyse analytisch statt abgetastet):
+/// `D(φ) = (1 + tan(φ − π/4))/2` auf `[0, π/2]`, und `D(φ) = 2 − D(π − φ)`
+/// auf `[π/2, π]`.
+///
+/// **Lemma (streng monoton, Nenner nullfrei).** Mit `z = ρ(cos φ, sin φ)`,
+/// `ρ > 0`:
+/// * Erster Quadrant: `x + y = ρ(cos φ + sin φ) = √2 ρ sin(φ + π/4) ≥ ρ > 0`
+///   für `φ ∈ [0, π/2]`, und `d/dφ [sin/(cos+sin)] = 1/(cos+sin)² > 0`.
+/// * Zweiter Quadrant: `y − x = √2 ρ sin(φ − π/4) ≥ ρ > 0` für
+///   `φ ∈ [π/2, π]`, und die Ableitung ist `1/(sin−cos)² > 0`.
+/// * **An der Quadranten-Naht `x = 0` liefern beide Zweige `1`**
+///   (`y/(0+y) = 1` und `1 + 0/(y−0) = 1`) — der Schalter ist stetig.
+///
+/// Die Nenner sind also **bewiesen nullfrei**, sobald `ρ > 0` — und `ρ > 0`
+/// sichert der bestehende `1e-9`-Schalter.
+///
+/// **Voraussetzung `y ≥ 0`**: der Aufrufer ruft `diamond` nur INNERHALB des
+/// Sektors, und dort ist `a = y ≥ 0` schon geprüft.
 #[inline]
+pub fn diamond(x: f32, y: f32) -> f32 {
+    if x >= 0.0 {
+        y / (x + y)
+    } else {
+        1.0 + (-x) / (y - x)
+    }
+}
+
+/// Die Inverse zu [`diamond`]: ein zu `D` gehörender Richtungsvektor
+/// (**nicht** normiert). `normalize(diamond_dir(D))` liefert denselben Strahl,
+/// aus dem `D` stammt.
+///
+/// **Lemma.** Für `D ≤ 1` ist `(1−D, D)` ein Vektor im ersten Quadranten mit
+/// `x + y = 1`, also `y/(x+y) = D` ✓. Für `D ≥ 1` ist `(−(D−1), 2−D)` im
+/// zweiten Quadranten mit `y − x = 1`, also `1 + (−x)/(y−x) = 1 + (D−1) = D` ✓.
+/// Bei `D = 1` liefern beide `(0,1)`.
+#[inline]
+pub fn diamond_dir(d: f32) -> [f32; 2] {
+    if d <= 1.0 {
+        [1.0 - d, d]
+    } else {
+        [-(d - 1.0), 2.0 - d]
+    }
+}
+
+/// Nächster Punkt eines [`ChannelArc`] zu `p`: (Distanz, Fußpunkt, t∈[0,1]).
+///
+/// #384 §8y — **ohne jede Laufzeit-Trigonometrie.** Vorher lief die
+/// Bogen-Auswertung über `atan2` (Sektor-Test) und `sin_cos` (Fusspunkt und
+/// Endpunkte). Beide sind in Rust nicht korrekt gerundet und
+/// plattformabhängig; der produzierte Wert ist nicht `fl(sin_exakt(x))`, die
+/// f32-Modell-Doktrin kann sie deshalb NIE einschliessen, und ein ulp-Budget
+/// wäre genau der verbotene Fudge-Faktor.
+///
+/// Jetzt algebraisch:
+/// * **Sektor** über zwei Kreuzprodukte, `a = ⟨s,z⟩_⊥ = y` und
+///   `b = ⟨z,e⟩_⊥ = x·e₁ − y·e₀`. Für einen Minor-Bogen (`0 < α ≤ π`) gilt
+///   `innen ⟺ a ≥ 0 ∧ b ≥ 0` — s. Sektorlemma im Doc §8y.
+/// * **Fusspunkt innen**: `q = c + r·(u·(x/ρ) + v·(y/ρ))`.
+/// * **Endpunkte**: `q₀ = c + r·u` (denn `e_start = (1,0)`) und
+///   `q₁ = c + r·(u·e₀ + v·e₁)`.
+/// * **Parameter** `t = D(z)/D_e`, geklemmt auf `[0,1]`.
+///
+/// **Major- und Vollbögen sind nicht unterstützt** und werden von der
+/// Synthese gar nicht erst erzeugt (`arc_through` kappt bei π); die
+/// Dateninvariante `0 < D_e ≤ 2` hält das fest. Hier wird nichts geraten:
+/// die Auswertung liest ausschliesslich `e`/`D_e`.
 pub fn arc_closest(arc: &ChannelArc, p: [f32; 3]) -> (f32, [f32; 3], f32) {
     if arc.sweep < 0.0 {
-        // Liniensegment: c → c + u·r.
+        // Liniensegment: c → c + u·r. Unverändert.
         let len = arc.r.max(1e-12);
         let t = (dot(sub(p, arc.c), arc.u) / len).clamp(0.0, 1.0);
         let q = [
@@ -290,30 +381,36 @@ pub fn arc_closest(arc: &ChannelArc, p: [f32; 3]) -> (f32, [f32; 3], f32) {
     let x = dot(d, arc.u);
     let y = dot(d, arc.v);
     let rho = (x * x + y * y).sqrt();
-    let arc_point = |phi: f32| -> [f32; 3] {
-        let (s, c) = phi.sin_cos();
-        [
-            arc.c[0] + arc.r * (arc.u[0] * c + arc.v[0] * s),
-            arc.c[1] + arc.r * (arc.u[1] * c + arc.v[1] * s),
-            arc.c[2] + arc.r * (arc.u[2] * c + arc.v[2] * s),
-        ]
-    };
+    // Start- und Endpunkt, rein algebraisch aus `e`.
+    let q0 = [
+        arc.c[0] + arc.r * arc.u[0],
+        arc.c[1] + arc.r * arc.u[1],
+        arc.c[2] + arc.r * arc.u[2],
+    ];
+    let q1 = [
+        arc.c[0] + arc.r * (arc.u[0] * arc.e[0] + arc.v[0] * arc.e[1]),
+        arc.c[1] + arc.r * (arc.u[1] * arc.e[0] + arc.v[1] * arc.e[1]),
+        arc.c[2] + arc.r * (arc.u[2] * arc.e[0] + arc.v[2] * arc.e[1]),
+    ];
     if rho < 1e-9 {
-        let q = arc_point(0.0);
-        return (norm(sub(p, q)), q, 0.0);
+        // Auf der Achse: der Startpunkt vertritt den Bogen (unveränderter
+        // Produktions-Schalter).
+        return (norm(sub(p, q0)), q0, 0.0);
     }
-    let mut phi = y.atan2(x);
-    if phi < 0.0 {
-        phi += std::f32::consts::TAU;
-    }
-    if phi <= arc.sweep {
-        let q = arc_point(phi);
-        (norm(sub(p, q)), q, phi / arc.sweep)
+    let a = y;
+    let b = x * arc.e[1] - y * arc.e[0];
+    if a >= 0.0 && b >= 0.0 {
+        let q = [
+            arc.c[0] + arc.r * (arc.u[0] * (x / rho) + arc.v[0] * (y / rho)),
+            arc.c[1] + arc.r * (arc.u[1] * (x / rho) + arc.v[1] * (y / rho)),
+            arc.c[2] + arc.r * (arc.u[2] * (x / rho) + arc.v[2] * (y / rho)),
+        ];
+        let t = (diamond(x, y) / arc.d_e).clamp(0.0, 1.0);
+        (norm(sub(p, q)), q, t)
     } else {
-        let q0 = arc_point(0.0);
-        let q1 = arc_point(arc.sweep);
         let d0 = norm(sub(p, q0));
         let d1 = norm(sub(p, q1));
+        // Tie-Richtung ausdrücklich: bei Gleichstand gewinnt der START.
         if d0 <= d1 {
             (d0, q0, 0.0)
         } else {
@@ -1385,12 +1482,33 @@ fn arc_through(p0: [f32; 3], p1: [f32; 3], p2: [f32; 3]) -> Option<ChannelArc> {
     if a1 > a2 + 1e-6 || a2 <= 1e-9 || a2 > std::f32::consts::PI {
         return None;
     }
+    // #384 §8y: `e` kommt DIREKT aus der gefitteten Trace-Geometrie — der
+    // Endpunkt `p2` relativ zum Rahmen `(u,v)` —, nicht über `sin_cos(a2)`.
+    // Zwei unabhängig gerundete Autoritäten wären verboten; `D_e` wird
+    // anschliessend aus GENAU diesem `e` gebildet.
+    let de_v = sub(p2, c);
+    let (ex0, ey0) = (dot(de_v, u), dot(de_v, v));
+    let en = (ex0 * ex0 + ey0 * ey0).sqrt();
+    if !(en > 1e-12) {
+        return None;
+    }
+    let e = [ex0 / en, ey0 / en];
+    // Minor-Invariante: `e₁ = sin α ≥ 0`. Major/Voll werden verweigert.
+    if !(e[1] >= 0.0) {
+        return None;
+    }
+    let d_e = diamond(e[0], e[1]);
+    if !(d_e > 0.0 && d_e <= 2.0) {
+        return None;
+    }
     Some(finish_arc(ChannelArc {
         c,
         u,
         v,
         r,
         sweep: a2,
+        e,
+        d_e,
         bc: [0.0; 3],
         br: 0.0,
         m1s: [0.0; 3],
@@ -1413,6 +1531,9 @@ fn segment_arc(p0: [f32; 3], p1: [f32; 3]) -> Option<ChannelArc> {
         v: [0.0; 3],
         r: len,
         sweep: -1.0,
+        // Segmente lesen `e`/`d_e` nie; neutral belegt.
+        e: [1.0, 0.0],
+        d_e: 0.0,
         bc: [0.0; 3],
         br: 0.0,
         m1s: [0.0; 3],
@@ -1422,23 +1543,78 @@ fn segment_arc(p0: [f32; 3], p1: [f32; 3]) -> Option<ChannelArc> {
     }))
 }
 
-/// Bounding-Sphere eines Bogens nachtragen.
+/// Bounding-Sphere eines Bogens nachtragen — **die Sehnen-Kugel, bewiesen
+/// umfassend** (#384 §8y).
+///
+/// Bis §8y wurden drei Punkte bei `t ∈ {0, 0.5, 1}` genommen und ihr Schwerpunkt
+/// als Mittelpunkt. Das stand auf der Annahme, `t = 0.5` sei der WINKEL-Mittelpunkt
+/// — mit der Diamant-Parametrisierung ist es das nicht mehr, und eine darauf
+/// gestützte Kugel dürfte nicht ungeprüft weiterlaufen.
+///
+/// Die Sehnen-Kugel braucht den Mittelpunkt gar nicht: Mittelpunkt `M` ist die
+/// Sehnenmitte `(A+B)/2`, Radius `|A−B|/2`.
+///
+/// **Lemma (umfassend für `α ≤ π`).** Mit `P − c = r(cos φ, sin φ)` und
+/// `M − c = r cos(α/2)·(cos(α/2), sin(α/2))` ist
+/// `|P−M|² = r²(1 + cos²(α/2)) − 2r² cos(α/2) cos(φ − α/2)`.
+/// Der Ausdruck wächst monoton mit `|φ − α/2|`, ist also über `φ ∈ [0, α]` an
+/// den ENDPUNKTEN maximal. Damit gilt `|P − M| ≤ |A − M| = |A−B|/2` für jeden
+/// Bogenpunkt. ∎
+///
+/// Für das Segment ist es dieselbe Formel (Sehne = Segment). Der Zuschlag
+/// `1e-4` bleibt als Rundungs-Reserve.
 fn finish_arc(mut arc: ChannelArc) -> ChannelArc {
-    let p0 = arc_point_at(&arc, 0.0);
-    let p1 = arc_point_at(&arc, 0.5);
-    let p2 = arc_point_at(&arc, 1.0);
+    let a = arc_point_at(&arc, 0.0);
+    let b = arc_point_at(&arc, 1.0);
     let bc = [
-        (p0[0] + p1[0] + p2[0]) / 3.0,
-        (p0[1] + p1[1] + p2[1]) / 3.0,
-        (p0[2] + p1[2] + p2[2]) / 3.0,
+        0.5 * (a[0] + b[0]),
+        0.5 * (a[1] + b[1]),
+        0.5 * (a[2] + b[2]),
     ];
-    let br = norm(sub(p0, bc))
-        .max(norm(sub(p1, bc)))
-        .max(norm(sub(p2, bc)))
-        + 1e-4;
+    let br = norm(sub(a, bc)).max(norm(sub(b, bc))) + 1e-4;
     arc.bc = bc;
     arc.br = br;
     arc
+}
+
+/// #384 §8y — **das A0-Änderungsbudget als Kosinus-Gate.** Unterhalb dieses
+/// Skalarprodukts der Dual-Endvektoren explodiert die nlerp-Lipschitz-Konstante
+/// `2√((1−c)/(1+c))` und mit ihr die Feldabweichungs-Schranke des
+/// Parameterwechsels; solche Bögen lehnt die Synthese ab.
+///
+/// `−0.95` entspricht einer Schranke von rund 4.5 mm bei `K = 3.91`. Die
+/// echten Bögen der §8p-Matrix liegen bei `c = −0.835` (Schranke 2.37 mm), das
+/// Gate hat also echten Abstand und ist trotzdem wirksam.
+pub const ARC_NLERP_COS_MIN: f32 = -0.95;
+
+/// #384 §8y — **die Dateninvariante eines Bogens.** Sie ersetzt das alte
+/// `sweep ≤ π`-Laufzeitkriterium: `sweep` ist keine Autorität mehr.
+///
+/// Ein gekrümmter Bogen ist nur verwendbar, wenn `c`, `u`, `v`, `r`, `e`, `D_e`
+/// endlich sind, `r > 0` gilt, `e` ein orientierter **Minor**-Bogen in `[0,π]`
+/// ist (`e₁ ≥ 0`) und `0 < D_e ≤ 2`. Major- und Vollbögen werden
+/// **fail-closed verweigert** statt mit totem Beweis-Code bedient.
+pub fn arc_data_valid(arc: &ChannelArc) -> bool {
+    if !(arc.c.iter().all(|v| v.is_finite())
+        && arc.u.iter().all(|v| v.is_finite())
+        && arc.r.is_finite()
+        && arc.r > 0.0
+        && arc.bc.iter().all(|v| v.is_finite())
+        && arc.br.is_finite())
+    {
+        return false;
+    }
+    if arc.sweep < 0.0 {
+        return true;
+    }
+    arc.v.iter().all(|v| v.is_finite())
+        && arc.e.iter().all(|v| v.is_finite())
+        && arc.d_e.is_finite()
+        && arc.e[1] >= 0.0
+        && arc.d_e > 0.0
+        && arc.d_e <= 2.0
+        // `e` muss ein Einheitsvektor sein (Rundungsreserve).
+        && (arc.e[0] * arc.e[0] + arc.e[1] * arc.e[1] - 1.0).abs() <= 1.0e-3
 }
 
 /// Punkt bei Parameter t ∈ [0,1] (Bogen: φ = t·sweep; Segment linear).
@@ -1450,12 +1626,16 @@ pub fn arc_point_at(arc: &ChannelArc, t: f32) -> [f32; 3] {
             arc.c[2] + arc.u[2] * (t * arc.r),
         ]
     } else {
-        let phi = t * arc.sweep;
-        let (s, c) = phi.sin_cos();
+        // #384 §8y: `t` hat PROJEKTWEIT Diamant-Semantik. `t = 0.5` ist
+        // deshalb NICHT mehr der Winkel-Mittelpunkt — es darf keine zwei
+        // Bedeutungen von `t` geben, und diese ist die eine.
+        let w = diamond_dir(t * arc.d_e);
+        let n = (w[0] * w[0] + w[1] * w[1]).sqrt().max(1e-30);
+        let (cs, sn) = (w[0] / n, w[1] / n);
         [
-            arc.c[0] + arc.r * (arc.u[0] * c + arc.v[0] * s),
-            arc.c[1] + arc.r * (arc.u[1] * c + arc.v[1] * s),
-            arc.c[2] + arc.r * (arc.u[2] * c + arc.v[2] * s),
+            arc.c[0] + arc.r * (arc.u[0] * cs + arc.v[0] * sn),
+            arc.c[1] + arc.r * (arc.u[1] * cs + arc.v[1] * sn),
+            arc.c[2] + arc.r * (arc.u[2] * cs + arc.v[2] * sn),
         ]
     }
 }
@@ -1466,12 +1646,15 @@ pub(crate) fn arc_tangent_at(arc: &ChannelArc, t: f32) -> Option<[f32; 3]> {
     let v = if arc.sweep < 0.0 {
         arc.u
     } else {
-        let phi = t * arc.sweep;
-        let (s, c) = phi.sin_cos();
+        // #384 §8y: derselbe Strahl wie in `arc_point_at`, um 90° gedreht —
+        // `(cos,sin) ↦ (−sin,cos)`. Kein `sin_cos` mehr.
+        let w = diamond_dir(t * arc.d_e);
+        let n = (w[0] * w[0] + w[1] * w[1]).sqrt().max(1e-30);
+        let (cs, sn) = (w[0] / n, w[1] / n);
         [
-            -arc.u[0] * s + arc.v[0] * c,
-            -arc.u[1] * s + arc.v[1] * c,
-            -arc.u[2] * s + arc.v[2] * c,
+            -arc.u[0] * sn + arc.v[0] * cs,
+            -arc.u[1] * sn + arc.v[1] * cs,
+            -arc.u[2] * sn + arc.v[2] * cs,
         ]
     };
     let l = norm(v);
@@ -3047,6 +3230,31 @@ fn build_channel(
     // Vertex-Kugel (C4).
     let gate = ctx.delta * (c_factor - 1.0) + 4.0 * ctx.tol;
     let trust = ctx.delta * c_factor + 0.5 * ctx.delta + 8.0 * ctx.tol;
+    // #384 §8y — **fail-closed vor der Tape-Ausgabe.** Verletzt auch nur EIN
+    // Bogen die Dateninvariante (Major/Voll, entartet, nicht endlich), wird der
+    // GANZE Kanal verworfen. Einen einzelnen Bogen still aus dem Argmin zu
+    // nehmen wäre je nach Konkavität NICHT neutral: der Kanal würde dann gegen
+    // eine andere Naht messen und könnte Material addieren, wo keines hingehört.
+    if !arcs.iter().all(arc_data_valid) {
+        return None;
+    }
+    // #384 §8y — **das A0-Änderungsbudget.** Der Parameterwechsel verschiebt
+    // den nlerp-Parameter; die Feldabweichung ist durch
+    // `K · 2√((1−c)/(1+c)) · ε_D` beschränkt (`c = m_start · m_end`,
+    // `ε_D ≤ 0.0911`). Diese Schranke EXPLODIERT bei fast antipodalen
+    // Dual-Endvektoren — und genau dort muss die Synthese den Bogen ablehnen,
+    // statt ein Feld auszuliefern, dessen Abweichung niemand mehr beziffern
+    // kann. Das Gate sitzt im Explosions-Regime (`c ≥ −0.95`), nicht als
+    // scharfe Schranke: die echten Bögen der Matrix liegen bei `c = −0.835`.
+    let nlerp_ok = arcs.iter().all(|a| {
+        a.sweep < 0.0
+            || [(a.m1s, a.m1e), (a.m2s, a.m2e)]
+                .iter()
+                .all(|(p, q)| dot(*p, *q) >= ARC_NLERP_COS_MIN)
+    });
+    if !nlerp_ok {
+        return None;
+    }
     Some(OffsetChannel {
         arcs,
         delta: ctx.delta,

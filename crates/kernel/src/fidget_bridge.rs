@@ -541,33 +541,46 @@ fn channel_to_tree(
             ];
             (t_norm(&t_sub(p, &q)), q, t)
         } else {
+            // #384 §8y: verzweigungsfrei UND trigonometrie-frei. Der Sektor ist
+            // ein Kreuzprodukt-Paar, der Fusspunkt die normierte Projektion,
+            // der Parameter der Diamant-Quotient.
             let c = t_const3(arc.c);
             let u = t_const3(arc.u);
             let v = t_const3(arc.v);
             let dc = t_sub(p, &c);
             let x = t_dot(&dc, &u);
             let y = t_dot(&dc, &v);
-            let mut phi = y.clone().atan2(x.clone());
-            // φ < 0 → φ + 2π (in [0, 2π) heben).
+            let (e0, e1) = (arc.e[0] as f64, arc.e[1] as f64);
+            let r = arc.r as f64;
             let zero = Tree::from(0.0);
-            let phi_shift = phi.clone() + std::f64::consts::TAU;
-            phi = select_lt(&phi, &zero, &phi_shift, &phi);
-            let arc_point = |ph: &Tree| -> [Tree; 3] {
-                let (s, co) = (ph.clone().sin(), ph.clone().cos());
-                [
-                    c[0].clone() + (u[0].clone() * co.clone() + v[0].clone() * s.clone()) * arc.r as f64,
-                    c[1].clone() + (u[1].clone() * co.clone() + v[1].clone() * s.clone()) * arc.r as f64,
-                    c[2].clone() + (u[2].clone() * co.clone() + v[2].clone() * s.clone()) * arc.r as f64,
-                ]
-            };
-            let sweep = Tree::from(arc.sweep as f64);
-            let q_in = arc_point(&phi);
-            let q0 = arc_point(&Tree::from(0.0));
-            let q1 = arc_point(&sweep);
+            let rho = (x.clone() * x.clone() + y.clone() * y.clone()).sqrt().max(1e-9);
+            // Start- und Endpunkt, algebraisch.
+            let q0 = [
+                c[0].clone() + u[0].clone() * r,
+                c[1].clone() + u[1].clone() * r,
+                c[2].clone() + u[2].clone() * r,
+            ];
+            let q1 = [
+                c[0].clone() + (u[0].clone() * e0 + v[0].clone() * e1) * r,
+                c[1].clone() + (u[1].clone() * e0 + v[1].clone() * e1) * r,
+                c[2].clone() + (u[2].clone() * e0 + v[2].clone() * e1) * r,
+            ];
+            let cs = x.clone() / rho.clone();
+            let sn = y.clone() / rho.clone();
+            let q_in = [
+                c[0].clone() + (u[0].clone() * cs.clone() + v[0].clone() * sn.clone()) * r,
+                c[1].clone() + (u[1].clone() * cs.clone() + v[1].clone() * sn.clone()) * r,
+                c[2].clone() + (u[2].clone() * cs.clone() + v[2].clone() * sn.clone()) * r,
+            ];
+            // Diamant: `x ≥ 0 ? y/(x+y) : 1 + (−x)/(y−x)`, als select.
+            let dm_q1 = y.clone() / (x.clone() + y.clone());
+            let dm_q2 = Tree::from(1.0) + (-x.clone()) / (y.clone() - x.clone());
+            let dm = select_lt(&x, &zero, &dm_q2, &dm_q1);
+            let t_in = (dm * (1.0 / arc.d_e as f64)).max(0.0).min(1.0);
             let d_in = t_norm(&t_sub(p, &q_in));
             let d0 = t_norm(&t_sub(p, &q0));
             let d1 = t_norm(&t_sub(p, &q1));
-            // Endpunkt-Fall: näherer der beiden Enden.
+            // Endpunkt-Fall: näherer der beiden Enden, Gleichstand → Start.
             let d_end = d0.clone().min(d1.clone());
             let t_end = select_lt(&d1, &d0, &Tree::from(1.0), &Tree::from(0.0));
             let q_end = [
@@ -575,15 +588,20 @@ fn channel_to_tree(
                 select_lt(&d1, &d0, &q1[1], &q0[1]),
                 select_lt(&d1, &d0, &q1[2], &q0[2]),
             ];
-            // In-Range-Select: φ ≤ sweep? (sweep < φ → Endpunkt).
-            let in_range = |x_in: &Tree, x_out: &Tree| select_lt(&sweep, &phi, x_out, x_in);
-            let de = in_range(&d_in, &d_end);
+            // Sektor: `a = y ≥ 0 ∧ b = x·e₁ − y·e₀ ≥ 0`. Als zwei selects:
+            // ausserhalb, wenn a < 0 ODER b < 0.
+            let bcr = x.clone() * e1 - y.clone() * e0;
+            let pick = |x_in: &Tree, x_out: &Tree| {
+                let after_a = select_lt(&y, &zero, x_out, x_in);
+                select_lt(&bcr, &zero, x_out, &after_a)
+            };
+            let de = pick(&d_in, &d_end);
             let q = [
-                in_range(&q_in[0], &q_end[0]),
-                in_range(&q_in[1], &q_end[1]),
-                in_range(&q_in[2], &q_end[2]),
+                pick(&q_in[0], &q_end[0]),
+                pick(&q_in[1], &q_end[1]),
+                pick(&q_in[2], &q_end[2]),
             ];
-            let t = in_range(&(phi.clone() * (1.0 / arc.sweep as f64)), &t_end);
+            let t = pick(&t_in, &t_end);
             (de, q, t)
         };
         // m-Vektoren am Fußpunkt (nlerp) — Normierung symbolisch.

@@ -12,6 +12,16 @@
 // Opcode tags and payload layouts are documented in sdf_compiler.rs.
 #pragma once
 
+// #384 §8y — Worte je Bogen-Record im OP_ARC_CHANNEL-Payload.
+// War 27 (bis §8x); die drei neuen Worte sind e[0], e[1], d_e — die
+// autoritative Bogen-Geometrie, die jede Laufzeit-Trigonometrie ersetzt.
+// Muss mit sdf_compiler::ARC_STRIDE (Rust) und ARC_STRIDE
+// (web/src/sdfVmInterpreter.ts) uebereinstimmen. tape_spec.h zieht die
+// Konstante ueber seinen Include dieses Headers.
+#ifndef FD_ARC_STRIDE
+#define FD_ARC_STRIDE 30
+#endif
+
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -1279,10 +1289,10 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         // (sdf_compiler.rs OP_ARC_CHANNEL / offset_channel::channel_apply),
         // inklusive des exakten Bounding-Sphere-Skips. Header 41 Floats
         // (9 + 4x4 End-Halbraeume §8f + 4x4 Fremdflaechen-Halbraeume §8j),
-        // je Bogen 27:
+        // je Bogen FD_ARC_STRIDE:
         // c(3) u(3) v(3) r sweep(<0 = Segment) bc(3) br
-        // m1s(3) m2s(3) m1e(3) m2e(3).
-        const int kArc = 27;
+        // m1s(3) m2s(3) m1e(3) m2e(3) e(2) d_e   (#384 §8y).
+        const int kArc = FD_ARC_STRIDE;
         int n = (int)rd();
         bool concave = rd() > 0.5f;
         float delta = rd();
@@ -1355,21 +1365,24 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
               q[2] = c[2] + u[2] * r;
               t = 0.0f;
             } else {
-              float phi = std::atan2(y, x);
-              if (phi < 0.0f) phi += 6.2831853f;
-              if (phi <= sweep) {
-                float cs = std::cos(phi), sn = std::sin(phi);
+              // #384 §8y: rein algebraisch — kein atan2, kein sin/cos.
+              float e0 = a[27], e1 = a[28], d_e = a[29];
+              float q0[3] = {c[0] + u[0] * r, c[1] + u[1] * r,
+                             c[2] + u[2] * r};
+              float q1[3] = {c[0] + r * (u[0] * e0 + v[0] * e1),
+                             c[1] + r * (u[1] * e0 + v[1] * e1),
+                             c[2] + r * (u[2] * e0 + v[2] * e1)};
+              float av = y;
+              float bv = x * e1 - y * e0;
+              if (av >= 0.0f && bv >= 0.0f) {
+                float cs = x / rho, sn = y / rho;
                 q[0] = c[0] + r * (u[0] * cs + v[0] * sn);
                 q[1] = c[1] + r * (u[1] * cs + v[1] * sn);
                 q[2] = c[2] + r * (u[2] * cs + v[2] * sn);
-                t = phi / sweep;
+                float dm = (x >= 0.0f) ? (y / (x + y)) : (1.0f + (-x) / (y - x));
+                t = dm / d_e;
+                t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
               } else {
-                float csw = std::cos(sweep), ssw = std::sin(sweep);
-                float q0[3] = {c[0] + u[0] * r, c[1] + u[1] * r,
-                               c[2] + u[2] * r};
-                float q1[3] = {c[0] + r * (u[0] * csw + v[0] * ssw),
-                               c[1] + r * (u[1] * csw + v[1] * ssw),
-                               c[2] + r * (u[2] * csw + v[2] * ssw)};
                 float d0 = std::sqrt(sq_(pt[0] - q0[0]) + sq_(pt[1] - q0[1]) +
                                      sq_(pt[2] - q0[2]));
                 float d1 = std::sqrt(sq_(pt[0] - q1[0]) + sq_(pt[1] - q1[1]) +

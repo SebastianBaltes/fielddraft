@@ -105,7 +105,12 @@ pub const OP_MASKED_BLEND: u32   = 0x40; // +var: n + n×point(3) + mask_r+blend
 //   der Naht, das vierte QUER dazu gegen die nächste stützende Fremdfläche).
 // je Bogen (27): c(3) u(3) v(3) r(1) sweep(1; −1 = Segment) bc(3) br(1)
 //   m1s(3) m2s(3) m1e(3) m2e(3).
-pub const OP_ARC_CHANNEL: u32    = 0x41; // +41+27N
+/// #384 §8y — Worte je Bogen-Record im `OP_ARC_CHANNEL`-Payload.
+/// War 27 (bis §8x); die drei neuen Worte sind `e[0]`, `e[1]`, `d_e` — die
+/// autoritative Bogen-Geometrie, die jede Laufzeit-Trigonometrie ersetzt.
+pub const ARC_STRIDE: usize = 30;
+
+pub const OP_ARC_CHANNEL: u32    = 0x41; // +41+ARC_STRIDE·N
 
 // offset_tree Phase C4 (#384): Rossignac–Requicha-Vertex-Kugel an einer
 // Triple-Junction — pops den Stopp-Wert d, pusht die korrigierte Distanz
@@ -751,6 +756,9 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
                     out.extend_from_slice(g);
                 }
                 for a in &ch.arcs {
+                    // #384 §8y: Reihenfolge und Länge stehen in `ARC_STRIDE`;
+                    // Emitter und Interpreter teilen sich die Konstante.
+                    let before = out.len();
                     out.extend_from_slice(&a.c);
                     out.extend_from_slice(&a.u);
                     out.extend_from_slice(&a.v);
@@ -762,6 +770,11 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
                     out.extend_from_slice(&a.m2s);
                     out.extend_from_slice(&a.m1e);
                     out.extend_from_slice(&a.m2e);
+                    // #384 §8y: die autoritative Bogen-Geometrie.
+                    out.push(a.e[0]);
+                    out.push(a.e[1]);
+                    out.push(a.d_e);
+                    debug_assert_eq!(out.len() - before, ARC_STRIDE);
                 }
             }
             for vs in verts {
@@ -2177,7 +2190,6 @@ pub fn eval_opcodes_with_volumes(
             // Opcode-Strom (inkl. des exakten Bounding-Sphere-Skips —
             // feldwert-identisch, reine Kostenoptimierung).
             OP_ARC_CHANNEL => {
-                const ARC_STRIDE: usize = 27;
                 let n = rd!() as usize;
                 let concave = rd!() > 0.5;
                 let delta = rd!();
@@ -2248,32 +2260,35 @@ pub fn eval_opcodes_with_volumes(
                         ];
                         (dist3(pt, q), q, t)
                     } else {
+                        // #384 §8y: rein algebraisch — kein atan2, kein sin_cos.
+                        let e0 = opcodes[b + 27];
+                        let e1 = opcodes[b + 28];
+                        let d_e = opcodes[b + 29];
                         let dc = [pt[0] - c[0], pt[1] - c[1], pt[2] - c[2]];
                         let x = dc[0] * u[0] + dc[1] * u[1] + dc[2] * u[2];
                         let y = dc[0] * v[0] + dc[1] * v[1] + dc[2] * v[2];
                         let rho = (x * x + y * y).sqrt();
-                        let arc_point = |phi: f32| -> [f32; 3] {
-                            let (s, cs) = phi.sin_cos();
-                            [
-                                c[0] + r * (u[0] * cs + v[0] * s),
-                                c[1] + r * (u[1] * cs + v[1] * s),
-                                c[2] + r * (u[2] * cs + v[2] * s),
-                            ]
-                        };
+                        let q0 = [c[0] + r * u[0], c[1] + r * u[1], c[2] + r * u[2]];
+                        let q1 = [
+                            c[0] + r * (u[0] * e0 + v[0] * e1),
+                            c[1] + r * (u[1] * e0 + v[1] * e1),
+                            c[2] + r * (u[2] * e0 + v[2] * e1),
+                        ];
                         if rho < 1e-9 {
-                            let q = arc_point(0.0);
-                            (dist3(pt, q), q, 0.0)
+                            (dist3(pt, q0), q0, 0.0)
                         } else {
-                            let mut phi = y.atan2(x);
-                            if phi < 0.0 {
-                                phi += std::f32::consts::TAU;
-                            }
-                            if phi <= sweep {
-                                let q = arc_point(phi);
-                                (dist3(pt, q), q, phi / sweep)
+                            let a = y;
+                            let bb = x * e1 - y * e0;
+                            if a >= 0.0 && bb >= 0.0 {
+                                let q = [
+                                    c[0] + r * (u[0] * (x / rho) + v[0] * (y / rho)),
+                                    c[1] + r * (u[1] * (x / rho) + v[1] * (y / rho)),
+                                    c[2] + r * (u[2] * (x / rho) + v[2] * (y / rho)),
+                                ];
+                                let dm =
+                                    if x >= 0.0 { y / (x + y) } else { 1.0 + (-x) / (y - x) };
+                                (dist3(pt, q), q, (dm / d_e).clamp(0.0, 1.0))
                             } else {
-                                let q0 = arc_point(0.0);
-                                let q1 = arc_point(sweep);
                                 let d0 = dist3(pt, q0);
                                 let d1 = dist3(pt, q1);
                                 if d0 <= d1 {

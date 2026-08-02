@@ -62,6 +62,16 @@ import {
   pathArcDistSqFn, pathArcCrossingFn,
 } from "./sdfRenderer";
 
+
+/**
+ * #384 §8y — Worte je Bogen-Record im OP_ARC_CHANNEL-Payload.
+ * War 27 (bis §8x); die drei neuen Worte sind e[0], e[1], d_e — die
+ * autoritative Bogen-Geometrie, die jede Laufzeit-Trigonometrie ersetzt.
+ * Muss mit `sdf_compiler::ARC_STRIDE` (Rust) und `FD_ARC_STRIDE`
+ * (cgal-mesher/src/sdf_interp.h) übereinstimmen.
+ */
+const ARC_STRIDE = 30;
+
 export const VM_MAX_OPCODES = 512;
 
 export const bitcastTagFn = wgslFn(`
@@ -941,7 +951,7 @@ export function buildVmSdfEvalFn(
           s4.assign(min(s4, vec3(ptx, pty, ptz).dot(gn).sub(gc)));
         }
         const arcBase = pc.toVar();
-        pc.addAssign(nArcs.mul(27));
+        pc.addAssign(nArcs.mul(ARC_STRIDE));
         const d = popV().toVar();
 
         const p = vec3(ptx, pty, ptz).toVar();
@@ -967,7 +977,7 @@ export function buildVmSdfEvalFn(
               opBuf.element(base.add(int(off + 2))),
             );
           Loop(nArcs, () => {
-            const b = arcBase.add(kk.mul(27)).toVar();
+            const b = arcBase.add(kk.mul(ARC_STRIDE)).toVar();
             const abc = rdA3(b, 11);
             const abr = rdA(b, 14);
             If(p.sub(abc).length().sub(abr).lessThan(best), () => {
@@ -995,19 +1005,25 @@ export function buildVmSdfEvalFn(
                   t.assign(0.0);
                   de.assign(p.sub(q).length());
                 }).Else(() => {
-                  const phi = atan2Fn({ y, x }).toVar();
-                  If(phi.lessThan(0.0), () => {
-                    phi.addAssign(6.2831853);
-                  });
-                  If(phi.lessThanEqual(sweep), () => {
-                    const cs = phi.cos(), sn = phi.sin();
+                  // #384 §8y: rein algebraisch — kein atan2, kein sin/cos.
+                  // Sektor über zwei Kreuzprodukte, Fusspunkt als normierte
+                  // Projektion, Parameter als Diamant-Quotient.
+                  const e0 = rdA(b, 27).toVar();
+                  const e1 = rdA(b, 28).toVar();
+                  const dE = rdA(b, 29).toVar();
+                  const q0 = c.add(u.mul(r)).toVar();
+                  const q1 = c.add(u.mul(e0).add(v.mul(e1)).mul(r)).toVar();
+                  const av = y;
+                  const bv = x.mul(e1).sub(y.mul(e0));
+                  If(av.greaterThanEqual(0.0).and(bv.greaterThanEqual(0.0)), () => {
+                    const cs = x.div(rho), sn = y.div(rho);
                     q.assign(c.add(u.mul(cs).add(v.mul(sn)).mul(r)));
-                    t.assign(phi.div(sweep));
+                    const dm = x
+                      .greaterThanEqual(0.0)
+                      .select(y.div(x.add(y)), float(1.0).add(x.negate().div(y.sub(x))));
+                    t.assign(clamp(dm.div(dE), 0.0, 1.0));
                     de.assign(p.sub(q).length());
                   }).Else(() => {
-                    const q0 = c.add(u.mul(r)).toVar();
-                    const csw = sweep.cos(), ssw = sweep.sin();
-                    const q1 = c.add(u.mul(csw).add(v.mul(ssw)).mul(r)).toVar();
                     const d0 = p.sub(q0).length().toVar();
                     const d1 = p.sub(q1).length().toVar();
                     If(d0.lessThanEqual(d1), () => {
