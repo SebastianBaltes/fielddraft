@@ -374,11 +374,15 @@ pub struct Knobs {
     /// ℝ identisch, über f32 nicht — das war der erste blockierende Befund des
     /// vierten Mathe-Reviews.
     pub reassociate_rotation: bool,
-    /// Den ERSTEN Bogen als Nearest nehmen, statt die Eindeutigkeit zu
-    /// beweisen (§8v). Der klassische Argmin-Fehler: `q*`, `m̂₁`, `m̂₂` springen
-    /// beim Gewinnerwechsel, ein blind gewählter Kandidat ist also keine
+    /// Den ERSTEN Kandidaten nehmen, statt über alle zu hüllen (§8v/§8w). Der
+    /// klassische Argmin-Fehler: `q*`, `m̂₁`, `m̂₂` springen beim
+    /// Gewinnerwechsel, ein blind gewählter Kandidat ist also keine
     /// Einschliessung.
     pub first_arc_wins: bool,
+    /// Genau EINEN Kandidaten aus der Hülle streichen (§8w-Gegenprobe). Milder
+    /// als `first_arc_wins` und damit die schärfere Probe: sie trifft nur den
+    /// Vereinigungs-Schritt, nicht die ganze Kandidaten-Bestimmung.
+    pub drop_last_candidate: bool,
     /// Den `best.is_finite()`-Schalter in `lb_value` **weglassen**. Genau der
     /// fehlte in der ersten §8u-Fassung; ein modelliertes `+∞` wählt dann den
     /// `L`-Zweig, während die Produktion den `G`-Zweig nimmt.
@@ -392,6 +396,7 @@ pub struct Ctx {
     ops: u64,
     max_ops: u64,
     channel_evals: u64,
+    max_candidates: usize,
 }
 
 impl Ctx {
@@ -403,7 +408,13 @@ impl Ctx {
     /// ist die konservative Richtung — ein erschöpftes Budget endet in
     /// `Unknown`, nie in einer Zertifizierung.
     pub fn new() -> Ctx {
-        Ctx { knobs: Knobs::default(), ops: 0, max_ops: 4_000_000, channel_evals: 0 }
+        Ctx {
+            knobs: Knobs::default(),
+            ops: 0,
+            max_ops: 4_000_000,
+            channel_evals: 0,
+            max_candidates: 0,
+        }
     }
 
     pub fn with_knobs(knobs: Knobs) -> Ctx {
@@ -421,6 +432,13 @@ impl Ctx {
     /// einziger Kanal je gerechnet wurde.
     pub fn channel_evals(&self) -> u64 {
         self.channel_evals
+    }
+
+    /// Die grösste Kandidaten-Menge, die das Selektions-Lemma (§8w) auf diesem
+    /// Kontext gebildet hat. `1` heisst „überall eindeutig", `≥ 2` heisst
+    /// „mindestens einmal gehüllt".
+    pub fn max_candidates(&self) -> usize {
+        self.max_candidates
     }
 
     #[inline]
@@ -1155,34 +1173,65 @@ struct NearestSeg {
     m2: [Iv; 3],
 }
 
-/// **Das Nearest-Arc-Lemma** (§8v).
+/// **Das Selektions-Lemma** (§8w) — welche Bögen kann die Produktion an einem
+/// Punkt der Zelle zurückgeben?
 ///
-/// `channel_nearest` bildet ein `min` über die Bögen und gibt die Daten des
-/// GEWINNERS zurück — `q*`, `m̂₁`, `m̂₂` sind also nicht stetig in `p`, sie
-/// springen beim Argmin-Wechsel. Eine Intervall-Auswertung darf deshalb nur
-/// dann einen Bogen einsetzen, wenn er über der ganzen Zelle gewinnt:
+/// `channel_nearest` läuft die Bögen in Array-Ordnung ab, hält ein laufendes
+/// `best` (Start `+∞`) und aktualisiert `best`, `q*`, `m̂₁`, `m̂₂` **genau
+/// dann**, wenn `de_k < best` — ein STRIKTER Vergleich. Daraus folgt:
+///
+/// * **An jedem Punkt wählt die Produktion genau EINEN Bogen** — den zuletzt
+///   aktualisierenden. Der Rückgabewert ist dessen vollständiger Downstream.
+/// * **Bei Gleichstand gewinnt der FRÜHERE Index.** `de_k < best` ist bei
+///   `de_k == best` falsch, der spätere Bogen aktualisiert also nicht. Die
+///   Kandidaten-Bestimmung muss das einschliessen — im Zweifel wird ein Bogen
+///   AUFGENOMMEN (mehr Kandidaten = breiterer Hull = sound).
+/// * **Bogen 0 wird nie übersprungen**: der Prune vergleicht gegen `best = +∞`.
+///
+/// Also liegt der Produktionswert in der VEREINIGUNG der Kandidaten-Ergebnisse,
+/// und die Hülle darüber ist eine gültige Einschliessung (§8u-Beweispflicht 4,
+/// nur über einer indizierten statt einer binären Fallunterscheidung).
+///
+/// ## Das Kandidaten-Kriterium, hergeleitet
+///
+/// `best_before_k` ist das Minimum der `de_j` über die AUSGEWERTETEN `j < k`.
+/// Zwei Schranken, beide ohne jede geometrische Zusatzannahme:
 ///
 /// ```text
-/// upper_i < lower_j   für ALLE j ≠ i.
+/// lower(best_before_k) ≥ min_{j<k} lower(de_j)      (Minimum einer Teilmenge)
+/// upper(best_before_k) ≤ min_{j<k, j bewiesen ausgewertet} upper(de_j)
 /// ```
 ///
-/// Bei Gleichheit oder Überlappung ist das Ergebnis `Unknown` — die Hülle über
-/// alle erreichbaren Kandidaten samt adaptiver Unterteilung ist Paket 3 und
-/// wird hier NICHT vorweggenommen.
+/// Damit:
 ///
-/// **Der Prune muss mitbewiesen werden.** Die Produktionsschleife überspringt
-/// einen Bogen, wenn `|p − bc| − br ≥ best` — überspränge sie den Gewinner,
-/// wäre `best` grösser als `de_i` und die Rückgabe eine andere. Das Lemma
-/// dafür: alle anderen Bögen haben `de_j > upper_i ≥ de_i`, das laufende `best`
-/// ist also zu jedem Zeitpunkt `> de_i`; es genügt somit
-/// `upper(dbs_i) ≤ lower(de_i)`. Das ist eine Rechnung im f32-Modell und
-/// **keine geerbte Behauptung** über die Bounding-Sphere.
+/// * **Bogen `k` ist bewiesen AUSGEWERTET**, wenn `upper(dbs_k) < lower(best_before_k)`
+///   (der Prune greift dann sicher nicht). Bogen 0 immer.
+/// * **Bogen `k` kann aktualisieren**, wenn `lower(de_k) < upper(best_before_k)`.
+///   Ist das falsch, kann er `best` nie unterbieten und ist kein Kandidat.
+/// * **Bogen `k` aktualisiert SICHER**, wenn er bewiesen ausgewertet ist und
+///   `upper(de_k) < lower(best_before_k)`.
 ///
-/// **Bögen mit Krümmung sind `Unknown`.** Ihr `arc_closest` braucht `atan2`,
+/// Der letzte sichere Aktualisierer `f` schneidet alle früheren ab: wer vor `f`
+/// liegt, kann nicht der LETZTE sein. Kandidaten sind also
+/// `{ k ≥ f : k kann aktualisieren }`.
+///
+/// **Ohne Containment-Annahme.** Die naheliegende Abkürzung wäre „der Bogen
+/// liegt in seiner Bounding-Sphere, also ist `de_j ≥ dbs_j`, also prunet der
+/// Prune nur Verlierer". Diese Invariante wird hier NICHT vorausgesetzt — die
+/// Herleitung oben benutzt ausschliesslich, dass `best` ein Minimum über eine
+/// TEILMENGE ist, und das gilt unabhängig davon, was der Prune tut. (§8v
+/// brauchte dafür noch eine eigene Prune-Prüfung; sie entfällt, weil die
+/// Kandidaten-Menge den Fall jetzt mitträgt.)
+///
+/// **Bögen mit Krümmung sind `Unknown`.** `arc_closest` braucht dort `atan2`,
 /// `sin` und `cos`; das trigonometrische Enclosure ist Paket 4. Enthält ein
 /// Kanal auch nur einen gekrümmten Bogen, verweigert diese Funktion — auch für
 /// die Konkurrenz-Schranken, damit kein halber Beweis entsteht.
-fn enc_channel_nearest(c: &mut Ctx, p: [Iv; 3], ch: &OffsetChannel) -> Result<NearestSeg, Unknown> {
+fn enc_channel_candidates(
+    c: &mut Ctx,
+    p: [Iv; 3],
+    ch: &OffsetChannel,
+) -> Result<Vec<NearestSeg>, Unknown> {
     c.channel_evals += 1;
     if ch.arcs.is_empty() {
         return Err(Unknown("Kanal ohne Bogen"));
@@ -1190,40 +1239,64 @@ fn enc_channel_nearest(c: &mut Ctx, p: [Iv; 3], ch: &OffsetChannel) -> Result<Ne
     if ch.arcs.iter().any(|a| !(a.sweep < 0.0)) {
         return Err(Unknown("Kanal-Bogen mit Krümmung (Paket 4)"));
     }
-    let mut dist = Vec::with_capacity(ch.arcs.len());
+    let n = ch.arcs.len();
+    let mut geo = Vec::with_capacity(n);
     for arc in &ch.arcs {
-        dist.push(enc_segment_closest(c, p, arc)?);
+        let g = enc_segment_closest(c, p, arc)?;
+        // Ein nicht-endliches `de` hiesse Überlauf in der Quadratsumme; dann
+        // ist die Argmin-Logik nicht mehr modellierbar.
+        if !g.0.lo.is_finite() || !g.0.hi.is_finite() {
+            return Err(Unknown("Bogen-Distanz nicht endlich"));
+        }
+        geo.push(g);
     }
-    // Der eindeutige Gewinner.
-    let mut win: Option<usize> = None;
-    for i in 0..dist.len() {
-        if (0..dist.len()).all(|j| j == i || dist[i].0.certainly_lt(dist[j].0)) {
-            win = Some(i);
+    // Prune-Grösse je Bogen (nur für den „bewiesen ausgewertet"-Test).
+    let mut dbs = Vec::with_capacity(n);
+    for arc in &ch.arcs {
+        let v = fsub3(c, p, c3(arc.bc))?;
+        let nb = c.fnorm(v)?;
+        dbs.push(c.fsub(nb, Iv::f32p(arc.br))?);
+    }
+    let mut proven_eval = vec![false; n];
+    let mut can_update = vec![false; n];
+    let mut last_forced = 0usize;
+    for k in 0..n {
+        // `best_before_k`.
+        let lo_before =
+            (0..k).map(|j| geo[j].0.lo).fold(f64::INFINITY, f64::min);
+        let hi_before = (0..k)
+            .filter(|&j| proven_eval[j])
+            .map(|j| geo[j].0.hi)
+            .fold(f64::INFINITY, f64::min);
+        proven_eval[k] = k == 0 || dbs[k].hi < lo_before;
+        can_update[k] = geo[k].0.lo < hi_before;
+        if proven_eval[k] && geo[k].0.hi < lo_before {
+            last_forced = k;
+        }
+    }
+    let mut out = Vec::new();
+    for k in last_forced..n {
+        if !can_update[k] {
+            continue;
+        }
+        if c.knobs.drop_last_candidate && !out.is_empty() {
+            // Gegenprobe: einen Kandidaten aus der Hülle streichen.
+            break;
+        }
+        let (de, q, t) = geo[k];
+        let arc = &ch.arcs[k];
+        let m1 = enc_nlerp(c, arc.m1s, arc.m1e, t)?;
+        let m2 = enc_nlerp(c, arc.m2s, arc.m2e, t)?;
+        out.push(NearestSeg { de, q, m1, m2 });
+        if c.knobs.first_arc_wins {
             break;
         }
     }
-    if c.knobs.first_arc_wins {
-        // Gegenprobe: blind den ersten Kandidaten nehmen.
-        win = Some(0);
+    if out.is_empty() {
+        return Err(Unknown("leere Kandidaten-Menge"));
     }
-    let Some(i) = win else {
-        return Err(Unknown("Nearest-Bogen nicht eindeutig (Paket 3)"));
-    };
-    // Der Prune darf den Gewinner nicht überspringen.
-    if ch.arcs.len() > 1 {
-        let arc = &ch.arcs[i];
-        let bc = fsub3(c, p, c3(arc.bc))?;
-        let nb = c.fnorm(bc)?;
-        let dbs = c.fsub(nb, Iv::f32p(arc.br))?;
-        if !dbs.certainly_le(dist[i].0) {
-            return Err(Unknown("Bogen-Prune nicht als harmlos bewiesen"));
-        }
-    }
-    let (de, q, t) = dist[i];
-    let arc = &ch.arcs[i];
-    let m1 = enc_nlerp(c, arc.m1s, arc.m1e, t)?;
-    let m2 = enc_nlerp(c, arc.m2s, arc.m2e, t)?;
-    Ok(NearestSeg { de, q, m1, m2 })
+    c.max_candidates = c.max_candidates.max(out.len());
+    Ok(out)
 }
 
 /// [`crate::offset_channel::channel_limit`], eingeschlossen.
@@ -1235,16 +1308,24 @@ pub fn enclose_channel_limit(c: &mut Ctx, p: [Iv; 3], ch: &OffsetChannel) -> Enc
     if decide_ge(dbs, Iv::f32p(ch.trust)) == Decision::True {
         return Ok(neutral);
     }
-    let near = enc_channel_nearest(c, p, ch)?;
-    let far = decide_ge(near.de, Iv::f32p(ch.trust));
-    let val = |c: &mut Ctx| -> Enc {
-        let s4 = enc_gate_planes(c, p, &ch.face_planes)?;
-        let h = c.fadd(s4, Iv::f32p(ch.delta))?;
-        c.fsub(Iv::f32p(ch.delta), near.de.min(h))
-    };
-    // Der `dbs ≥ K`-Schalter kann noch unentschieden sein; dann gehört der
-    // neutrale Fall in die Hülle.
-    let inner = sw(c, far, |_| Ok(neutral), val)?;
+    // §8w: über ALLE möglichen Gewinner hüllen.
+    let cands = enc_channel_candidates(c, p, ch)?;
+    let s4 = enc_gate_planes(c, p, &ch.face_planes)?;
+    let mut inner: Option<Iv> = None;
+    for near in &cands {
+        let far = decide_ge(near.de, Iv::f32p(ch.trust));
+        let de = near.de;
+        let val = |c: &mut Ctx| -> Enc {
+            let h = c.fadd(s4, Iv::f32p(ch.delta))?;
+            c.fsub(Iv::f32p(ch.delta), de.min(h))
+        };
+        let v = sw(c, far, |_| Ok(neutral), val)?;
+        inner = Some(match inner {
+            Some(o) => o.hull(v),
+            None => v,
+        });
+    }
+    let inner = inner.ok_or(Unknown("leere Kandidaten-Menge"))?;
     match decide_ge(dbs, Iv::f32p(ch.trust)) {
         Decision::False => Ok(inner),
         _ => Ok(inner.hull(neutral)),
@@ -1301,10 +1382,10 @@ pub fn enclose_channel_apply(
         return Ok(d);
     }
     let body = |c: &mut Ctx| -> Enc {
-        let near = enc_channel_nearest(c, p, ch)?;
-        let dq = fsub3(c, p, near.q)?;
-        let s1 = c.fdot(dq, near.m1)?;
-        let s2 = c.fdot(dq, near.m2)?;
+        // §8w: der komplette Downstream JE Kandidat, danach die Hülle über die
+        // Ergebnisse. Nicht über `q*`/`m̂` zuerst zu hüllen ist wesentlich —
+        // das wäre zwar auch sound, aber deutlich breiter.
+        let cands = enc_channel_candidates(c, p, ch)?;
         let gate = if ch.concave {
             enclose_concave_gate(c, ch.gate, base, extra)?
         } else {
@@ -1312,14 +1393,26 @@ pub fn enclose_channel_apply(
         };
         let s3 = enc_gate_planes(c, p, &ch.end_planes)?;
         let s4 = enc_gate_planes(c, p, &ch.face_planes)?;
-        let rd = c.fsub(near.de, Iv::f32p(ch.delta))?;
-        let tr = c.fsub(Iv::f32p(ch.trust), near.de)?;
-        let w_geo = s1.min(s2).min(s3).min(s4).min(rd).min(tr);
-        let w = w_geo.min(gate);
-        if !ch.concave {
-            return Ok(d.max(w));
+        let mut out: Option<Iv> = None;
+        for near in &cands {
+            let dq = fsub3(c, p, near.q)?;
+            let s1 = c.fdot(dq, near.m1)?;
+            let s2 = c.fdot(dq, near.m2)?;
+            let rd = c.fsub(near.de, Iv::f32p(ch.delta))?;
+            let tr = c.fsub(Iv::f32p(ch.trust), near.de)?;
+            let w_geo = s1.min(s2).min(s3).min(s4).min(rd).min(tr);
+            let w = w_geo.min(gate);
+            let v = if !ch.concave {
+                d.max(w)
+            } else {
+                three_way_concave(c, d, w, w_geo)?
+            };
+            out = Some(match out {
+                Some(o) => o.hull(v),
+                None => v,
+            });
         }
-        three_way_concave(c, d, w, w_geo)
+        out.ok_or(Unknown("leere Kandidaten-Menge"))
     };
     sw(c, skip, |_| Ok(d), body)
 }

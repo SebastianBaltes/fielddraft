@@ -9438,7 +9438,7 @@ fn interval_subdivision_keeps_every_sample_384() {
     let (stop, _b) = stop_with_lb(&field);
     let (mut kids, mut narrowed, mut probes) = (0usize, 0usize, 0usize);
     for cell in fixture_cells([-7.0; 3], [1.0; 3], 4) {
-        for node in [stop, &cut] {
+        for node in [stop, &cut, &field] {
             let mut c0 = iv::Ctx::new();
             let Ok(parent) = iv::enclose_node(&mut c0, node, cell.world_f32()) else { continue };
             let Some((a, b)) = cell.split() else { continue };
@@ -10289,33 +10289,59 @@ fn interval_encloses_the_production_channel_term_384() {
     );
 }
 
-/// **§8v-Pin 2: das Nearest-Arc-Lemma — Eindeutigkeit oder `Unknown`.**
+/// **§8w-Pin: der Argmin-Hull trägt — und das Streichen eines Kandidaten
+/// reisst.**
 ///
-/// `channel_nearest` gibt die Daten des GEWINNERS zurück; `q*`, `m̂₁`, `m̂₂`
-/// springen beim Argmin-Wechsel. Eine Zelle, in der zwei Segmente den
-/// Gewinner tauschen, MUSS deshalb `Unknown` liefern — und die Rückdreh-Probe
-/// („nimm einfach den ersten Kandidaten") MUSS an derselben Familie reissen.
+/// §8v verweigerte über einer Argmin-Grenze (`Unknown`). §8w hüllt stattdessen
+/// über alle möglichen Gewinner. Das ist die stärkere Aussage, aber auch die
+/// gefährlichere: eine Hülle, der ein Kandidat fehlt, ist keine
+/// Einschliessung, sondern eine Lüge. Der Pin prüft vier Richtungen:
+///
+/// * **Über der Grenze wird gehüllt** (Kandidaten-Menge `≥ 2`) und die Hülle
+///   enthält JEDEN Produktionswert an dicht gesetzten Proben.
+/// * **Daneben bleibt es eindeutig** (Kandidaten-Menge `== 1`) — sonst wäre
+///   das Kriterium eine Dauer-Hülle und die Schärfe dahin.
+/// * **Ein gestrichener Kandidat reisst** (`Knobs::drop_last_candidate`).
+/// * **Blind den ersten nehmen reisst** (`Knobs::first_arc_wins`).
 #[test]
-fn interval_nearest_arc_uniqueness_is_load_bearing_384() {
+fn interval_argmin_hull_is_load_bearing_384() {
     let straddle: Vec<_> = adversarial_channel_cases()
         .into_iter()
         .filter(|(n, ..)| n.starts_with("2-Seg Voronoi"))
         .collect();
     assert!(straddle.len() >= 2, "die Voronoi-Familie fehlt");
-    // (a) Über der Grenze verweigert die Eindeutigkeits-Prüfung.
-    let mut refused = 0usize;
+    // (a) Über der Grenze: gehüllt, und die Hülle hält.
+    let (mut hulled, mut probes) = (0usize, 0usize);
     for (name, ch, cell, base, d, extra) in &straddle {
         let mut c = iv::Ctx::new();
-        if iv::enclose_channel_apply(&mut c, cell.world_f32(), *base, *d, ch, *extra).is_err() {
-            refused += 1;
-        } else {
-            panic!("{name}: die Zelle überspannt die Voronoi-Grenze, die Prüfung hat aber \
-                    einen eindeutigen Gewinner behauptet");
+        let enc = iv::enclose_channel_apply(&mut c, cell.world_f32(), *base, *d, ch, *extra)
+            .unwrap_or_else(|e| panic!("{name}: der Hull verweigert ({e:?})"));
+        assert!(
+            c.max_candidates() >= 2,
+            "{name}: die Zelle überspannt die Argmin-Grenze, das Selektions-Lemma hat aber \
+             nur {} Kandidaten gebildet",
+            c.max_candidates()
+        );
+        for p in cell_samples(cell, 3) {
+            let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+            for b in iv_samples(*base) {
+                for dd in iv_samples(*d) {
+                    for e in iv_samples(*extra) {
+                        let got = crate::offset_channel::channel_apply(b, dd, pf, ch, e);
+                        probes += 1;
+                        assert!(
+                            got.is_finite() && enc.contains(got as f64),
+                            "{name}: Produktionswert {got} liegt AUSSERHALB des Hulls {enc:?}"
+                        );
+                    }
+                }
+            }
         }
+        hulled += 1;
     }
-    assert_eq!(refused, straddle.len());
-    // (b) Klar zugeordnete Zellen werden NICHT verweigert — sonst wäre die
-    //     Prüfung bloss eine Dauer-Verweigerung.
+    assert_eq!(hulled, straddle.len());
+    assert!(probes > 5_000, "nur {probes} Proben");
+    // (b) Klar zugeordnet: EIN Kandidat.
     let clear: Vec<_> = adversarial_channel_cases()
         .into_iter()
         .filter(|(n, ..)| n.starts_with("2-Seg klar"))
@@ -10323,27 +10349,36 @@ fn interval_nearest_arc_uniqueness_is_load_bearing_384() {
     assert!(clear.len() >= 2, "die eindeutige Familie fehlt");
     for (name, ch, cell, base, d, extra) in &clear {
         let mut c = iv::Ctx::new();
-        assert!(
-            iv::enclose_channel_apply(&mut c, cell.world_f32(), *base, *d, ch, *extra).is_ok(),
-            "{name}: eindeutig zugeordnete Zelle wurde trotzdem verweigert"
+        iv::enclose_channel_apply(&mut c, cell.world_f32(), *base, *d, ch, *extra)
+            .unwrap_or_else(|e| panic!("{name}: eindeutige Zelle verweigert ({e:?})"));
+        assert_eq!(
+            c.max_candidates(),
+            1,
+            "{name}: eindeutig zugeordnete Zelle bildet {} Kandidaten — dann ist das \
+             Kriterium eine Dauer-Hülle",
+            c.max_candidates()
         );
     }
-    // (c) Die Rückdreh-Gegenprobe: erster Kandidat statt Beweis.
-    let knobs = iv::Knobs { first_arc_wins: true, ..Default::default() };
-    let (mut broken, mut esc_total) = (0usize, 0usize);
-    for (_n, ch, cell, base, d, extra) in &straddle {
-        let (esc, _n2, _ok) = channel_enclosure_escapes(knobs, ch, cell, *base, *d, *extra, 3);
-        if esc > 0 {
-            broken += 1;
-            esc_total += esc;
+    // (c)/(d) Die beiden Rückdreh-Gegenproben.
+    for (tag, knobs) in [
+        ("Kandidat gestrichen", iv::Knobs { drop_last_candidate: true, ..Default::default() }),
+        ("erster Kandidat blind", iv::Knobs { first_arc_wins: true, ..Default::default() }),
+    ] {
+        let (mut broken, mut esc_total) = (0usize, 0usize);
+        for (_n, ch, cell, base, d, extra) in &straddle {
+            let (esc, _n2, _ok) = channel_enclosure_escapes(knobs, ch, cell, *base, *d, *extra, 3);
+            if esc > 0 {
+                broken += 1;
+                esc_total += esc;
+            }
         }
+        assert!(
+            broken > 0,
+            "die Gegenprobe {tag} blieb still: über einer Argmin-Grenze MUSS eine \
+             unvollständige Hülle Produktionswerte verlieren ({esc_total} Ausreisser) — \
+             sonst belegt das Selektions-Lemma nichts"
+        );
     }
-    assert!(
-        broken > 0,
-        "die Gegenprobe blieb still: wer über einer Argmin-Grenze blind den ersten Bogen \
-         nimmt, MUSS Produktionswerte verlieren ({esc_total} Ausreisser) — sonst belegt \
-         das Nearest-Arc-Lemma nichts"
-    );
 }
 
 /// **§8v-Pin 3: die Kachelung ist lückenlos.**
@@ -10396,4 +10431,205 @@ fn interval_tiling_of_the_plate_core_is_gapless_384() {
     }
     assert_eq!(b2, n * n * n, "nur {b2} von {} Zellen zertifiziert", n * n * n);
     assert!(probes > 3_000, "nur {probes} Proben");
+}
+
+/// **§8w-Sonde: wie sich die Argmin-Zellen auflösen — und was übrig bleibt.**
+///
+/// Gefahren wird die ECHTE Konfiguration (Zweig 1 an, wie in `certify_cell`).
+/// Der Rest wird dreifach klassifiziert, weil die drei Fälle völlig
+/// verschiedene Dinge bedeuten:
+///
+/// * **Vorzeichenwechsel** — das Feld ist über der Zelle teils Material, teils
+///   Luft. `sup_C f < 0` ist dort per Konstruktion unerreichbar, und Zweig 1
+///   greift nur, wenn `U(c) + ρ ≤ δ + tol`. Das ist die **Decke der beiden
+///   Kriterien**, keine Schwäche der Einschliessung.
+/// * **ganz Luft** (`f ≥ 0` an allen Proben) — hier könnte ein Unter-Claim
+///   SITZEN; das sind die wirklich offenen Zellen.
+/// * **ganz Material, aber nicht zertifiziert** — reine Breite; die
+///   Unterteilung ist das Mittel.
+#[test]
+#[ignore]
+fn probe_384_interval_argmin_resolution() {
+    let delta = 2.0f32;
+    println!(
+        "| Fixture | Zellen | gehüllt | Z1+Z2 direkt | + per Unterteilung | Rest | \
+         Vorz.wechsel | ganz Luft | ganz Material | Tiefen-Hist. | ms |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|---|---|");
+    for (name, field, _e, lo, hi, _n) in cert_matrix(delta) {
+        if !name.starts_with("Ecken-Schale") && !name.starts_with("notch α=90") {
+            continue;
+        }
+        let (stop, blk) = stop_with_lb(&field);
+        let cap = delta as f64 + CERT_TOL;
+        let u_at = |c: [f64; 3]| u_upper(stop, blk, delta, c, 2.0 * cap);
+        let t0 = std::time::Instant::now();
+        let (mut hulled, mut direct, mut viasub, mut rest) = (0, 0, 0, 0);
+        let (mut flip, mut air, mut solid) = (0, 0, 0);
+        let mut hist = [0usize; 5];
+        for cell in fixture_cells(lo, hi, 12) {
+            let mut c = iv::Ctx::new();
+            let v = iv::certify_cell(&cell, &field, delta as f64, CERT_TOL, &u_at, &mut c);
+            if c.max_candidates() >= 2 {
+                hulled += 1;
+            }
+            if v.certified() {
+                direct += 1;
+                continue;
+            }
+            let mut done = None;
+            for depth in 1..=4u32 {
+                let mut c2 = iv::Ctx::new();
+                if iv::certify_cell_adaptive(
+                    &cell,
+                    &field,
+                    delta as f64,
+                    CERT_TOL,
+                    &u_at,
+                    depth,
+                    &mut c2,
+                )
+                .is_ok()
+                {
+                    done = Some(depth);
+                    break;
+                }
+            }
+            match done {
+                Some(dp) => {
+                    viasub += 1;
+                    hist[dp as usize] += 1;
+                }
+                None => {
+                    rest += 1;
+                    let (mut neg, mut pos) = (false, false);
+                    for p in cell_samples(&cell, 2) {
+                        let f =
+                            field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+                        if f < 0.0 {
+                            neg = true;
+                        } else {
+                            pos = true;
+                        }
+                    }
+                    match (neg, pos) {
+                        (true, true) => flip += 1,
+                        (false, true) => air += 1,
+                        _ => solid += 1,
+                    }
+                }
+            }
+        }
+        println!(
+            "| {name} | 1728 | {hulled} | {direct} | {viasub} | {rest} | {flip} | {air} | \
+             {solid} | 1:{} 2:{} 3:{} 4:{} | {} |",
+            hist[1],
+            hist[2],
+            hist[3],
+            hist[4],
+            t0.elapsed().as_millis()
+        );
+    }
+}
+
+/// **§8w-Pin: der exakte Gleichstand und das Tiefen-Limit.**
+///
+/// Zwei Pflichten, die leicht durchrutschen:
+///
+/// * **Exakter Tie.** Auf der Mittelsenkrechten zweier Segmente sind beide
+///   Distanzen bit-gleich. Die Produktion aktualisiert `best` nur bei
+///   `de < best` — **der FRÜHERE Index gewinnt**. Der Hull muss diesen Zweig
+///   enthalten. Geprüft wird mit PUNKT-Zellen exakt auf der Grenze, damit der
+///   Tie wirklich eintritt und nicht bloss „fast".
+/// * **Das Tiefen-Limit ist kein Erfolg.** Eine Zelle, die das Feld-Vorzeichen
+///   wechselt, kann `sup_C f < 0` prinzipiell nie erfüllen; mit abgeschaltetem
+///   Zweig 1 MUSS die adaptive Zertifizierung sie auf JEDER Tiefe ablehnen —
+///   und nicht etwa beim Erreichen des Limits durchwinken.
+#[test]
+fn interval_exact_tie_and_depth_limit_384() {
+    // (1) Exakter Gleichstand.
+    let two: Vec<_> = adversarial_channel_cases()
+        .into_iter()
+        .filter(|(n, ..)| n.starts_with("2-Seg Voronoi-Grenze"))
+        .collect();
+    let (_n0, ch, _c0, base, d, extra) = two.into_iter().next().expect("Voronoi-Familie fehlt");
+    let mut ties = 0usize;
+    for (y, z) in [(2.6f64, 0.8f64), (1.3, 0.4), (3.1, -0.6)] {
+        // Punkt-Zelle EXAKT auf der Mittelsenkrechten x = 0.
+        let p = [0.0f64, y, z];
+        let cell = iv::Box3::new(p, p);
+        let pf = [0.0f32, y as f32, z as f32];
+        // Der Gleichstand muss echt sein, sonst prüft der Pin nichts.
+        let (d0, _, _) = crate::offset_channel::arc_closest(&ch.arcs[0], pf);
+        let (d1, _, _) = crate::offset_channel::arc_closest(&ch.arcs[1], pf);
+        assert_eq!(
+            d0.to_bits(),
+            d1.to_bits(),
+            "bei {pf:?} sind die Distanzen {d0} / {d1} nicht bit-gleich — kein echter Tie"
+        );
+        ties += 1;
+        let mut c = iv::Ctx::new();
+        let enc = iv::enclose_channel_apply(&mut c, cell.world_f32(), base, d, &ch, extra)
+            .expect("der Hull verweigert auf der Grenze");
+        assert!(
+            c.max_candidates() >= 2,
+            "auf dem exakten Tie wurden nur {} Kandidaten gebildet — der \
+             Erster-gewinnt-Zweig könnte fehlen",
+            c.max_candidates()
+        );
+        for b in iv_samples(base) {
+            for dd in iv_samples(d) {
+                for e in iv_samples(extra) {
+                    let got = crate::offset_channel::channel_apply(b, dd, pf, &ch, e);
+                    assert!(
+                        enc.contains(got as f64),
+                        "Tie bei {pf:?}: Produktionswert {got} fehlt im Hull {enc:?} — der \
+                         Erster-gewinnt-Zweig ist nicht enthalten"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(ties, 3);
+
+    // (2) Tiefen-Limit: eine Zelle, die das Vorzeichen wechselt, wird nie
+    //     zertifiziert — auf keiner Tiefe.
+    let delta = 2.0f32;
+    let (field, _) = compile_for(thin_corner_node(6.0 * delta, 40.0, delta));
+    let none = |_c: [f64; 3]| None;
+    let mut checked = 0usize;
+    for cell in fixture_cells([-36.0, -12.0, -36.0], [-30.0, -2.0, -30.0], 6) {
+        let (mut neg, mut pos) = (false, false);
+        for p in cell_samples(&cell, 2) {
+            let f = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+            if f < 0.0 {
+                neg = true;
+            } else {
+                pos = true;
+            }
+        }
+        if !(neg && pos) {
+            continue;
+        }
+        checked += 1;
+        for depth in [0u32, 2, 5] {
+            let mut c = iv::Ctx::new();
+            let r = iv::certify_cell_adaptive(
+                &cell,
+                &field,
+                delta as f64,
+                CERT_TOL,
+                &none,
+                depth,
+                &mut c,
+            );
+            assert!(
+                r.is_err(),
+                "die Vorzeichenwechsel-Zelle {cell:?} wurde auf Tiefe {depth} zertifiziert — \
+                 `sup_C f < 0` ist dort aber unmöglich, das Tiefen-Limit darf NIE ein \
+                 Erfolg sein"
+            );
+        }
+    }
+    assert!(checked >= 5, "nur {checked} Vorzeichenwechsel-Zellen gefunden — der Pin misst nichts");
 }

@@ -5472,6 +5472,197 @@ ausgelieferte Feld und verlangt eine Mindestzahl dort ausgewerteter Zellen.
   wörtlich; die Zell-Zertifizierung ist ein zweiter, unabhängiger Nachweis und
   ersetzt den Stichproben-Zeugen nicht.
 
+## 8w. Intervall-Stufe Paket 3 — Argmin-Hull und adaptive Unterteilung (#384, 2026-08-02)
+
+§8v hat den Kanal-Term ausgewertet, aber nur wo der nächste Bogen BEWEISBAR
+eindeutig war. Die eigene Zählung nannte den Preis: **10 414 von 22 464 Zellen**
+scheiterten an `Nearest-Bogen nicht eindeutig` — der Flaschenhals, und
+ausschliesslich an den Ecken-Schalen, deren Naht aus mehreren kollinear
+anschliessenden Segmenten besteht.
+
+§8w ersetzt die Verweigerung durch eine **Hülle über alle möglichen Gewinner**.
+Ergebnis: der Grund `Nearest-Bogen nicht eindeutig` kommt in der ganzen Matrix
+**nicht mehr vor**.
+
+### Das Selektions-Lemma
+
+`channel_nearest` läuft die Bögen in Array-Ordnung ab, hält ein laufendes
+`best` (Start `+∞`) und aktualisiert `best`, `q*`, `m̂₁`, `m̂₂` genau dann, wenn
+`de_k < best` — ein **strikter** Vergleich. Daraus:
+
+* An jedem Punkt wählt die Produktion **genau EINEN** Bogen: den zuletzt
+  aktualisierenden. Zurückgegeben wird dessen vollständiger Downstream.
+* **Bei Gleichstand gewinnt der FRÜHERE Index.** `de_k < best` ist bei
+  `de_k == best` falsch, der spätere Bogen aktualisiert also nicht.
+* **Bogen 0 wird nie übersprungen** — der Prune vergleicht gegen `best = +∞`.
+
+Also liegt der Produktionswert in der VEREINIGUNG der Kandidaten-Ergebnisse,
+und die Hülle darüber ist eine gültige Einschliessung. Formal ist das
+§8u-Beweispflicht 4, nur über einer indizierten statt einer binären
+Fallunterscheidung.
+
+### Das Kandidaten-Kriterium — ohne Containment-Annahme
+
+`best_before_k` ist das Minimum der `de_j` über die AUSGEWERTETEN `j < k`. Zwei
+Schranken, beide ohne jede geometrische Zusatzannahme:
+
+```text
+lower(best_before_k) ≥ min_{j<k} lower(de_j)          (Minimum einer Teilmenge)
+upper(best_before_k) ≤ min_{j<k, j bewiesen ausgewertet} upper(de_j)
+```
+
+Damit drei Aussagen je Bogen:
+
+| Aussage | Kriterium |
+|---|---|
+| `k` ist bewiesen AUSGEWERTET | `upper(dbs_k) < lower(best_before_k)`; `k = 0` immer |
+| `k` KANN aktualisieren | `lower(de_k) < upper(best_before_k)` |
+| `k` aktualisiert SICHER | bewiesen ausgewertet **und** `upper(de_k) < lower(best_before_k)` |
+
+Der letzte sicher aktualisierende Bogen `f` schneidet alle früheren ab — wer vor
+`f` liegt, kann nicht der LETZTE sein. Kandidaten sind also
+`{ k ≥ f : k kann aktualisieren }`. Die Tie-Richtung ist eingeschlossen, weil
+„kann aktualisieren" mit `<` auf den offenen Schranken arbeitet: im Zweifel
+wird ein Bogen AUFGENOMMEN, und mehr Kandidaten heisst breitere Hülle, also
+sound.
+
+**Die Containment-Invariante entfällt.** §8v brauchte noch eine eigene
+Prune-Prüfung („der Bogen liegt in seiner Bounding-Sphere, also prunet der
+Prune nur Verlierer"). Die Herleitung oben benutzt ausschliesslich, dass `best`
+ein Minimum über eine TEILMENGE ist — und das gilt unabhängig davon, was der
+Prune tut. Ein Lemma weniger, und der Grund `Bogen-Prune nicht als harmlos
+bewiesen` (§8v: 3 Zellen) verschwindet mit.
+
+**Gehüllt wird das ERGEBNIS, nicht der Zwischenwert.** Für jeden Kandidaten
+läuft der komplette Downstream (`q*`, `t`, `nlerp`, `s₁`/`s₂`, Gates, der
+Drei-Wege-Schalter, `channel_limit`), erst danach wird vereinigt. Zuerst über
+`q*`/`m̂` zu hüllen wäre ebenfalls sound, aber deutlich breiter.
+
+### Messung
+
+Zell-Zertifizierung über die Doktrin-Gitter, 12³ = 1728 Zellen je Fixture,
+`δ = 2 mm`, `tol = 10⁻³`.
+
+| Fixture | Z1 | Z2 §8v | **Z2 §8w** | **gesamt** | + Unterteilung | Anteil |
+|---|---|---|---|---|---|---|
+| Stufen-Nabe | 1236 | 0 | 0 | 1236 | — | 72 % |
+| Ecken-Schale `t/δ = 2` | 1023 | 0 | **31** | 1054 | **1128** | 65 % |
+| Ecken-Schale `t/δ = 2.1` | 876 | 0 | **56** | 932 | **1141** | 66 % |
+| Ecken-Schale `t/δ = 2.25` | 722 | 0 | **132** | 854 | **1013** | 59 % |
+| Ecken-Schale `t/δ = 2.4` | 700 | 0 | **119** | 819 | **918** | 53 % |
+| Ecken-Schale `t/δ = 2.5` | 658 | 0 | **114** | 772 | **959** | 55 % |
+| Ecken-Schale `t/δ = 3` | 450 | 0 | **475** | 925 | **1120** | 65 % |
+| Ecken-Schale `t/δ = 4` | 216 | 0 | **731** | 947 | **1178** | 68 % |
+| Ecken-Schale `t/δ = 6` | 64 | 0 | **1331** | 1395 | **1486** | 86 % |
+| Rippen-Kamm 4×1.5/0.8 | 432 | 0 | 0 | 432 | — | 25 % |
+| Rippen-Kamm 4×2/1 | 432 | 1008 | 1008 | 1440 | — | 83 % |
+| notch α = 90° | 972 | 360 | 360 | 1332 | **1461** | 85 % |
+| notch α = 60° | 916 | 400 | 400 | 1316 | — | 76 % |
+
+Die Ecken-Schalen gewinnen zusammen **2989** Zellen allein durch den Hull, und
+noch einmal **1245** durch die Unterteilung. Der Hull greift dort auch
+tatsächlich: je nach Dicke sind 705 … 1664 der 1728 Zellen echte Hüll-Fälle
+(`≥ 2` Kandidaten). Der notch braucht ihn nie (ein Bogen je Kanal) — dass er
+trotzdem gleich bleibt, ist die Kontroll-Beobachtung.
+
+### Was jetzt übrig bleibt — und warum es kein Lemma mehr ist
+
+Der Rest wurde dreifach klassifiziert (Sonde
+`probe_384_interval_argmin_resolution`), weil die drei Fälle völlig
+Verschiedenes bedeuten:
+
+| Fixture | Rest | Vorzeichenwechsel | ganz Luft | ganz Material |
+|---|---|---|---|---|
+| Ecken-Schale `t/δ = 2` | 600 | 416 | 183 | 1 |
+| Ecken-Schale `t/δ = 2.1` | 587 | 551 | 0 | 36 |
+| Ecken-Schale `t/δ = 2.25` | 715 | 623 | 86 | 6 |
+| Ecken-Schale `t/δ = 2.4` | 810 | 686 | 115 | 9 |
+| Ecken-Schale `t/δ = 2.5` | 769 | 668 | 95 | 6 |
+| Ecken-Schale `t/δ = 3` | 608 | 542 | 48 | 18 |
+| Ecken-Schale `t/δ = 4` | 550 | 416 | 96 | 38 |
+| Ecken-Schale `t/δ = 6` | 242 | 212 | 18 | 12 |
+| notch α = 90° | 267 | 171 | 96 | 0 |
+| **Summe** | **5148** | **4285 (83 %)** | **737 (14 %)** | **126 (2 %)** |
+
+**83 % des Rests sind Zellen, über denen das Feld das Vorzeichen wechselt** —
+teils Material, teils Luft. Dort ist `sup_C f < 0` **per Konstruktion**
+unerreichbar, und Zweig 1 greift nur, wenn `U(c) + ρ ≤ δ + tol`, was an der
+Erosionsfläche `ρ ≤ tol` verlangen würde. Das ist keine Schwäche der
+Einschliessung und kein fehlendes Lemma, sondern **die Decke der beiden
+Kriterien**: sie prüfen die zwei Hälften der Unter-Claim-Bedingung getrennt und
+können deshalb nichts über eine Zelle sagen, in der beide Hälften an
+verschiedenen Punkten wahr sind. Der Ausweg ist ein DRITTES Kriterium, das
+beide Schranken auf derselben Zelle koppelt: „für jeden `x ∈ C` mit `f(x) ≥ 0`
+gilt `dist(x,∁Ω) ≤ δ + tol`" — und das braucht eine Einschliessung von
+`dist(·,∁Ω)` selbst, nicht nur von `f`.
+
+Die 737 „ganz Luft"-Zellen sind der eigentlich offene Rest: dort ist `f ≥ 0`,
+und ob `dist > δ + tol` gilt, sagt keines der beiden Kriterien. Die 126 „ganz
+Material"-Zellen sind reine Breite — dort ist die Unterteilung das Mittel, und
+sie hat schon 1245 davon geholt.
+
+### Laufzeit
+
+Die Zertifizierung läuft offline in Tests, die Grössenordnung gehört trotzdem
+hierher (Release-Build, ein Kern):
+
+* **ohne Unterteilung**: rund **0.09 ms je Zelle** über die ganze Matrix
+  (13 Fixturen × 1728 Zellen × drei Konfigurationen in 6.3 s).
+* **mit Unterteilungs-Versuchen bis Tiefe 4**: 0.07 ms/Zelle (notch, ein Bogen
+  je Kanal) bis **1.4 ms/Zelle** (Ecken-Schale `t/δ = 2.4`, bis zu 24 Kanäle mit
+  Hüll-Kandidaten). Die Unterteilung multipliziert die Arbeit erwartungsgemäss
+  um bis zu `2^Tiefe`; der Nutzen fällt nach Tiefe 3 deutlich ab (Histogramm in
+  der Sonde: Tiefe 1 und 2 tragen den Löwenanteil, Tiefe 4 liefert je Fixture
+  nur noch 0 … 37 Zellen).
+
+### Pflicht-Gegen-Beispiel-Familien
+
+* **Argmin-Grenze mit stark verschiedenen Dualen.** Der Hull enthält jeden
+  Produktionswert; die Kandidaten-Menge ist dort `≥ 2`, daneben `== 1`. **Zwei**
+  Rückdreh-Proben reissen: `drop_last_candidate` (einen Kandidaten streichen —
+  die schärfere Probe, sie trifft nur den Vereinigungs-Schritt) und
+  `first_arc_wins` (blind den ersten nehmen).
+* **Exakter Tie.** Punkt-Zellen exakt auf der Mittelsenkrechten, mit
+  Bit-Gleichheit von `de₀` und `de₁` als Vorbedingung im Pin — sonst prüft er
+  nur „fast". Der Hull muss den Erster-gewinnt-Zweig enthalten.
+* **Unterteilungs-Konsistenz.** `interval_subdivision_keeps_every_sample_384`
+  läuft seit §8w auch über das AUSGELIEFERTE Feld; jede Teilzelle enthält
+  weiterhin jeden gesampelten Produktionswert, und die Kind-Einschliessung
+  verlässt die Eltern-Einschliessung nie.
+* **Tiefen-Limit.** Vorzeichenwechsel-Zellen werden auf Tiefe 0, 2 und 5
+  abgelehnt — das Erreichen des Limits ist NIE ein Erfolg (§8u-Beweispflicht 10
+  unverändert).
+
+### Prüfungen
+
+* **Golden**: byte-identisch inkl. Tape.
+* **`just test`**: Fast-Tier **1490** (Baseline 1488) / Web **2082**.
+  `cargo test --workspace` **1595** (Baseline 1593).
+* **`OFFSET_FUZZ_ITERS=200 … offset_fuzz --release`**: 5/5.
+
+### Neue Pins
+
+* `interval_argmin_hull_is_load_bearing_384` — der Hull in vier Richtungen
+  (hüllt über der Grenze, bleibt eindeutig daneben, und beide Rückdreh-Proben
+  reissen). Ersetzt den §8v-Pin `interval_nearest_arc_uniqueness_is_load_bearing_384`,
+  dessen Kernaussage („über der Grenze wird VERWEIGERT") §8w gerade aufhebt.
+* `interval_exact_tie_and_depth_limit_384` — der exakte Gleichstand und das
+  Tiefen-Limit.
+* Sonde `probe_384_interval_argmin_resolution` — die Auflösungs- und
+  Rest-Tabelle oben samt Laufzeit.
+
+### Was OFFEN bleibt
+
+* **Das dritte Kriterium** — die gekoppelte Aussage über `{f ≥ 0} ∩ C`. Mit
+  4285 Zellen der grösste Einzelposten und ab jetzt der Flaschenhals. Es
+  braucht eine Einschliessung von `dist(·,∁Ω)`, nicht nur von `f`.
+* **Paket 4 — Kreisbögen** (12 Zellen, Stufen-Nabe).
+* **Paket 5 — der geometrische Naht-Aussenzeuge und die η-Klemme.**
+* **`LbPiece::Rev`** (480), **Skizzen-Blätter** (1296),
+  **Rotations-Dependency**: unverändert §8u.
+* **Die Zusage selbst ist unverändert.** Die Unter-Seiten-Ausnahme steht
+  wörtlich.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -5542,6 +5733,13 @@ ausgelieferte Feld und verlangt eine Mindestzahl dort ausgewerteter Zellen.
   ihm fallen `at_vertex`/`at_face` und der `verts`-Parameter).
   **Kein Auswerter, kein Opcode, kein Payload-Wort, kein Spiegel** — Golden
   35/35 byte-identisch, `check_interp` 35 Szenen / 0 failures.
+- Produktionscode §8w: `crates/kernel/src/offset_interval.rs` —
+  `enc_channel_candidates` (Selektions-Lemma; ersetzt `enc_channel_nearest`),
+  Hüll-Auswertung in `enclose_channel_apply`/`enclose_channel_limit`,
+  `Knobs::drop_last_candidate`, `Ctx::max_candidates`. Pins in
+  `offset_capability_tests.rs`: `interval_argmin_hull_is_load_bearing_384`,
+  `interval_exact_tie_and_depth_limit_384`, Sonde
+  `probe_384_interval_argmin_resolution`.
 - Produktionscode §8v: `crates/kernel/src/offset_interval.rs` — `enc_gate_planes`,
   `enc_segment_closest`, `enc_nlerp`, `enc_channel_nearest` (Nearest-Arc-Lemma),
   `enclose_channel_limit`, `enclose_channel_apply`, der geteilte
