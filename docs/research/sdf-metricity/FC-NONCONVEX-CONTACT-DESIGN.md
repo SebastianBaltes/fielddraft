@@ -2707,6 +2707,249 @@ bewegt sich**, kein Produktionscode, kein Opcode, kein Spiegel.
   **die latente `safe_sqrt`-Entartung anderer Primitive**: unverändert
   §8j/§8k/§8m.
 
+## 8o. Die Nabe ist zu — `L` ist jetzt die zugeschnittene Vereinigungs-B-Rep im Tape (#384, 2026-08-02)
+
+§8n hat den Satz bewiesen und den Weg beziffert: `gate = max(G − d₀, L(x) − δ)`
+schliesst die Stufen-Nabe, wenn `L` der VOLLE Member-Schnitt ist — das Paar
+schafft nur 59 → 14. §8o baut ihn, und zwar nicht als Keil-Minimum (`∏_k n_k`,
+beim Rippen-Kamm `6⁵ = 7776`), sondern als **`min` über `Σ_k n_k` zugeschnittene
+Randstücke**: für `x ∈ Ω` ist `dist(x,∁Ω) = dist(x,∂Ω)`, und `∂Ω` zerfällt
+linear.
+
+Ergebnis in einer Zeile: **Stufen-Nabe von `0 / 59 · 0.3156` auf `0 / 0`**, jede
+andere Fixture auf den Punkt unverändert, Golden-Feldwerte byte-identisch.
+
+### Die Pflicht-Handrechnung (vor der ersten Zeile Produktionscode)
+
+Am §8l-Worst-Punkt `[−1.463461, −1.163986, −0.684392]` (`r = 1.869915`,
+`z = −0.684392`) zerfällt `∂Ω` in genau diese Stücke — die vierte Spalte ist,
+was die Synthese daraus tatsächlich gemacht hat:
+
+| Randstück | zugeschnitten durch | `dist` | Stück-Typ |
+|---|---|---|---|
+| **Plattenboden `z = −3`** | niemanden (beide Zylinder enden darüber) | **2.315608** | Dreieck |
+| A-Deckel-Ring `z = 0.5` | Zylinder B (`r < 4` entfällt) | 2.437221 | Rev `(4,0.5)→(6,0.5)` |
+| B-Mantel `r = 4` | Platte (`z < 0`) + A (`z < 0.5`) | 2.437221 | Rev `(4,0.5)→(4,6)` |
+| Plattendeckel `z = 0` | Zylinder A (`r < 6` entfällt) | 4.186406 | Rev `(6,0)→(28.284,0)` |
+| A-Mantel `r = 6` | Platte (`z < 0`) | 4.186406 | Rev `(6,0)→(6,0.5)` |
+| B-Deckel `z = 6` | niemanden | 6.684392 | Rev `(0,6)→(4,6)` |
+| Plattenseiten `\|x\|,\|y\| = 20` | niemanden | 18.5 … 21.5 | 8 Dreiecke |
+| A-Boden `z = −1.2`, B-Boden `z = −1.8` | **ganz im Plattenkörper** | — | **verworfen** |
+
+`min = 2.315608` — exakt der §8k-Referenzwert und exakt der §8n-VOLL-Wert. Das
+beste PAAR war 2.237332, der ungeschnittene A-Deckel wäre 1.184392 gewesen.
+15 Stücke, gemessen: `L = 2.315608`.
+
+Und der Gegen-Punkt am Rippen-Kamm 4×1.5/0.8, damit die Über-Seite nicht bloss
+behauptet ist. Punkt `(1.15, 0, −0.9235)` unter der Rippenmitte, `ray = 1.1897`
+— genau die Klasse, aus der der grösste Über-Claim 0.8103 stammt:
+`L = 1.1897` (Plattendeckel-Streifen im Spalt bzw. Rippenflanke, alle vier
+Kandidaten identisch), also `L − δ = −0.8103` gegen `G − d₀ = 0.868 − 1.0765 =
+−0.2085`. **Das `max` wählt den `G`-Zweig; `L` bindet dort gar nicht.**
+Allgemeiner bindet `L` erst, wenn `L − max_k depth_k > G` — am Kamm ist die
+Differenz 0.07, an der Nabe 1.200.
+
+### Die zwei Stück-Typen
+
+Beide mit geschlossener EXAKTER Distanzformel, beide in EINEM Record fester
+Länge (11 Worte) — der Tape-Vertrag verlangt eine Payload-Länge, die alle vier
+Tape-Spiegel mit einer Multiplikation ausrechnen:
+
+* **`Tri`** — Welt-Dreieck. Deckt jede ebene Facette ab (Fächer-Triangulierung
+  eines konvexen Rings).
+* **`Rev`** — ein um eine Achse rotiertes `(r,z)`-Segment. Für eine volle
+  Umdrehung liegt der nächste Flächenpunkt in DERSELBEN Halbebene wie `x`, also
+  ist die 3D-Distanz exakt die 2D-Distanz von `(r_x, t_x)` zum Profil-Segment.
+  Ein Typ, drei Rollen: Mantel-Band (`r0 = r1`), Kreisring/Scheibe (`z0 = z1`),
+  Kegelstumpf sonst.
+
+**Warum `Rev` und nicht nur Dreiecke** — das ist eine Rechnung, keine Vorliebe.
+Polygonisiert man einen Zylinder als einbeschriebenes Prisma, liegt `Ω' ⊆ Ω`,
+und `dist(x,∂Ω')` ist für `x` im Sagitta-Sliver `> 0`, wo `dist(x,∁Ω) = 0` sein
+kann. Repariert man das mit einem globalen Abzug `ε = R(1 − cos(π/N))`, kostet
+das die Nabe genau `ε`: bei `N = 16` sind das 0.115 mm gegen eine Zusage von
+0.010; man bräuchte `N ≥ 54` je Zylinder. `Rev` kostet stattdessen EIN Stück.
+
+### Die Sicherheitsrichtung, drei Regeln
+
+1. **Kein Stück darf fehlen.** Ein fehlendes Randstück macht das `min` zu gross,
+   `L` überschätzt die Distanz, und das Gate erlaubt Phantom-Material. Deshalb
+   startet die Synthese mit ALLEN Facetten ALLER Member (`∂Ω ⊆ ⋃_k ∂P_k`, immer
+   wahr) und entfernt nur, was **beweisbar im Inneren** eines anderen Members
+   liegt: „für jeden Austritt `e` von `P_m` gilt `max_{q∈Stück} e(q) < 0`" ⇒
+   `Stück ⊆ int P_m` ⇒ `Stück ∩ ∂Ω = ∅`. Alle dafür benutzten Schranken sind
+   OBERE Schranken (Linearform-Maximum in einer Polygon-Ecke bzw. an einem
+   Profil-Endpunkt; für eine fremde Achse die Bounding-Sphere) — ein zu grosser
+   Wert kostet nur Schärfe, ein zu kleiner wäre der eine tödliche Fehler.
+2. **Zuschnitt darf konservativ zu GROSS sein.** Jeder „kann ich nicht
+   darstellen"-Zweig behält das Stück ungeschnitten. Beispiel mit Zahlen: der
+   Plattendeckel `∩ {r ≥ 6}` wird als Kreisring `(6,0)→(28.284,0)` abgelegt —
+   das Quadrat verschwindet, der Ring ist eine Obermenge des wahren
+   Randstücks. Am Worst-Punkt kostet das nichts (4.186406 in beiden Formen).
+3. **Ein nicht darstellbarer Member verweigert den GANZEN Block.** `lb_solid`
+   kennt Box und Zylinder; alles andere liefert `None`, und `synthesize_lb`
+   gibt dann `None` zurück statt eines Blocks mit Löchern in `∂Ω`. Gemessener
+   Fall: der Rippen-Kamm 4×1.5/0.8 trägt drei Extrude-Kontaktprismen als
+   Union-Member und bekommt deshalb **gar kein `L`** — ehrlich degradiert
+   statt still falsch.
+
+### Das Ausserhalb-`Ω`-Problem und sein Beweis
+
+`min` über die Randstücke ist für `x ∉ Ω` echt positiv, `dist(x,∁Ω)` dort aber
+`0` — die rohe Stück-Schranke ist ausserhalb UNGÜLTIG. Der Auswerter kappt sie
+mit einem Indikator, den er ohnehin schon hält:
+
+> Der naive Stoppwert ist `d₀ = δ + min_k f_k`, also ist `d₀ − δ = min_k f_k`
+> **das naive Vereinigungsfeld**. Jedes `f_k` ist vorzeichenrichtig (Kernel-
+> Invariante jeder Leaf-SDF), folglich `x ∉ Ω ⟹ min_k f_k > 0 ⟹ d₀ > δ`. Der
+> Test `d₀ ≤ δ` verwirft also KEINEN Innenpunkt und lässt KEINEN Aussenpunkt
+> durch.
+
+Nachgerechnet an der Nabe: `d₀ = 0.884392`, `δ = 2`, `min_k f_k = −1.1156` — der
+Punkt ist innen, die Schranke gilt.
+
+Der Sprung von `min` auf `−1e30` ist **feldstetig**, nicht bloss numerisch
+harmlos: auf `∂Ω` ist `d₀ = δ` UND `min = 0`, also `gate = max(G − δ, −δ)` gegen
+`gate = max(G − δ, −1e30)` — beides `G − δ`, weil `G > 0`. Der Schalter sitzt
+genau dort, wo beide Zweige denselben Wert liefern.
+
+Dazu eine zweite Kappe, rein für die Kosten und beweisbar feldwert-neutral: eine
+Kugel um alle Terme des Stopps mit Radius `max_i(|c_i − c| + K_i)`. Jeder
+Kanal-/Kugel-Term hat `w_geo ≤ K − de`, ist also für `de > K` ohnehin neutral —
+nur DORT liest überhaupt jemand das `gate`.
+
+### Tape-Layout
+
+Neues `OP_STOP_LB = 0x47`, emittiert **unmittelbar nach `OP_STOP_BASE`** (es
+LIEST dessen Register für den Innen-Indikator und muss vor allen Termen stehen),
+stack-neutral wie dieses. Payload `7 + 11·N`:
+
+    n  delta  slack  center[3]  skip_r        |  je Stück: kind + 10 Worte
+    kind = 0: a[3] b[3] c[3] (+1 Füllwort)    |  kind = 1: o[3] ax[3] r0 z0 r1 z1
+
+Zwei Entscheidungen, beide vom Vertrag erzwungen:
+
+* **Fester Stride statt variabler Eckenzahl.** Alle acht bestehenden
+  variable-Länge-Opcodes tragen einen konstanten Record-Stride; ein
+  zweistufiger Count (N Stücke, jedes mit eigenem `n_verts`) würde
+  `tape_spec.h::payload_len` von einer Multiplikation zu einer Schleife machen
+  und in TSL/WGSL das `pc.addAssign(N·stride)`-Muster brechen. Deshalb
+  Dreiecke statt Polygone.
+* **Count an Payload-Offset 0**, wie `OP_ARC_CHANNEL`/`OP_RIM_FILLET` — nicht
+  wie `OP_PRIM_CUSTOM` (Offset 14).
+
+`slack` (`10⁻⁵ · Modellmass`, an der Nabe 2.8·10⁻⁴ mm) deckt die f32-Rundung der
+Stück-Koordinaten ab: ein Stück, das durch Rundung um `ε` VON `x` weg wandert,
+überschätzt `L` um `ε`. Er deckt auch die metrische Achsen-Toleranz mit (s. u.).
+
+### Zwei Befunde aus der Sonde, beide vor dem Merge gefunden
+
+* **Das Dreiecks-Innen-Kriterium hatte ein Vorzeichen verdreht.** `nor` muss
+  `(b−a) × (a−c)` sein, nicht `(b−a) × (c−a)`. Mit gedrehtem `nor` schlagen ALLE
+  drei Kantentests `⟨e × nor, w⟩ ≥ 0` um, das Innere wird nie erkannt, und die
+  Formel fällt überall auf das Kanten-Minimum zurück. Am Plattenboden: **2.3253
+  statt 2.3156** — 0.0097 mm zu viel, also genau die Sorte Phantom-Material, die
+  dieses Paket ausschliessen soll. Der Kommentar an der Stelle nennt die Zahl.
+* **Die Koaxialitäts-Toleranz war 1-ULP-artig statt metrisch.** Die Achse eines
+  `Primitive::Cylinder` entsteht aus einer f32-Quaternion; bei einem Hebel von
+  2.45 mm trägt sie 1.46·10⁻⁷ Abweichung. Mit `1e−9` fiel der
+  Zylinder-Zylinder-Zuschnitt komplett aus, A-Deckel blieb Vollscheibe:
+  **`L = 1.184392` statt 2.315608**. Jetzt `10⁻⁶ · Modellmass`, und der Fehler,
+  den eine als koaxial behandelte Fast-Achse einträgt, ist selbst `≤ tol` und
+  vom `slack` (eine Zehnerpotenz grösser) gedeckt.
+
+### Messtabelle, beidseitig, vorher/nachher
+
+Gitter und Grenzen wie im Doktrin-Pin (Nabe/Schale/notch 22³, Kamm 24³).
+**über** = Phantom-Material gegen die Strahl-Schranke, **unter** = fehlendes
+Material gegen die exakte Referenz.
+
+| Fixture | §8n (BASIS) | §8o (Produktion) | `L`-Stücke |
+|---|---|---|---|
+| **Stufen-Nabe** | 0 / **59 · 0.3156** | **0 / 0** | 15 |
+| Ecken-Schale `t/δ = 2.0` | 0 / 0 | 0 / 0 | 72 |
+| Ecken-Schale `t/δ = 2.1, 2.25, 2.4, 2.5, 3.0, 4.0, 6.0` | 0 / 0 | **0 / 0** | 24 … 72 |
+| Rippen-Kamm 4×1.5/0.8 | **168 · 0.8103** / 0 | **168 · 0.8103** / 0 | — (Prismen ⇒ verweigert) |
+| Rippen-Kamm 4×2.0/1.0 | **144 · 0.5378** / 0 | **144 · 0.5378** / 0 | **140** |
+| notch_union 90° / 60° | 0 / 0 | **0 / 0** | 28 |
+| Kontroll-Lauf (`L`-Block entfernt) | — | reproduziert BASIS **exakt** (0 / 59 · 0.3156) | — |
+
+Der Rippen-Kamm 4×2.0/1.0 ist die aussagekräftige Zeile: er HAT einen aktiven
+140-Stück-Block und bewegt sich trotzdem um NULL Punkte. Das ist der §8n-Satz
+gemessen, nicht geglaubt. (Die 1.5/0.8-Zeile ist trivial unverändert — dort gibt
+es gar kein `L`.)
+
+### Kosten
+
+Worst-Case-Punkt (im Material, innerhalb der Term-Kugel — der Fernfeld-Skip ist
+dort ausgeschaltet), release, f32, skalar:
+
+| Fixture | Stücke | `L`-Worte | Tape gesamt | `L` ns/Punkt | Feld ns/Punkt |
+|---|---|---|---|---|---|
+| Stufen-Nabe | 15 | 173 | 467 | **237** | 569 |
+| Ecken-Schale `t/δ = 2` | 72 | 800 | 3614 | 1022 | 2110 |
+| notch 90° | 28 | 316 | 420 | 406 | 470 |
+| Rippen-Kamm 4×1.5/0.8 | 0 | 0 | 1583 | — | 374 |
+| Rippen-Kamm 4×2.0/1.0 | 140 | 1548 | 3173 | 1996 | 2359 |
+
+Ehrlich gesagt: das ist teuer — beim 140-Stück-Block dominiert `L` die
+Auswertung. Zwei Dinge relativieren es: die Zahl ist der WORST CASE (ausserhalb
+der Term-Kugel und ausserhalb `Ω` kostet der Block zwei Vergleiche), und der
+Kanal-Term selbst liegt in derselben Grössenordnung. Die offensichtliche
+Optimierung ist ein räumliches Pruning der Stück-Liste; sie ist **nicht** gebaut,
+weil jedes Weglassen erst einen Trust-Region-Beweis braucht (§8n: aus dem `min`
+darf kein Stück entfallen).
+
+### Verifikation
+
+* **Golden**: 33 der 35 Szenen byte-identisch. In `arc_channel_notch` und
+  `vertex_sphere_corner` ändert sich AUSSCHLIESSLICH die Tape-Länge
+  (104 → 420 bzw. 2490 → 3290 Worte, also 28 bzw. 72 Stücke); **alle 513
+  Feldwerte je Szene sind bit-identisch.** Das ist die erwartete Richtung: beide
+  Szenen sind auf ihrer Über-Seite bereits exakt, `L` bindet dort nirgends.
+* **`check_interp`** (frisch gebaut, Golden-Pfad als ARGUMENT): 35 Szenen,
+  17920 Prüfungen, worst_err 2·10⁻⁶, **0 Failures**.
+* **`just test`**: Fast-Tier 1456 Kernel (Baseline 1451, +5 neue Pins) / 2082
+  Web (unverändert). `cargo test --workspace` 1561 (Baseline 1556).
+* **`OFFSET_FUZZ_ITERS=200 … offset_fuzz --release`**: 5/5.
+
+### Neue Pins
+
+* `lb_block_is_sound_and_reaches_the_full_member_complement_384` — die
+  Sicherheits-Ungleichung `L ≤ dist(x,∁Ω)` gegen die exakten Referenzen aus
+  §8k an Nabe, zwei Ecken-Schalen und dem Rippen-Kamm, PLUS die Gegenrichtung
+  (am Worst-Punkt der exakte Wert 2.315608 — den das Paar mit 2.237332 verfehlt
+  und der ungeschnittene A-Deckel mit 1.184392 weit verfehlt).
+* `erosion_stepped_hub_is_exact_on_both_sides_384` — 0/0, Zusage ≤ 0.010.
+* `stop_lb_absent_reproduces_the_g_cap_384` — Kontroll-Äquivalenz, und zwar
+  zweifach: der Baum ohne Block reproduziert die BASIS-Zahl (0 / 59 · 0.3156)
+  und ist an 3000 Zufallspunkten bit-gleich.
+* `lb_gate_leaves_the_over_side_fixtures_unmoved_384` — Kamm 168/0.8103 und
+  144/0.5378, notch 0/0.
+* `stop_lb_opcode_is_emitted_and_tape_matches_the_tree_384` — Opcode im Strom
+  UND Baum ↔ Tape auf 2·10⁻⁵.
+
+**Keine bestehende Pin-Zeile bewegt sich**, insbesondere nicht
+`hub_gate_needs_the_full_member_complement_384` (die §8n-Harness ist von der
+Produktion unabhängig).
+
+### Was OFFEN bleibt
+
+* **Member-Formen jenseits Box/Zylinder.** Extrude (auch die eigenen
+  Kontakt-Prismen!), Revolve, Sweep verweigern den Block. Der Extrude-Fall ist
+  der wertvollste: er braucht einen **Konvexitäts-Nachweis je Profil** (ein
+  nicht-konvexes Polytop macht `⋂{h_i ≤ 0} ⊋ P` und die Austritts-Aufzählung
+  ungültig) und danach die Facetten aus `member_contact_faces`, die es längst
+  gibt. Damit fiele auch die 1.5/0.8-Kamm-Lücke.
+* **Kosten.** Räumliches Pruning der Stück-Liste, mit Trust-Region-Beweis für
+  jedes weggelassene Stück.
+* **Der Zuschnitt an schiefen Achsen.** `Poly ∩ {r ≥ R}` ist nur für eine zur
+  Achse SENKRECHTE Facettenebene darstellbar, `Rev ∩ Halbraum` nur für einen
+  axialen. Sonst bleibt das Stück ungeschnitten — sicher, aber stumpf.
+* **Der Unter-Claim-Zeuge**, **der konvexe Zweig**, **Naht gegen Naht**,
+  **spitze Nähte**, **der Wächter als Stichprobe**, **die latente
+  `safe_sqrt`-Entartung**: unverändert §8j/§8k/§8m/§8n.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -2725,10 +2968,23 @@ bewegt sich**, kein Produktionscode, kein Opcode, kein Spiegel.
   `complement_lower_bound_is_sound_384`,
   `hub_gate_needs_the_full_member_complement_384` sowie die `#[ignore]`-
   Deckenmessung `probe_384_pair_distance_gate`.
+- `crates/kernel/src/offset_lb.rs` — §8o: das ganze Modul (Stück-Typen
+  `LbPiece::{Tri, Rev}` samt exakter Distanz- und Fusspunkt-Formeln, der
+  `LbBlock`, `lb_value` mit Innen-Indikator und Fernfeld-Kugel, `lb_foot` für
+  den Dual-Spiegel, und die Synthese `synthesize_lb` mit `lb_solid`,
+  `LbExit`, `WPiece::{max_lin, min_lin, max_rad, min_rad, clip}`, `coaxial`).
 - `crates/metricity-lab/tests/f_c_nonconvex_contact_spike.rs` — Machbarkeits-
   Prototyp (cavalier-Verschnitt L∩Rechteck, Zwei-Komponenten-Zerlegung,
   Loch-Kontakt), 3/3 grün.
-- Produktionscode: KEINE Änderung (Scope: Forschung/Doku/Prototyp).
+- Produktionscode §8o: `offset_lb.rs` (neu), `offset_channel.rs`
+  (`stop_lb_value`, `lb_skip_sphere`, `extra`-Parameter von `channel_apply`/
+  `vertex_apply`, `lb`-Feld am `ArcChannel`-Bau), `bvh.rs` (`ArcChannel.lb`,
+  beide Auswerter), `sdf_compiler.rs` (`OP_STOP_LB`, Encoder, Interpreter,
+  Register `stop_lb`), `sdf_dual.rs` (Enveloppen-Fusspunkt als Dual),
+  `fidget_bridge.rs` (`lb_to_tree`, `tri_dist_tree`, `rev_dist_tree`),
+  `web/src/sdfRenderer.ts` (Konstante), `web/src/sdfVmInterpreter.ts`
+  (Register + Arm), `cgal-mesher/src/sdf_interp.h` (Arm),
+  `cgal-mesher/src/tape_spec.h` (`payload_len` + `value_pops`).
 
 ## 10. Verweise
 

@@ -436,7 +436,7 @@ pub fn face_plane_gate(p: [f32; 3], ch: &OffsetChannel) -> f32 {
 /// `f = max(d, C(x))` — eine Permutation der Terme ändert das Feld nicht.
 /// (Der Bounding-Sphere-Skip bleibt am LAUFENDEN `d`: er greift genau dann,
 /// wenn `C ≥ d` bzw. `C ≤ d` gilt, also das Ergebnis ohnehin `d` ist.)
-pub fn channel_apply(base: f32, d: f32, p: [f32; 3], ch: &OffsetChannel) -> f32 {
+pub fn channel_apply(base: f32, d: f32, p: [f32; 3], ch: &OffsetChannel, extra: f32) -> f32 {
     if channel_skip(d, p, ch) {
         return d;
     }
@@ -446,8 +446,11 @@ pub fn channel_apply(base: f32, d: f32, p: [f32; 3], ch: &OffsetChannel) -> f32 
     let dq = sub(p, q);
     let s1 = dot(dq, m1);
     let s2 = dot(dq, m2);
+    // #384 §8o: `extra = L(x) − δ` ist die ZWEITE Gate-Basis des konkaven
+    // Zweigs. Ohne `L`-Block ist sie `−1e30 − δ`, das `max` also wirkungslos —
+    // dieser Pfad ist bit-identisch zum Zustand vor §8o.
     let gate = if ch.concave {
-        ch.gate - base
+        (ch.gate - base).max(extra)
     } else {
         ch.gate + base
     };
@@ -532,6 +535,57 @@ pub fn vertex_limit(p: [f32; 3], vs: &VertexSphere) -> f32 {
     vs.delta - rho
 }
 
+/// #384 §8o — die Kugel, ausserhalb derer KEIN Term dieses Stopps mehr gaten
+/// kann: jeder Kanal-/Vertex-Term hat `w_geo ≤ K − de`, ist also für `de > K`
+/// ohnehin neutral, und nur DORT liest überhaupt jemand das `gate`. Das ganze
+/// `min` über die Randstücke darf ausserhalb entfallen — reine Kosten, kein
+/// Feldwert. `None`, wenn der Stopp gar keine Terme hat.
+fn lb_skip_sphere(
+    channels: &[OffsetChannel],
+    verts: &[VertexSphere],
+) -> Option<([f32; 3], f32)> {
+    let mut n = 0usize;
+    let mut c = [0.0f32; 3];
+    for ch in channels {
+        for k in 0..3 {
+            c[k] += ch.bound_c[k];
+        }
+        n += 1;
+    }
+    for vs in verts {
+        for k in 0..3 {
+            c[k] += vs.v[k];
+        }
+        n += 1;
+    }
+    if n == 0 {
+        return None;
+    }
+    for v in c.iter_mut() {
+        *v /= n as f32;
+    }
+    let mut r = 0.0f32;
+    for ch in channels {
+        r = r.max(norm(sub(ch.bound_c, c)) + ch.bound_r + ch.trust);
+    }
+    for vs in verts {
+        r = r.max(norm(sub(vs.v, c)) + vs.trust);
+    }
+    Some((c, r))
+}
+
+/// #384 §8o — das `L`-Register des Stopps (Spiegel von `OP_STOP_LB`).
+/// Ohne Block ist es [`crate::offset_lb::LB_NONE`] = `−1e30`, das `max` im Gate
+/// also wirkungslos: **die Kontroll-Äquivalenz ist keine Messung, sondern eine
+/// Identität.**
+#[inline]
+pub fn stop_lb_value(d0: f32, p: [f32; 3], lb: Option<&crate::offset_lb::LbBlock>) -> f32 {
+    match lb {
+        Some(b) => crate::offset_lb::lb_value(p, d0, b),
+        None => crate::offset_lb::LB_NONE,
+    }
+}
+
 /// Alle Terme EINES Stopps anwenden: erst die Kanäle, dann die
 /// Vertex-Kugeln — alle gegen denselben naiven Stoppwert `d0` gegatet
 /// (#384 §8i), zuletzt die gemeinsame Grenzwert-Klemme (#384 §8j).
@@ -547,16 +601,20 @@ pub fn stop_apply(
     p: [f32; 3],
     channels: &[OffsetChannel],
     verts: &[VertexSphere],
+    lb: Option<&crate::offset_lb::LbBlock>,
 ) -> f32 {
     let mut d = d0;
     let mut lim = -END_PLANE_OFF;
+    // #384 §8o: EIN `L` je Stopp, von allen Termen geteilt (Spiegel von
+    // `OP_STOP_LB`, das direkt nach `OP_STOP_BASE` steht).
+    let lbv = stop_lb_value(d0, p, lb);
     for ch in channels {
         lim = lim.max(channel_limit(p, ch));
-        d = channel_apply(d0, d, p, ch);
+        d = channel_apply(d0, d, p, ch, lbv - ch.delta);
     }
     for vs in verts {
         lim = lim.max(vertex_limit(p, vs));
-        d = vertex_apply(d0, d, p, vs);
+        d = vertex_apply(d0, d, p, vs, lbv - vs.delta);
     }
     let concave = channels
         .first()
@@ -574,7 +632,7 @@ pub fn stop_apply(
 /// fidget, Dual). Struktur identisch zu [`channel_apply`], nur mit
 /// Punkt-Spine (`q* = v`, drei Gates statt zwei interpolierten) — inklusive
 /// des `d₀`-Gates aus #384 §8i (`base` = naiver Stopp-Wert).
-pub fn vertex_apply(base: f32, d: f32, p: [f32; 3], vs: &VertexSphere) -> f32 {
+pub fn vertex_apply(base: f32, d: f32, p: [f32; 3], vs: &VertexSphere, extra: f32) -> f32 {
     let dq = sub(p, vs.v);
     let rho = norm(dq);
     // Exakter Fernfeld-Skip (Spiegel von `channel_skip`, Sphäre = Punkt).
@@ -584,8 +642,9 @@ pub fn vertex_apply(base: f32, d: f32, p: [f32; 3], vs: &VertexSphere) -> f32 {
     let s1 = dot(dq, vs.gates[0]);
     let s2 = dot(dq, vs.gates[1]);
     let s3 = dot(dq, vs.gates[2]);
+    // #384 §8o: zweite Gate-Basis, s. [`channel_apply`].
     let gate = if vs.concave {
-        vs.gate - base
+        (vs.gate - base).max(extra)
     } else {
         vs.gate + base
     };
@@ -1450,7 +1509,7 @@ fn end_region_violation(
                     if !d.is_finite() {
                         continue;
                     }
-                    let corr = stop_apply(d, x, channels, verts);
+                    let corr = stop_apply(d, x, channels, verts, None);
                     // Geprüft wird die NULLMENGE (die Zusage des Stopps), und
                     // nur, was der Term VERURSACHT: das naive Feld muss den
                     // Punkt richtig klassifizieren, das korrigierte falsch.
@@ -1518,7 +1577,7 @@ fn end_region_violation(
                 if !d.is_finite() {
                     continue;
                 }
-                let corr = stop_apply(d, x, channels, verts);
+                let corr = stop_apply(d, x, channels, verts, None);
                 let flipped = if delta_signed > 0.0 {
                     d <= 0.0 && corr > 0.0
                 } else {
@@ -5517,11 +5576,24 @@ pub fn synthesize_offset_channels_reported(
                 ),
                 rims_aabb(&rims),
             );
+            // #384 §8o: die untere Distanzschranke des Stopps. Nur der KONKAVE
+            // Stopp (`δ < 0` über einer Union) hat eine Member-Vereinigung, und
+            // nur sein Gate ist `G − d₀`. Quelle ist `inner` NACH dem Anhängen
+            // der Kontakt-Prismen — genau der Baum, aus dem auch `d₀` entsteht.
+            // Ein nicht darstellbarer Member (Prisma, Revolve, Sweep) lässt die
+            // Synthese den ganzen Block verweigern: ein fehlendes Randstück ist
+            // der EINE Fehler, den `L` nicht machen darf.
+            let lb = match (&stop, delta < 0.0) {
+                (BoundedCsg::Offset { inner: src, .. }, true) => lb_skip_sphere(&channels, &verts)
+                    .and_then(|(c, r)| crate::offset_lb::synthesize_lb(src, delta.abs(), c, r)),
+                _ => None,
+            };
             BoundedCsg::ArcChannel {
                 inner: Box::new(stop),
                 channels,
                 verts,
                 rims,
+                lb,
                 aabb,
             }
         }
@@ -5611,13 +5683,16 @@ pub fn synthesize_offset_channels_reported(
             inner: Box::new(synthesize_offset_channels_reported(*inner, tol, report)),
             aabb,
         },
-        BoundedCsg::ArcChannel { inner, channels, verts, rims, aabb } => BoundedCsg::ArcChannel {
-            inner: Box::new(synthesize_offset_channels_reported(*inner, tol, report)),
-            channels,
-            verts,
-            rims,
-            aabb,
-        },
+        BoundedCsg::ArcChannel { inner, channels, verts, rims, lb, aabb } => {
+            BoundedCsg::ArcChannel {
+                inner: Box::new(synthesize_offset_channels_reported(*inner, tol, report)),
+                channels,
+                verts,
+                rims,
+                lb,
+                aabb,
+            }
+        }
         other @ (BoundedCsg::Empty
         | BoundedCsg::Leaf { .. }
         | BoundedCsg::Extrude { .. }
@@ -5697,7 +5772,7 @@ pub fn prune_dead_channels(root: &mut BoundedCsg, _tol: f32) -> PruneStats {
                 ctx.push(&**left);
                 walk(right, &ctx, stats);
             }
-            BoundedCsg::ArcChannel { inner, channels, verts, rims, aabb } => {
+            BoundedCsg::ArcChannel { inner, channels, verts, rims, lb: _, aabb } => {
                 if !neighbors.is_empty() {
                     let g_sum: f32 = channels.iter().map(|c| c.gate).sum();
                     let lips: Vec<f32> = neighbors

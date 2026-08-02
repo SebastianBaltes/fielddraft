@@ -52,7 +52,7 @@ import {
   OP_WARP_TRANSFORM, OP_WARP_REVOLVE,
   OP_WARP_HELIX, OP_HELIX_SCALE, OP_WARP_SWEEP, OP_LOFT_MORPH,
   OP_MASKED_BLEND, OP_ARC_CHANNEL, OP_VERTEX_SPHERE, OP_RIM_FILLET, OP_RIM_FILLET_ARC,
-  OP_STOP_BASE, OP_STOP_LIMIT, OP_END,
+  OP_STOP_BASE, OP_STOP_LIMIT, OP_STOP_LB, OP_END,
   worldToLocalFn, halfspaceLocalFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
   sdfTorusFn, sdfConeFn, sdfCapsuleFn, sdfHexPrismFn,
   sdfEllipsoidFn, sdfGyroidFn, sdfThreadFn,
@@ -107,6 +107,10 @@ export function buildVmSdfEvalFn(
     // #384 §8j: Grenzwert-Register — `max_j(δ − de_j)` in konkaver
     // Orientierung; OP_STOP_BASE setzt es zurück, OP_STOP_LIMIT wendet es an.
     const stopLim = float(-1e30).toVar();
+    // #384 §8o: `L`-Register — die untere Distanzschranke `L(x) ≤ dist(x,∁Ω)`
+    // aus der zugeschnittenen Vereinigungs-B-Rep. OP_STOP_BASE setzt es
+    // neutral, OP_STOP_LB füllt es, die konkaven Gates lesen es.
+    const stopLb = float(-1e30).toVar();
 
     const ps0x = float(0).toVar(), ps0y = float(0).toVar(), ps0z = float(0).toVar();
     const ps1x = float(0).toVar(), ps1y = float(0).toVar(), ps1z = float(0).toVar();
@@ -793,6 +797,9 @@ export function buildVmSdfEvalFn(
         const d = popV().toVar();
         stopBase.assign(d);
         stopLim.assign(float(-1e30));
+        // §8o: ohne OP_STOP_LB bleibt das `L`-Register neutral — das `max` im
+        // konkaven Gate ist dann wirkungslos (Kontroll-Äquivalenz).
+        stopLb.assign(float(-1e30));
         pushV(d);
 
       }).ElseIf(tag.equal(int(OP_STOP_LIMIT)), () => {
@@ -802,6 +809,75 @@ export function buildVmSdfEvalFn(
         const concave = rd().toVar();
         const d = popV().toVar();
         pushV(concave.greaterThan(0.5).select(max(d, stopLim), min(d, stopLim.negate())));
+
+      }).ElseIf(tag.equal(int(OP_STOP_LB)), () => {
+        // offset_tree §8o (#384): untere Distanzschranke des Stopps —
+        // 1:1-Spiegel von `kernel offset_lb::lb_value` / `eval_opcodes`
+        // OP_STOP_LB. Header 7: n(1) delta(1) slack(1) center(3) skip_r(1);
+        // je Stück 11 Floats: kind(1) + 10 (Dreieck a[3] b[3] c[3] · pad,
+        // oder Rev o[3] ax[3] r0 z0 r1 z1).
+        const nPc = floatToIntFn({ v: rd() }).toVar();
+        const lbDelta = rd().toVar();
+        const lbSlack = rd().toVar();
+        const lbCx = rd(), lbCy = rd(), lbCz = rd();
+        const lbSkipR = rd().toVar();
+        const pcBase = pc.toVar();
+        pc.addAssign(nPc.mul(11));
+        const d = popV().toVar();
+        const pp = vec3(ptx, pty, ptz).toVar();
+        const rc = pp.sub(vec3(lbCx, lbCy, lbCz)).length().toVar();
+        const best = float(1e30).toVar();
+        const kb = int(0).toVar();
+        Loop(nPc, () => {
+          const b0 = pcBase.add(kb.mul(11)).toVar();
+          const g = (o: number) => opBuf.element(b0.add(int(o)));
+          const g3 = (o: number) => vec3(g(o), g(o + 1), g(o + 2));
+          const dd = float(1e30).toVar();
+          If(g(0).lessThan(0.5), () => {
+            // Dreieck (CPU: offset_lb::tri_dist).
+            const a = g3(1).toVar(), b = g3(4).toVar(), c = g3(7).toVar();
+            const ba = b.sub(a).toVar(), cb = c.sub(b).toVar(), ac = a.sub(c).toVar();
+            const nor = ba.cross(ac).toVar();
+            const nn = nor.dot(nor).toVar();
+            const segD = (u: any, v: any) => {
+              const e = v.sub(u);
+              const w = pp.sub(u);
+              const ll = max(e.dot(e), float(1e-20));
+              const t = w.dot(e).div(ll).clamp(0, 1);
+              return w.sub(e.mul(t)).length();
+            };
+            const edge = min(min(segD(a, b), segD(b, c)), segD(c, a)).toVar();
+            // Exakt wie die CPU-Referenz: `≥ 0` ⇒ +1, sonst −1 (KEIN sign(),
+            // das bei 0 eine Null liefert und die Summe unter 2 drückt).
+            const sg = (e: any, w: any) =>
+              e.cross(nor).dot(w).greaterThanEqual(0).select(float(1), float(-1));
+            const ins = sg(ba, pp.sub(a)).add(sg(cb, pp.sub(b))).add(sg(ac, pp.sub(c)));
+            const h = nor.dot(pp.sub(a));
+            const planeD = h.mul(h).div(max(nn, float(1e-24))).sqrt();
+            dd.assign(nn.greaterThan(1e-24).and(ins.greaterThanEqual(2)).select(planeD, edge));
+          }).Else(() => {
+            // Rotationsfläche (CPU: offset_lb::rev_dist).
+            const o = g3(1).toVar(), ax = g3(4).toVar();
+            const r0 = g(7).toVar(), z0 = g(8).toVar(), r1 = g(9).toVar(), z1 = g(10).toVar();
+            const dv = pp.sub(o).toVar();
+            const t = dv.dot(ax).toVar();
+            const r = dv.sub(ax.mul(t)).length().toVar();
+            const ex = r1.sub(r0).toVar(), ey = z1.sub(z0).toVar();
+            const px = r.sub(r0).toVar(), py = t.sub(z0).toVar();
+            const ll = ex.mul(ex).add(ey.mul(ey)).toVar();
+            const sPar = px.mul(ex).add(py.mul(ey)).div(max(ll, float(1e-20))).clamp(0, 1);
+            const sc = ll.greaterThan(1e-20).select(sPar, float(0)).toVar();
+            const qx = px.sub(ex.mul(sc)), qy = py.sub(ey.mul(sc));
+            dd.assign(qx.mul(qx).add(qy.mul(qy)).sqrt());
+          });
+          best.assign(min(best, dd));
+          kb.addAssign(1);
+        });
+        stopLb.assign(
+          d.greaterThan(lbDelta).or(rc.greaterThan(lbSkipR))
+            .select(float(-1e30), best.sub(lbSlack)),
+        );
+        pushV(d);
 
       }).ElseIf(tag.equal(int(OP_ARC_CHANNEL)), () => {
         // offset_tree Phase B (#384): Kanal-Korrekturkörper an einem dualen
@@ -939,9 +1015,10 @@ export function buildVmSdfEvalFn(
             const s1 = dq.dot(bestM1);
             const s2 = dq.dot(bestM2);
             // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d₀).
+            // §8o: zweite Gate-Basis `L − δ` (neutral ohne OP_STOP_LB).
             const gate = concave
               .greaterThan(0.5)
-              .select(gateW.sub(stopBase), gateW.add(stopBase));
+              .select(max(gateW.sub(stopBase), stopLb.sub(delta)), gateW.add(stopBase));
             // Rollen-Trennung (C4, CPU-Referenz channel_apply):
             // Geometrie-Klemme (Luft-Distanzschranke) vs. Add-Gate.
             const wGeo = min(min(min(min(s1, s2), s3), s4), min(best.sub(delta), trust.sub(best)));
@@ -991,9 +1068,10 @@ export function buildVmSdfEvalFn(
           const s2 = dq.dot(g2);
           const s3 = dq.dot(g3);
           // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d₀).
+          // §8o: zweite Gate-Basis `L − δ` (neutral ohne OP_STOP_LB).
           const gate = concave
             .greaterThan(0.5)
-            .select(gateW.sub(stopBase), gateW.add(stopBase));
+            .select(max(gateW.sub(stopBase), stopLb.sub(delta)), gateW.add(stopBase));
           // Rollen-Trennung (C4, CPU-Referenz vertex_apply).
           const wGeo = min(
             min(min(s1, s2), min(s3, rho.sub(delta))),

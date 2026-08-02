@@ -78,6 +78,9 @@ enum : uint32_t {
   OP_STOP_BASE      = 0x45,
   // #384 §8j: Grenzwert-Klemme eines Offset-Stopps (+1 Float: concave).
   OP_STOP_LIMIT     = 0x46,
+  // #384 §8o: untere Distanzschranke eines Offset-Stopps
+  // (+7 Kopf-Floats + 11 je Randstueck, stack-neutral).
+  OP_STOP_LB        = 0x47,
 
   OP_END            = 0xFF,
 };
@@ -633,6 +636,10 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
   // Orientierung. OP_STOP_BASE setzt es zurueck, OP_STOP_LIMIT wendet es an.
   // Ebenfalls NICHT `lim` in den Opcode-Armen wiederverwenden.
   float stop_lim = -1.0e30f;
+  // #384 §8o: L-Register — die untere Distanzschranke L(x) <= dist(x, komplement Omega)
+  // aus der zugeschnittenen Vereinigungs-B-Rep. OP_STOP_BASE setzt es neutral,
+  // OP_STOP_LB fuellt es, die konkaven Gates lesen es als zweite Gate-Basis.
+  float stop_lb = -1.0e30f;
 
   auto push_v = [&](float v) { vs[vsp++] = v; };
   auto pop_v = [&]() { return vs[--vsp]; };
@@ -1128,6 +1135,110 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float d = pop_v();
         stop_base = d;
         stop_lim = -1.0e30f;
+        // §8o: ohne OP_STOP_LB bleibt das L-Register neutral — das max im
+        // konkaven Gate ist dann wirkungslos (Kontroll-Aequivalenz).
+        stop_lb = -1.0e30f;
+        push_v(d);
+        break;
+      }
+
+      case OP_STOP_LB: {
+        // #384 §8o: untere Distanzschranke des Stopps — 1:1-Spiegel von
+        // kernel offset_lb::lb_value / sdf_compiler.rs OP_STOP_LB.
+        // Kopf 7: n delta slack center(3) skip_r; je Stueck 11 Floats
+        // (Wort 0 = kind: 0 = Dreieck a(3) b(3) c(3), 1 = rotiertes
+        // (r,z)-Segment o(3) ax(3) r0 z0 r1 z1).
+        const int kLb = 11;
+        int n = (int)rd();
+        float lb_delta = rd();
+        float lb_slack = rd();
+        float lc[3] = {rd(), rd(), rd()};
+        float lb_skip = rd();
+        int lb_base = pc;
+        pc += n * kLb;
+        float d = pop_v();
+        float dcx = pt[0] - lc[0], dcy = pt[1] - lc[1], dcz = pt[2] - lc[2];
+        float rc = sqrtf(dcx * dcx + dcy * dcy + dcz * dcz);
+        if (d > lb_delta || rc > lb_skip) {
+          stop_lb = -1.0e30f;
+        } else {
+          float best = FD_FLT_MAX;
+          for (int k = 0; k < n; ++k) {
+            const float* a = opcodes + lb_base + k * kLb;
+            float dd;
+            if (a[0] < 0.5f) {
+              // Dreieck (CPU: offset_lb::tri_dist).
+              const float* va = a + 1;
+              const float* vb = a + 4;
+              const float* vc = a + 7;
+              float ba[3] = {vb[0] - va[0], vb[1] - va[1], vb[2] - va[2]};
+              float cb[3] = {vc[0] - vb[0], vc[1] - vb[1], vc[2] - vb[2]};
+              float ac[3] = {va[0] - vc[0], va[1] - vc[1], va[2] - vc[2]};
+              float nor[3] = {
+                  ba[1] * ac[2] - ba[2] * ac[1],
+                  ba[2] * ac[0] - ba[0] * ac[2],
+                  ba[0] * ac[1] - ba[1] * ac[0]};
+              float nn = nor[0] * nor[0] + nor[1] * nor[1] + nor[2] * nor[2];
+              auto seg2 = [&](const float* u, const float* v) {
+                float e[3] = {v[0] - u[0], v[1] - u[1], v[2] - u[2]};
+                float w[3] = {pt[0] - u[0], pt[1] - u[1], pt[2] - u[2]};
+                float ll = e[0] * e[0] + e[1] * e[1] + e[2] * e[2];
+                float t = ll > 1e-20f ? (w[0] * e[0] + w[1] * e[1] + w[2] * e[2]) / ll : 0.0f;
+                if (t < 0.0f) t = 0.0f;
+                if (t > 1.0f) t = 1.0f;
+                float q[3] = {w[0] - e[0] * t, w[1] - e[1] * t, w[2] - e[2] * t};
+                return q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
+              };
+              float edge = seg2(va, vb);
+              float e2 = seg2(vb, vc);
+              if (e2 < edge) edge = e2;
+              float e3 = seg2(vc, va);
+              if (e3 < edge) edge = e3;
+              if (nn <= 1e-24f) {
+                dd = sqrtf(edge);
+              } else {
+                auto sg = [&](const float* e, const float* v) {
+                  float cr[3] = {
+                      e[1] * nor[2] - e[2] * nor[1],
+                      e[2] * nor[0] - e[0] * nor[2],
+                      e[0] * nor[1] - e[1] * nor[0]};
+                  float w[3] = {pt[0] - v[0], pt[1] - v[1], pt[2] - v[2]};
+                  return (cr[0] * w[0] + cr[1] * w[1] + cr[2] * w[2]) >= 0.0f ? 1.0f : -1.0f;
+                };
+                float ins = sg(ba, va) + sg(cb, vb) + sg(ac, vc);
+                if (ins >= 2.0f) {
+                  float h = nor[0] * (pt[0] - va[0]) + nor[1] * (pt[1] - va[1]) +
+                            nor[2] * (pt[2] - va[2]);
+                  dd = sqrtf(h * h / nn);
+                } else {
+                  dd = sqrtf(edge);
+                }
+              }
+            } else {
+              // Rotationsflaeche (CPU: offset_lb::rev_dist).
+              const float* o = a + 1;
+              const float* ax = a + 4;
+              float r0 = a[7], z0 = a[8], r1 = a[9], z1 = a[10];
+              float dv[3] = {pt[0] - o[0], pt[1] - o[1], pt[2] - o[2]};
+              float t = dv[0] * ax[0] + dv[1] * ax[1] + dv[2] * ax[2];
+              float rd3[3] = {dv[0] - ax[0] * t, dv[1] - ax[1] * t, dv[2] - ax[2] * t};
+              float r = sqrtf(rd3[0] * rd3[0] + rd3[1] * rd3[1] + rd3[2] * rd3[2]);
+              float ex = r1 - r0, ey = z1 - z0;
+              float px = r - r0, py = t - z0;
+              float ll = ex * ex + ey * ey;
+              float sp = 0.0f;
+              if (ll > 1e-20f) {
+                sp = (px * ex + py * ey) / ll;
+                if (sp < 0.0f) sp = 0.0f;
+                if (sp > 1.0f) sp = 1.0f;
+              }
+              float qx = px - ex * sp, qy = py - ey * sp;
+              dd = sqrtf(qx * qx + qy * qy);
+            }
+            if (dd < best) best = dd;
+          }
+          stop_lb = best < FD_FLT_MAX ? best - lb_slack : -1.0e30f;
+        }
         push_v(d);
         break;
       }
@@ -1286,7 +1397,9 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float s2 = dq[0] * best_m2[0] + dq[1] * best_m2[1] +
                    dq[2] * best_m2[2];
         // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d0).
-        float gate = concave ? gate_w - stop_base : gate_w + stop_base;
+        // §8o: zweite Gate-Basis L - delta (neutral ohne OP_STOP_LB).
+        float gate = concave ? fmaxf_(gate_w - stop_base, stop_lb - delta)
+                             : gate_w + stop_base;
         // Rollen-Trennung (C4, CPU-Referenz channel_apply): Geometrie-
         // Klemme (Luft-Distanzschranke) vs. Add-Gate.
         float w_geo = fminf_(fminf_(fminf_(fminf_(s1, s2), s3), s4),
@@ -1331,7 +1444,9 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float s2 = dq[0] * g2[0] + dq[1] * g2[1] + dq[2] * g2[2];
         float s3 = dq[0] * g3[0] + dq[1] * g3[1] + dq[2] * g3[2];
         // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d0).
-        float gate = concave ? gate_w - stop_base : gate_w + stop_base;
+        // §8o: zweite Gate-Basis L - delta (neutral ohne OP_STOP_LB).
+        float gate = concave ? fmaxf_(gate_w - stop_base, stop_lb - delta)
+                             : gate_w + stop_base;
         // Rollen-Trennung (C4, CPU-Referenz vertex_apply).
         float w_geo = fminf_(fminf_(fminf_(s1, s2), fminf_(s3, rho - delta)),
                              trust - rho);

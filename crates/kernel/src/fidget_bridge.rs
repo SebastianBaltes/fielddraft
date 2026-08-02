@@ -272,7 +272,7 @@ fn node_to_tree(node: &BoundedCsg, p: &[Tree; 3]) -> Result<Tree, String> {
         // Gewinner via `compare`-Selects, Bogen-Distanz closed-form mit
         // `atan2`. Kein Bounding-Sphere-Skip (feldwert-identisch, der Skip
         // ist reine Laufzeit-Optimierung der numerischen Interpreter).
-        BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
+        BoundedCsg::ArcChannel { inner, channels, verts, rims, lb, .. } => {
             let mut d = node_to_tree(inner, p)?;
             // #384 §8i: fidget ist ein Ausdrucks-DAG, keine Stack-Maschine —
             // das „Basis-Register" ist hier schlicht der TEILAUSDRUCK VOR den
@@ -280,6 +280,12 @@ fn node_to_tree(node: &BoundedCsg, p: &[Tree; 3]) -> Result<Tree, String> {
             // Knoten `d0` wird in jedes Gate hineingehängt (der DAG teilt ihn,
             // also kostet die Mehrfachnutzung nichts).
             let d0 = d.clone();
+            // #384 §8o: EIN `L`-Teilausdruck je Stopp, von allen Termen geteilt
+            // (der DAG teilt ihn, die Mehrfachnutzung kostet nichts).
+            let lbt = match lb {
+                Some(b) => lb_to_tree(&d0, p, b),
+                None => Tree::from(crate::offset_lb::LB_NONE as f64),
+            };
             // #384 §8j: das Grenzwert-Register ist im DAG ebenfalls kein
             // State, sondern ein `max` über die Term-Beiträge.
             let mut lim: Option<Tree> = None;
@@ -290,12 +296,12 @@ fn node_to_tree(node: &BoundedCsg, p: &[Tree; 3]) -> Result<Tree, String> {
                 });
             };
             for ch in channels {
-                let (nd, l) = channel_to_tree(&d0, &d, p, ch);
+                let (nd, l) = channel_to_tree(&d0, &lbt, &d, p, ch);
                 d = nd;
                 acc(l, &mut lim);
             }
             for vs in verts {
-                let (nd, l) = vertex_to_tree(&d0, &d, p, vs);
+                let (nd, l) = vertex_to_tree(&d0, &lbt, &d, p, vs);
                 d = nd;
                 acc(l, &mut lim);
             }
@@ -355,11 +361,147 @@ fn t_norm(a: &[Tree; 3]) -> Tree {
     t_dot(a, a).sqrt()
 }
 
+/// #384 §8o — Spiegel von [`crate::offset_lb::lb_value`] als Tree.
+///
+/// Im DAG ist das billig: die Stück-Koordinaten sind KONSTANTEN, also sind
+/// Ebenen-Normale, Kanten-Richtungen und die drei Innen-Halbebenen eines
+/// Dreiecks konstante Koeffizienten — nur `p` ist symbolisch. Ein Stück kostet
+/// damit eine Handvoll affiner Formen plus die `min`-Faltung, und `min` ist ein
+/// nativer fidget-Op mit Intervall-Pruning.
+///
+/// Die Neutral-Maske läuft NICHT über `select_lt` (dessen `y + (x−y)·m` löscht
+/// bei einem 1e30-Sentinel die Mantisse aus), sondern additiv — derselbe
+/// Präzedenzfall wie beim Grenzwert-Register.
+fn lb_to_tree(base: &Tree, p: &[Tree; 3], blk: &crate::offset_lb::LbBlock) -> Tree {
+    let mut best: Option<Tree> = None;
+    for piece in &blk.pieces {
+        let d = match *piece {
+            crate::offset_lb::LbPiece::Tri { a, b, c } => tri_dist_tree(p, a, b, c),
+            crate::offset_lb::LbPiece::Rev { o, ax, r0, z0, r1, z1 } => {
+                rev_dist_tree(p, o, ax, r0, z0, r1, z1)
+            }
+        };
+        best = Some(match best.take() {
+            Some(prev) => prev.min(d),
+            None => d,
+        });
+    }
+    let Some(best) = best else {
+        return Tree::from(crate::offset_lb::LB_NONE as f64);
+    };
+    // Innen-Indikator (`d₀ ≤ δ`) UND Fernfeld-Kugel.
+    let rc = t_norm(&t_sub(p, &t_const3(blk.center)));
+    let on = relu(Tree::from(blk.delta as f64).compare(base.clone()))
+        * relu(Tree::from(blk.skip_r as f64).compare(rc));
+    (best - blk.slack as f64) * on.clone()
+        - (Tree::from(1.0) - on) * (crate::offset_channel::END_PLANE_OFF as f64)
+}
+
+/// Distanz zu einem Dreieck mit KONSTANTEN Ecken — Spiegel von
+/// [`crate::offset_lb::tri_dist`].
+fn tri_dist_tree(p: &[Tree; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Tree {
+    let f = |v: [f32; 3]| [v[0] as f64, v[1] as f64, v[2] as f64];
+    let (a, b, c) = (f(a), f(b), f(c));
+    let vsub = |u: [f64; 3], v: [f64; 3]| [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+    let vcross = |u: [f64; 3], v: [f64; 3]| {
+        [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ]
+    };
+    let vdot = |u: [f64; 3], v: [f64; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+    let ba = vsub(b, a);
+    let cb = vsub(c, b);
+    let ac = vsub(a, c);
+    let nor = vcross(ba, ac);
+    let nn = vdot(nor, nor);
+    let seg = |u: [f64; 3], v: [f64; 3]| -> Tree {
+        let e = vsub(v, u);
+        let ll = vdot(e, e).max(1e-20);
+        let w = t_sub(p, &t_const3([u[0] as f32, u[1] as f32, u[2] as f32]));
+        let t = (t_dot(&w, &t_const3([e[0] as f32, e[1] as f32, e[2] as f32])) * (1.0 / ll))
+            .max(0.0)
+            .min(1.0);
+        let q = [
+            w[0].clone() - t.clone() * e[0],
+            w[1].clone() - t.clone() * e[1],
+            w[2].clone() - t * e[2],
+        ];
+        t_norm(&q)
+    };
+    let edge = seg(a, b).min(seg(b, c)).min(seg(c, a));
+    if nn <= 1e-24 {
+        return edge;
+    }
+    let inv = 1.0 / nn.sqrt();
+    let plane = (t_dot(p, &t_const3([
+        (nor[0] * inv) as f32,
+        (nor[1] * inv) as f32,
+        (nor[2] * inv) as f32,
+    ])) - vdot(nor, a) * inv)
+        .abs();
+    // Innen-Test: die drei affinen Formen `⟨e × nor, p − v⟩`.
+    let mut inside: Option<Tree> = None;
+    for (e, v) in [(ba, a), (cb, b), (ac, c)] {
+        let g = vcross(e, nor);
+        let gl = vdot(g, g).sqrt().max(1e-30);
+        let form = t_dot(p, &t_const3([
+            (g[0] / gl) as f32,
+            (g[1] / gl) as f32,
+            (g[2] / gl) as f32,
+        ])) - vdot(g, v) / gl;
+        inside = Some(match inside.take() {
+            Some(prev) => prev.min(form),
+            None => form,
+        });
+    }
+    let inside = inside.expect("drei Kanten");
+    // `inside ≥ 0` ⇒ Lot auf die Ebene, sonst Kanten-Minimum.
+    select_lt(&Tree::from(0.0), &inside, &plane, &edge)
+}
+
+/// Distanz zu einer Rotationsfläche mit KONSTANTEM Profil — Spiegel von
+/// [`crate::offset_lb::rev_dist`].
+#[allow(clippy::too_many_arguments)]
+fn rev_dist_tree(
+    p: &[Tree; 3],
+    o: [f32; 3],
+    ax: [f32; 3],
+    r0: f32,
+    z0: f32,
+    r1: f32,
+    z1: f32,
+) -> Tree {
+    let d = t_sub(p, &t_const3(o));
+    let axt = t_const3(ax);
+    let t = t_dot(&d, &axt);
+    let rad = [
+        d[0].clone() - t.clone() * ax[0] as f64,
+        d[1].clone() - t.clone() * ax[1] as f64,
+        d[2].clone() - t.clone() * ax[2] as f64,
+    ];
+    let r = t_norm(&rad);
+    let (ex, ey) = ((r1 - r0) as f64, (z1 - z0) as f64);
+    let px = r - r0 as f64;
+    let py = t - z0 as f64;
+    let ll = ex * ex + ey * ey;
+    let s = if ll > 1e-20 {
+        ((px.clone() * ex + py.clone() * ey) * (1.0 / ll)).max(0.0).min(1.0)
+    } else {
+        Tree::from(0.0)
+    };
+    let qx = px - s.clone() * ex;
+    let qy = py - s * ey;
+    (qx.clone() * qx + qy.clone() * qy).sqrt()
+}
+
 /// Spiegel von [`crate::offset_channel::channel_apply`] als Tree.
 /// `base` ist der naive Stopp-Teilausdruck d₀ (#384 §8i) — im DAG die
 /// Entsprechung des `OP_STOP_BASE`-Registers der Stack-Maschinen.
 fn channel_to_tree(
     base: &Tree,
+    lb: &Tree,
     d: &Tree,
     p: &[Tree; 3],
     ch: &crate::offset_channel::OffsetChannel,
@@ -472,8 +614,10 @@ fn channel_to_tree(
     let dq = t_sub(p, &best_q);
     let s1 = t_dot(&dq, &best_m1);
     let s2 = t_dot(&dq, &best_m2);
+    // #384 §8o: zweite Gate-Basis `L − δ` (neutral ohne `L`-Block).
     let gate = if ch.concave {
-        Tree::from(ch.gate as f64) - base.clone()
+        (Tree::from(ch.gate as f64) - base.clone())
+            .max(lb.clone() - ch.delta as f64)
     } else {
         Tree::from(ch.gate as f64) + base.clone()
     };
@@ -538,6 +682,7 @@ fn channel_to_tree(
 /// wie beim Kanal der naive Stopp-Teilausdruck d₀ (#384 §8i).
 fn vertex_to_tree(
     base: &Tree,
+    lb: &Tree,
     d: &Tree,
     p: &[Tree; 3],
     vs: &crate::offset_channel::VertexSphere,
@@ -549,8 +694,10 @@ fn vertex_to_tree(
     let s1 = t_dot(&dq, &t_const3(vs.gates[0]));
     let s2 = t_dot(&dq, &t_const3(vs.gates[1]));
     let s3 = t_dot(&dq, &t_const3(vs.gates[2]));
+    // #384 §8o: zweite Gate-Basis, s. `channel_to_tree`.
     let gate = if vs.concave {
-        Tree::from(vs.gate as f64) - base.clone()
+        (Tree::from(vs.gate as f64) - base.clone())
+            .max(lb.clone() - vs.delta as f64)
     } else {
         Tree::from(vs.gate as f64) + base.clone()
     };

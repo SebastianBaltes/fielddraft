@@ -909,6 +909,34 @@ für Shell.
   die beiden Naht-Eltern als Paar (an der Nabe 1.115608, unter `δ`).
   Herleitung, Handrechnung und alle Tabellen:
   `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8n.
+* **Die Stufen-Nabe ist ZU — `L` als zugeschnittene Vereinigungs-B-Rep im Tape
+  (#384 §8o, v0.56.13, 2026-08-02).** §8n hatte den Satz bewiesen und den Weg
+  beziffert; §8o baut ihn linear statt exponentiell. Für `x ∈ Ω` ist
+  `dist(x,∁Ω) = dist(x,∂Ω)`, und `∂Ω` zerfällt in `Σ_k n_k` zugeschnittene
+  Randstücke statt `∏_k n_k` Keile (Rippen-Kamm: 5 Boxen ⇒ `6⁵ = 7776`). Neues
+  `OP_STOP_LB = 0x47` (Payload `7 + 11·N`, fester Record-Stride) trägt sie in
+  ALLE Tape-Spiegel; zwei Stück-Typen mit exakter geschlossener Distanz:
+  Welt-Dreieck und rotiertes `(r,z)`-Segment (letzteres hält Zylinder EXAKT —
+  ein einbeschriebenes 16-Prisma hätte die Nabe um seine Sagitta 0.115 mm
+  verfehlt, bei zugesagten 0.010).
+  **Ergebnis: Stufen-Nabe `0 / 59 · 0.3156` → `0 / 0`.** Ecken-Schale
+  `t/δ = 2.0…6.0`, notch 90°/60° beidseitig unverändert 0/0; Rippen-Kamm
+  4×2.0/1.0 hat einen AKTIVEN 140-Stück-Block und bleibt exakt bei
+  `144 · 0.5378` Über-Claim — der §8n-Satz gemessen statt geglaubt. Golden:
+  33/35 Szenen byte-identisch, in den zwei anderen ändert sich nur die
+  Tape-Länge (alle Feldwerte bit-identisch). `check_interp` 35/35, 0 Failures.
+  Drei Sicherheitsregeln tragen das: kein Stück darf fehlen (nur beweisbar
+  vergrabene werden verworfen), Zuschnitt darf zu GROSS sein (jeder
+  „nicht darstellbar"-Zweig behält das Stück ganz), und ein nicht
+  darstellbarer Member verweigert den GANZEN Block — gemessen am Kamm
+  4×1.5/0.8, der wegen dreier Extrude-Kontaktprismen gar kein `L` bekommt.
+  Ausserhalb `Ω` wäre die Stück-Schranke ungültig; der Auswerter kappt sie mit
+  dem Innen-Indikator `d₀ ≤ δ`, der aus dem Basis-Register folgt
+  (`d₀ − δ = min_k f_k` ist das naive Vereinigungsfeld, jedes `f_k`
+  vorzeichenrichtig) — und der Schalter sitzt feldstetig genau dort, wo beide
+  Gate-Zweige denselben Wert liefern. Design, Beweise, Handrechnung,
+  Messtabellen und Kosten:
+  `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8o.
 
 ## 10. Verweise
 

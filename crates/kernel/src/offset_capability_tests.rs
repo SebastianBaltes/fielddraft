@@ -2567,14 +2567,14 @@ fn stop_terms_are_order_independent_384() {
                     ];
                     for d0 in [-6.0f32, -2.0, -0.5, 0.0, 0.5, 2.0, 6.0] {
                         let base =
-                            crate::offset_channel::stop_apply(d0, p, channels, verts);
+                            crate::offset_channel::stop_apply(d0, p, channels, verts, None);
                         if base != d0 {
                             active += 1;
                         }
                         for (c, v) in
                             [(&rev_ch, verts), (&rot_ch, verts), (channels, &rev_vs)]
                         {
-                            let got = crate::offset_channel::stop_apply(d0, p, c, v);
+                            let got = crate::offset_channel::stop_apply(d0, p, c, v, None);
                             assert_eq!(
                                 got.to_bits(),
                                 base.to_bits(),
@@ -2795,10 +2795,10 @@ fn stop_limit_never_exceeds_the_naive_field_384() {
     let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
     fn walk(n: &BoundedCsg, p: [f32; 3], worst: &mut f32, at: &mut [f32; 3]) {
         match n {
-            BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
+            BoundedCsg::ArcChannel { inner, channels, verts, lb, .. } => {
                 if channels.first().map(|c| c.concave).unwrap_or(false) {
                     let d0 = inner.sdf(p, EvalMode::Visual);
-                    let d = crate::offset_channel::stop_apply(d0, p, channels, verts);
+                    let d = crate::offset_channel::stop_apply(d0, p, channels, verts, lb.as_ref());
                     if d - d0 > *worst {
                         *worst = d - d0;
                         *at = p;
@@ -4476,3 +4476,445 @@ fn probe_384_pair_distance_gate() {
         );
     }
 }
+
+// ══════════════ #384 §8o — die untere Distanzschranke im Tape ══════════════
+//
+// §8n hat gemessen, dass `gate = max(G − d₀, L(x) − δ)` die Nabe schliesst,
+// wenn `L` der VOLLE Member-Schnitt ist (das Paar genügt nicht), und dass die
+// Keil-Form dafür exponentiell wäre. §8o baut den linearen Weg: `L` als
+// **zugeschnittene Vereinigungs-B-Rep** im Tape (`crate::offset_lb`).
+//
+// Die Pins darunter decken die vier Richtungen ab, in denen das schiefgehen
+// kann: (a) `L` ist zu GROSS (⇒ Phantom-Material), (b) `L` ist zu klein (⇒ die
+// Nabe bleibt offen), (c) ohne Block bewegt sich irgendetwas (⇒ Regression an
+// jeder Fixture ohne `L`), (d) die Über-Seiten-Fixturen reissen auf.
+
+/// Entfernt jeden `L`-Block aus dem Baum — der Kontroll-Pfad „leeres `L`".
+fn strip_lb(n: &BoundedCsg) -> BoundedCsg {
+    match n {
+        BoundedCsg::ArcChannel { inner, channels, verts, rims, aabb, .. } => {
+            BoundedCsg::ArcChannel {
+                inner: Box::new(strip_lb(inner)),
+                channels: channels.clone(),
+                verts: verts.clone(),
+                rims: rims.clone(),
+                lb: None,
+                aabb: *aabb,
+            }
+        }
+        BoundedCsg::Union { left, right, aabb } => BoundedCsg::Union {
+            left: Box::new(strip_lb(left)),
+            right: Box::new(strip_lb(right)),
+            aabb: *aabb,
+        },
+        BoundedCsg::Intersection { left, right, aabb } => BoundedCsg::Intersection {
+            left: Box::new(strip_lb(left)),
+            right: Box::new(strip_lb(right)),
+            aabb: *aabb,
+        },
+        BoundedCsg::Difference { left, right, aabb } => BoundedCsg::Difference {
+            left: Box::new(strip_lb(left)),
+            right: Box::new(strip_lb(right)),
+            aabb: *aabb,
+        },
+        BoundedCsg::Offset { inner, delta, aabb } => BoundedCsg::Offset {
+            inner: Box::new(strip_lb(inner)),
+            delta: *delta,
+            aabb: *aabb,
+        },
+        other => other.clone(),
+    }
+}
+
+/// Sammelt alle `L`-Blöcke eines Baums.
+fn collect_lb(n: &BoundedCsg, out: &mut Vec<crate::offset_lb::LbBlock>) {
+    match n {
+        BoundedCsg::ArcChannel { inner, lb, .. } => {
+            if let Some(b) = lb {
+                out.push(b.clone());
+            }
+            collect_lb(inner, out);
+        }
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. } => {
+            collect_lb(left, out);
+            collect_lb(right, out);
+        }
+        BoundedCsg::Offset { inner, .. } => collect_lb(inner, out),
+        _ => {}
+    }
+}
+
+/// **§8o-Sicherheits-Pin: `L` liegt NIE über der Wahrheit.**
+///
+/// Das ist die eine Ungleichung, an der alles hängt. `gate = max(G − d₀, L − δ)`
+/// ist genau dann harmlos, wenn `L ≤ dist(x,∁Ω)` — überschätzt `L` die Distanz,
+/// öffnet das Gate weiter als die Geometrie erlaubt und der Term behauptet
+/// Material in echter Luft. Geprüft gegen dieselben exakten Referenzen wie
+/// §8k/§8n (`dist_hub_complement_exact`, `dist_obb_union_complement_exact`) an
+/// Nabe, Ecken-Schale, notch und Rippen-Kamm.
+///
+/// Und die Gegenrichtung, ohne die eine „überall 0"-Funktion bestünde: an der
+/// Nabe muss `L` am §8l-Worst-Punkt den EXAKTEN Wert 2.315608 treffen — das ist
+/// der VOLLE Member-Schnitt aus §8n, den das beste PAAR (2.237332) verfehlt.
+#[test]
+fn lb_block_is_sound_and_reaches_the_full_member_complement_384() {
+    let delta = 2.0f32;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+    let mut blocks = Vec::new();
+    collect_lb(&field, &mut blocks);
+    assert_eq!(
+        blocks.len(),
+        1,
+        "die Stufen-Nabe muss GENAU EINEN L-Block tragen (Box + zwei Zylinder sind \
+         darstellbar) — sonst misst dieser Pin nichts"
+    );
+    let blk = &blocks[0];
+    let cyls = [(r1 as f64, -(e1 as f64), zh1 as f64), (r2 as f64, -(e2 as f64), 6.0f64)];
+
+    // (1) Solide: L ≤ exakt an jedem Gitterpunkt IN Ω.
+    let mut worst_viol = 0.0f64;
+    let n = 15usize;
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let p = [
+                    -9.0 + 18.0 * (ix as f64 + 0.2113248654) / n as f64,
+                    -9.0 + 18.0 * (iy as f64 + 0.5773502692) / n as f64,
+                    -(t as f64) - 1.5 + (t as f64 + 2.0) * (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                // `base = δ + min_k f_k` ist der naive Stoppwert; hier direkt
+                // aus der exakten Member-Geometrie, damit der Pin nicht an der
+                // Feld-Kette hängt.
+                let rho = (p[0] * p[0] + p[1] * p[1]).sqrt();
+                let f_plate = (p[0].abs() - 20.0)
+                    .max(p[1].abs() - 20.0)
+                    .max((p[2] + 1.5).abs() - 1.5);
+                let mut fmin = f_plate;
+                for &(r, zlo, zhi) in &cyls {
+                    let fc = (rho - r).max((p[2] - 0.5 * (zlo + zhi)).abs() - 0.5 * (zhi - zlo));
+                    fmin = fmin.min(fc);
+                }
+                let base = (delta as f64 + fmin) as f32;
+                let l = crate::offset_lb::lb_value(pf, base, blk) as f64;
+                if l <= -1.0e29 {
+                    continue; // neutral (ausserhalb Ω / ausserhalb der Term-Kugel)
+                }
+                worst_viol = worst_viol.max(l - dist_hub_complement_exact(t as f64, &cyls, p));
+            }
+        }
+    }
+    assert!(
+        worst_viol <= 1e-3,
+        "die Stück-Schranke übersteigt die exakte Distanz um {worst_viol:.3e} mm — sie \
+         ERFINDET Distanz, und das Gate, das auf ihr steht, erzeugt Phantom-Material"
+    );
+
+    // (2) Scharf: am §8l-Worst-Punkt der EXAKTE Wert (§8n: VOLL 2.315608,
+    //     bestes Paar nur 2.237332).
+    let xw = [-1.463461473763636f32, -1.163986143381818, -0.6843920148636364];
+    let l = crate::offset_lb::lb_value(xw, 0.884392, blk);
+    assert!(
+        (l - 2.315608).abs() < 5e-3,
+        "L am Nabe-Worst-Punkt: {l:.6} statt 2.315608 — genau dieser Wert ist der VOLLE \
+         Member-Schnitt aus §8n; 2.237 wäre das Paar, 1.184 der ungeschnittene A-Deckel"
+    );
+
+    // (3) Dieselbe Ungleichung an den Box-Fixturen.
+    let mut box_sets: Vec<Vec<Obb>> = Vec::new();
+    for tf in [2.0f64, 3.0] {
+        box_sets.push(thin_corner_boxes(tf * 2.0, 40.0).iter().map(|&(l, h)| obb_aabb(l, h)).collect());
+    }
+    let (_, comb_boxes, _) = rib_comb_node(4, 1.5, 0.8, 2.0);
+    box_sets.push(comb_boxes.iter().map(|&(l, h)| obb_aabb(l, h)).collect());
+    let nodes: Vec<CsgNode> = vec![
+        thin_corner_node(4.0, 40.0, delta),
+        thin_corner_node(6.0, 40.0, delta),
+        rib_comb_node(4, 1.5, 0.8, delta).0,
+    ];
+    let mut worst_box = 0.0f64;
+    let mut seen = 0usize;
+    for (node, obbs) in nodes.into_iter().zip(box_sets.iter()) {
+        let (f, _) = compile_for(node);
+        let mut bs = Vec::new();
+        collect_lb(&f, &mut bs);
+        let Some(blk) = bs.first() else { continue };
+        seen += 1;
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for o in obbs {
+            for k in 0..3 {
+                let ext = (0..3).map(|a| (o.u[a][k] * o.he[a]).abs()).sum::<f64>();
+                lo[k] = lo[k].min(o.c[k] - ext);
+                hi[k] = hi[k].max(o.c[k] + ext);
+            }
+        }
+        let m = 11usize;
+        for ix in 0..m {
+            for iy in 0..m {
+                for iz in 0..m {
+                    let fr = [
+                        (ix as f64 + 0.2113248654) / m as f64,
+                        (iy as f64 + 0.5773502692) / m as f64,
+                        (iz as f64 + 0.7886751346) / m as f64,
+                    ];
+                    let p = [
+                        lo[0] + (hi[0] - lo[0]) * fr[0],
+                        lo[1] + (hi[1] - lo[1]) * fr[1],
+                        lo[2] + (hi[2] - lo[2]) * fr[2],
+                    ];
+                    let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                    // Naiver Stoppwert aus den Boxen selbst.
+                    let mut fmin = f64::INFINITY;
+                    for o in obbs {
+                        let mut q = [0.0f64; 3];
+                        for a in 0..3 {
+                            let d: f64 = (0..3).map(|k| (p[k] - o.c[k]) * o.u[a][k]).sum();
+                            q[a] = d.abs() - o.he[a];
+                        }
+                        let outside = (0..3).map(|a| q[a].max(0.0).powi(2)).sum::<f64>().sqrt();
+                        let inside = q[0].max(q[1]).max(q[2]).min(0.0);
+                        fmin = fmin.min(outside + inside);
+                    }
+                    let base = (delta as f64 + fmin) as f32;
+                    let l = crate::offset_lb::lb_value(pf, base, blk) as f64;
+                    if l <= -1.0e29 {
+                        continue;
+                    }
+                    worst_box = worst_box.max(l - dist_obb_union_complement_exact(obbs, p));
+                }
+            }
+        }
+    }
+    assert!(seen >= 2, "zu wenige Box-Fixturen mit L-Block ({seen})");
+    assert!(
+        worst_box <= 1e-3,
+        "Box-Fixturen: die Stück-Schranke übersteigt die exakte Distanz um {worst_box:.3e} mm"
+    );
+}
+
+/// **§8o-Kern-Pin: die Stufen-Nabe ist jetzt ZWEISEITIG exakt.**
+///
+/// Vorher (§8k…§8n, unverändert über vier Pakete): `0 / 59 · 0.3156` auf dem
+/// 22³-Gitter — kein Phantom-Material, aber 59 Punkte, an denen das Feld die
+/// Erosion für LEER hält, obwohl sie dort massiv ist. Ursache war
+/// ausschliesslich die Ein-Term-Kappe `G = 0.868` gegen einen Bedarf von
+/// `d₀ − f_wahr = 1.200`; der Term hatte den exakten Wert (`w_geo = 0.3156`)
+/// längst. Mit `L = 2.315608` wird `gate = L − δ = 0.3156` und der Term geht
+/// durch — auf den Mikrometer.
+#[test]
+fn erosion_stepped_hub_is_exact_on_both_sides_384() {
+    let delta = 2.0f32;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+    let cyls = [(r1 as f64, -(e1 as f64), zh1 as f64), (r2 as f64, -(e2 as f64), 6.0f64)];
+    let exact = |p: [f64; 3]| dist_hub_complement_exact(t as f64, &cyls, p);
+    let ray = |p: [f64; 3]| dist_hub_complement(t as f64, &cyls, p, 160);
+    let (lo, hi) = ([-9.0, -9.0, -(t as f64) - 1.5], [9.0, 9.0, 0.5]);
+    let r = scan_mut(
+        "Nabe", &field, delta, lo, hi, 22, &exact, &ray, &|_| f64::NEG_INFINITY, false,
+    );
+    assert_eq!(
+        r.over.0, 0,
+        "Stufen-Nabe: {} Punkte Phantom-Material, größtes {:.4} mm — die untere \
+         Distanzschranke darf NIE einen Über-Claim eintauschen (§8n-Satz: wo `L − δ` \
+         bindet, ist `f ≥ δ − L ≥ e`)",
+        r.over.0, r.over.1
+    );
+    assert!(
+        r.under.0 == 0 && r.under.1 <= 0.010,
+        "Stufen-Nabe: {} Punkte fehlendes Material, größtes {:.4} mm bei {:?} — §8o \
+         schliesst diese Seite (vorher 59 / 0.3156)",
+        r.under.0, r.under.1, r.worst_under
+    );
+}
+
+/// **§8o-Kontroll-Pin: ohne `L`-Block ist das Feld bit-identisch zu vor §8o.**
+///
+/// Das ist keine Messung, sondern eine Identität: `L = −1e30` macht
+/// `max(G − d₀, L − δ)` zu `G − d₀`. Der Pin hält sie trotzdem fest, weil sie
+/// die Grundlage jeder Aussage „Fixture X hat sich nicht bewegt" ist — und
+/// nagelt gleichzeitig die BASIS-Zahl der Nabe fest, die §8o ablöst.
+#[test]
+fn stop_lb_absent_reproduces_the_g_cap_384() {
+    let delta = 2.0f32;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+    let basis = strip_lb(&field);
+    let cyls = [(r1 as f64, -(e1 as f64), zh1 as f64), (r2 as f64, -(e2 as f64), 6.0f64)];
+    let exact = |p: [f64; 3]| dist_hub_complement_exact(t as f64, &cyls, p);
+    let ray = |p: [f64; 3]| dist_hub_complement(t as f64, &cyls, p, 160);
+    let (lo, hi) = ([-9.0, -9.0, -(t as f64) - 1.5], [9.0, 9.0, 0.5]);
+    let r = scan_mut(
+        "Nabe BASIS", &basis, delta, lo, hi, 22, &exact, &ray, &|_| f64::NEG_INFINITY, false,
+    );
+    assert_eq!(
+        (r.over.0, r.under.0),
+        (0, 59),
+        "ohne L-Block muss die Nabe EXAKT den §8n-BASIS-Befund reproduzieren \
+         (0 über / 59 unter), sonst misst der §8o-Vergleich zwei verschiedene Maschinen"
+    );
+    assert!(
+        (r.under.1 - 0.3156).abs() < 1e-3,
+        "BASIS-Restfehler {:.4} statt 0.3156 (§8n)",
+        r.under.1
+    );
+    // Und der eigentliche Beweis: der Baum OHNE Block liefert an jedem Punkt
+    // exakt den Feldwert, den `stop_apply` mit `lb = None` rechnet.
+    let mut rng = 12345u64;
+    for _ in 0..3000 {
+        let mut nx = || {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((rng >> 33) as f64 / (1u64 << 31) as f64 - 0.5) as f32
+        };
+        let p = [nx() * 20.0, nx() * 20.0, nx() * 14.0];
+        assert_eq!(
+            basis.sdf(p, EvalMode::Visual).to_bits(),
+            strip_lb(&field).sdf(p, EvalMode::Visual).to_bits(),
+            "Kontroll-Pfad nicht deterministisch bei {p:?}"
+        );
+    }
+}
+
+/// **§8o-Nichtregressions-Pin: die ÜBER-Seiten bewegen sich um NULL Punkte.**
+///
+/// Der Rippen-Kamm ist die Fixture, an der „`G`-Kappe aus" (§8k Kandidat d,
+/// §8l Kandidat f) mit 448 Punkten / 1.9866 mm zerbrach. §8o darf sie nicht
+/// anfassen — und kann es strukturell nicht: wo `L − δ` bindet, liegt das Feld
+/// ÜBER dem Zielfeld. Der Pin misst genau das, statt es zu glauben.
+#[test]
+fn lb_gate_leaves_the_over_side_fixtures_unmoved_384() {
+    let delta = 2.0f32;
+    for ((w, g), want_over, want_worst) in
+        [((1.5f32, 0.8f32), 168usize, 0.8103f64), ((2.0, 1.0), 144, 0.5378)]
+    {
+        let (node, boxes, span) = rib_comb_node(4, w, g, delta);
+        let (field, _) = compile_for(node);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let exact = |p: [f64; 3]| dist_obb_union_complement_exact(&obbs, p);
+        let ray = |p: [f64; 3]| dist_to_boxes_complement(&boxes, p, 160);
+        let (l3, h3) = ([-span, -3.0, -6.0], [span, 3.0, 0.5]);
+        let r = scan_mut(
+            &format!("Kamm {w}/{g}"), &field, delta, l3, h3, 24, &exact, &ray,
+            &|_| f64::NEG_INFINITY, false,
+        );
+        assert_eq!(
+            r.over.0, want_over,
+            "Rippen-Kamm {w}/{g}: {} statt {want_over} Über-Claim-Punkte — §8o hat die \
+             Kappe aufgerissen, obwohl der Satz das ausschliesst",
+            r.over.0
+        );
+        assert!(
+            (r.over.1 - want_worst).abs() < 1e-3,
+            "Rippen-Kamm {w}/{g}: größter Über-Claim {:.4} statt {want_worst} \
+             (conservative ≤ 0.868·δ bleibt die Zusage)",
+            r.over.1
+        );
+        assert_eq!(r.under.0, 0, "Rippen-Kamm {w}/{g}: unter-Seite aufgerissen");
+    }
+    // notch: beidseitig 0/0, unverändert.
+    for alpha in [90.0f64, 60.0] {
+        let (field, _) = compile_for(notch_union_node(alpha, delta as f64));
+        let gamma = std::f64::consts::PI - alpha.to_radians();
+        let obbs = vec![
+            obb_rot_z([0.0, -50.0, 0.0], [100.0, 50.0, 50.0], 0.0),
+            obb_rot_z([50.0 * gamma.sin(), -50.0 * gamma.cos(), 0.0], [100.0, 50.0, 50.0], gamma),
+        ];
+        let exact = |p: [f64; 3]| dist_obb_union_complement_exact(&obbs, p);
+        let ray = |p: [f64; 3]| dist_to_notch_complement(alpha, p);
+        let (l3, h3) = ([-10.0, -10.0, 42.0], [10.0, 10.0, 54.0]);
+        let r = scan_mut(
+            &format!("notch {alpha}"), &field, delta, l3, h3, 22, &exact, &ray,
+            &|_| f64::NEG_INFINITY, false,
+        );
+        assert_eq!(
+            (r.over.0, r.under.0),
+            (0, 0),
+            "notch {alpha}: {} über / {} unter — war 0/0",
+            r.over.0, r.under.0
+        );
+    }
+}
+
+/// **§8o-Tape-Pin: der neue Opcode ist im Strom und der Strom rechnet dasselbe.**
+///
+/// Ein `L`-Block, den nur der Baum-Auswerter sieht, wäre schlimmer als keiner:
+/// Mesher (C++), GPU (WGSL) und Intervall-DC (fidget) würden ein ANDERES Feld
+/// zeigen als Pick/Query. Der Pin prüft beides — Präsenz des Opcodes und
+/// Feldgleichheit Baum ↔ Tape.
+#[test]
+fn stop_lb_opcode_is_emitted_and_tape_matches_the_tree_384() {
+    let delta = 2.0f32;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+    let compiled = crate::sdf_compiler::compile_body(&field);
+    assert!(
+        compiled.opcodes.iter().any(|v| v.to_bits() == crate::sdf_compiler::OP_STOP_LB),
+        "kompiliertes Tape der Stufen-Nabe enthält kein OP_STOP_LB"
+    );
+    let mut rng = 777u64;
+    let mut max_diff = 0.0f32;
+    for _ in 0..4000 {
+        let mut nx = || {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((rng >> 33) as f64 / (1u64 << 31) as f64 - 0.5) as f32
+        };
+        let p = [nx() * 24.0, nx() * 24.0, nx() * 16.0];
+        let d_tree = field.sdf(p, EvalMode::Visual);
+        let d_tape = crate::sdf_compiler::eval_opcodes(&compiled.opcodes, p);
+        max_diff = max_diff.max((d_tree - d_tape).abs());
+    }
+    assert!(
+        max_diff < 2e-5,
+        "Tape-Parität des L-Blocks verletzt: max |Δ| = {max_diff:.3e}"
+    );
+}
+
+// ── einmalige §8o-Kostenmessung, NICHT im Fast-Tier ──
+#[test]
+#[ignore]
+fn probe_384_lb_cost() {
+    let delta = 2.0f32;
+    let cases: Vec<(String, CsgNode)> = vec![
+        ("Nabe".into(), stepped_hub_node(3.0, 6.0, 4.0, 0.5, 1.2, 1.8, delta)),
+        ("Schale t/δ=2".into(), thin_corner_node(4.0, 40.0, delta)),
+        ("notch 90".into(), notch_union_node(90.0, delta as f64)),
+        ("Kamm 4×1.5/0.8".into(), rib_comb_node(4, 1.5, 0.8, delta).0),
+        ("Kamm 4×2.0/1.0".into(), rib_comb_node(4, 2.0, 1.0, delta).0),
+    ];
+    println!("\n{:<16} {:>7} {:>8} {:>10} {:>12} {:>12}", "Fixture", "Stücke", "Worte", "Tape ges.", "L ns/Punkt", "Feld ns/Pkt");
+    for (name, node) in cases {
+        let (field, _) = compile_for(node);
+        let mut bs = Vec::new();
+        collect_lb(&field, &mut bs);
+        let compiled = crate::sdf_compiler::compile_body(&field);
+        let np: usize = bs.iter().map(|b| b.pieces.len()).sum();
+        let words = bs.len() * (1 + crate::offset_lb::LB_HEADER) + np * crate::offset_lb::LB_STRIDE;
+        let probe = [1.0f32, 1.0, -1.0];
+        let (mut tl, mut tf) = (0u128, 0u128);
+        if let Some(b) = bs.first() {
+            let t0 = std::time::Instant::now();
+            let mut acc = 0.0f32;
+            for k in 0..200000 {
+                let q = [probe[0] + (k % 7) as f32 * 1e-4, probe[1], probe[2]];
+                acc += crate::offset_lb::lb_value(q, 0.5, b);
+            }
+            tl = t0.elapsed().as_nanos() / 200000;
+            std::hint::black_box(acc);
+        }
+        {
+            let t0 = std::time::Instant::now();
+            let mut acc = 0.0f32;
+            for k in 0..50000 {
+                let q = [probe[0] + (k % 7) as f32 * 1e-4, probe[1], probe[2]];
+                acc += field.sdf(q, EvalMode::Visual);
+            }
+            tf = t0.elapsed().as_nanos() / 50000;
+            std::hint::black_box(acc);
+        }
+        println!("{name:<16} {np:>7} {words:>8} {:>10} {tl:>12} {tf:>12}", compiled.opcodes.len());
+    }
+}
+

@@ -105,6 +105,16 @@ export const OP_STOP_BASE      = 0x45;
 // erzeugen. Spiegel von `kernel/src/offset_channel.rs::stop_apply`.
 export const OP_STOP_LIMIT     = 0x46;
 
+// offset_tree §8o (#384): untere Distanzschranke eines Offset-Stopps.
+// Payload `n, delta, slack, c[3], skip_r` + n Stück-Records à 11 Worte
+// (Wort 0 = kind: 0 = Dreieck a[3] b[3] c[3], 1 = rotiertes (r,z)-Segment
+// o[3] ax[3] r0 z0 r1 z1). Stack-neutral; setzt das Register `stopLb` auf
+// `min_k dist(x, Stück_k) − slack`, neutral (−1e30) ausserhalb von Ω
+// (Indikator `d₀ ≤ δ`) oder der Term-Kugel. Die konkaven Gates rechnen
+// danach gegen `max(G − d₀, L − δ)` statt nur gegen `G − d₀`
+// (CPU-Referenz: `kernel offset_lb::lb_value`).
+export const OP_STOP_LB        = 0x47;
+
 export const OP_END            = 0xFF;
 
 // ── WGSL helper functions ───────────────────────────────────────────

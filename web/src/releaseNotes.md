@@ -1,3 +1,6 @@
+## 0.56.13
+- fix(kernel) #384: Erodierte Boolean-Körper mit gestuften Naben zeigen die Erosion jetzt dort, wo sie wirklich massiv ist — bisher blieb an solchen Stufen bis zu 0.32 mm Material unsichtbar, weil die Kanal-Korrektur an einer Ein-Term-Kappe hängenblieb. Das Feld kennt jetzt eine echte untere Distanzschranke aus dem zugeschnittenen Körperrand und lässt den Term durch. Kein zusätzliches Phantom-Material: an Rippen-Kämmen, Ecken-Schalen und Kerben ändert sich kein einziger Punkt.
+
 ## 0.56.12
 - fix(kernel) #384: In einer konkaven Raumecke bekommt jetzt jede der acht Ecken ihren Eckklotz — bei bestimmten Wandstärken fehlte die Hälfte davon, und mit ihr bis zu einem halben Millimeter Material.
 

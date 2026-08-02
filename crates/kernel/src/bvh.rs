@@ -300,6 +300,13 @@ pub enum BoundedCsg {
         /// schließt den δ-schmalen Sliver/Keil am Kontaktrand, den das
         /// Kontakt-Prisma stehen lässt ([`crate::offset_rim`]).
         rims: Vec<crate::offset_rim::RimBlock>,
+        /// #384 §8o: die **untere Distanzschranke** dieses Stopps als
+        /// zugeschnittene Vereinigungs-B-Rep (`L(x) ≤ dist(x,∁Ω)`). Die
+        /// konkaven Terme gaten gegen `max(G − d₀, L − δ)` statt nur gegen
+        /// `G − d₀`. `None` = die Synthese konnte `∂Ω` nicht vollständig
+        /// abdecken ⇒ `L = −1e30` ⇒ bit-identisch zum Zustand vor §8o
+        /// ([`crate::offset_lb`]).
+        lb: Option<crate::offset_lb::LbBlock>,
         aabb: Aabb,
     },
 }
@@ -573,11 +580,11 @@ impl BoundedCsg {
             // offset_tree Phase B: naiver Stopp-Wert + Kanal-Korrekturen.
             // Modus-unabhängig — der Kanal IST die korrekte harte Geometrie
             // (wie MaskedBlend: die Fläche ist real, kein Render-Effekt).
-            BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
+            BoundedCsg::ArcChannel { inner, channels, verts, rims, lb, .. } => {
                 // #384 §8i: `d0` ist der NAIVE Stopp-Wert; alle Kanal-/
                 // Vertex-Gates rechnen gegen ihn (Kaskaden-Schnitt).
                 let d0 = inner.sdf_open(p, mode, open);
-                let d = crate::offset_channel::stop_apply(d0, p, channels, verts);
+                let d = crate::offset_channel::stop_apply(d0, p, channels, verts, lb.as_ref());
                 // Phase 4 (#398): ∂P-Rand-Fillet NACH Kanälen/Vertices
                 // (disjunkte Masken, Reihenfolge feldwert-neutral). Spiegel des
                 // `OP_RIM_FILLET`-Decodes und des Dual-Arms.
@@ -881,15 +888,17 @@ impl BoundedCsg {
             // Kanal-Term klar (> eps), gehört die Fläche dem Kanal-Branch
             // (0x700+-Band); im eps-Band an der Naht tragen Eltern UND
             // Kanal bei (Mess-/Snap-Referenz der Eltern bleibt erreichbar).
-            BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
+            BoundedCsg::ArcChannel { inner, channels, verts, rims, lb, .. } => {
                 let (d0, mut c) = inner.evaluate_open(p, eps, mode, open);
                 let mut d = d0;
                 // #384 §8j: gemeinsame Grenzwert-Klemme (`OP_STOP_LIMIT`).
                 let mut lim = -crate::offset_channel::END_PLANE_OFF;
+                // #384 §8o: die untere Distanzschranke des Stopps (`OP_STOP_LB`).
+                let lbv = crate::offset_channel::stop_lb_value(d0, p, lb.as_ref());
                 for ch in channels {
                     lim = lim.max(crate::offset_channel::channel_limit(p, ch));
                     // #384 §8i: Gate gegen den naiven Stopp-Wert `d0`.
-                    let nd = crate::offset_channel::channel_apply(d0, d, p, ch);
+                    let nd = crate::offset_channel::channel_apply(d0, d, p, ch, lbv - ch.delta);
                     if nd != d {
                         if (nd - d).abs() > eps {
                             c = Contributors::single(crate::csg::BranchId(ch.branch));
@@ -902,7 +911,7 @@ impl BoundedCsg {
                 // Phase C4: Vertex-Kugeln mit derselben Provenance-Regel.
                 for vs in verts {
                     lim = lim.max(crate::offset_channel::vertex_limit(p, vs));
-                    let nd = crate::offset_channel::vertex_apply(d0, d, p, vs);
+                    let nd = crate::offset_channel::vertex_apply(d0, d, p, vs, lbv - vs.delta);
                     if nd != d {
                         if (nd - d).abs() > eps {
                             c = Contributors::single(crate::csg::BranchId(vs.branch));

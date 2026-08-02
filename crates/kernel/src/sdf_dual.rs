@@ -413,7 +413,7 @@ fn eval_bounded_d3_open(
         // eingefroren — für den Distanzterm ist das der Enveloppen-Satz
         // (∂de/∂x = (x−q*)/|x−q*| exakt), für die s-Terme erster Ordnung
         // korrekt (die Fußpunkt-Drift ist ein O(κ·|x−q*|)-Nebenterm).
-        BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
+        BoundedCsg::ArcChannel { inner, channels, verts, rims, lb, .. } => {
             let mut d = eval_bounded_d3_open(inner, p, mode, open);
             // #384 §8i: das Basis-Register als Dual-Zahl — der NAIVE Stopp-Wert
             // samt Ableitungen. Alle Gates dieses Stopps rechnen gegen ihn
@@ -425,6 +425,33 @@ fn eval_bounded_d3_open(
             // `δ − ρ` — Distanzterme mit exakter Enveloppen-Ableitung.
             let mut lim = D3::from(-(crate::offset_channel::END_PLANE_OFF as f64));
             let max_d3 = |a: D3, b: D3| if a.re >= b.re { a } else { b };
+            // #384 §8o: das `L`-Register als Dual-Zahl. Der Fusspunkt `q*` des
+            // gewinnenden Randstücks wird — wie `q*` der Naht — als KONSTANTE
+            // eingefroren; `∂|x−q*|/∂x = (x−q*)/|x−q*|` ist damit der exakte
+            // Gradient der Distanzfunktion (Enveloppen-Satz). Neutral (`−1e30`
+            // als Konstante) ausserhalb von `Ω` oder der Term-Kugel.
+            let lb_d3: D3 = match lb
+                .as_ref()
+                .and_then(|b| crate::offset_lb::lb_foot(p_re, d0.re as f32, b).map(|q| (q, b.slack)))
+            {
+                Some((q, slack)) => {
+                    let dq = [
+                        p[0] - D3::from(q[0] as f64),
+                        p[1] - D3::from(q[1] as f64),
+                        p[2] - D3::from(q[2] as f64),
+                    ];
+                    let r2 = dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2];
+                    // Direkt AUF dem Stück ist die Wurzel nicht differenzierbar;
+                    // dort ist `L ≈ 0`, das Gate wählt ohnehin den `G`-Zweig, und
+                    // eine Konstante hält den Gradienten endlich (§8m).
+                    if r2.re > 1e-14 {
+                        r2.sqrt() - D3::from(slack as f64)
+                    } else {
+                        D3::from(-(slack as f64))
+                    }
+                }
+                None => D3::from(crate::offset_lb::LB_NONE as f64),
+            };
             for ch in channels {
                 if crate::offset_channel::channel_skip(d.re as f32, p_re, ch) {
                     continue;
@@ -446,7 +473,10 @@ fn eval_bounded_d3_open(
                     + dq[1] * D3::from(m2[1] as f64)
                     + dq[2] * D3::from(m2[2] as f64);
                 let gate = if ch.concave {
-                    D3::from(ch.gate as f64) - d0
+                    max_d3(
+                        D3::from(ch.gate as f64) - d0,
+                        lb_d3 - D3::from(ch.delta as f64),
+                    )
                 } else {
                     D3::from(ch.gate as f64) + d0
                 };
@@ -528,7 +558,10 @@ fn eval_bounded_d3_open(
                 let s2 = sdot(vs.gates[1]);
                 let s3 = sdot(vs.gates[2]);
                 let gate = if vs.concave {
-                    D3::from(vs.gate as f64) - d0
+                    max_d3(
+                        D3::from(vs.gate as f64) - d0,
+                        lb_d3 - D3::from(vs.delta as f64),
+                    )
                 } else {
                     D3::from(vs.gate as f64) + d0
                 };

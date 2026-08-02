@@ -172,6 +172,27 @@ pub const OP_STOP_BASE: u32      = 0x45; // +0
 // `offset_channel::stop_apply`).
 pub const OP_STOP_LIMIT: u32     = 0x46; // +1
 
+// offset_tree §8o (#384): **untere Distanzschranke eines Offset-Stopps.**
+// Payload `n, delta, slack, c[3], skip_r` + `n` Stück-Records à
+// `offset_lb::LB_STRIDE` Worte (erstes Record-Wort = `kind`: 0 = Dreieck,
+// 1 = rotiertes (r,z)-Segment). Stack-neutral wie OP_STOP_BASE; setzt das
+// Register `stop_lb` auf `min_k dist(x, Stück_k) − slack`.
+//
+// Warum: das konkave Gate war `G − d₀` mit `G = (c−1)·δ + Marge` — eine
+// Ein-Term-Kappe, die an der Stufen-Nabe 0.868 statt der gebrauchten 1.200
+// hergibt. §8n hat bewiesen, dass `gate = max(G − d₀, L − δ)` mit JEDER
+// gültigen unteren Distanzschranke `L ≤ dist(x,∁Ω)` strukturell kein
+// Phantom-Material erzeugen kann (wo `L − δ` bindet, ist `f ≥ δ − L ≥ e`).
+// Dieses Opcode trägt `L` als zugeschnittene Vereinigungs-B-Rep: `Σ_k n_k`
+// Randstücke statt `∏_k n_k` Keile.
+//
+// **Ausserhalb `Ω` ist die Stück-Schranke ungültig** (`min > 0`, `dist = 0`)
+// — der Interpreter kappt sie mit dem Innen-Indikator `d₀ ≤ δ`, den das
+// Basis-Register schon hält (`d₀ − δ = min_k f_k` ist das naive
+// Vereinigungsfeld). Ohne dieses Opcode bleibt `stop_lb = −1e30`, das `max`
+// im Gate also wirkungslos (CPU-Referenz: `offset_lb::lb_value`).
+pub const OP_STOP_LB: u32        = 0x47; // +7+11N
+
 pub const OP_END: u32            = 0xFF;
 
 // ── Compiled output ────────────────────────────────────────────────
@@ -669,7 +690,7 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
         // provenance, which the tape does not track) — emit the child unchanged.
         // This keeps the GPU-TSL and CGAL-C++ backends untouched.
         BoundedCsg::InnerWall { inner, .. } => emit_node(inner, ctx, open),
-        BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
+        BoundedCsg::ArcChannel { inner, channels, verts, rims, lb, .. } => {
             // offset_tree Phase B: naiver Stopp zuerst, dann je Kanal EIN
             // OP_ARC_CHANNEL (pops d, pusht korrigiert) — sequenziell wie
             // `offset_channel::channels_apply`. Phase C4: danach je
@@ -682,6 +703,19 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             let out = &mut ctx.opcodes;
             if !channels.is_empty() || !verts.is_empty() {
                 out.push(op(OP_STOP_BASE));
+                // §8o: unmittelbar nach dem Basis-Register — es LIEST `base`
+                // für den Innen-Indikator und muss vor allen Termen stehen.
+                if let Some(b) = lb {
+                    out.push(op(OP_STOP_LB));
+                    out.push(b.pieces.len() as f32);
+                    out.push(b.delta);
+                    out.push(b.slack);
+                    out.extend_from_slice(&b.center);
+                    out.push(b.skip_r);
+                    for piece in &b.pieces {
+                        out.extend_from_slice(&piece.to_words());
+                    }
+                }
             }
             for ch in channels {
                 out.push(op(OP_ARC_CHANNEL));
@@ -1577,6 +1611,11 @@ pub fn eval_opcodes_with_volumes(
     // in konkaver Orientierung; `OP_STOP_BASE` setzt es zurück,
     // `OP_STOP_LIMIT` wendet es an (Spiegel: `offset_channel::stop_apply`).
     let mut lim: f32 = -crate::offset_channel::END_PLANE_OFF;
+    // #384 §8o: `L`-Register eines Offset-Stopps — die untere Distanzschranke
+    // `L(x) ≤ dist(x,∁Ω)` aus der zugeschnittenen Vereinigungs-B-Rep.
+    // `OP_STOP_BASE` setzt es neutral (`−1e30`), `OP_STOP_LB` füllt es,
+    // die konkaven Terme lesen es als zweite Gate-Basis.
+    let mut stop_lb: f32 = crate::offset_lb::LB_NONE;
 
     macro_rules! push_v {
         ($v:expr) => {{
@@ -2060,6 +2099,49 @@ pub fn eval_opcodes_with_volumes(
                 let d = pop_v!();
                 base = d;
                 lim = -crate::offset_channel::END_PLANE_OFF;
+                // §8o: ohne OP_STOP_LB bleibt `stop_lb` neutral — das `max` im
+                // konkaven Gate ist dann wirkungslos, der Pfad bit-identisch
+                // zum Zustand vor §8o (Kontroll-Äquivalenz als Identität).
+                stop_lb = crate::offset_lb::LB_NONE;
+                push_v!(d);
+            }
+
+            // ── Untere Distanzschranke eines Offset-Stopps (#384 §8o) ────
+            // 1:1-Spiegel von `offset_lb::lb_value`. Stack-neutral.
+            OP_STOP_LB => {
+                let n = rd!() as usize;
+                let delta = rd!();
+                let slack = rd!();
+                let center = rd3!();
+                let skip_r = rd!();
+                let piece_base = pc;
+                pc += n * crate::offset_lb::LB_STRIDE;
+                let d = pop_v!();
+                let dc = [pt[0] - center[0], pt[1] - center[1], pt[2] - center[2]];
+                let rc = (dc[0] * dc[0] + dc[1] * dc[1] + dc[2] * dc[2]).sqrt();
+                if d > delta || rc > skip_r {
+                    stop_lb = crate::offset_lb::LB_NONE;
+                } else {
+                    let mut best = f32::INFINITY;
+                    for k in 0..n {
+                        let a = piece_base + k * crate::offset_lb::LB_STRIDE;
+                        let w = |i: usize| opcodes[a + i];
+                        let w3 = |i: usize| [opcodes[a + i], opcodes[a + i + 1], opcodes[a + i + 2]];
+                        let dd = if w(0) < 0.5 {
+                            crate::offset_lb::tri_dist(pt, w3(1), w3(4), w3(7))
+                        } else {
+                            crate::offset_lb::rev_dist(pt, w3(1), w3(4), w(7), w(8), w(9), w(10))
+                        };
+                        if dd < best {
+                            best = dd;
+                        }
+                    }
+                    stop_lb = if best.is_finite() {
+                        best - slack
+                    } else {
+                        crate::offset_lb::LB_NONE
+                    };
+                }
                 push_v!(d);
             }
 
@@ -2210,7 +2292,12 @@ pub fn eval_opcodes_with_volumes(
                 let s1 = dq[0] * best_m1[0] + dq[1] * best_m1[1] + dq[2] * best_m1[2];
                 let s2 = dq[0] * best_m2[0] + dq[1] * best_m2[1] + dq[2] * best_m2[2];
                 // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d₀).
-                let gate = if concave { gate_w - base } else { gate_w + base };
+                // §8o: zweite Gate-Basis `L − δ` (neutral ohne OP_STOP_LB).
+                let gate = if concave {
+                    (gate_w - base).max(stop_lb - delta)
+                } else {
+                    gate_w + base
+                };
                 // Rollen-Trennung (C4): Geometrie-Klemme vs. Add-Gate —
                 // 1:1-Spiegel von `channel_apply`.
                 let w_geo = s1.min(s2).min(s3).min(s4).min(best - delta).min(trust - best);
@@ -2258,7 +2345,12 @@ pub fn eval_opcodes_with_volumes(
                 let s2 = dq[0] * g2[0] + dq[1] * g2[1] + dq[2] * g2[2];
                 let s3 = dq[0] * g3[0] + dq[1] * g3[1] + dq[2] * g3[2];
                 // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d₀).
-                let gate = if concave { gate_w - base } else { gate_w + base };
+                // §8o: zweite Gate-Basis `L − δ` (neutral ohne OP_STOP_LB).
+                let gate = if concave {
+                    (gate_w - base).max(stop_lb - delta)
+                } else {
+                    gate_w + base
+                };
                 // Rollen-Trennung (C4) — 1:1-Spiegel von `vertex_apply`.
                 let w_geo = s1.min(s2).min(s3).min(rho - delta).min(trust - rho);
                 let w = w_geo.min(gate);
