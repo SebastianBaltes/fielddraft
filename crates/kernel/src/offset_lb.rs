@@ -85,6 +85,22 @@ pub const LB_HEADER: usize = 7;
 /// vor §8o. Das ist der Kontroll-Äquivalenz-Pfad („leeres `L`").
 pub const LB_NONE: f32 = -crate::offset_channel::END_PLANE_OFF;
 
+/// Rundet einen positiven f64-Betrag **aufwärts** nach f32 (#384 §8t).
+///
+/// `as f32` rundet zur NÄCHSTEN Zahl und darf damit unter den Wert fallen —
+/// bei einem Sicherheits-Budget ist das genau die falsche Richtung.
+#[inline]
+fn round_up_f32(x: f64) -> f32 {
+    let y = x as f32;
+    if (y as f64) >= x || !y.is_finite() {
+        y
+    } else {
+        // `y > 0` und endlich: das nächste Bitmuster ist der nächstgrössere
+        // f32 (monotone Ordnung der positiven Gleitkommazahlen).
+        f32::from_bits(y.to_bits() + 1)
+    }
+}
+
 /// Ein Randstück der zugeschnittenen Vereinigungs-B-Rep.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub enum LbPiece {
@@ -115,30 +131,86 @@ pub enum LbPiece {
 impl LbPiece {
     /// **Ein Dreieck-Stück mit seiner vorberechneten Ebenen-Schranke (#384 §8t).**
     ///
-    /// `center`/`skip_r` sind die Fernfeld-Kugel des Blocks. Sie gehen in
-    /// `emax` ein, denn die Schranke muss nur für Punkte gelten, an denen der
-    /// Block überhaupt ausgewertet wird — [`lb_value`] und jeder Tape-Spiegel
-    /// verlassen den Block vorher mit [`LB_NONE`], wenn
-    /// `|p − center| > skip_r`. **Das ist eine Format-Invariante:** wer die
-    /// Kugel-Prüfung vor der Stück-Schleife weglässt, macht `emax` ungültig.
+    /// `emax` ist das **Rundungs-Budget** des Prunes: der Betrag, um den der
+    /// von [`tri_dist`] ZURÜCKGEGEBENE f32-Wert unter der exakten Ebenen-
+    /// Distanz liegen kann. `tri_cannot_beat` zieht ihn ab, bevor es
+    /// überspringt.
     ///
-    /// Gerechnet wird in f64; `emax` deckt drei Rundungsquellen ab:
+    /// ## Das Lemma (die Soundness-Kette, §8t-Korrektur)
     ///
-    /// 1. das **Residuum** `max(|n̂·(b−a)|, |n̂·(c−a)|)` — bei exakter Normale
-    ///    null, bei der gerundeten winzig, bei einem entarteten Dreieck gross
-    ///    (und schaltet die Schranke damit von selbst ab, s.
-    ///    [`tri_cannot_beat`]);
-    /// 2. dass `|n̂|` nach der f32-Rundung nur `≈ 1` ist;
-    /// 3. die f32-Rundung des Laufzeit-Skalarprodukts **und** die Rundung von
-    ///    [`tri_dist`] selbst — beide absolut beschränkt durch die Reichweite
-    ///    `R = skip_r + |a − center|`, also die grösste Distanz `|p − a|`, die
-    ///    ein lebendiger Punkt haben kann.
+    /// Sei `N` das EXAKTE Kreuzprodukt `(b−a)×(c−a)` über den f32-Ecken
+    /// (`|N| = 2·Fläche`), `Π` die Trägerebene und
+    /// `Δ = |N·(p−a)|/|N| = dist(p,Π)`. Behauptet wird für JEDEN Zweig:
     ///
-    /// Der Faktor `64·2⁻²⁴` über `R` ist rund das Doppelte der Summe der drei
-    /// Fehlerterme (`≤ 10·2⁻²⁴·R` für das Skalarprodukt, `≤ 2·2⁻²⁴·R` für die
-    /// Normierung, `≤ 10·2⁻²⁴·R` für `tri_dist`, `≤ 2·2⁻²⁴·R` für die Addition
-    /// `best + emax`). Er kostet an Schärfe nichts: bei `R = 100 mm` sind das
-    /// `4·10⁻⁴ mm` gegen ein typisches `best` von Millimetern.
+    /// ```text
+    /// tri_dist(p,a,b,c)  ≥  Δ − err(D, κ)
+    /// ```
+    ///
+    /// * **Ebenen-Zweig** (`inside ≥ 2`): der Rückgabewert IST die mit dem
+    ///   f32-Kreuzprodukt `N_c` gerechnete Ebenen-Distanz. Mit
+    ///   `N_c = N + δ`, `|δ| ≤ 8u·E²` und `Δ ≤ R` ergibt die Fehlerfortpflanzung
+    ///   durch `h`, `nn`, Division und Wurzel
+    ///   `≥ Δ − (16κ + 8)·u·R`, wobei `κ = E²/|N|` die **Kondition** ist.
+    /// * **Kanten-Zweig**: `min_k dist(p, Kante_k) ≥ dist(p,T) ≥ Δ`, weil die
+    ///   Kanten in `T` und `T` in `Π` liegen. Die Rundung von `seg_dist2`
+    ///   (Subtraktionen, `t`-Division, Quadratsumme, Wurzel) kostet
+    ///   `≤ 24·u·D` mit `D = max(R, E)` — hier steht `E`, nicht `R`, denn der
+    ///   zweite Kanten-Aufruf rechnet mit `p−b`, und `b` darf beliebig weit
+    ///   von `a` liegen.
+    ///
+    /// **Deshalb ist ein Zweig-KIPPEN harmlos**, und das ist der Kern: kippt
+    /// der Orientierungstest fälschlich auf „innen", liefert die Funktion die
+    /// Ebenen-Distanz statt der grösseren Kanten-Distanz — also den KLEINEREN
+    /// der beiden Anker. Genau dieser kleinere Anker ist oben abgeschätzt. Die
+    /// Kette braucht den Orientierungstest also gar nicht als korrekt
+    /// vorauszusetzen; sie umgeht ihn. (Die erste §8t-Fassung ankerte auf
+    /// `dist(p,T)` statt auf `Δ` — dort IST der Zweigwechsel tödlich, denn der
+    /// Ebenen-Zweig darf `dist(p,T)` unterschreiten. Das war das fehlende
+    /// Lemma, das das externe Mathe-Review gefunden hat.)
+    ///
+    /// Dazu die Brücke vom gespeicherten `n̂` zu `Δ`: mit
+    /// `|n̂ − N/|N|| ≤ √3·u + 2⁻⁵²·κ` (f32-Rundung der Komponenten; der
+    /// f64-Anteil ist bei `κ < 10⁸` erdrückt) und der f32-Auswertung des
+    /// Skalarprodukts gilt `|H| ≤ Δ + 6·u·R`. Die dabei gefährliche Richtung
+    /// ist `‖n̂‖ > 1` — sie steckt in derselben Komponenten-Schranke, denn
+    /// `|H| ≤ ‖n̂‖·|p−a|` und `‖n̂‖ ≤ 1 + √3·u`.
+    ///
+    /// Summiert (statt maximiert, das ist die konservative Wahl):
+    ///
+    /// ```text
+    /// err  ≤  u·D·(38 + 16·κ)          u = 2⁻²⁴,  D = max(R, E),  κ = E²/|N|
+    /// ```
+    ///
+    /// Angesetzt ist `u·D·(160 + 64·κ)`, also gut das Vierfache — Reserve für
+    /// die Konstanten, die ich grosszügig statt scharf gezählt habe.
+    ///
+    /// ## Warum `D` und `κ` und nicht bloss `R`
+    ///
+    /// Die erste §8t-Fassung setzte `64·u·R` an. Das deckt nur Terme, die mit
+    /// der REICHWEITE skalieren — `tri_dist` hat aber beides: einen Anteil, der
+    /// mit den KANTENLÄNGEN wächst (Kanten-Zweig, `p−b`), und einen, der mit
+    /// der KONDITION wächst (Ebenen-Zweig über das f32-Kreuzprodukt). Eine
+    /// Format-Invariante `E = O(R)` gibt es nicht: §8t misst Stück-Hüllradien
+    /// bis 74.5 mm gegen Abfrage-Distanzen von 2–5 mm. Für ein Sliver-Dreieck
+    /// ist `κ` gross, das Budget wächst mit, und der Prune schaltet sich selbst
+    /// ab — das ist die Konditions-Schranke, die der `res`-Term der ersten
+    /// Fassung NICHT leisten konnte (er ist bei exakter Normale schlicht null).
+    ///
+    /// ## Reichweite, Kugel-Invariante, Rundung des Budgets selbst
+    ///
+    /// `R = skip_r + |a − center|` ist die grösste Distanz `|p − a|` eines
+    /// lebendigen Punktes — **Format-Invariante:** [`lb_value`] und jeder
+    /// Tape-Spiegel verlassen den Block mit [`LB_NONE`], wenn
+    /// `|p − center| > skip_r`. Wer die Kugel-Prüfung vor der Stück-Schleife
+    /// weglässt, macht `emax` ungültig. Weil diese Prüfung selbst in f32 läuft,
+    /// lässt sie Punkte knapp AUSSERHALB durch; `R` trägt dafür `16 u` Reserve.
+    ///
+    /// `emax` wird zum Schluss **aufwärts** nach f32 gerundet — `as f32` rundet
+    /// zur nächsten Zahl und dürfte das Budget unterschreiten.
+    ///
+    /// Ist das Budget so gross, dass der Prune ohnehin nie feuern kann
+    /// (`emax ≥ D ≥ |H|`), wird `emax = ∞` gesetzt: Prune aus, trivial sound.
+    /// Dasselbe bei `|N| = 0` (kollineare Ecken).
     pub fn tri(a: [f32; 3], b: [f32; 3], c: [f32; 3], center: [f32; 3], skip_r: f32) -> LbPiece {
         let f = |v: [f32; 3]| [v[0] as f64, v[1] as f64, v[2] as f64];
         let (af, bf, cf) = (f(a), f(b), f(c));
@@ -149,17 +221,29 @@ impl LbPiece {
             ba[0] * ca[1] - ba[1] * ca[0],
         ];
         let ln = fd(nx, nx).sqrt();
-        // Entartet: keine brauchbare Ebene ⇒ `emax = ∞` schaltet den Prune für
-        // dieses Stück ab (die Schranke bleibt gültig, nur wirkungslos).
+        // Kollinear: keine Trägerebene ⇒ Prune aus. `n̂` bleibt null, weil es
+        // keine gibt.
         if !(ln > 0.0) {
             return LbPiece::Tri { a, b, c, n: [0.0; 3], emax: f32::INFINITY };
         }
         let n32 = [(nx[0] / ln) as f32, (nx[1] / ln) as f32, (nx[2] / ln) as f32];
-        let nh = f(n32);
-        let res = fd(nh, ba).abs().max(fd(nh, ca).abs());
-        let reach = skip_r as f64 + fl(fs(af, f(center)));
-        let emax = res + 64.0 * (-24f64).exp2() * reach;
-        LbPiece::Tri { a, b, c, n: n32, emax: emax as f32 }
+        let u = (-24f64).exp2();
+        // Reichweite inkl. Reserve für die f32-Kugel-Prüfung.
+        let reach = (skip_r as f64 + fl(fs(af, f(center)))) * (1.0 + 16.0 * u);
+        // Kantenlängen — der Kanten-Zweig von `tri_dist` rechnet mit `p−b`.
+        let e = fl(ba).max(fl(ca)).max(fl(fs(cf, bf)));
+        let d = reach.max(e);
+        let kappa = e * e / ln;
+        let emax = u * d * (160.0 + 64.0 * kappa);
+        // Budget grösser als jede erreichbare `|H|` ⇒ der Prune könnte nie
+        // feuern; das explizit zu machen hält die Sliver-Aussage prüfbar.
+        // `n̂` bleibt trotzdem stehen — es beschreibt die Ebene korrekt, nur
+        // das Budget taugt nicht mehr. (Es zu nullen hätte im Tape drei
+        // weitere Worte bewegt, ohne dass sie je gelesen werden.)
+        if !(emax < d) {
+            return LbPiece::Tri { a, b, c, n: n32, emax: f32::INFINITY };
+        }
+        LbPiece::Tri { a, b, c, n: n32, emax: round_up_f32(emax) }
     }
 
     /// Der Record im Tape-Layout (`LB_STRIDE` Worte, erstes Wort = `kind`).
@@ -340,6 +424,47 @@ pub fn rev_dist(p: [f32; 3], o: [f32; 3], ax: [f32; 3], r0: f32, z0: f32, r1: f3
 /// Rundungs-Reserven in `emax` ([`LbPiece::tri`]); zur Laufzeit bleibt EIN
 /// Skalarprodukt und EIN Vergleich.
 ///
+/// ## Was „exakt" hier heisst — und was nicht
+///
+/// Die Zusage ist **je Auswerter**: der Prune-Lauf liefert denselben Wert wie
+/// der flache Lauf DESSELBEN Auswerters (Rust gegen Rust, C++ gegen C++). Sie
+/// steht auf dem Budget-Lemma in [`LbPiece::tri`], nicht auf einer Messung —
+/// die Messung (`lb_pruning_is_bit_exact_384`) prüft die 13 Fixturen, das
+/// Lemma deckt den Rest.
+///
+/// **Nicht** behauptet wird Bit-Gleichheit ZWISCHEN den Spiegeln: Rust, C++
+/// und GPU rechnen dieselbe Formel in anderer Operations-Reihenfolge, und
+/// `check_interp` hat dafür ohnehin einen Toleranz-Vertrag (`worst_err` in der
+/// Grössenordnung `10⁻⁶`). Die GPU (`sdfVmInterpreter.ts`) ist ein
+/// **numerischer**, kein bit-genauer Spiegel: WGSL garantiert für Division und
+/// Wurzel keine korrekte Rundung.
+///
+/// **FMA:** der Mesher baut mit `-O3 -march=native`, GCC darf also
+/// kontrahieren. Das Lemma hält: jede benutzte Schranke hat die Form
+/// `≤ k·u·Σ|Terme|`, wobei `k` die Zahl der Rundungen zählt — eine
+/// Kontraktion ENTFERNT Rundungen (`fma(a,b,c)` rundet einmal statt zweimal),
+/// der Fehler wird also kleiner, nie grösser. Dass beide C++-Schleifen
+/// dieselbe kompilierte `tri_dist` aufrufen, macht ihre Werte ohnehin
+/// identisch; der Prune ändert nur, ob sie aufgerufen wird.
+///
+/// ## NaN und Überlauf — Fail-safe, nicht ausgeschlossen
+///
+/// `tri_dist` KANN NaN liefern: bei sehr grossen endlichen Eingaben laufen
+/// `h·h` und `nn` nach `∞`, und `∞/∞` ist NaN. Ausgeschlossen ist das nicht
+/// (die Fernfeld-Kugel macht es nur absurd unwahrscheinlich — sie beschränkt
+/// `|p−a|`, nicht die Kantenlängen). Es ist aber **harmlos**, und zwar in
+/// beide Richtungen:
+///
+/// * Liefert `tri_dist` NaN, ist `d < best` FALSCH — im flachen wie im
+///   geprunten Lauf. Beide lassen `best` unverändert, das Ergebnis bleibt
+///   gleich.
+/// * Ist `h` NaN oder `emax` unendlich, ist `h.abs() >= best + emax` FALSCH.
+///   Der Prune greift dann nicht und fällt auf die volle Auswertung zurück —
+///   die sichere Richtung.
+///
+/// Die frühere §8t-Notiz behauptete, `piece_dist` liefere keine NaN. Das war
+/// falsch; richtig ist das Fail-safe-Verhalten oben.
+///
 /// **Warum der Korrektur-Term trägt und nicht Kosmetik ist.** Wäre `n̂` die
 /// exakte Flächennormale, wären `n̂·(b−a)` und `n̂·(c−a)` null und die Schranke
 /// wäre die nackte Ebenen-Distanz. Sie sind es nicht: `n̂` entsteht aus einem
@@ -362,7 +487,8 @@ pub fn rev_dist(p: [f32; 3], o: [f32; 3], ax: [f32; 3], r0: f32, z0: f32, r1: f3
 pub fn tri_cannot_beat(p: [f32; 3], a: [f32; 3], n: [f32; 3], emax: f32, best: f32) -> bool {
     let h = n[0] * (p[0] - a[0]) + n[1] * (p[1] - a[1]) + n[2] * (p[2] - a[2]);
     // `best = ∞` (erstes Stück) ⇒ `best + emax = ∞` ⇒ nie wahr. `emax = ∞`
-    // (entartetes Dreieck) ebenso.
+    // (Sliver / kollinear) ebenso, denn die Fernfeld-Kugel hält `h` endlich.
+    // NaN in `h` ⇒ falsch ⇒ kein Skip (Fail-safe, s. oben).
     h.abs() >= best + emax
 }
 
@@ -421,10 +547,13 @@ pub fn lb_value(p: [f32; 3], base: f32, blk: &LbBlock) -> f32 {
     best - blk.slack
 }
 
-/// Der FLACHE Lauf ohne §8t-Prune — die Kontroll-Referenz. Jeder Spiegel darf
-/// die Strategie wählen (die GPU behält den flachen Loop, s. §8t), der WERT
-/// muss überall dieser sein; `lb_pruning_is_bit_exact_384` pinnt die Gleichheit
-/// auf einem dichten Gitter aller 13 Fixturen.
+/// Der FLACHE Lauf ohne §8t-Prune — die Kontroll-Referenz.
+///
+/// Jeder Spiegel darf die Strategie wählen (die GPU behält den flachen Loop,
+/// s. §8t); innerhalb EINES Auswerters muss der Wert identisch sein.
+/// `lb_pruning_is_bit_exact_384` pinnt das auf einem dichten Gitter aller 13
+/// Fixturen, das Budget-Lemma in [`LbPiece::tri`] trägt es darüber hinaus.
+/// Bit-Gleichheit ZWISCHEN Rust, C++ und GPU wird nicht behauptet.
 pub fn lb_value_flat(p: [f32; 3], base: f32, blk: &LbBlock) -> f32 {
     if base > blk.delta || norm(sub(p, blk.center)) > blk.skip_r {
         return LB_NONE;

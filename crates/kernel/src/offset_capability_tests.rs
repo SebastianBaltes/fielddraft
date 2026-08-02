@@ -8166,6 +8166,14 @@ fn bvh_visit(
 /// Der Prune ist deshalb nicht „nah genug", sondern **wertgleich**: geprüft
 /// wird `to_bits()`, nicht eine Toleranz, an jedem Gitterpunkt aller 13
 /// Fixturen, an dem der Block lebendig ist.
+///
+/// **Was dieser Pin beweist und was nicht.** Er ist die EMPIRISCHE Hälfte:
+/// er deckt genau diese 13 Fixturen ab. Die allgemeine Aussage steht auf dem
+/// Budget-Lemma in `offset_lb::LbPiece::tri` — und dass ein Pin allein hier
+/// nicht reicht, ist keine Vermutung: die erste §8t-Fassung war auf denselben
+/// 13 Fixturen grün und trotzdem unsound (`lb_old_emax_budget_was_unsound_384`
+/// findet an einer Sliver-Familie Verletzungen bis 0.62 mm). Pin und Lemma
+/// zusammen, nicht der Pin allein.
 #[test]
 fn lb_pruning_is_bit_exact_384() {
     let delta = 2.0f32;
@@ -8266,4 +8274,306 @@ fn lb_pruning_counter_probe_too_tight_emax_384() {
         "die Gegenprobe blieb still: mit einer um 0.05 mm ZU SCHARFEN Schranke muss der \
          Prune messbar falsch werden, sonst prüft der Exaktheits-Pin nichts"
     );
+}
+
+// ══════════════ #384 §8t-Korrektur — das Budget gegen die Kondition ══════════
+//
+// Das externe Mathe-Review hat die Ebenen-Schranke geometrisch bestätigt und
+// das RUNDUNGS-BUDGET verworfen: `emax = res + 64·2⁻²⁴·R` deckt nur Terme, die
+// mit der Reichweite skalieren. `tri_dist` hat aber einen Anteil, der mit den
+// KANTENLÄNGEN wächst, und einen, der mit der KONDITION `κ = E²/|N|` wächst.
+// Die zwei Tests hier sind die Gegenprobe dazu: der erste zeigt, dass das ALTE
+// Budget an einer konstruierbaren Familie REISST, der zweite, dass das neue
+// sie trägt.
+
+/// Das ALTE §8t-Budget (`res + 64·2⁻²⁴·R`) — nur für die Gegenprobe.
+fn emax_old_384(a: [f32; 3], b: [f32; 3], c: [f32; 3], center: [f32; 3], skip_r: f32) -> f32 {
+    let f = |v: [f32; 3]| [v[0] as f64, v[1] as f64, v[2] as f64];
+    let (af, bf, cf) = (f(a), f(b), f(c));
+    let s = |u: [f64; 3], v: [f64; 3]| [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+    let d = |u: [f64; 3], v: [f64; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+    let (ba, ca) = (s(bf, af), s(cf, af));
+    let nx = [
+        ba[1] * ca[2] - ba[2] * ca[1],
+        ba[2] * ca[0] - ba[0] * ca[2],
+        ba[0] * ca[1] - ba[1] * ca[0],
+    ];
+    let ln = d(nx, nx).sqrt();
+    if !(ln > 0.0) {
+        return f32::INFINITY;
+    }
+    let n32 = [(nx[0] / ln) as f32, (nx[1] / ln) as f32, (nx[2] / ln) as f32];
+    let nh = f(n32);
+    let res = d(nh, ba).abs().max(d(nh, ca).abs());
+    let reach = skip_r as f64 + d(s(af, f(center)), s(af, f(center))).sqrt();
+    (res + 64.0 * (-24f64).exp2() * reach) as f32
+}
+
+/// Die Sliver-Familie: fast kollineare Dreiecke mit grosser Kantenlänge, bei
+/// denen das f32-Kreuzprodukt in `tri_dist` Auslöschung erleidet — `κ` gross.
+/// Der Punkt wird über die Fläche gelegt, damit der Ebenen-Zweig greift.
+fn sliver_family_384() -> Vec<([f32; 3], [f32; 3], [f32; 3], Vec<[f32; 3]>)> {
+    let mut out = Vec::new();
+    let mut rng = 0x384_0084u64;
+    let mut nx = || {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (rng >> 33) as f64 / (1u64 << 31) as f64 - 0.5
+    };
+    for k in 0..60 {
+        // Zwei fast parallele Kanten von grosser Länge, schief im Raum —
+        // genau die Lage, in der `cross` in f32 auslöscht.
+        let len = 60.0 + 40.0 * k as f64;
+        let dir: [f64; 3] = {
+            let v = [0.6 + nx() * 0.2, 0.5 + nx() * 0.2, 0.62 + nx() * 0.2];
+            let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            [v[0] / n, v[1] / n, v[2] / n]
+        };
+        // Senkrechte Richtung
+        let perp: [f64; 3] = {
+            let t: [f64; 3] = if dir[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+            let v = [
+                dir[1] * t[2] - dir[2] * t[1],
+                dir[2] * t[0] - dir[0] * t[2],
+                dir[0] * t[1] - dir[1] * t[0],
+            ];
+            let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            [v[0] / n, v[1] / n, v[2] / n]
+        };
+        let thin: f64 = 10f64.powf(-2.0 - 2.0 * (k % 7) as f64 / 6.0);
+        let a: [f64; 3] = [nx() * 20.0, nx() * 20.0, nx() * 20.0];
+        let b: [f64; 3] = [
+            a[0] + dir[0] * len,
+            a[1] + dir[1] * len,
+            a[2] + dir[2] * len,
+        ];
+        let c: [f64; 3] = [
+            a[0] + dir[0] * len * 0.5 + perp[0] * thin,
+            a[1] + dir[1] * len * 0.5 + perp[1] * thin,
+            a[2] + dir[2] * len * 0.5 + perp[2] * thin,
+        ];
+        let v32 = |q: [f64; 3]| [q[0] as f32, q[1] as f32, q[2] as f32];
+        // Punkte über der Fläche, in der Mitte der langen Kante (dort schlägt
+        // der Orientierungstest auf „innen").
+        let mut pts = Vec::new();
+        for m in 0..24 {
+            let h = 0.05 + 0.6 * m as f64;
+            let t = 0.2 + 0.6 * (m % 5) as f64 / 5.0;
+            pts.push(v32([
+                a[0] + dir[0] * len * t + perp[0] * thin * 0.4 + (-perp[0]) * 0.0 + dir[0] * 0.0
+                    + h * (dir[1] * perp[2] - dir[2] * perp[1]),
+                a[1] + dir[1] * len * t + perp[1] * thin * 0.4
+                    + h * (dir[2] * perp[0] - dir[0] * perp[2]),
+                a[2] + dir[2] * len * t + perp[2] * thin * 0.4
+                    + h * (dir[0] * perp[1] - dir[1] * perp[0]),
+            ]));
+        }
+        out.push((v32(a), v32(b), v32(c), pts));
+    }
+    out
+}
+
+/// Wertet die Prune-Bedingung mit einem GEGEBENEN Budget aus und meldet, ob
+/// die Soundness verletzt ist: `|H| ≥ best + emax` behauptet
+/// `tri_dist ≥ best` — verletzt ist es, wenn `tri_dist < best`.
+///
+/// Geprüft wird die schärfste Form (`best` = die Behauptung selbst,
+/// `best := |H| − emax`): genau dann darf `tri_dist` nicht darunter liegen.
+fn budget_violation_384(
+    p: [f32; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3], n: [f32; 3], emax: f32,
+) -> Option<f32> {
+    if !emax.is_finite() {
+        return None;
+    }
+    let h = n[0] * (p[0] - a[0]) + n[1] * (p[1] - a[1]) + n[2] * (p[2] - a[2]);
+    let claim = h.abs() - emax;
+    if !(claim > 0.0) {
+        return None;
+    }
+    let d = crate::offset_lb::tri_dist(p, a, b, c);
+    if d < claim {
+        Some(claim - d)
+    } else {
+        None
+    }
+}
+
+/// **§8t-Korrektur, Gegenprobe 1: das ALTE Budget war unhaltbar.**
+///
+/// Nicht „vielleicht knapp", sondern konstruierbar falsch: an fast kollinearen
+/// Dreiecken mit grosser Kantenlänge löscht das f32-Kreuzprodukt in `tri_dist`
+/// aus, der Ebenen-Zweig liefert eine Distanz, die um ein Vielfaches des alten
+/// Budgets unter der Behauptung liegt — der Prune hätte ein Stück verworfen,
+/// das das `min` sehr wohl gesenkt hätte. `L` würde die Distanz ÜBERschätzen:
+/// Phantom-Material.
+///
+/// Der Test ist damit der Beleg, dass die §8t-Korrektur tragend ist und nicht
+/// Kosmetik.
+#[test]
+fn lb_old_emax_budget_was_unsound_384() {
+    let (center, skip_r) = ([0.0f32; 3], 400.0f32);
+    let (mut hits, mut worst) = (0usize, 0.0f32);
+    for (a, b, c, pts) in sliver_family_384() {
+        let f = |v: [f32; 3]| [v[0] as f64, v[1] as f64, v[2] as f64];
+        let s = |u: [f64; 3], v: [f64; 3]| [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+        let (ba, ca) = (s(f(b), f(a)), s(f(c), f(a)));
+        let nx = [
+            ba[1] * ca[2] - ba[2] * ca[1],
+            ba[2] * ca[0] - ba[0] * ca[2],
+            ba[0] * ca[1] - ba[1] * ca[0],
+        ];
+        let ln = (nx[0] * nx[0] + nx[1] * nx[1] + nx[2] * nx[2]).sqrt();
+        if !(ln > 0.0) {
+            continue;
+        }
+        let n32 = [(nx[0] / ln) as f32, (nx[1] / ln) as f32, (nx[2] / ln) as f32];
+        let eold = emax_old_384(a, b, c, center, skip_r);
+        for p in &pts {
+            if let Some(v) = budget_violation_384(*p, a, b, c, n32, eold) {
+                hits += 1;
+                worst = worst.max(v);
+            }
+        }
+    }
+    assert!(
+        hits > 0,
+        "die Gegenprobe blieb still — dann wäre die §8t-Korrektur unbegründet. \
+         Das alte Budget MUSS an der Sliver-Familie reissen."
+    );
+    println!("§8t alt: {hits} Soundness-Verletzungen, schlimmste {worst:.6} mm");
+    assert!(
+        worst > 1e-4,
+        "nur {worst:.3e} mm Verletzung — das wäre im Rauschen, der Test träfe \
+         nicht den beschriebenen Struktur-Fehler"
+    );
+}
+
+/// **§8t-Korrektur, Gegenprobe 2: das NEUE Budget trägt dieselbe Familie.**
+///
+/// Entweder das Budget deckt den Fehler, oder `κ` ist so gross, dass
+/// [`crate::offset_lb::LbPiece::tri`] den Prune für dieses Stück ganz abschaltet
+/// (`emax = ∞`). Beides ist sound; verboten ist nur ein endliches Budget, das
+/// zu klein ist.
+#[test]
+fn lb_new_emax_budget_covers_the_sliver_family_384() {
+    let (center, skip_r) = ([0.0f32; 3], 400.0f32);
+    let (mut checked, mut off, mut live) = (0usize, 0usize, 0usize);
+    for (a, b, c, pts) in sliver_family_384() {
+        let crate::offset_lb::LbPiece::Tri { n, emax, .. } =
+            crate::offset_lb::LbPiece::tri(a, b, c, center, skip_r)
+        else {
+            unreachable!()
+        };
+        if !emax.is_finite() {
+            off += 1;
+        } else {
+            live += 1;
+        }
+        for p in &pts {
+            checked += 1;
+            assert!(
+                budget_violation_384(*p, a, b, c, n, emax).is_none(),
+                "neues Budget verletzt: Dreieck {a:?}/{b:?}/{c:?}, Punkt {p:?}, emax {emax:e}"
+            );
+        }
+    }
+    println!("§8t neu: {checked} Punkte, {off} Stücke mit Prune AUS, {live} mit aktivem Budget");
+    assert!(checked > 1000, "nur {checked} Punkte geprüft");
+}
+
+/// **§8t-Korrektur: das Budget hält auch an gut konditionierten Dreiecken.**
+///
+/// Die Sliver-Familie zeigt die Abschalt-Richtung; dieser Test zeigt die
+/// andere: an gesunden Dreiecken (`κ ≈ 1`) bleibt `emax` endlich UND korrekt,
+/// sonst hätte die Korrektur den Prune stillschweigend überall abgeschaltet
+/// und der Perf-Gewinn wäre eine Illusion.
+#[test]
+fn lb_new_emax_stays_sharp_on_healthy_triangles_384() {
+    let (center, skip_r) = ([0.0f32; 3], 120.0f32);
+    let mut rng = 0xA5A5_1234u64;
+    let mut nx = || {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+        ((rng >> 33) as f64 / (1u64 << 31) as f64 - 0.5) as f32
+    };
+    let (mut live, mut checked) = (0usize, 0usize);
+    for _ in 0..400 {
+        let a = [nx() * 60.0, nx() * 60.0, nx() * 60.0];
+        let b = [a[0] + nx() * 40.0, a[1] + nx() * 40.0, a[2] + nx() * 40.0];
+        let c = [a[0] + nx() * 40.0, a[1] + nx() * 40.0, a[2] + nx() * 40.0];
+        let crate::offset_lb::LbPiece::Tri { n, emax, .. } =
+            crate::offset_lb::LbPiece::tri(a, b, c, center, skip_r)
+        else {
+            unreachable!()
+        };
+        if emax.is_finite() {
+            live += 1;
+            // Ein gesundes Dreieck darf kein millimetergrosses Budget haben —
+            // sonst prunet nichts mehr.
+            assert!(
+                emax < 0.05,
+                "gesundes Dreieck mit emax = {emax:e} mm — das Budget ist zu stumpf"
+            );
+        }
+        for _ in 0..20 {
+            let p = [nx() * 100.0, nx() * 100.0, nx() * 100.0];
+            checked += 1;
+            assert!(
+                budget_violation_384(p, a, b, c, n, emax).is_none(),
+                "Budget verletzt an gesundem Dreieck {a:?}/{b:?}/{c:?}, Punkt {p:?}"
+            );
+        }
+    }
+    assert!(live > 300, "nur {live} von 400 gesunden Dreiecken haben ein endliches Budget");
+    assert!(checked > 5000, "nur {checked} Punkte geprüft");
+}
+
+/// §8t-Korrektur-Diagnose: Verteilung von `emax` und der Kondition `κ` je
+/// Fixture — die Frage, warum die Budget-Verschärfung am 296-Stück-Kamm
+/// Schärfe kostet.
+#[test]
+#[ignore]
+fn probe_384_lb_emax_distribution() {
+    let delta = 2.0f32;
+    println!(
+        "\n{:<16} {:>7} {:>6} {:>10} {:>10} {:>10} {:>10}",
+        "Fixture", "Stücke", "aus", "emax med", "emax max", "κ med", "κ max"
+    );
+    for (name, field, ..) in p8t_fixtures(delta) {
+        let mut bs = Vec::new();
+        collect_lb(&field, &mut bs);
+        let Some(b) = bs.first() else { continue };
+        let (mut es, mut ks, mut off) = (Vec::new(), Vec::new(), 0usize);
+        for pc in &b.pieces {
+            if let crate::offset_lb::LbPiece::Tri { a, b: bb, c, emax, .. } = *pc {
+                if emax.is_finite() {
+                    es.push(emax);
+                } else {
+                    off += 1;
+                }
+                let f = |v: [f32; 3]| [v[0] as f64, v[1] as f64, v[2] as f64];
+                let (af, bf, cf) = (f(a), f(bb), f(c));
+                let s = |u: [f64; 3], v: [f64; 3]| [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+                let (ba, ca) = (s(bf, af), s(cf, af));
+                let nx = [
+                    ba[1] * ca[2] - ba[2] * ca[1],
+                    ba[2] * ca[0] - ba[0] * ca[2],
+                    ba[0] * ca[1] - ba[1] * ca[0],
+                ];
+                let ln = (nx[0] * nx[0] + nx[1] * nx[1] + nx[2] * nx[2]).sqrt();
+                let l = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                let e = l(ba).max(l(ca)).max(l(s(cf, bf)));
+                ks.push(if ln > 0.0 { e * e / ln } else { f64::INFINITY });
+            }
+        }
+        es.sort_by(|a, c| a.partial_cmp(c).unwrap());
+        ks.sort_by(|a, c| a.partial_cmp(c).unwrap());
+        if es.is_empty() {
+            println!("{name:<16} {:>7} {off:>6}  (alle aus)", b.pieces.len());
+            continue;
+        }
+        println!(
+            "{name:<16} {:>7} {off:>6} {:>10.2e} {:>10.2e} {:>10.2} {:>10.2}",
+            b.pieces.len(), es[es.len() / 2], es[es.len() - 1],
+            ks[ks.len() / 2], ks[ks.len() - 1]
+        );
+    }
 }

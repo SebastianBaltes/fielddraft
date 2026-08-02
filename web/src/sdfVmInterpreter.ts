@@ -825,10 +825,15 @@ export function buildVmSdfEvalFn(
         // beweisbar nicht mehr senken kann. Die GPU behält bewusst den FLACHEN
         // Loop: ein datenabhängiger Zweig in einer TSL-`Loop` divergiert über
         // die Lanes, und der übersprungene Zweig kostet auf SIMD trotzdem
-        // Zeit — der Prune könnte hier nichts gewinnen. Der WERT ist in beiden
-        // Strategien bit-identisch (§8t: die Schranke ändert das `min` nie),
-        // nur der Weg unterscheidet sich. Die drei/vier Zusatzworte werden
-        // hier also gelesen-und-übersprungen.
+        // Zeit — der Prune könnte hier nichts gewinnen. Der Prune ändert das
+        // Ergebnis nicht, das Weglassen ist also folgenlos; die vier
+        // Zusatzworte werden hier gelesen-und-übersprungen.
+        //
+        // Dieser Spiegel ist ein NUMERISCHER, kein bit-genauer: WGSL sichert
+        // für Division und Wurzel keine korrekte Rundung zu. Die SEMANTIK ist
+        // seit der §8t-Korrektur angeglichen (quadrierte Segment-Distanzen,
+        // `t = 0` im entarteten Zweig) — vorher wich der Degenerat-Pfad
+        // strukturell ab, nicht nur um ULPs.
         const nPc = floatToIntFn({ v: rd() }).toVar();
         const lbDelta = rd().toVar();
         const lbSlack = rd().toVar();
@@ -852,14 +857,23 @@ export function buildVmSdfEvalFn(
             const ba = b.sub(a).toVar(), cb = c.sub(b).toVar(), ac = a.sub(c).toVar();
             const nor = ba.cross(ac).toVar();
             const nn = nor.dot(nor).toVar();
-            const segD = (u: any, v: any) => {
+            // §8t-Korrektur: QUADRIERTE Segment-Distanz, `t = 0` im entarteten
+            // Fall — beides jetzt wie die CPU-Referenz `offset_lb::seg_dist2`.
+            // Vorher rechnete der Spiegel drei Längen und nahm deren Minimum
+            // (die CPU nimmt das Minimum der Quadrate und zieht EINE Wurzel)
+            // und ersetzte den `ll ≤ 1e−20`-Zweig durch `max(ll, 1e−20)`, was
+            // ein anderes `t` liefert. Das `div` behält `max()` nur als
+            // NaN-Schutz — der `select` verwirft den Wert dort ohnehin.
+            const segD2 = (u: any, v: any) => {
               const e = v.sub(u);
               const w = pp.sub(u);
-              const ll = max(e.dot(e), float(1e-20));
-              const t = w.dot(e).div(ll).clamp(0, 1);
-              return w.sub(e.mul(t)).length();
+              const ll = e.dot(e).toVar();
+              const t = ll.greaterThan(1e-20)
+                .select(w.dot(e).div(max(ll, float(1e-20))).clamp(0, 1), float(0));
+              const q = w.sub(e.mul(t));
+              return q.dot(q);
             };
-            const edge = min(min(segD(a, b), segD(b, c)), segD(c, a)).toVar();
+            const edge = min(min(segD2(a, b), segD2(b, c)), segD2(c, a)).sqrt().toVar();
             // Exakt wie die CPU-Referenz: `≥ 0` ⇒ +1, sonst −1 (KEIN sign(),
             // das bei 0 eine Null liefert und die Summe unter 2 drückt).
             const sg = (e: any, w: any) =>

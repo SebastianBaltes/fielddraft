@@ -441,6 +441,15 @@ für Shell.
   Fixturen mit grossem Block; **Feldwert bit-identisch** (Golden: alle
   17920 Probe-Punkte unverändert).
 
+  **Korrektur v0.56.19 (externes Mathe-Review):** die Schranke stimmte, das
+  Rundungs-Budget nicht — es skalierte nur mit der Reichweite, nicht mit
+  Kantenlänge und Kondition der Stücke. An fast kollinearen Dreiecken
+  konstruierbar bis **0.62 mm** unsound (Zusage: 0.01 mm), auf allen 13
+  Fixturen aber unauffällig — ein Pin auf Fixturen ersetzt kein Lemma. Budget
+  jetzt `u·max(R,E)·(160 + 64·E²/|N|)`, schlecht konditionierte Stücke schalten
+  den Prune ab. Kosten: der 296-Stück-Kamm hat 54 entartete Fächer-Dreiecke und
+  gibt Faktor 1.83× → 1.56× ab; alle anderen Fixturen unverändert.
+
   Wichtiger Nebenbefund für künftige Anläufe: **räumliches Pruning über
   Hüllkugeln/BVH funktioniert hier NICHT** — simuliert besucht eine
   Median-Split-BVH auf 10 von 13 Fixturen 100 % der Stücke. Die Randstücke

@@ -1169,6 +1169,10 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         if (d > lb_delta || rc > lb_skip) {
           stop_lb = -1.0e30f;
         } else {
+          // §8t: Startwert FLT_MAX statt Rust-INFINITY. Beide sind sicher —
+          // `best + emax` ist dann so gross, dass der Prune am ersten Stueck
+          // nie feuert —, aber sie sind nicht bit-identisch zueinander; die
+          // §8t-Zusage gilt je Auswerter (C++-Prune == C++-flach).
           float best = FD_FLT_MAX;
           for (int k = 0; k < n; ++k) {
             const float* a = opcodes + lb_base + k * kLb;

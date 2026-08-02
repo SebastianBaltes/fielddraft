@@ -4463,6 +4463,144 @@ keine der 13 Fixturen verliert in (A), (B) oder (C).
 * **Keine Verkleinerung der Stücke.** Kleinere Stücke würden die Hüllkugeln
   brauchbar machen, kosten aber mehr Stücke — nicht gemessen, nicht gebaut.
 
+### §8t-Korrektur: die Schranke stimmte, das Budget nicht (v0.56.19)
+
+Das externe Mathe-Review hat die Ebenen-Schranke geometrisch bestätigt und die
+Bit-Exaktheits-Zusage als **unbewiesen** und das ulp-Budget als **strukturell
+unhaltbar** zurückgewiesen. Beides zu Recht; hier steht, was daran falsch war.
+
+**Der Strukturfehler.** Das erste Budget war `emax = res + 64·2⁻²⁴·R`. Es deckt
+nur Terme, die mit der REICHWEITE `R` skalieren. `tri_dist` hat aber zwei
+weitere Fehlerquellen:
+
+1. der **Kanten-Zweig** rechnet mit `p − b`, und `b` darf beliebig weit von `a`
+   liegen — der Fehler wächst mit den KANTENLÄNGEN `E`;
+2. der **Ebenen-Zweig** normiert ein f32-Kreuzprodukt, dessen Richtungsfehler
+   mit der KONDITION `κ = E²/|N|` wächst (Auslöschung bei fast kollinearen
+   Ecken).
+
+Eine Format-Invariante `E = O(R)` gibt es nicht — §8t misst selbst
+Stück-Hüllradien bis 74.5 mm gegen Abfrage-Distanzen von 2–5 mm. Der
+`res`-Term konnte das nicht auffangen: bei exakter Normale ist er schlicht
+null.
+
+**Das war nicht theoretisch.** `lb_old_emax_budget_was_unsound_384`
+konstruiert die Familie (fast kollineare Dreiecke grosser Kantenlänge, Punkt
+über der Fläche) und findet **56 Soundness-Verletzungen, die schlimmste
+0.624 mm** — das Sechzigfache der 0.010-mm-Zusage. Der Prune hätte dort ein
+Stück verworfen, das das `min` gesenkt hätte: `L` zu gross, Phantom-Material.
+Dass der Bit-Pin auf allen 13 Fixturen trotzdem grün war, ist genau die
+Lücke, die das Review benennt — **ein Pin auf Fixturen ersetzt kein Lemma.**
+
+**Das fehlende Lemma.** Die erste Fassung ankerte implizit auf `dist(p,T)`.
+Dort IST ein Zweigwechsel tödlich: kippt der Orientierungstest fälschlich auf
+„innen", liefert `tri_dist` die Ebenen-Distanz, und die darf `dist(p,T)`
+unterschreiten. Der richtige Anker ist die **Ebenen-Distanz `Δ = dist(p,Π)`
+selbst**, denn beide Zweige liegen über ihr:
+
+| Zweig | untere Schranke des Rückgabewerts |
+|---|---|
+| Ebene (`inside ≥ 2`) | `Δ − (16κ + 8)·u·R` — Fehlerfortpflanzung über `N_c = N + δ`, `\|δ\| ≤ 8u·E²` |
+| Kante | `min_k dist(p,Kante_k) ≥ dist(p,T) ≥ Δ`, minus `24·u·D` Rundung von `seg_dist2` |
+
+Damit ist der **Zweigwechsel harmlos**: der Ebenen-Zweig ist der KLEINERE der
+beiden Anker, und genau er ist abgeschätzt. Die Kette muss den
+Orientierungstest gar nicht als korrekt voraussetzen — sie umgeht ihn. Dazu die
+Brücke `|H| ≤ Δ + 6·u·R` vom gespeicherten `n̂` (inkl. der gefährlichen
+Richtung `‖n̂‖ > 1`, die in derselben Komponenten-Schranke steckt). Summiert:
+
+```text
+err ≤ u·D·(38 + 16·κ)      u = 2⁻²⁴,  D = max(R, E),  κ = E²/|N|
+```
+
+Angesetzt ist `u·D·(160 + 64·κ)` — gut das Vierfache, Reserve für die
+grosszügig statt scharf gezählten Konstanten.
+
+**Die drei kleineren Löcher**, alle geschlossen: `emax` wird jetzt **aufwärts**
+nach f32 gerundet (`as f32` rundet zur nächsten Zahl und durfte das Budget
+unterschreiten); `R` trägt `16 u` Reserve, weil die Kugel-Prüfung selbst in f32
+läuft und Punkte knapp ausserhalb durchlässt; Über-/Unterlauf ist benannt statt
+ausgeschlossen (s. u.).
+
+**Ist das Budget so gross, dass der Prune nie feuern könnte (`emax ≥ D`), wird
+`emax = ∞`** — Prune aus, trivial sound. Das ist die Konditions-Schranke, die
+das Review verlangt hat, und sie greift real: am Rippen-Kamm 4×1.5/0.8 sind
+**54 der 296 Stücke exakt kollinear** (`κ = ∞`) — entartete Fächer-Dreiecke aus
+der Ring-Triangulierung.
+
+### Zurückgenommene Behauptungen
+
+| erste §8t-Fassung | richtig |
+|---|---|
+| „der Feldwert ist überall bit-identisch" | **je Auswerter**: Rust-Prune ≡ Rust-flach, C++-Prune ≡ C++-flach. Zwischen Rust, C++ und GPU wird KEINE Bit-Gleichheit behauptet — `check_interp` hat ohnehin einen Toleranz-Vertrag (`worst_err ≈ 2·10⁻⁶`). |
+| „`piece_dist` liefert keine NaN" | **falsch.** Bei sehr grossen endlichen Eingaben laufen `h·h` und `nn` nach `∞`, `∞/∞` ist NaN. Harmlos, aber als **Fail-safe** dokumentiert: NaN ⇒ `d < best` falsch in BEIDEN Läufen ⇒ gleiches Ergebnis; NaN in `h` ⇒ kein Skip. |
+| „die GPU spiegelt den Wert" | **numerischer** Spiegel, nicht bit-genau: WGSL sichert für Division und Wurzel keine korrekte Rundung zu. Die SEMANTIK ist jetzt angeglichen — vorher wich der Degenerat-Pfad strukturell ab (`max(ll,1e−20)` statt `t = 0`) und der Spiegel nahm das Minimum dreier LÄNGEN statt der Quadrate. |
+| (unerwähnt) | **FMA:** der Mesher baut mit `-O3 -march=native`, GCC darf kontrahieren. Das Lemma hält: jede Schranke hat die Form `≤ k·u·Σ\|Terme\|` mit `k` = Zahl der Rundungen, und eine Kontraktion ENTFERNT eine Rundung. Beide C++-Schleifen rufen ohnehin dieselbe kompilierte `tri_dist`. |
+| (unerwähnt) | **`best`-Startwert:** C++ `FLT_MAX`, Rust `∞`. Beide sicher (der Prune feuert am ersten Stück nie), nicht bit-identisch zueinander. |
+
+### Kosten nach der Verschärfung
+
+Gemessen wie oben. Die alten §8t-Zahlen stehen in Klammern als Historie.
+
+| Fixture | `L` flach | `L` mit Prune (A) | Faktor (A) | Feld (C) |
+|---|---|---|---|---|
+| Stufen-Nabe | 143 | 164 | 0.87× (war 1.08×) | 1.00× |
+| Ecken-Schale `t/δ = 2` | 1052 | 683 | 1.54× (war 1.54×) | 1.00× |
+| Ecken-Schale `t/δ = 6` | 1052 | 684 | 1.54× | **1.34×** (war 1.34×) |
+| notch 90° / 60° | 372 / 380 | 210 / 209 | 1.77× / 1.82× | 1.40× / 1.46× |
+| **Rippen-Kamm 4×1.5/0.8** | 4370 | **3452** | **1.27×** (war 2.28×) | **1.56×** (war 1.83×) |
+| Rippen-Kamm 4×2.0/1.0 | 2108 | 978 | 2.15× (war 2.91×) | **1.68×** (war 1.69×) |
+
+Über die lebendigen Gitterpunkte (Tabelle B) bleibt der Kamm 4×1.5/0.8 bei
+**2.15×** (war 2.83×), der Kamm 4×2.0/1.0 bei 2.74×, die Schalen bei 1.74–1.96×.
+
+**Der Kamm 4×1.5/0.8 verliert — und der Grund ist genau die Korrektur:** seine
+54 kollinearen Fächer-Dreiecke bekommen `emax = ∞`, die Besuchsrate steigt von
+28.7 % auf 38.9 %. Das ist kein Bug, das ist die Konditions-Schranke bei der
+Arbeit. Der Gewinn bleibt in jeder der drei Tabellen positiv; die Nabe (15
+Stücke, `κ` median 13.4) fällt am Ein-Punkt-Mass auf 0.87×, am Feld auf 1.00×.
+
+### Prüfungen der Korrektur
+
+* **Golden `PT`-Zeilen byte-identisch** zu v0.56.18 *und* zum HEAD-Golden
+  v0.56.16 — alle 17920 Punkte. Das Feld hat sich seit §8o nicht bewegt.
+* **Nur `emax`-Worte im Tape geändert**, nachgewiesen: genau **100** abweichende
+  Worte, das ist die Zahl der `Tri`-Stücke der beiden Szenen mit `L`-Block
+  (28 + 72), Abstand exakt **14** (= `LB_STRIDE`, also je genau ein Wort je
+  Record), jeder neue Wert `≥` dem alten (das Budget wächst, nie umgekehrt),
+  `NOPS` unverändert. `n̂` bleibt beim Abschalten stehen — es zu nullen hätte
+  drei weitere Worte bewegt, die ohnehin nie gelesen werden.
+* `check_interp` gegen das neue Golden: **35 Szenen / 17920 / 0 failures**.
+* Tests: Fast-Tier **1474** (Baseline 1471, drei neue Pins), Web **2082**,
+  `cargo test --workspace` **1579** (Baseline 1576), Fuzz **5/5**.
+
+### Neue Pins der Korrektur
+
+* `lb_old_emax_budget_was_unsound_384` — die Gegenprobe, die das alte Budget
+  reissen lässt (56 Verletzungen, schlimmste 0.624 mm). Ohne sie wäre die
+  Korrektur unbegründet.
+* `lb_new_emax_budget_covers_the_sliver_family_384` — dieselbe Familie unter
+  dem neuen Budget: keine Verletzung, 44 Stücke mit Prune aus, 16 mit aktivem
+  Budget.
+* `lb_new_emax_stays_sharp_on_healthy_triangles_384` — die Gegenrichtung: an
+  400 zufälligen gesunden Dreiecken bleibt `emax < 0.05 mm` und endlich, sonst
+  hätte die Korrektur den Prune stillschweigend überall abgeschaltet und der
+  Perf-Gewinn wäre eine Illusion.
+* Sonde `probe_384_lb_emax_distribution` — `emax`/`κ`-Verteilung je Fixture.
+
+### Was die Korrektur NICHT gebaut hat
+
+* **Die 54 entarteten Fächer-Dreiecke bleiben im Block.** Sie aus
+  `emit_ring` wegzulassen wäre vermutlich sicher (bei konvexem Ring ist ein
+  entartetes Fächer-Dreieck in der Vereinigung der übrigen enthalten) und würde
+  dem Kamm den verlorenen Faktor zurückgeben — aber es ist eine
+  Synthese-Änderung mit eigenem Risiko, sie bewegt mehr als `emax`-Worte, und
+  sie ist NICHT gemessen. Kandidat für ein eigenes Paket.
+* **Kein gerichtetes Runden / Intervall-Arithmetik.** Das Review nannte es als
+  Alternative. Das Budget-Lemma ist der billigere Weg (eine Konstante je Stück
+  statt zweier Auswertungen), solange die Konditions-Schranke die schlecht
+  konditionierten Fälle abschaltet — und das tut sie nachweislich.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
