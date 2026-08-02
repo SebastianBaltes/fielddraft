@@ -6122,3 +6122,905 @@ fn witness_and_runtime_share_the_same_lower_bound_384() {
         "nur {checked} Stopps mit L-Block geprüft — der Pin misst nichts"
     );
 }
+
+// ══════════════ #384 §8r — der Unter-Claim-Zeuge ══════════════
+//
+// **Die Vorzeichen, hergeleitet statt vermutet.** Die Harness misst die
+// NULLMENGE (s. [`two_sided_scan`]):
+//
+//     Unter-Claim bei x  ⟺  f(x) ≥ 0  ∧  dist(x,∁Ω) − δ > tol
+//     Über-Claim  bei x  ⟺  f(x) < 0  ∧  δ − dist(x,∁Ω) > tol
+//
+// `L` ist eine UNTERE Schranke von `dist(x,∁Ω)` (§8o). Damit gilt:
+//
+// * `L ≥ δ` beweist „x liegt tief genug" — das stützt die ÜBER-Seite (und
+//   genau das ist der §8p-Satz, nur strukturell statt punktweise).
+// * Für die ABWESENHEIT eines Unter-Claims braucht man das Gegenteil, eine
+//   OBERE Schranke `U ≥ dist(x,∁Ω)`: nur sie kann `dist ≤ δ + tol` belegen.
+//   **`L` kann das nicht — in keiner Umformung.**
+// * Was `L` dagegen kann, ist die ANWESENHEIT beweisen: `f(x) ≥ 0 ∧
+//   L(x) > δ + tol` ⇒ `dist ≥ L > δ + tol` ⇒ der Punkt MUSS Material sein,
+//   das Feld behauptet Luft. Das ist ein Zeuge im Wortsinn — seine Aussage
+//   ist ein Beweis, sein Schweigen keiner.
+//
+// Die obere Schranke liefert der **Fuss-Zeuge**: `lb_foot` gibt den Fusspunkt
+// `q*` des `min`-gewinnenden Randstücks; um `CERT_PUSH` von `x` weg geschoben
+// und im naiven Vereinigungsfeld als AUSSEN nachgewiesen (`d₀(q_out) > δ`, der
+// SELBE Innen-Indikator, den `lb_value` benutzt), ist `q_out ∈ ∁Ω` und damit
+// `U = |x − q_out| ≥ dist(x,∁Ω)`. Schlägt der Nachweis fehl, ist das genau der
+// Fall „das Stück ist von einem anderen Member verschluckt" — dort ist `L`
+// stumpf, und es gibt kein Zertifikat.
+
+/// Toleranz-Schwelle der Nullmengen-Messung — identisch zu [`two_sided_scan`].
+const CERT_TOL: f64 = 1e-3;
+/// Ausschub des Fuss-Zeugen aus `∂Ω` heraus (mm). Er geht 1:1 in die Breite
+/// des unentschiedenen Bandes ein und muss deutlich unter [`CERT_TOL`] bleiben.
+const CERT_PUSH: f64 = 2e-4;
+/// Mindestwert des naiven Vereinigungsfeldes am ausgeschobenen Punkt, damit er
+/// BEWEISBAR ausserhalb `Ω` liegt. Das f32-Rauschen der Auswertung liegt eine
+/// Zehnerpotenz darunter; ein zu kleiner Wert kostet nur Abdeckung, ein zu
+/// grosser wäre der eine tödliche Fehler.
+const CERT_MARGIN: f32 = 5e-5;
+
+/// Das Unter-Claim-Zertifikat an EINEM Punkt.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum UnderCert {
+    /// Das Feld behauptet Material — fehlendes Material ist per Definition aus.
+    FieldSolid,
+    /// `d₀ > δ` ⇒ `min_k f_k > 0` ⇒ `x ∉ Ω` ⇒ `dist(x,∁Ω) = 0`.
+    OutsideOmega,
+    /// Fuss-Zeuge auf dem `min`-Stück: `U ≤ δ + tol`, der Punkt gehört
+    /// nachweislich nicht in die Erosion.
+    Foot,
+    /// Der Aussen-Punkt kam aus dem Newton-Marsch ([`march_outside`]).
+    March,
+    /// `L > δ + tol` bei stehendem Feld — BEWIESENER Unter-Claim.
+    Proven,
+    /// `L` neutral: kein Block, oder ausserhalb der Fernfeld-Kugel.
+    NoLb,
+    /// Der Fusspunkt liegt NICHT nachweisbar in `∁Ω` (Stück verschluckt) —
+    /// dort ist `L` stumpf.
+    FootSwallowed,
+    /// `L ≤ δ + tol < U`: das Band der Breite `slack + CERT_PUSH` um
+    /// `dist = δ + tol`.
+    Band,
+}
+
+/// Der duale Stopp eines Fixture-Baums: der `Offset`-Knoten (er liefert den
+/// naiven Stoppwert `d₀`) und der `L`-Block darüber.
+fn stop_with_lb(field: &BoundedCsg) -> (&BoundedCsg, &crate::offset_lb::LbBlock) {
+    let mut stops = Vec::new();
+    stop_nodes(field, &mut stops);
+    for st in stops {
+        if let BoundedCsg::ArcChannel { inner, lb: Some(b), .. } = st {
+            return (inner.as_ref(), b);
+        }
+    }
+    panic!("Fixture ohne L-Block — das Zertifikat hat dort nichts zu messen");
+}
+
+/// **Rigoroser Aussen-Zeuge per gedämpftem Newton-Marsch.** Gesucht wird ein
+/// Punkt `y` mit `f_inner(y) > CERT_MARGIN` — der liegt BEWEISBAR in `∁Ω`
+/// (Vorzeichen-Invariante jeder Leaf-SDF), also ist `|x − y|` eine obere
+/// Schranke von `dist(x,∁Ω)`. Anders als [`crate::offset_channel`]s
+/// `boundary_witness` wird hier NICHT `|f(y)|` aufaddiert: das wäre nur für
+/// `f(y) ≥ 0` gültig, und der Marsch endet dort sonst knapp INNEN.
+///
+/// Der Marsch ist eine reine Schärfe-Frage — jeder gefundene Punkt ist gültig,
+/// ein nicht gefundener kostet nur Abdeckung.
+fn march_outside(stop: &BoundedCsg, delta: f32, start: [f64; 3], reach: f64) -> Option<[f64; 3]> {
+    let h = 1e-3f32;
+    let mut y = start;
+    for _ in 0..24 {
+        let yf = [y[0] as f32, y[1] as f32, y[2] as f32];
+        let v = stop.sdf(yf, EvalMode::Visual) - delta;
+        if !v.is_finite() {
+            return None;
+        }
+        if v > CERT_MARGIN {
+            return Some(y);
+        }
+        let g = [
+            stop.sdf([yf[0] + h, yf[1], yf[2]], EvalMode::Visual)
+                - stop.sdf([yf[0] - h, yf[1], yf[2]], EvalMode::Visual),
+            stop.sdf([yf[0], yf[1] + h, yf[2]], EvalMode::Visual)
+                - stop.sdf([yf[0], yf[1] - h, yf[2]], EvalMode::Visual),
+            stop.sdf([yf[0], yf[1], yf[2] + h], EvalMode::Visual)
+                - stop.sdf([yf[0], yf[1], yf[2] - h], EvalMode::Visual),
+        ];
+        let n = ((g[0] * g[0] + g[1] * g[1] + g[2] * g[2]) as f64).sqrt();
+        if !(n > 1e-12) {
+            return None;
+        }
+        let step = (-v as f64 + 4.0 * CERT_MARGIN as f64) * 2.0 * h as f64 / n;
+        for k in 0..3 {
+            y[k] += g[k] as f64 / n * step;
+        }
+        let d = ((y[0] - start[0]).powi(2) + (y[1] - start[1]).powi(2) + (y[2] - start[2]).powi(2))
+            .sqrt();
+        if d > reach {
+            return None;
+        }
+    }
+    None
+}
+
+/// Das Zertifikat: Klassifikation plus `L` und (falls belegt) `U`.
+fn under_cert(
+    stop: &BoundedCsg,
+    blk: &crate::offset_lb::LbBlock,
+    delta: f32,
+    f: f32,
+    p: [f64; 3],
+) -> (UnderCert, Option<f64>, Option<f64>) {
+    if f < 0.0 {
+        return (UnderCert::FieldSolid, None, None);
+    }
+    let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+    let d0 = stop.sdf(pf, EvalMode::Visual);
+    if d0 > delta {
+        return (UnderCert::OutsideOmega, None, Some(0.0));
+    }
+    let l = crate::offset_lb::lb_value(pf, d0, blk);
+    if l <= crate::offset_channel::LB_AVAIL {
+        return (UnderCert::NoLb, None, None);
+    }
+    let l64 = l as f64;
+    if l64 > delta as f64 + CERT_TOL {
+        return (UnderCert::Proven, Some(l64), None);
+    }
+    // Die Schranke, die zu schlagen ist. Alles darüber zertifiziert nichts,
+    // also darf jede Suche dort abbrechen.
+    let cap = delta as f64 + CERT_TOL;
+    let dist_to = |y: [f64; 3]| {
+        ((y[0] - p[0]).powi(2) + (y[1] - p[1]).powi(2) + (y[2] - p[2]).powi(2)).sqrt()
+    };
+    // Ein Stück-Fusspunkt, um `CERT_PUSH` von `x` weg geschoben.
+    let pushed = |q: [f32; 3]| -> Option<[f64; 3]> {
+        let dir = [q[0] as f64 - p[0], q[1] as f64 - p[1], q[2] as f64 - p[2]];
+        let n = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+        (n > 1e-9).then(|| {
+            [
+                q[0] as f64 + CERT_PUSH * dir[0] / n,
+                q[1] as f64 + CERT_PUSH * dir[1] / n,
+                q[2] as f64 + CERT_PUSH * dir[2] / n,
+            ]
+        })
+    };
+    let is_outside = |y: [f64; 3]| {
+        stop.sdf([y[0] as f32, y[1] as f32, y[2] as f32], EvalMode::Visual) > delta + CERT_MARGIN
+    };
+    let mut best: Option<f64> = None;
+    // (1) Der Fusspunkt des `min`-Stücks — der billigste und schärfste Fall.
+    let foot = crate::offset_lb::lb_foot(pf, d0, blk);
+    if let Some(y) = foot.and_then(pushed).filter(|y| is_outside(*y)) {
+        let u = dist_to(y);
+        if u <= cap {
+            return (UnderCert::Foot, Some(l64), Some(u));
+        }
+        best = Some(u);
+    }
+    // (2) Ist er verschluckt, liegt der wahre Randpunkt oft auf DEMSELBEN
+    //     Stück, nur ausserhalb des verschluckten Teils — ein Marsch vom
+    //     Fusspunkt aus findet ihn, ein Stück-Wechsel nicht.
+    for start in [foot.map(|q| [q[0] as f64, q[1] as f64, q[2] as f64]), Some(p)]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(y) = march_outside(stop, delta, start, 2.0 * cap) {
+            let u = dist_to(y);
+            if u <= cap {
+                return (UnderCert::March, Some(l64), Some(u));
+            }
+            best = Some(best.map_or(u, |b: f64| b.min(u)));
+        }
+    }
+    // Ein dritter Zweig — die ganze Stück-Liste in wachsender Distanz
+    // abzuklappern — war an keiner der dreizehn Fixturen je der entscheidende:
+    // was der `min`-Fusspunkt nicht schafft, holt der Marsch. Er steht deshalb
+    // nicht im Code.
+    match best {
+        Some(u) => (UnderCert::Band, Some(l64), Some(u)),
+        None => (UnderCert::FootSwallowed, Some(l64), None),
+    }
+}
+
+/// Abdeckungs-Zeile einer Fixture.
+#[derive(Default, Clone)]
+struct CertRow {
+    name: String,
+    pts: usize,
+    /// Die RISIKO-Menge: `f ≥ 0` UND `x ∈ Ω` — nur dort kann fehlendes
+    /// Material überhaupt sitzen.
+    risk: usize,
+    foot: usize,
+    march: usize,
+    proven: usize,
+    no_lb: usize,
+    swallowed: usize,
+    band: usize,
+    field_solid: usize,
+    outside: usize,
+    /// Grösste Verletzung `L − exakt` (muss `≤ 0` bleiben).
+    l_viol: f64,
+    /// Grösste Verletzung `exakt − U` (muss `≤ 0` bleiben).
+    u_viol: f64,
+    /// Grösste Klammer-Weite `U − L`, wo beide da sind.
+    bracket: f64,
+    /// Der `slack` des Blocks — die Klammer kann nicht enger werden als
+    /// `slack + CERT_PUSH`.
+    slack: f64,
+}
+
+impl CertRow {
+    fn certified(&self) -> usize {
+        self.foot + self.march
+    }
+    fn open(&self) -> usize {
+        self.no_lb + self.swallowed + self.band
+    }
+}
+
+type ExactFn = Box<dyn Fn([f64; 3]) -> f64>;
+/// Eine Zeile der Zertifikats-Matrix: Name, Feld, exakte Referenz, Gitter.
+type CertFixture = (String, BoundedCsg, ExactFn, [f64; 3], [f64; 3], usize);
+
+/// Die volle §8p-Fixture-Matrix mit exakter Komplement-Referenz, Gitter und
+/// Grenzen — dieselben Fixtures, dieselben Gitter wie im Doktrin-Pin.
+fn cert_matrix(delta: f32) -> Vec<CertFixture> {
+    let mut out: Vec<CertFixture> = Vec::new();
+    {
+        let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+        let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+        let cyls = [(r1 as f64, -(e1 as f64), zh1 as f64), (r2 as f64, -(e2 as f64), 6.0f64)];
+        out.push((
+            "Stufen-Nabe".into(),
+            field,
+            Box::new(move |p| dist_hub_complement_exact(t as f64, &cyls, p)),
+            [-9.0, -9.0, -(t as f64) - 1.5],
+            [9.0, 9.0, 0.5],
+            22,
+        ));
+    }
+    for tf in [2.0f32, 2.1, 2.25, 2.4, 2.5, 3.0, 4.0, 6.0] {
+        let t = tf * delta;
+        let (field, _) = compile_for(thin_corner_node(t, 40.0, delta));
+        let boxes = thin_corner_boxes(t as f64, 40.0);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let lo = -(t as f64 + delta as f64 + 1.0);
+        out.push((
+            format!("Ecken-Schale t/δ={tf}"),
+            field,
+            Box::new(move |p| dist_obb_union_complement_exact(&obbs, p)),
+            [lo; 3],
+            [1.0; 3],
+            22,
+        ));
+    }
+    for (w, g) in [(1.5f32, 0.8f32), (2.0, 1.0)] {
+        let (node, boxes, span) = rib_comb_node(4, w, g, delta);
+        let (field, _) = compile_for(node);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        out.push((
+            format!("Rippen-Kamm 4×{w}/{g}"),
+            field,
+            Box::new(move |p| dist_obb_union_complement_exact(&obbs, p)),
+            [-span, -3.0, -6.0],
+            [span, 3.0, 0.5],
+            24,
+        ));
+    }
+    for alpha in [90.0f64, 60.0] {
+        let (field, _) = compile_for(notch_union_node(alpha, delta as f64));
+        let gamma = std::f64::consts::PI - alpha.to_radians();
+        let obbs = vec![
+            obb_rot_z([0.0, -50.0, 0.0], [100.0, 50.0, 50.0], 0.0),
+            obb_rot_z([50.0 * gamma.sin(), -50.0 * gamma.cos(), 0.0], [100.0, 50.0, 50.0], gamma),
+        ];
+        out.push((
+            format!("notch α={alpha}"),
+            field,
+            Box::new(move |p| dist_obb_union_complement_exact(&obbs, p)),
+            [-10.0, -10.0, 42.0],
+            [10.0, 10.0, 54.0],
+            22,
+        ));
+    }
+    out
+}
+
+/// Ein Gitterlauf des Zertifikats über eine Fixture.
+#[allow(clippy::too_many_arguments)]
+fn cert_scan(
+    name: &str,
+    field: &BoundedCsg,
+    delta: f32,
+    lo: [f64; 3],
+    hi: [f64; 3],
+    n: usize,
+    exact: &dyn Fn([f64; 3]) -> f64,
+    no_skip: bool,
+) -> CertRow {
+    let (stop, blk0) = stop_with_lb(field);
+    // Die Fernfeld-Kugel ist eine reine KOSTEN-Optimierung des Gates; für das
+    // Zertifikat darf sie aus. Das ist keine zweite Fassung von `lb_value`,
+    // sondern derselbe Aufruf mit `skip_r = ∞` (§8q-Lockstep bleibt intakt).
+    let blk = if no_skip {
+        crate::offset_lb::LbBlock { skip_r: f32::INFINITY, ..blk0.clone() }
+    } else {
+        blk0.clone()
+    };
+    let mut row = CertRow {
+        name: name.into(),
+        slack: blk0.slack as f64,
+        l_viol: f64::NEG_INFINITY,
+        u_viol: f64::NEG_INFINITY,
+        ..Default::default()
+    };
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let fr = [
+                    (ix as f64 + 0.2113248654) / n as f64,
+                    (iy as f64 + 0.5773502692) / n as f64,
+                    (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let p = [
+                    lo[0] + (hi[0] - lo[0]) * fr[0],
+                    lo[1] + (hi[1] - lo[1]) * fr[1],
+                    lo[2] + (hi[2] - lo[2]) * fr[2],
+                ];
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let f = field.sdf(pf, EvalMode::Visual);
+                row.pts += 1;
+                let (c, l, u) = under_cert(stop, &blk, delta, f, p);
+                let e = exact(p);
+                if let Some(l) = l {
+                    row.l_viol = row.l_viol.max(l - e);
+                }
+                if let Some(u) = u {
+                    row.u_viol = row.u_viol.max(e - u);
+                    if let Some(l) = l {
+                        row.bracket = row.bracket.max(u - l);
+                    }
+                }
+                match c {
+                    UnderCert::FieldSolid => row.field_solid += 1,
+                    UnderCert::OutsideOmega => row.outside += 1,
+                    other => {
+                        row.risk += 1;
+                        match other {
+                            UnderCert::Foot => row.foot += 1,
+                            UnderCert::March => row.march += 1,
+                            UnderCert::Proven => row.proven += 1,
+                            UnderCert::NoLb => row.no_lb += 1,
+                            UnderCert::FootSwallowed => row.swallowed += 1,
+                            UnderCert::Band => row.band += 1,
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+            }
+        }
+    }
+    row
+}
+
+/// **§8r-Sonde: die Abdeckungs-Tabelle.** Nicht im Fast-Tier — sie fährt die
+/// volle Matrix zweimal (mit und ohne Fernfeld-Kugel).
+#[test]
+#[ignore]
+fn probe_384_under_certificate_coverage() {
+    let delta = 2.0f32;
+    println!(
+        "| Fixture | Punkte | Risiko | zert. (min-Stück) | zert. (Marsch) | zert. (Liste) | \
+         Rest | bewiesener Unter-Claim | kein L | verschluckt | Band | L−exakt | exakt−U | U−L |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    for no_skip in [false, true] {
+        println!("**Fernfeld-Kugel {}**", if no_skip { "AUS" } else { "an (Laufzeit)" });
+        for (name, field, exact, lo, hi, n) in cert_matrix(delta) {
+            let r = cert_scan(&name, &field, delta, lo, hi, n, &*exact, no_skip);
+            println!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.2e} | {:.2e} | \
+                 {:.2e} |",
+                r.name,
+                r.pts,
+                r.risk,
+                r.foot,
+                r.march,
+                r.open(),
+                r.proven,
+                r.no_lb,
+                r.swallowed,
+                r.band,
+                r.l_viol,
+                r.u_viol,
+                r.bracket
+            );
+        }
+    }
+}
+
+/// **§8r-Gegenprobe: der Kandidaten-Weg des Hauptagenten, widerlegt.**
+///
+/// Die Hypothese lautete: `L(x) ≥ f(x) + δ − tol` (also `f ≤ L − δ + tol`)
+/// zertifiziere Unter-Claim-Freiheit. Sie hat das Vorzeichen verdreht — die
+/// Ungleichung ist an einem echten Unter-Claim erst recht erfüllt, weil ein
+/// grosses `L` gerade heisst, dass der Punkt Material SEIN MUSS. Der Pin
+/// misst das am BASIS-Feld der Nabe (`L`-Block entfernt, §8n-Stand
+/// 0 / 59 · 0.3156): wie viele der bewiesenen Unter-Claim-Punkte das
+/// Kriterium „zertifiziert".
+#[test]
+fn the_naive_lb_criterion_certifies_real_under_claims_384() {
+    let delta = 2.0f32;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+    let basis = strip_lb(&field);
+    let cyls = [(r1 as f64, -(e1 as f64), zh1 as f64), (r2 as f64, -(e2 as f64), 6.0f64)];
+    let (stop, blk) = stop_with_lb(&field);
+    let (lo, hi, n) = ([-9.0, -9.0, -(t as f64) - 1.5], [9.0, 9.0, 0.5], 22usize);
+    let (mut under, mut falsely_certified, mut worst) = (0usize, 0usize, (0.0f64, [0.0f64; 3]));
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let fr = [
+                    (ix as f64 + 0.2113248654) / n as f64,
+                    (iy as f64 + 0.5773502692) / n as f64,
+                    (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let p = [
+                    lo[0] + (hi[0] - lo[0]) * fr[0],
+                    lo[1] + (hi[1] - lo[1]) * fr[1],
+                    lo[2] + (hi[2] - lo[2]) * fr[2],
+                ];
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let f = basis.sdf(pf, EvalMode::Visual) as f64;
+                let e = dist_hub_complement_exact(t as f64, &cyls, p);
+                if !(f >= 0.0 && e - delta as f64 > CERT_TOL) {
+                    continue;
+                }
+                under += 1;
+                let d0 = stop.sdf(pf, EvalMode::Visual);
+                let l = crate::offset_lb::lb_value(pf, d0, blk) as f64;
+                if l <= crate::offset_channel::LB_AVAIL as f64 {
+                    continue;
+                }
+                // Das Kriterium der Hypothese.
+                if f <= l - delta as f64 + CERT_TOL {
+                    falsely_certified += 1;
+                    if e - delta as f64 > worst.0 {
+                        worst = (e - delta as f64, p);
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(
+        under, 59,
+        "die BASIS-Nabe muss die §8n-Zahl reproduzieren (59 Unter-Claim-Punkte), \
+         gemessen {under} — sonst misst die Gegenprobe eine andere Maschine"
+    );
+    assert!(
+        falsely_certified > 0,
+        "die Hypothese `f ≤ L − δ + tol` hat an dieser Fixture keinen einzigen \
+         Unter-Claim fälschlich zertifiziert — dann ist die Widerlegung nicht belegt"
+    );
+    println!(
+        "§8r-Gegenprobe: {falsely_certified} von {under} bewiesenen Unter-Claim-Punkten \
+         werden vom Kandidaten-Kriterium ZERTIFIZIERT, schlimmster {:.4} mm bei {:?}",
+        worst.0, worst.1
+    );
+}
+
+/// **§8r-Gültigkeits-Pin: der Zeuge erkennt einen ECHTEN Unter-Claim.**
+///
+/// Ein Zeuge, der nie etwas findet, ist von einem `return None` nicht zu
+/// unterscheiden. Die Gegenprobe braucht deshalb ein Feld, in dem nachweislich
+/// Material fehlt — und es gibt eins, ohne dass man etwas erfinden müsste: das
+/// BASIS-Feld der Stufen-Nabe (`L`-Block entfernt, §8n-Stand `0 / 59 · 0.3156`,
+/// festgenagelt von `stop_lb_absent_reproduces_the_g_cap_384`).
+///
+/// Geprüft wird die Produktions-Funktion selbst
+/// ([`crate::offset_channel::under_claim_witness`]), nicht ein Nachbau — und
+/// zwar in beide Richtungen:
+///
+/// * **Er spricht**, wo Material fehlt: am §8n-Worst-Punkt mindestens 0.31 mm.
+/// * **Er lügt nie**: an JEDEM Punkt, an dem er anschlägt, bestätigt die exakte
+///   Referenz mindestens denselben Fehlbetrag.
+/// * **Er schweigt** am ausgelieferten Feld (seit §8o ist die Nabe beidseitig
+///   leer).
+#[test]
+fn under_witness_proves_the_basis_regression_384() {
+    let delta = 2.0f32;
+    let tol = CHANNEL_TOL_RENDER;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+    let basis = strip_lb(&field);
+    let cyls = [(r1 as f64, -(e1 as f64), zh1 as f64), (r2 as f64, -(e2 as f64), 6.0f64)];
+    let (stop, blk) = stop_with_lb(&field);
+    let (lo, hi, n) = ([-9.0, -9.0, -(t as f64) - 1.5], [9.0, 9.0, 0.5], 22usize);
+    let (mut basis_hits, mut prod_hits, mut worst) = (0usize, 0usize, (0.0f32, [0.0f32; 3]));
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let fr = [
+                    (ix as f64 + 0.2113248654) / n as f64,
+                    (iy as f64 + 0.5773502692) / n as f64,
+                    (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let p = [
+                    lo[0] + (hi[0] - lo[0]) * fr[0],
+                    lo[1] + (hi[1] - lo[1]) * fr[1],
+                    lo[2] + (hi[2] - lo[2]) * fr[2],
+                ];
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let d0 = stop.sdf(pf, EvalMode::Visual);
+                for (prod, hits) in
+                    [(false, &mut basis_hits), (true, &mut prod_hits)]
+                {
+                    let corr = if prod { &field } else { &basis }.sdf(pf, EvalMode::Visual);
+                    let (found, _) = crate::offset_channel::under_claim_witness(
+                        None,
+                        d0,
+                        pf,
+                        corr,
+                        Some(blk),
+                        delta,
+                        tol,
+                    );
+                    let Some((v, at)) = found else { continue };
+                    *hits += 1;
+                    // Kein Falsch-Positiv: die exakte Referenz muss den
+                    // behaupteten Fehlbetrag mindestens bestätigen.
+                    let e = dist_hub_complement_exact(t as f64, &cyls, p);
+                    assert!(
+                        e - delta as f64 >= v as f64 - 1e-4,
+                        "Unter-Zeuge behauptet {v:.4} mm bei {at:?}, die exakte Referenz \
+                         gibt aber nur {:.4} mm her — ein Falsch-Positiv wäre das Ende \
+                         jeder Aussage, die auf L steht",
+                        e - delta as f64
+                    );
+                    if !prod && v > worst.0 {
+                        worst = (v, at);
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        basis_hits >= 40,
+        "der Zeuge findet am BASIS-Feld nur {basis_hits} der 59 bewiesenen \
+         Unter-Claim-Punkte — dann misst er zu wenig, um etwas zu belegen"
+    );
+    assert!(
+        worst.0 > 0.31 && worst.0 < 0.3156,
+        "schlimmster nachgewiesener Fehlbetrag {:.4} mm — erwartet knapp unter dem \
+         exakten §8n-Wert 0.3156 (die Differenz ist der `slack`)",
+        worst.0
+    );
+    assert_eq!(
+        prod_hits, 0,
+        "am AUSGELIEFERTEN Feld weist der Zeuge {prod_hits} Unter-Claims nach — \
+         die Nabe ist seit §8o beidseitig leer"
+    );
+}
+
+/// **§8r-Abdeckungs-Pin: das Zertifikat deckt die Risiko-Menge.**
+///
+/// Die Risiko-Menge ist `{f ≥ 0} ∩ Ω` — nur dort kann fehlendes Material
+/// überhaupt sitzen. Der Pin fährt ein grobes Gitter (das feine steht in der
+/// Sonde `probe_384_under_certificate_coverage` und im Doc §8r) und hält drei
+/// Dinge fest, die alle drei fallen könnten:
+///
+/// * **Beide Schranken sind solide** — `L ≤ dist ≤ U` an JEDEM Punkt, gemessen
+///   gegen die exakten §8k-Referenzen. Ohne das ist das Zertifikat wertlos.
+/// * **Die Klammer ist eng** — `U − L` bleibt unter der Mess-Toleranz; das
+///   Zertifikat entscheidet also, statt bloss zu existieren.
+/// * **Die Abdeckung ist vollständig** — kein Punkt der Risiko-Menge bleibt
+///   offen, und keiner ist ein bewiesener Unter-Claim.
+#[test]
+fn under_certificate_covers_the_risk_set_384() {
+    let delta = 2.0f32;
+    let mut checked = 0usize;
+    for (name, field, exact, lo, hi, _) in cert_matrix(delta) {
+        if !(name.starts_with("Stufen")
+            || name == "Ecken-Schale t/δ=2"
+            || name == "Rippen-Kamm 4×2/1"
+            || name == "notch α=90")
+        {
+            continue;
+        }
+        let r = cert_scan(&name, &field, delta, lo, hi, 10, &*exact, true);
+        assert!(
+            r.l_viol <= 0.0,
+            "{name}: L übersteigt die exakte Distanz um {:.2e} — die untere Schranke lügt",
+            r.l_viol
+        );
+        assert!(
+            r.u_viol <= 0.0,
+            "{name}: die exakte Distanz übersteigt U um {:.2e} — der Aussen-Zeuge ist kein \
+             Aussen-Punkt, und dann zertifiziert er Unter-Claims weg",
+            r.u_viol
+        );
+        assert!(
+            r.bracket <= r.slack + CERT_PUSH + 1e-4,
+            "{name}: Klammer U − L = {:.2e} über `slack + push` = {:.2e} plus die f32-Rundung \
+             des Fusspunkts (an allen dreizehn Fixturen ≤ 4.4·10⁻⁵) — dann kommt die \
+             Unschärfe nicht mehr aus den drei bekannten Quellen",
+            r.bracket,
+            r.slack + CERT_PUSH
+        );
+        assert_eq!(
+            r.proven, 0,
+            "{name}: {} bewiesene Unter-Claims im Feld — die Matrix ist seit §8p \
+             beidseitig leer",
+            r.proven
+        );
+        assert_eq!(
+            r.open(),
+            0,
+            "{name}: {} von {} Risiko-Punkten bleiben unzertifiziert ({} kein L, {} Stück \
+             verschluckt, {} Band) — die Restmenge muss in der Zusage benannt sein",
+            r.open(),
+            r.risk,
+            r.no_lb,
+            r.swallowed,
+            r.band
+        );
+        assert!(r.risk > 100, "{name}: nur {} Risiko-Punkte — der Pin misst nichts", r.risk);
+        checked += 1;
+    }
+    assert_eq!(checked, 4, "nur {checked} Fixtures geprüft");
+}
+
+/// **§8r-Zusagen-Pin: die Unter-Seiten-Ausnahme benennt ihren Zeugen — und der
+/// hat an vier von neun Fixturen etwas gefunden.**
+///
+/// Bis §8q lautete die Ausnahme „für diese Richtung ist keine Schranke
+/// belegbar" und damit basta: niemand hatte je hingesehen, und die Begründung
+/// stützte sich auf zwölf leere Messgitter. §8r sieht hin — mit einem Zeugen,
+/// dessen Fund ein BEWEIS ist (`L > δ + tol` bei stehendem Feld) — und findet
+/// an vier der neun Matrix-Fixturen echtes fehlendes Material. Nicht weil sich
+/// das Feld bewegt hätte, sondern weil die Gitter der §8k-Reihe um die
+/// interessante Ecke herumlagen und das freie NAHT-ENDE nie abtasteten.
+///
+/// Der Pin nagelt das Inventar fest. Bewegt sich eine Zeile, ist entweder der
+/// Naht-Ende-Rest gefallen (dann gehört die Zeile gestrichen und §8r
+/// fortgeschrieben) oder ein neuer aufgemacht.
+#[test]
+fn promise_names_the_under_claim_witness_384() {
+    let delta = 2.0f32;
+    let tol_class = CHANNEL_TOL_RENDER as f64 + 1e-9;
+    // Fixture → nachgewiesenes FEHLENDES Material (`None` = der Zeuge schweigt).
+    let inventory: &[(&str, Option<f64>)] = &[
+        ("Stufen-Nabe", None),
+        ("Ecken-Schale t/δ=2", Some(0.200)),
+        ("Ecken-Schale t/δ=2.25", Some(0.499)),
+        ("Ecken-Schale t/δ=3", None),
+        ("Ecken-Schale t/δ=6", None),
+        ("Rippen-Kamm 4×1.5/0.8", Some(0.110)),
+        ("Rippen-Kamm 4×2/1", Some(0.199)),
+        ("notch α=90", None),
+        ("notch α=60", None),
+    ];
+    let mut seen = 0usize;
+    for (name, field, report, _) in promise_matrix(delta) {
+        let mut blocks = Vec::new();
+        collect_lb(&field, &mut blocks);
+        assert!(!blocks.is_empty(), "{name}: Fixture ohne L-Block");
+        let reasons = report.reasons();
+        assert!(
+            reasons.iter().any(|s| s.contains("Unter-Claim-Zeuge (#384 §8r)")),
+            "{name}: die Zusage nennt ihren Unter-Claim-Zeugen nicht. Reasons: {reasons:?}"
+        );
+        // Die Zusage selbst darf sich durch den Zeugen NICHT bewegen: er ist
+        // Text, keine Schranke. Stünde seine Messung als Zusage da, wäre das
+        // der §8g-Zirkelschluss.
+        assert!(
+            promised_bound(&report).is_some_and(|b| b <= tol_class),
+            "{name}: die Zusage hat sich durch den Zeugen bewegt ({:?})",
+            promised_bound(&report)
+        );
+        let (_, want) = inventory
+            .iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name}: nicht im §8r-Inventar"));
+        seen += 1;
+        let note = reasons
+            .iter()
+            .find(|s| s.contains("§8r"))
+            .unwrap_or_else(|| panic!("{name}: keine §8r-Notiz"));
+        match want {
+            None => {
+                assert!(
+                    note.contains("Sondier-Punkten dieses Stopps keinen")
+                        && note.contains("Stichprobe, kein Satz"),
+                    "{name}: der Zeuge schweigt — dann muss die Notiz genau das sagen, samt \
+                     der Zahl der Sondier-Punkte, und das Schweigen darf nicht wie ein Beweis \
+                     klingen. Notiz: {note}"
+                );
+            }
+            Some(v) => {
+                assert!(
+                    note.contains("mindestens") && note.contains("FEHLENDES Material nach"),
+                    "{name}: der Zeuge hat {v:.3} mm nachgewiesen — die Notiz muss den Fund \
+                     benennen, nicht das Schweigen. Notiz: {note}"
+                );
+                let got: f64 = note
+                    .split("mindestens ")
+                    .nth(1)
+                    .and_then(|t| t.split(' ').next())
+                    .and_then(|t| t.parse().ok())
+                    .unwrap_or_else(|| panic!("{name}: Fehlbetrag nicht lesbar: {note}"));
+                assert!(
+                    (got - v).abs() < 0.011,
+                    "{name}: nachgewiesen {got:.3} mm statt {v:.3} — das Naht-Ende hat sich \
+                     bewegt, §8r gehört fortgeschrieben"
+                );
+            }
+        }
+    }
+    assert_eq!(seen, inventory.len(), "nur {seen} Fixtures geprüft");
+}
+
+#[test]
+#[ignore]
+fn probe_384_shell_under_claim_point() {
+    let delta = 2.0f32;
+    let t = 2.0f32 * delta;
+    let (field, report) = compile_for(thin_corner_node(t, 40.0, delta));
+    let boxes = thin_corner_boxes(t as f64, 40.0);
+    let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+    let (stop, blk) = stop_with_lb(&field);
+    for r in report.reasons() {
+        println!("REASON: {r}");
+    }
+    let mut zs: Vec<f64> = Vec::new();
+    let mut z = -39.5f64;
+    while z <= 39.5 {
+        let pf = [-1.78f32, -1.30, z as f32];
+        if field.sdf(pf, EvalMode::Visual) >= 0.0 {
+            zs.push(z);
+        }
+        z += 0.25;
+    }
+    println!("Feld ≥ 0 bei z ∈ {:?} … {:?} ({} von {} Abtastungen)",
+        zs.first(), zs.last(), zs.len(), 317);
+    for p in [
+        [-1.78f64, -1.30, -37.78],
+        [-1.78, -1.30, -20.0],
+        [-1.78, -1.30, 0.0],
+        [-1.78, -1.30, 37.78],
+    ] {
+        let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+        let d0 = stop.sdf(pf, EvalMode::Visual);
+        let l = crate::offset_lb::lb_value(pf, d0, blk);
+        println!(
+            "p={p:?}  Feld={:.6}  d0={:.6}  L={:.6}  exakt={:.6}",
+            field.sdf(pf, EvalMode::Visual),
+            d0,
+            l,
+            dist_obb_union_complement_exact(&obbs, p)
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn probe_384_under_witness_inventory() {
+    let delta = 2.0f32;
+    let mut cases: Vec<(String, CsgNode)> = vec![(
+        "Stufen-Nabe".into(),
+        stepped_hub_node(3.0, 6.0, 4.0, 0.5, 1.2, 1.8, delta),
+    )];
+    for tf in [2.0f32, 2.1, 2.25, 2.4, 2.5, 3.0, 4.0, 6.0] {
+        cases.push((format!("Ecken-Schale t/δ={tf}"), thin_corner_node(tf * delta, 40.0, delta)));
+    }
+    for (w, g) in [(1.5f32, 0.8f32), (2.0, 1.0)] {
+        cases.push((format!("Rippen-Kamm 4×{w}/{g}"), rib_comb_node(4, w, g, delta).0));
+    }
+    for alpha in [90.0f64, 60.0] {
+        cases.push((format!("notch α={alpha}"), notch_union_node(alpha, delta as f64)));
+    }
+    for (name, node) in cases {
+        let (field, report) = compile_for(node);
+        let mut blocks = Vec::new();
+        collect_lb(&field, &mut blocks);
+        let verdict = report
+            .reasons()
+            .iter()
+            .find(|s| s.contains("§8r"))
+            .map(|s| {
+                let tail = s.split("§8r)").nth(1).unwrap_or("").trim().to_string();
+                tail.chars().take(120).collect::<String>()
+            })
+            .unwrap_or_else(|| "KEINE §8r-Notiz".into());
+        println!(
+            "{name}: {} Stücke | {verdict}",
+            blocks.first().map_or(0, |b| b.pieces.len())
+        );
+    }
+}
+
+/// **§8r-Naht-Ende-Sonde: das Gitter war das Problem, nicht das Feld.**
+///
+/// Die §8k–§8q-Gitter sitzen um die interessante Ecke herum (die Schale misst
+/// `[−7,1]³` bei Platten, die bis `±40` reichen). Der Unter-Claim sitzt aber am
+/// freien NAHT-ENDE. Diese Sonde legt ein Gitter genau dorthin, wo der
+/// zertifizierte Zeuge angeschlagen hat, und misst beides: was das Zertifikat
+/// sagt und was die exakte Referenz sagt.
+#[test]
+#[ignore]
+fn probe_384_seam_end_grid() {
+    let delta = 2.0f32;
+    type SeamCase = (String, BoundedCsg, ExactFn, [f64; 3]);
+    let cases: Vec<SeamCase> = {
+        let mut v: Vec<SeamCase> = Vec::new();
+        for tf in [2.0f32, 2.1, 2.25, 2.4] {
+            let t = tf * delta;
+            let (field, _) = compile_for(thin_corner_node(t, 40.0, delta));
+            let boxes = thin_corner_boxes(t as f64, 40.0);
+            let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+            v.push((
+                format!("Ecken-Schale t/δ={tf}"),
+                field,
+                Box::new(move |p| dist_obb_union_complement_exact(&obbs, p)),
+                [-(t as f64) * 0.5, -(t as f64) * 0.5, -37.5],
+            ));
+        }
+        for (w, g, cx) in [(1.5f32, 0.8f32, 3.5f64), (2.0, 1.0, -4.4)] {
+            let (node, boxes, _) = rib_comb_node(4, w, g, delta);
+            let (field, _) = compile_for(node);
+            let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+            v.push((
+                format!("Rippen-Kamm 4×{w}/{g}"),
+                field,
+                Box::new(move |p| dist_obb_union_complement_exact(&obbs, p)),
+                [cx, 18.0, -3.5],
+            ));
+        }
+        v
+    };
+    println!("| Fixture | Zentrum | Risiko | zertifiziert | BEWIESENER Unter-Claim | offen | exakt max |");
+    println!("|---|---|---|---|---|---|---|");
+    for (name, field, exact, c) in cases {
+        let lo = [c[0] - 2.0, c[1] - 2.0, c[2] - 2.0];
+        let hi = [c[0] + 2.0, c[1] + 2.0, c[2] + 2.0];
+        let r = cert_scan(&name, &field, delta, lo, hi, 16, &*exact, true);
+        // Wieviel fehlendes Material sieht die EXAKTE Referenz im selben Fenster?
+        let (stop, _) = stop_with_lb(&field);
+        let _ = stop;
+        let mut worst = 0.0f64;
+        for ix in 0..16 {
+            for iy in 0..16 {
+                for iz in 0..16 {
+                    let fr = [
+                        (ix as f64 + 0.2113248654) / 16.0,
+                        (iy as f64 + 0.5773502692) / 16.0,
+                        (iz as f64 + 0.7886751346) / 16.0,
+                    ];
+                    let p = [
+                        lo[0] + (hi[0] - lo[0]) * fr[0],
+                        lo[1] + (hi[1] - lo[1]) * fr[1],
+                        lo[2] + (hi[2] - lo[2]) * fr[2],
+                    ];
+                    let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                    if field.sdf(pf, EvalMode::Visual) >= 0.0 {
+                        worst = worst.max(exact(p) - delta as f64);
+                    }
+                }
+            }
+        }
+        println!(
+            "| {} | {:?} | {} | {} | {} | {} | {:.4} |",
+            r.name,
+            c,
+            r.risk,
+            r.certified(),
+            r.proven,
+            r.open(),
+            worst
+        );
+    }
+}

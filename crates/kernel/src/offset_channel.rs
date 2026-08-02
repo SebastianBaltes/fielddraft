@@ -1536,6 +1536,82 @@ fn boundary_witness(
     None
 }
 
+/// #384 §8e/§8r — **was das Audit EINES Stopps festgestellt hat.**
+///
+/// Bis §8q war das ein blosses `bool` (`cap_over_claim`). Seit §8r trägt es
+/// zusätzlich die Unter-Seite, weil die Zusage sie benennen muss — und der
+/// Zeuge, der sie feststellt, im selben Stationen-Durchlauf sitzt.
+#[derive(Debug, Default, Clone, Copy)]
+struct StopAudit {
+    /// `true` = die enge Kanal-Zusage ist an diesem Stopp mit einem
+    /// Randpunkt-Zeugen widerlegt; der Aufrufer unterdrückt dann seine
+    /// `tol`-Notiz, weil das Audit die ehrliche schon geschrieben hat.
+    over_claim: bool,
+    /// Zertifizierter Unter-Claim: (mindestens X mm, Ort).
+    under: Option<(f32, [f32; 3])>,
+    /// Sondier-Punkte, an denen `L` etwas sagen konnte.
+    lb_probed: usize,
+}
+
+/// #384 §8r — **das Ergebnis des Randpunkt-Zeugen, beide Richtungen.**
+#[derive(Debug, Default, Clone, Copy)]
+struct EndRegionProbe {
+    /// Über-Claim: (nachgewiesene Fehlklassifikation mm, Gate-/B0-Schranke,
+    /// Ort). Ein Zeuge, kein Verdacht.
+    over: Option<(f32, f32, [f32; 3])>,
+    /// **Zertifizierter** Unter-Claim: (mindestens X mm fehlendes Material,
+    /// Ort) — s. [`under_claim_witness`].
+    under: Option<(f32, [f32; 3])>,
+    /// Sondier-Punkte, an denen `L` überhaupt etwas sagen konnte. Das ist die
+    /// Reichweite des Schweigens, wenn `under` leer bleibt.
+    lb_probed: usize,
+}
+
+/// #384 §8r — **der zertifizierte Unter-Claim-Zeuge.**
+///
+/// `L` ist eine UNTERE Schranke von `dist(x,∁Ω)` (§8o). Damit kann sie die
+/// ABWESENHEIT fehlenden Materials NICHT zertifizieren — dafür bräuchte es
+/// eine OBERE Schranke, und jede billige Grösse dieses Stopps (`de`, `min_k
+/// f_k`, jede stützende Ebene, `L` selbst) ist eine untere. Was `L` kann, ist
+/// die ANWESENHEIT beweisen:
+///
+/// > `L(x) > δ + tol` ⇒ `dist(x,∁Ω) > δ + tol` ⇒ `x` liegt ZWINGEND in der
+/// > Erosion. Behauptet das Feld dort Luft (`corr ≥ 0`), fehlt dort Material,
+/// > und zwar mindestens `L − δ` mm. Ohne exakte Referenz, für beliebige
+/// > Geometrie.
+///
+/// Falsch-Positive sind ausgeschlossen: die Aussage benutzt ausschliesslich
+/// die Schranken-Richtung, die [`crate::offset_lb::synthesize_lb`] beweist.
+/// Falsch-Negative sind möglich (`L` stumpf) — **das Schweigen dieses Zeugen
+/// ist kein Beweis**, und die Zusage sagt das auch so.
+pub(crate) fn under_claim_witness(
+    best: Option<(f32, [f32; 3])>,
+    d0: f32,
+    x: [f32; 3],
+    corr: f32,
+    lb: Option<&crate::offset_lb::LbBlock>,
+    dabs: f32,
+    tol: f32,
+) -> (Option<(f32, [f32; 3])>, bool) {
+    // Das Feld behauptet Material — fehlendes Material ist dort per Definition
+    // ausgeschlossen (die Nullmengen-Messung zählt nur `f ≥ 0`).
+    if corr < 0.0 {
+        return (best, false);
+    }
+    // `LB_NONE` heisst: kein Block, `x ∉ Ω` (dann ist `dist = 0`), oder
+    // ausserhalb der Fernfeld-Kugel. In allen drei Fällen sagt `L` nichts.
+    let l = stop_lb_value(d0, x, lb);
+    if l <= LB_AVAIL {
+        return (best, false);
+    }
+    let v = l - dabs;
+    if v > tol && best.is_none_or(|(w, _)| v > w) {
+        (Some((v, x)), true)
+    } else {
+        (best, true)
+    }
+}
+
 /// #384 §8e/§8f — **Beweis-Sonde gegen den Bound-Over-Claim am Nahtende.**
 ///
 /// Die C2-Konstruktion ist nur dort exakt, wo der nächste Punkt der
@@ -1574,6 +1650,11 @@ fn boundary_witness(
 /// entstand. Seit §8q baut [`stop_lb_block`] ihn davor, und `lb` ist
 /// buchstäblich derselbe Block, der gleich darauf im Baum landet — kein
 /// Nachbau, keine zweite Klemmen-Fassung.
+///
+/// #384 §8r — **dieselben Punkte, die andere Richtung.** Auf jedem Sondier-
+/// Punkt läuft jetzt auch [`under_claim_witness`]: `L` kann die ABWESENHEIT
+/// fehlenden Materials nicht zertifizieren (dafür bräuchte es eine OBERE
+/// Distanzschranke), seine ANWESENHEIT aber beweisen.
 fn end_region_violation(
     channels: &[OffsetChannel],
     verts: &[VertexSphere],
@@ -1581,7 +1662,8 @@ fn end_region_violation(
     lb: Option<&crate::offset_lb::LbBlock>,
     delta_signed: f32,
     tol: f32,
-) -> Option<(f32, f32, [f32; 3])> {
+) -> EndRegionProbe {
+    let mut probe = EndRegionProbe::default();
     let mut worst: Option<(f32, f32, [f32; 3])> = None;
     for ch in channels {
         if ch.arcs.is_empty() {
@@ -1646,6 +1728,11 @@ fn end_region_violation(
                     // mass den `G`-Kappen-Pfad — ehrlich, aber am Rippen-Kamm
                     // 87-fach stumpfer als das Feld.
                     let corr = stop_apply(d, x, channels, verts, lb);
+                    // #384 §8r — derselbe Punkt, die andere Richtung.
+                    let (u2, looked) =
+                        under_claim_witness(probe.under, d, x, corr, lb, dabs, tol);
+                    probe.under = u2;
+                    probe.lb_probed += looked as usize;
                     // Geprüft wird die NULLMENGE (die Zusage des Stopps), und
                     // nur, was der Term VERURSACHT: das naive Feld muss den
                     // Punkt richtig klassifizieren, das korrigierte falsch.
@@ -1715,6 +1802,10 @@ fn end_region_violation(
                 }
                 // #384 §8q: derselbe Block wie im Kanal-Zweig (s. o.).
                 let corr = stop_apply(d, x, channels, verts, lb);
+                // #384 §8r: und derselbe Unter-Claim-Zeuge (s. o.).
+                let (u2, looked) = under_claim_witness(probe.under, d, x, corr, lb, dabs, tol);
+                probe.under = u2;
+                probe.lb_probed += looked as usize;
                 let flipped = if delta_signed > 0.0 {
                     d <= 0.0 && corr > 0.0
                 } else {
@@ -1740,7 +1831,8 @@ fn end_region_violation(
             }
         }
     }
-    worst
+    probe.over = worst;
+    probe
 }
 
 /// #384 §8f — **das dritte Gate als Synthese-Schritt.** Die zwei
@@ -4763,9 +4855,8 @@ fn synthesize_stop(
     Vec<VertexSphere>,
     Vec<BoundedCsg>,
     Vec<crate::offset_rim::RimBlock>,
-    // #384 §8e: `true` = die enge Kanal-Zusage ist an diesem Stopp widerlegt
-    // (der Aufrufer unterdrückt dann seine `tol`-Notiz).
-    bool,
+    // #384 §8e/§8r: das Ergebnis des Randpunkt-Zeugen, beide Richtungen.
+    StopAudit,
     // #384 §8q: die untere Distanzschranke des Stopps — hier gebaut, DAMIT der
     // Randpunkt-Zeuge sie sieht, und vom Aufrufer unverändert in den Baum
     // gehängt. Ein Objekt, zwei Leser: das ist der Lockstep.
@@ -4775,7 +4866,7 @@ fn synthesize_stop(
     let mut members = Vec::new();
     flatten_members(inner, union_form, 1.0, &mut members);
     if members.len() < 2 {
-        return (Vec::new(), Vec::new(), Vec::new(), Vec::new(), false, None);
+        return (Vec::new(), Vec::new(), Vec::new(), Vec::new(), StopAudit::default(), None);
     }
     // Phase 4 (#398): der ∂P-Rand-Fillet dieses Stopps aus DERSELBEN
     // `contact_clips`-Quelle wie die Prismen (faithful Accept/Refuse-Mirror,
@@ -5147,11 +5238,11 @@ fn synthesize_stop(
                                 set_end_plane_gates(&mut channels, &chan_step, &verts);
                                 let lb =
                                     stop_lb_block(inner, &prisms, &channels, &verts, delta);
-                                let capped = audit_channel_end_caps(
+                                let audit = audit_channel_end_caps(
                                     &channels, &verts, inner, &prisms, lb.as_ref(), delta, tol,
                                     report,
                                 );
-                                return (channels, verts, prisms, rims, capped, lb);
+                                return (channels, verts, prisms, rims, audit, lb);
                             }
                             // Schon von einer früheren Kurve abgedeckt?
                             if claimed.iter().any(|q| norm(sub(*q, seed)) < step * 1.5) {
@@ -5354,11 +5445,11 @@ fn synthesize_stop(
                                     set_end_plane_gates(&mut channels, &chan_step, &verts);
                                     let lb =
                                         stop_lb_block(inner, &prisms, &channels, &verts, delta);
-                                    let capped = audit_channel_end_caps(
+                                    let audit = audit_channel_end_caps(
                                         &channels, &verts, inner, &prisms, lb.as_ref(), delta,
                                         tol, report,
                                     );
-                                    return (channels, verts, prisms, rims, capped, lb);
+                                    return (channels, verts, prisms, rims, audit, lb);
                                 }
                                 // #384 §8k — **die Sperrliste erst JETZT.**
                                 // Sie verhindert, dass dieselbe Naht aus 64
@@ -5411,9 +5502,9 @@ fn synthesize_stop(
     set_face_plane_gates(&mut channels, &members, &branch_maps, &branch_lists, union_form, gate_eps);
     set_end_plane_gates(&mut channels, &chan_step, &verts);
     let lb = stop_lb_block(inner, &prisms, &channels, &verts, delta);
-    let capped =
+    let audit =
         audit_channel_end_caps(&channels, &verts, inner, &prisms, lb.as_ref(), delta, tol, report);
-    (channels, verts, prisms, rims, capped, lb)
+    (channels, verts, prisms, rims, audit, lb)
 }
 
 /// #384 §8e: prüft NACH dem End-Kappen-Gate, ob die Korrektur in der
@@ -5462,9 +5553,9 @@ fn audit_channel_end_caps(
     delta_signed: f32,
     tol: f32,
     report: &mut crate::offset_capability::CapabilityReport,
-) -> bool {
+) -> StopAudit {
     if channels.is_empty() && verts.is_empty() {
-        return false;
+        return StopAudit::default();
     }
     let field = |x: [f32; 3]| -> f32 {
         let mut v = inner.sdf(x, EvalMode::Visual);
@@ -5478,10 +5569,11 @@ fn audit_channel_end_caps(
         }
         v
     };
-    let Some((viol, gate, at)) =
-        end_region_violation(channels, verts, &field, lb, delta_signed, tol)
-    else {
-        return false;
+    let probe = end_region_violation(channels, verts, &field, lb, delta_signed, tol);
+    let audit =
+        StopAudit { over_claim: false, under: probe.under, lb_probed: probe.lb_probed };
+    let Some((viol, gate, at)) = probe.over else {
+        return audit;
     };
     // Schranke: die strukturell hergeleitete Ein-Term-Auslenkung
     // `(c−1)·δ + 4·tol` (= das Gate, zugleich die B0-Schranke der
@@ -5495,20 +5587,50 @@ fn audit_channel_end_caps(
              [{:.2}, {:.2}, {:.2}] weist {viol:.3} mm Fehlklassifikation nach — MEHR als die \
              strukturelle Gate-/B0-Schranke {gate:.3} mm. Damit ist keine Schranke mehr belegbar. \
              (Dort trägt die Stück-Schranke L nicht — mit ihr wäre der Über-Claim strukturell \
-             ausgeschlossen, #384 §8q.)",
-            at[0], at[1], at[2]
+             ausgeschlossen, #384 §8q.) {}",
+            at[0], at[1], at[2],
+            under_sentence(&audit)
         ));
-        return true;
+        return StopAudit { over_claim: true, ..audit };
     }
     report.note_tolerance(format!(
         "Duale Boolean-Kante über Arc-Spline-Kanäle korrigiert — am Nahtende aber NICHT auf die \
          Bau-Toleranz: dort greift der Term über Fremdgeometrie (Randpunkt-Zeuge bei \
          [{:.2}, {:.2}, {:.2}], nachgewiesene Fehlklassifikation {viol:.3} mm). Fehler ≤ \
          {gate:.3} mm (Gate-/B0-Schranke) — dort trägt die Stück-Schranke L nicht, sonst wäre \
-         der Über-Claim strukturell ausgeschlossen (#384 §8q).",
-        at[0], at[1], at[2]
+         der Über-Claim strukturell ausgeschlossen (#384 §8q). {}",
+        at[0], at[1], at[2],
+        under_sentence(&audit)
     ));
-    true
+    StopAudit { over_claim: true, ..audit }
+}
+
+/// #384 §8r — der Satz, mit dem die Zusage ihre UNTER-Seiten-Ausnahme belegt.
+///
+/// Er steht in jeder Notiz, die die Ausnahme ausspricht, und sagt genau so
+/// viel, wie der Zeuge weiss: sein Fund ist ein Beweis, sein Schweigen eine
+/// Stichprobe. Bewusst OHNE `≤`-Zahl — die Unter-Seite bekommt keine Schranke
+/// zugesagt, auch keine gemessene (sonst läse `promised_bound` sie als eine).
+fn under_sentence(a: &StopAudit) -> String {
+    match a.under {
+        Some((v, at)) => format!(
+            "Der zertifizierte Unter-Claim-Zeuge (#384 §8r) weist bei [{:.2}, {:.2}, {:.2}] \
+             mindestens {v:.3} mm FEHLENDES Material nach: dort ist die Stück-Schranke \
+             L > δ, der Punkt liegt also zwingend in der Erosion, und das Feld behauptet \
+             trotzdem Luft.",
+            at[0], at[1], at[2]
+        ),
+        None if a.lb_probed > 0 => format!(
+            "Der zertifizierte Unter-Claim-Zeuge (#384 §8r) hat an {} Sondier-Punkten dieses \
+             Stopps keinen nachgewiesen — das ist eine Stichprobe, kein Satz: L kann fehlendes \
+             Material nur BEWEISEN, nie ausschliessen (dafür bräuchte es eine obere \
+             Distanzschranke).",
+            a.lb_probed
+        ),
+        None => "Der Unter-Claim-Zeuge (#384 §8r) konnte hier gar nicht hinsehen — ohne \
+                 Stück-Schranke L gibt es für diese Richtung nicht einmal einen Test."
+            .into(),
+    }
 }
 
 /// C4-Spine-Snapping: verlängert Kanal-Kurven, deren Trace am
@@ -5674,7 +5796,7 @@ pub fn synthesize_offset_channels_reported(
             // Prismen, Konkavitäts-Gate inklusive) — sie schließen den δ-schmalen
             // Sliver/Keil, den das Prisma stehen lässt, und fließen in die
             // Capability-Note (Rest = tol statt 0.75·δ).
-            let (channels, verts, prisms, rims, cap_over_claim, lb) =
+            let (channels, verts, prisms, rims, audit, lb) =
                 synthesize_stop(&inner, delta, tol, report);
             // #395: die Kontakt-Prismen als reguläre Boolean-Member VOR dem ±δ in
             // den gefalteten Baum hängen (Design §3.2). Da S ⊆ U (Erosion) bzw.
@@ -5700,7 +5822,7 @@ pub fn synthesize_offset_channels_reported(
                 // `synthesize_stop` notiert) oder gar keine Korrektur.
                 return stop;
             }
-            if (!channels.is_empty() || !verts.is_empty()) && !cap_over_claim {
+            if (!channels.is_empty() || !verts.is_empty()) && !audit.over_claim {
                 // #384 §8e: `cap_over_claim` heißt, die Sonde hat die enge
                 // Zusage an diesem Stopp mit einem Randpunkt-Zeugen widerlegt
                 // und die ehrliche (weitere) Schranke bereits notiert — dann
@@ -5721,8 +5843,9 @@ pub fn synthesize_offset_channels_reported(
                          strukturell ausgeschlossen, weil jeder addierende Term \
                          f ≥ δ − L ≥ δ − dist(x,∁Ω) erfüllt. FEHLENDES Material ist davon NICHT \
                          gedeckt: dafür ist die geometrische Klemme massgeblich, nicht das Gate; \
-                         für diese Richtung ist keine Schranke belegbar (#384 §8k).",
-                        b.pieces.len()
+                         für diese Richtung ist keine Schranke belegbar (#384 §8k). {}",
+                        b.pieces.len(),
+                        under_sentence(&audit)
                     ),
                     None => format!(
                         "Duale Boolean-Kante über Arc-Spline-Kanäle toleranzbeschränkt korrigiert: \

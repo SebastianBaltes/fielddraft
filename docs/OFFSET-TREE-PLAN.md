@@ -1004,6 +1004,43 @@ für Shell.
   Gegenprobe des Pins:
   `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8q.
 
+* **#384 §8r — der Unter-Claim-Zeuge: `L` beweist Anwesenheit, nicht
+  Abwesenheit (2026-08-02).** Die UNTER-Seite (fehlendes Material) war seit
+  §8k von jeder Zusage ausgenommen, gestützt auf zwölf leere Messgitter. §8r
+  ersetzt das Gitter durch einen Zeugen — und leitet zuerst die Vorzeichen her,
+  statt sie zu vermuten: aus `L ≤ dist(x,∁Ω)` folgt **nicht**, dass fehlendes
+  Material ausgeschlossen ist (das verlangt eine OBERE Distanzschranke),
+  sondern nur die Gegenrichtung — `f(x) ≥ 0 ∧ L(x) > δ + tol` BEWEIST
+  fehlendes Material von mindestens `L − δ` mm, ohne exakte Referenz, für
+  beliebige Geometrie. Der vorab benannte Kandidaten-Weg (`f ≤ L − δ + tol`
+  als Freispruch) ist damit widerlegt und „zertifiziert" 10 der 59 bewiesenen
+  Unter-Claims der §8n-BASIS-Nabe, den schlimmsten inklusive. Die obere
+  Schranke liefert der **Fuss-Zeuge** (Fusspunkt des `min`-Stücks aus
+  `lb_foot`, um `push` nach aussen geschoben und mit DEMSELBEN Innen-Indikator
+  als `∁Ω`-Punkt nachgewiesen; ein Newton-Marsch, wo das Stück verschluckt
+  ist) — er zertifiziert **100 % der Risiko-Menge `{f ≥ 0} ∩ Ω` an allen
+  dreizehn Fixturen**, mit `L ≤ exakt ≤ U` an jedem der 143 000 Punkte und
+  einer Klammer `U − L ≤ slack + push + 4.4·10⁻⁵`.
+  **Der Zeuge hat beim ersten Lauf etwas gefunden:** an vier der neun
+  Matrix-Fixturen steht bewiesenes fehlendes Material im ausgelieferten Feld
+  (Ecken-Schale `t/δ = 2 / 2.1 / 2.25`: 0.200 / 0.240 / 0.499 mm; beide
+  Rippen-Kämme: 0.110 / 0.199 mm) — am freien NAHT-ENDE, wo kein §8k-Gitter je
+  hingesehen hat (das Schalen-Gitter misst `[−7,1]³` bei Platten bis `±40`).
+  Gegengeprüft an der exakten Referenz: Feld `+0.0458` gegen `dist = 2.2042`
+  bei `δ = 2`. Ursache ist die um `δ` verschobene freie End-Ebene (§8f), also
+  §8l Ursache 2 — jetzt erstmals mit Ort, Betrag und Beweis. Die Zusage nennt
+  ab sofort beides: den Fund mit Ort und Mindestbetrag, oder die Zahl der
+  Sondier-Punkte plus „Stichprobe, kein Satz". Bewusst NICHT geändert: die
+  `≤`-Zusage der Über-Seite (der Fund ist ein `mindestens`), der Status
+  (`Conservative` würde die wahre Über-Schranke unterschlagen) und die Ausnahme
+  selbst. Die Intervall-Stufe ist zur Hälfte baubar (`U(c) + ρ ≤ δ + tol` ist
+  1-Lipschitz-gültig), die andere Hälfte braucht eine obere Schranke des
+  KORRIGIERTEN Feldes über einer Zelle — und die existiert nicht, solange
+  `channel_apply`/`vertex_apply` keine Intervall-Auswertung haben.
+  Golden 35/35 byte-identisch (der Zeuge schreibt Text, keine Feldwerte).
+  Herleitung, Handrechnungen, Abdeckungs- und Fund-Tabellen:
+  `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8r.
+
 ## 10. Verweise
 
 * SYNTHESIS.md: §1 (Fehler-Taxonomie), §5 (2×2-Pushdown-Messung,

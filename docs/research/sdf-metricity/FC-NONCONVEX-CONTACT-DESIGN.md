@@ -3476,6 +3476,309 @@ sind es 0 Punkte.
 * **Der Unter-Claim-Zeuge**, **Naht gegen Naht**, **spitze Nähte**, **die
   latente `safe_sqrt`-Entartung**: unverändert §8j/§8k/§8m/§8n.
 
+## 8r. Der Unter-Claim-Zeuge — `L` beweist Anwesenheit, nicht Abwesenheit (#384, 2026-08-02)
+
+§8q hat die Unter-Seiten-Ausnahme stehen gelassen und den Grund benannt:
+*„Zwölf leere Gitter sind kein Satz."* Dieses Paket sollte sie durch etwas
+Zertifiziertes ersetzen. Es tut das — und findet dabei heraus, dass die zwölf
+Gitter nicht nur kein Satz waren, sondern **an der falschen Stelle lagen**.
+
+Drei Ergebnisse, in dieser Reihenfolge:
+
+1. **Der vorab benannte Kandidaten-Weg ist widerlegt** — mit verdrehtem
+   Vorzeichen. Er „zertifiziert" 10 von 59 bewiesenen Unter-Claims der
+   §8n-BASIS-Nabe, den schlimmsten inklusive.
+2. **Die richtige Konstruktion hat zwei Hälften**, und `L` ist nur die eine:
+   `L` kann fehlendes Material BEWEISEN, nie ausschliessen. Für das
+   Ausschliessen braucht es eine OBERE Distanzschranke `U` — den Fuss-Zeugen.
+   Er zertifiziert **100 % der Risiko-Menge** an allen dreizehn Fixturen.
+3. **Der Zeuge hat etwas gefunden.** An vier der neun Matrix-Fixturen (fünf von
+   dreizehn) steht bewiesenes FEHLENDES Material im ausgelieferten Feld, bis
+   0.499 mm — am freien NAHT-ENDE, wo kein §8k-Gitter je hingesehen hat. Die
+   Zusage sagt das ab jetzt mit Ort und Betrag.
+
+### Die Vorzeichen, hergeleitet statt vermutet
+
+Gemessen wird die NULLMENGE (`two_sided_scan`), nicht der Wert:
+
+    Über-Claim  bei x  ⟺  f(x) < 0  ∧  δ − dist(x,∁Ω) > tol   (Phantom-Material)
+    Unter-Claim bei x  ⟺  f(x) ≥ 0  ∧  dist(x,∁Ω) − δ > tol   (fehlendes Material)
+
+`L(x) ≤ dist(x,∁Ω)` ist eine UNTERE Schranke (§8o). Daraus folgt, in beide
+Richtungen sauber getrennt:
+
+* **Über-Seite (Abwesenheit).** `L ≥ δ` belegt „x liegt tief genug"; genau das
+  ist der §8p-Satz, nur strukturell statt punktweise.
+* **Unter-Seite (Abwesenheit).** Sie verlangt `dist ≤ δ + tol` — also eine
+  OBERE Schranke. **`L` kann das in keiner Umformung.** Und es ist keine
+  Nachlässigkeit, dass es sie nicht gibt: JEDE billige Grösse dieses Stopps
+  (`de`, `min_k f_k`, jede stützende Ebene, `L` selbst) ist eine untere
+  Schranke. Eine obere verlangt einen Punkt, der BEWEISBAR in `∁Ω` liegt — und
+  das ist genau das §8n-Hindernis (einbeschriebene Polytope `P' ⊆ P`), nur an
+  einer anderen Stelle: nicht als Volumen, sondern als EIN Punkt.
+* **Unter-Seite (Anwesenheit).** Das kann `L` — und nur das:
+
+  > `f(x) ≥ 0 ∧ L(x) > δ + tol` ⇒ `dist(x,∁Ω) ≥ L > δ + tol` ⇒ der Punkt liegt
+  > ZWINGEND in der Erosion, das Feld behauptet dort aber Luft. Es fehlt
+  > Material, und zwar mindestens `L − δ` mm. Ohne exakte Referenz, für
+  > beliebige Geometrie. ∎
+
+Ein Zeuge im Wortsinn: **seine Aussage ist ein Beweis, sein Schweigen keiner.**
+
+### Die Widerlegung des Kandidaten-Wegs, mit Zahlen
+
+Die Hypothese lautete `L(x) ≥ f(x) + δ − tol`, also `f ≤ L − δ + tol`. Mit
+`L ≤ dist` folgt daraus `f ≤ dist − δ + tol` — das ist das Zielfeld mit
+**umgekehrtem Vorzeichen** (`δ − dist`). Schlimmer noch: unter `f ≥ 0` besagt
+das Kriterium `L ≥ δ − tol`, also gerade, dass der Punkt Material sein MUSS.
+Es ist kein Zertifikat gegen Unter-Claims, es ist ein Indiz FÜR sie.
+
+Gemessen am BASIS-Feld der Stufen-Nabe (`L`-Block entfernt, §8n-Stand
+`0 / 59 · 0.3156`): **10 der 59 bewiesenen Unter-Claim-Punkte bestehen das
+Kriterium**, der schlimmste ist ausgerechnet der §8n-Worst-Punkt
+`[−1.463461, −1.163986, −0.684392]` mit 0.3156 mm fehlendem Material. Pin:
+`the_naive_lb_criterion_certifies_real_under_claims_384`.
+
+### Die Handrechnung an genau diesem Punkt
+
+`x = [−1.463461, −1.163986, −0.684392]`, `δ = 2`, `tol = 10⁻³`.
+
+| Grösse | Wert | Herkunft |
+|---|---|---|
+| `dist(x,∁Ω)` | **2.315608** | exakte Zerlegung (§8k) |
+| `L(x)` | 2.315325 | 15 Stücke, `= dist − slack` (`slack = 2.83·10⁻⁴`) |
+| Fusspunkt `q*` | `[−1.463461, −1.163986, −3]` | Plattenboden `z = −3` (§8o-Tabelle) |
+| `q_out = q* + push·(q*−x)/|q*−x|` | `[…, −3.0002]` | `push = 2·10⁻⁴` |
+| naives Feld in `q_out` | `> 0` | unter der Platte, beide Zylinder enden bei `z ≥ −1.8` |
+| `U = |x − q_out|` | **2.315808** | ⇒ `L ≤ dist ≤ U`, Klammer 4.8·10⁻⁴ |
+
+Zwei Ablesungen an demselben Punkt:
+
+* **Zertifikat (Abwesenheit):** `U = 2.3158 > δ + tol = 2.001` — der Fuss-Zeuge
+  zertifiziert hier NICHTS, und das ist richtig: der Punkt liegt tief in der
+  Erosion. Zertifiziert wird er von der anderen Seite, `f(x) < 0`.
+* **Zeuge (Anwesenheit):** am BASIS-Feld ist `f(x) ≥ 0`, und
+  `L − δ = 0.3153` ⇒ **bewiesen fehlendes Material ≥ 0.3153 mm**, gegen den
+  exakten Wert 0.3156. Die Differenz IST der `slack`. Derselbe Punkt, den das
+  Kandidaten-Kriterium freispricht, wird vom richtigen Zeugen überführt.
+
+### Der Fuss-Zeuge: eine obere Schranke aus dem, was schon da ist
+
+`U` braucht einen Punkt in `∁Ω`. Zwei Quellen, beide rigoros, beide ohne neue
+Geometrie:
+
+1. **Der Fusspunkt des `min`-Stücks.** `lb_foot` liefert `q*` (er existiert seit
+   §8o für den Dual-Pfad). Um `push` von `x` weg geschoben und im naiven
+   Vereinigungsfeld geprüft: ist `d₀(q_out) > δ + margin`, liegt `q_out`
+   ausserhalb JEDES Members, also in `∁Ω` — und `U = |x − q_out|`. Der Test ist
+   **derselbe Innen-Indikator, den `lb_value` benutzt** (§8o: `x ∉ Ω ⟺
+   min_k f_k > 0 ⟺ d₀ > δ`), also keine zweite Klemmen-Fassung.
+2. **Der Newton-Marsch**, wenn (1) scheitert — das Stück ist dann von einem
+   anderen Member verschluckt, und der wahre Randpunkt liegt meist auf
+   DEMSELBEN Stück, nur ausserhalb des verschluckten Teils. Ein Stück-Wechsel
+   findet ihn nicht, ein Marsch schon. Abbruch bei `f_inner > margin` — bewusst
+   OHNE das `|f(y)|` des §8e-`boundary_witness`: dessen Addition ist nur für
+   `f(y) ≥ 0` gültig, und ein Marsch auf `|f| ≤ eps` endet auch mal knapp INNEN.
+
+Die Sicherheitsrichtung ist trivial und deshalb belastbar: **jeder gefundene
+Punkt ist gültig, ein nicht gefundener kostet nur Abdeckung.** Ein zu kleines
+`margin` wäre der eine tödliche Fehler — es steht auf `5·10⁻⁵`, eine
+Zehnerpotenz über dem f32-Rauschen der Auswertung.
+
+Ein dritter Zweig (die ganze Stück-Liste in wachsender Distanz abklappern) war
+an keiner der dreizehn Fixturen je der entscheidende und steht deshalb nicht im
+Code: was der `min`-Fusspunkt nicht schafft, holt der Marsch.
+
+### Abdeckung: 100 % der Risiko-Menge, an allen dreizehn Fixturen
+
+Die RISIKO-Menge ist `{f ≥ 0} ∩ Ω` — nur dort kann fehlendes Material sitzen
+(bei `f < 0` behauptet das Feld Material, ausserhalb `Ω` ist `dist = 0`, und
+beides erkennt der Indikator selbst). Gitter und Grenzen wie im Doktrin-Pin
+(Nabe/Schale/notch 22³, Kamm 24³).
+
+| Fixture | Punkte | Risiko | zert. (min-Stück) | zert. (Marsch) | offen | `L − exakt` | `exakt − U` | `U − L` |
+|---|---|---|---|---|---|---|---|---|
+| Stufen-Nabe | 10648 | 6950 | 6718 | 232 | **0** | −2.83e−4 | ≤ 0 | 5.3e−4 |
+| Ecken-Schale `t/δ = 2` | 10648 | 7794 | 6403 | 1391 | **0** | −5.67e−4 | ≤ 0 | 8.1e−4 |
+| `t/δ = 2.1` | 10648 | 7192 | 5756 | 1436 | **0** | −5.67e−4 | ≤ 0 | 8.1e−4 |
+| `t/δ = 2.25` | 10648 | 6546 | 5267 | 1279 | **0** | −5.67e−4 | ≤ 0 | 8.1e−4 |
+| `t/δ = 2.4` | 10648 | 5874 | 4788 | 1086 | **0** | −5.67e−4 | ≤ 0 | 8.1e−4 |
+| `t/δ = 2.5` | 10648 | 5470 | 4623 | 847 | **0** | −5.68e−4 | ≤ 0 | 8.1e−4 |
+| `t/δ = 3` | 10648 | 4084 | 3265 | 819 | **0** | −5.69e−4 | ≤ 0 | 8.1e−4 |
+| `t/δ = 4` | 10648 | 2324 | 1887 | 437 | **0** | −5.71e−4 | ≤ 0 | 8.2e−4 |
+| `t/δ = 6` | 10648 | 997 | 773 | 224 | **0** | −5.78e−4 | ≤ 0 | 8.2e−4 |
+| Rippen-Kamm 4×1.5/0.8 | 13824 | 4896 | 4200 | 696 | **0** | −3.07e−4 | ≤ 0 | 5.5e−4 |
+| Rippen-Kamm 4×2.0/1.0 | 13824 | 4896 | 4296 | 600 | **0** | −3.07e−4 | ≤ 0 | 5.5e−4 |
+| notch 90° | 10648 | 1617 | 1605 | 12 | **0** | −1.50e−3 | ≤ 0 | 1.7e−3 |
+| notch 60° | 10648 | 1782 | 1733 | 49 | **0** | −1.50e−3 | ≤ 0 | 1.9e−3 |
+
+Drei Ablesungen:
+
+* **Beide Schranken sind solide.** `L ≤ exakt ≤ U` an JEDEM der 143 000 Punkte,
+  gemessen gegen die exakten §8k-Referenzen. `L − exakt` ist überall genau
+  `−slack` — die untere Schranke trifft die Wahrheit, sie schätzt sie nicht.
+* **Die Klammer ist eng.** `U − L ≤ slack + push + 4.4·10⁻⁵`; die dritte
+  Quelle ist die f32-Rundung des Fusspunkts. Das Zertifikat entscheidet also,
+  statt bloss zu existieren.
+* **Die Fernfeld-Kugel ist die einzige Blende.** Mit ihr bleiben an der Nabe
+  681 Risiko-Punkte ohne `L` (ausserhalb der Term-Kugel); ohne sie null. Für
+  den Laufzeit-Zeugen ist das folgenlos: er sondiert ausschliesslich in den
+  Wirkfenstern `δ < de < K` der Terme, und `skip_r = max_i(|c_i − c| + K_i)`
+  umschliesst sie alle.
+
+### Der Fund: das freie Naht-Ende
+
+Der Zeuge läuft auf DENSELBEN Sondier-Punkten wie der §8e-Über-Zeuge (240
+Fibonacci-Richtungen × 10 Radien je Station, im Wirkfenster des Terms). Beim
+ersten Lauf über die Fixture-Matrix hat er angeschlagen:
+
+| Fixture | `L`-Stücke | Zeuge | bewiesen | Ort |
+|---|---|---|---|---|
+| Stufen-Nabe | 15 | schweigt (8597 Punkte) | — | — |
+| **Ecken-Schale `t/δ = 2`** | 72 | **spricht** | **≥ 0.200 mm** | `[−1.78, −1.30, −37.78]` |
+| **`t/δ = 2.1`** | 72 | **spricht** | **≥ 0.240 mm** | `[−3.06, −2.02, −37.76]` |
+| **`t/δ = 2.25`** | 72 | **spricht** | **≥ 0.499 mm** | `[−3.36, −2.28, −37.47]` |
+| `t/δ = 2.4 … 6` (5 Dicken) | 72 | schweigt (26–34 k Punkte) | — | — |
+| **Rippen-Kamm 4×1.5/0.8** | 296 | **spricht** | **≥ 0.110 mm** | `[3.52, 18.00, −3.56]` |
+| **Rippen-Kamm 4×2.0/1.0** | 140 | **spricht** | **≥ 0.199 mm** | `[−4.43, 18.01, −3.52]` |
+| notch 90° / 60° | 28 | schweigt (1000 / 1772 Punkte) | — | — |
+
+**Die Gegenprüfung an der exakten Referenz**, damit der erste Fund nicht bloss
+behauptet ist. Ecken-Schale `t/δ = 2` bei `[−1.78, −1.30, −37.78]`:
+
+| Grösse | Wert |
+|---|---|
+| Feld (ausgeliefert) | **+0.045825** — behauptet LUFT |
+| naives `d₀` | +0.220000 |
+| `L` | 2.203610 |
+| exakt `dist(x,∁Ω)` | **2.204178** |
+| fehlendes Material | `dist − δ = 0.204178` |
+
+Von Hand nachgerechnet: der Punkt liegt in `P1 ∩ P2` (Tiefe 1.30 bzw. 1.78,
+`max = 1.78 < δ` ⇒ naiv Luft), aber `P3` ist bei `z = −37.78` weit weg. Der
+nächste Punkt von `∁Ω` liegt auf der Reflex-Kante `x = 0, y = 0`, also
+`sqrt(1.78² + 1.30²) = 2.204`. Das Feld müsste dort `−0.204` sagen; bei
+`z = −20` sagt es **genau das** (`−0.203610`), bei `z = −37.78` nicht mehr.
+
+**Die Ursache ist benannt und alt.** Am freien Naht-Ende gatet die um `δ`
+verschobene End-Ebene (§8f): `s₃ = ⟨x−E, t̂⟩ − δ = 2.22 − 2 = 0.22`, also
+`w_geo ≤ 0.22`, während `d₀ = 0.22` und die nötige Korrektur `0.4236` beträgt.
+Der Term darf genau die Hälfte. Das ist §8l Ursache 2 („die freie End-Ebene mit
+`δ`-Versatz lässt den naiven Sliver stehen"), dort für die Ecken-Schale
+vertagt — jetzt zum ersten Mal MIT Ort, Betrag und Beweis. Ein lokales Gitter
+`4 mm ± ` um die Fundstelle (16³, Fernfeld-Kugel aus) bestätigt es unabhängig:
+
+| Fixture | Risiko | zertifiziert | **bewiesener Unter-Claim** | offen | `exakt` max |
+|---|---|---|---|---|---|
+| Ecken-Schale `t/δ = 2` | 3564 | 3546 | **18** | 0 | 0.1972 |
+| `t/δ = 2.1` | 3336 | 3296 | **40** | 0 | 0.2592 |
+| `t/δ = 2.25` | 3031 | 2946 | **85** | 0 | 0.4472 |
+| `t/δ = 2.4` | 2636 | 2636 | **0** | 0 | 0.0000 |
+| Rippen-Kamm 4×2.0/1.0 | 2287 | 2277 | **10** | 0 | 0.0636 |
+
+Das Zertifikat zählt exakt dort Unter-Claims, wo die exakte Referenz welche
+sieht, und nirgends sonst — **ohne sie zu benutzen**. Und `t/δ = 2.4` ist
+beidseitig leer, genau wie der Zeuge sagt.
+
+Warum §8k–§8q das nie sahen: das Schalen-Gitter misst `[−7, 1]³` bei Platten,
+die bis `±40` reichen. Es liegt um die Ecke herum — der Rest sitzt am
+**Naht-Ende**. Die zwölf leeren Gitter waren nicht nur kein Satz; sie waren
+eine Messung an der falschen Stelle. Der Zeuge braucht kein Gitter: er sondiert
+das Wirkfenster jedes Terms, und das ist genau dort, wo der Term etwas
+behauptet.
+
+### Was in die Zusage kam — und was bewusst nicht
+
+| | vorher (§8q) | nachher (§8r) |
+|---|---|---|
+| Über-Seite | `≤ 0.010 mm` + §8p-Satz | unverändert |
+| Unter-Seite | „für diese Richtung ist keine Schranke belegbar" | dito **plus** das Zeugen-Ergebnis: Ort und Mindestbetrag, wo er spricht; Zahl der Sondier-Punkte und „Stichprobe, kein Satz", wo er schweigt |
+| Status | `ToleranceBounded` | unverändert |
+| `promised_bound` | `0.010` | unverändert |
+
+Drei Entscheidungen, jede gegen eine naheliegende Alternative:
+
+* **Kein `≤` und keine Zahl als ZUSAGE für die Unter-Seite.** Der Fund ist ein
+  `mindestens`, kein `höchstens`; `promised_bound` liest ausschliesslich
+  `≤`-Zahlen, und eine Messung als Versprechen auszugeben wäre der
+  §8g-Zirkelschluss.
+* **Kein Downgrade auf `Conservative`, obwohl fehlendes Material jetzt BEWIESEN
+  ist.** Das würde `promised_bound` auf `None` setzen und damit die wahre
+  Über-Seiten-Schranke unterschlagen. Die Unter-Seite war nie zugesagt; sie
+  wird jetzt nur ehrlich beziffert.
+* **Die Ausnahme bleibt eine Ausnahme.** Das Zertifikat deckt 100 % der
+  Risiko-Menge der gemessenen GITTER — aber der Laufzeit-Zeuge sondiert Punkte,
+  keine Zellen. Wer die Ausnahme streichen will, braucht den Raum, nicht die
+  Stichprobe (s. u.).
+
+### Die Intervall-Stufe: erreichbar zur Hälfte, und die andere Hälfte ist benannt
+
+Für eine Zelle `C` (Mittelpunkt `c`, Halbdiagonale `ρ`) wäre zu zeigen: kein
+`x ∈ C` erfüllt `f(x) ≥ 0 ∧ dist(x) > δ + tol`. Zwei hinreichende Zweige:
+
+1. **`U(c) + ρ ≤ δ + tol`** — gültig ohne Intervallarithmetik, weil
+   `dist(·,∁Ω)` 1-Lipschitz ist. Dieser Zweig ist **heute baubar**: `U` gibt es
+   seit diesem Paket.
+2. **`sup_C f < 0`** — und genau hier steht die Mauer. `f ≤ d₀` liefert
+   `sup_C f ≤ d₀(c) + ρ` (das naive Vereinigungsfeld ist 1-Lipschitz), aber
+   diese Schranke ist im naiven SLIVER wertlos — und der Sliver IST das
+   Problem. Eine echte obere Schranke von `f` über einer Zelle braucht eine
+   Lipschitz-Konstante des KORRIGIERTEN Feldes, und die existiert nicht: die
+   Terme schalten hart (`select`, Kegel-Gates), und §8m hat die latente
+   `safe_sqrt`-Entartung dokumentiert.
+
+Damit ist die Unter-Seite über den ganzen Raum **nicht** mit heutigen Mitteln
+beweisbar, und der fehlende Baustein hat einen Namen: *eine Intervall-/
+Lipschitz-Auswertung von `channel_apply`/`vertex_apply`.* Das ist ein eigenes
+Paket, kein Nebensatz — und solange es fehlt, bleibt die Ausnahme stehen.
+
+### Verifikation
+
+* **Golden**: `cmp` über die ganze Datei — **35 von 35 Szenen byte-identisch**,
+  Tape UND Feldwerte. Erwartete Richtung: keine Auswerter-Zeile, kein Opcode,
+  kein Payload-Wort, kein Spiegel berührt; der Zeuge schreibt Text.
+* **`just test`**: Fast-Tier **1466** (Baseline 1462, vier neue Pins) / Web
+  **2082** (unverändert). `cargo test --workspace` **1571** (Baseline 1567).
+* **`OFFSET_FUZZ_ITERS=200 … offset_fuzz --release`**: 5/5.
+
+### Neue Pins
+
+* `the_naive_lb_criterion_certifies_real_under_claims_384` — die Widerlegung
+  des Kandidaten-Wegs, 10 von 59 an der BASIS-Nabe.
+* `under_witness_proves_the_basis_regression_384` — die Gültigkeit des Zeugen,
+  gegen die PRODUKTIONS-Funktion, in drei Richtungen: er spricht am BASIS-Feld
+  (≥ 40 der 59 Punkte, schlimmster knapp unter 0.3156), er lügt nie (an JEDEM
+  Fund bestätigt die exakte Referenz mindestens den Betrag), und er schweigt am
+  ausgelieferten Feld.
+* `under_certificate_covers_the_risk_set_384` — `L ≤ exakt ≤ U`, Klammer unter
+  `slack + push + f32`, null offene Risiko-Punkte, an vier Fixturen.
+* `promise_names_the_under_claim_witness_384` — das Inventar: welche Fixture
+  einen Fund trägt und welchen Betrag, und dass die Zusage sich davon NICHT
+  bewegt.
+* Sonden (`#[ignore]`): `probe_384_under_certificate_coverage` (die Tabelle
+  oben, mit und ohne Fernfeld-Kugel), `probe_384_under_witness_inventory`,
+  `probe_384_seam_end_grid`, `probe_384_shell_under_claim_point`.
+
+**Keine bestehende Pin-Zeile bewegt sich** — insbesondere nicht
+`promise_is_as_sharp_as_the_field_384` und
+`erosion_promise_names_the_side_it_covers_384`: der Zusagen-Text wächst nur,
+die Teilstrings, an denen sie hängen (`FEHLENDES Material`, `Stück-Schranke L`,
+`≤ 0.01 mm`), stehen unverändert darin.
+
+### Was OFFEN bleibt
+
+* **Der Naht-Ende-Rest ist jetzt ein MESSWERT, kein Verdacht** — bis 0.499 mm
+  fehlendes Material an drei Schalen-Dicken und beiden Kämmen, Ursache §8l
+  Ursache 2 (`δ`-verschobene freie End-Ebene). Das ist der nächste Fix, und er
+  hat zum ersten Mal einen Zeugen, der ihn abnehmen kann.
+* **Die Intervall-Stufe** — Zweig 1 baubar, Zweig 2 braucht eine
+  Intervall-Auswertung des korrigierten Feldes (s. o.).
+* **Der Zeuge bleibt eine Stichprobe.** 240 Richtungen × 10 Radien je Station;
+  sein Schweigen ist kein Beweis, und die Notiz sagt das wörtlich.
+* **Der konvexe Zweig**, **Member-Formen jenseits Box/Zylinder/konvexem
+  Geraden-Extrude**, **spitze Nähte**, **die latente `safe_sqrt`-Entartung**:
+  unverändert §8j/§8m/§8n/§8q.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
