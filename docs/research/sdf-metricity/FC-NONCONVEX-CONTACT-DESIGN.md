@@ -6097,20 +6097,55 @@ nicht zwei Bedeutungen haben.
 **Die Bounding-Sphere musste deshalb neu bewiesen werden.** Bis §8x nahm
 `finish_arc` drei Punkte bei `t ∈ {0, 0.5, 1}` und deren Schwerpunkt; das stand
 auf der Annahme, `t = 0.5` sei der WINKEL-Mittelpunkt. Ist es nicht mehr.
-Jetzt die **Sehnen-Kugel**: Mittelpunkt `(A+B)/2`, Radius `|A−B|/2`.
-*Lemma:* mit `M − c = r cos(α/2)(cos(α/2), sin(α/2))` ist
-`|P−M|² = r²(1 + cos²(α/2)) − 2r² cos(α/2) cos(φ − α/2)`, monoton wachsend in
-`|φ − α/2|`, also über `φ ∈ [0,α]` an den ENDPUNKTEN maximal. ∎ Sie braucht den
-Winkelmittelpunkt gar nicht.
+
+Die erste §8y-Fassung ersetzte das durch die **Sehnen-Kugel** — und die war für
+die tatsächlich zugelassenen Daten **nicht bewiesen** (Blocker des zehnten
+Reviews). Ihr Beweis braucht einen ORTHONORMALEN Rahmen `(u,v)`, und den prüfte
+niemand: mit `u = v = (1,0,0)` und einem Viertelbogen fallen beide Endpunkte
+zusammen, die Kugel schrumpft auf die Reserve, und der Prune darf einen
+Bogenpunkt überspringen, der `√2 − 1` entfernt liegt. Dazu skalierte die feste
+`1e-4`-Reserve nicht mit `r`, und `finish_arc` baute die B-Seite über
+`arc_point_at(1) = normalize(diamond_dir(D_e))`, während die Produktion für
+`q₁` direkt `e` benutzt — reell gleich, in f32 nicht bitgleich, also eine
+zweite Autorität.
+
+**Jetzt eine strukturelle Schranke ohne Rahmen-Voraussetzung.** Für den Bogen:
+Mittelpunkt `c`, Radius `r·√(|u|²+|v|²)`.
+
+*Lemma:* `|P − c| = r·|u cos φ + v sin φ|`, und `|u cos φ + v sin φ|²` ist die
+quadratische Form der Gram-Matrix `[[|u|², u·v], [u·v, |v|²]]` auf dem
+Einheitskreis — also höchstens deren grösster Eigenwert, und der ist höchstens
+die Spur `|u|² + |v|²`. ∎ Gilt für **jedes** `u`, `v`.
+
+Für das **Segment** bleibt die Sehnen-Kugel, und dort ist sie exakt und
+voraussetzungsfrei: das Segment IST seine Sehne.
+
+Damit muss `arc_data_valid` `u`,`v` **nicht** auf Orthonormalität prüfen — die
+Voraussetzung ist weggefallen statt hinzugefügt worden. Die Kugel ist lockerer
+als die Sehnen-Kugel; das ist unkritisch, weil sie ausschliesslich ein PRUNE
+ist: Überschätzen kostet Rechenzeit, nie Korrektheit. Die Reserve skaliert jetzt
+relativ mit der Grösse. Und `arc_point_at(0)`/`(1)` liefern jetzt explizit
+`c + r·u` bzw. `c + r·(u·e₀ + v·e₁)` — buchstäblich dieselben Zahlen wie die
+Produktion.
 
 ### Das Abweichungslemma
 
 Der Parameterwechsel `φ/α → D(φ)/D_e` verschiebt nur den nlerp-Parameter:
 
-1. `ε_D(α) = sup_φ |D(φ)/D(α) − φ/α|`; das Maximum über ALLE `α ∈ (0,π]` liegt
-   bei `α ≈ 0.859 rad (49.2°)` und beträgt **0.0911**.
+1. `ε_D(α) = sup_φ |D(φ)/D(α) − φ/α|`; **numerisch abgetastet** über ein
+   2000×400-Gitter ergibt sich ein Maximum von **0.0911** bei
+   `α ≈ 0.859 rad (49.2°)`.
+
+   **Das ist kein Beweis** (Richtigstellung nach dem zehnten Review): eine
+   Gitter-Abtastung belegt weder Lage noch Höhe des globalen Maximums. Die
+   geschlossene Form `D(φ) = (1 + tan(φ − π/4))/2` macht eine echte
+   Extremwert-Herleitung möglich (Ableitung nach `φ` und `α`, Monotonie-
+   Argument) — sie ist nicht geführt. Der Wert motiviert ausschliesslich den
+   Konditionswächter; er trägt keine Laufzeit-Zusage.
 2. nlerp-Lipschitz: `|N(a,b,t₁) − N(a,b,t₂)| ≤ 2√((1−c)/(1+c))·|t₁−t₂|`,
-   `c = a·b`.
+   `c = a·b`. **Die Formel setzt EXAKT normierte Endvektoren voraus**; die
+   f32-`m` sind nur näherungsweise normiert. Eine Rundungsbrücke dafür ist
+   nicht geführt — auch dieser Wert motiviert nur den Konditionswächter.
 3. Damit `|Δs_i| ≤ K · 2√((1−c)/(1+c)) · ε_D` im Trust-Radius; `min`/`max` sind
    nicht-expansiv, also ist das zugleich die **Feldabweichungs-Schranke**.
 
@@ -6121,11 +6156,18 @@ Konsequenz: **sie taugt nicht als scharfes Änderungsbudget.** Ein Budget, das
 die 0.03 mm einfängt, würde jeden gesunden Bogen verwerfen.
 
 Was sie kann, ist die **Explosion** abfangen: bei `c → −1` wächst sie über alle
-Grenzen (`c = −0.9 ⇒ 3.1 mm`, `c = −0.999 ⇒ 31.9 mm`). Das A0-Budget sitzt
-deshalb dort — `ARC_NLERP_COS_MIN = −0.95` (Schranke ≈ 4.5 mm). Die echten
-Bögen liegen bei `−0.835`, das Gate hat echten Abstand und ist trotzdem
-wirksam: ein Bogen mit fast antipodalen Dual-Endvektoren wird von der Synthese
-abgelehnt statt mit unbezifferbarer Abweichung ausgeliefert.
+Grenzen (`c = −0.9 ⇒ 3.1 mm`, `c = −0.999 ⇒ 31.9 mm`). Dort sitzt der
+Wächter — `ARC_NLERP_CONDITION_MIN = −0.95`.
+
+**Er heisst bewusst nicht mehr „Budget"** (Richtigstellung nach dem zehnten
+Review): er ist ein **Konditionswächter** gegen numerische
+Quasi-Antipodalität, **kein beziffertes Änderungsbudget**. Bei `c = −0.835`
+liesse er rein rechnerisch 2.37 mm zu, an der Schwelle rund 4.5 mm, und er
+skaliert mit `K`. Was er garantiert, ist nicht „die Abweichung bleibt unter X",
+sondern „die Interpolation ist nicht numerisch entartet". Ein Bogen mit fast
+antipodalen Dual-Endvektoren wird von der Synthese abgelehnt statt mit
+unbezifferbarer Abweichung ausgeliefert; auf der §8p-Matrix ist der Wächter
+inert.
 
 **Zweifach ausgewiesen**, wie verlangt:
 * **mathematisch** gegen das ideale `φ/α`, mit bewiesenem `ε_D` (oben);
@@ -6135,6 +6177,18 @@ abgelehnt statt mit unbezifferbarer Abweichung ausgeliefert.
   das ist der Grund für den Umbau. `sin`/`cos`/`atan2` haben keinen
   Rundungsvertrag; was sie lieferten, lässt sich nicht einschliessen, nur
   messen.
+
+### Der Enveloppen-Satz, eng formuliert
+
+`sdf_dual` friert `q*` und `m̂` aus der CPU-`channel_nearest` ein. Der
+Enveloppen-Satz rechtfertigt das **für die Distanz `de`**: dort ist der
+Fusspunkt stationär, das Einfrieren also ableitungsneutral. Er rechtfertigt
+**nicht** pauschal jede Ableitung der interpolierten `m`-Gate-Terme — die
+hängen über `t` von `p` ab, und diese Abhängigkeit fällt beim Einfrieren weg.
+Das ist eine ältere Näherung des Dual-Arms; **A0 führt sie weder neu ein noch
+verschärft es sie** (der Parameterwechsel ändert `t`, nicht die Frage, ob seine
+Ableitung mitgeführt wird). Benannt, damit die Zusage nicht breiter gelesen
+wird als sie ist.
 
 ### Golden-Diff, vollständig attribuiert
 
@@ -6206,6 +6260,81 @@ rechnet eine andere, clamp-basierte Formel und behält ihr `atan2`.
 * `arc_parameter_deviation_bound_384` — `ε_D`, nlerp-Lipschitz, Feldschranke,
   und das Explosions-Gate.
 
+### §8y-Korrektur: das zehnte Mathe-Review (v0.61.1)
+
+Bestätigt hat es Sektorlemma, Diamantlemma, die CPU-Grenzsemantik, die
+C++/TSL/Rust-Tape-Parität, die dichte Referenz als Falsifikator und dass
+`sdf_dual` unangetastet bleiben durfte. **Drei Blocker blieben.**
+
+#### B1 — der fidget-Spiegel folgte dem ρ-Zweig nicht
+
+Die CPU liefert für `ρ < 1e-9` **zwingend** `(q₀, t = 0)`; fidget ersetzte nur
+`ρ` durch `max(ρ, 1e-9)` und projizierte weiter. Auf der Bogenachse
+(`x = y = 0`) sind dann BEIDE Diamant-Nenner null, `dm` wird `0/0 = NaN` — und
+**NaN wandert durch `select` hindurch**, ein toter Ast vergiftet den ganzen
+Baum. Auch abseits der Achse, bei `0 < ρ < 1e-9`, projizierte fidget auf den
+Kreis, während die CPU den Startpunkt nimmt.
+
+Gefixt mit einem **äusseren ρ-Select**, der `de`/`q`/`t` GEMEINSAM auf den
+Achsenzweig setzt, plus sicheren Nennern (auf der Achse wird `1` addiert), damit
+gar kein NaN-Ast entsteht. `check_interp` deckt fidget **nicht** ab; der neue
+Pin `arc_fidget_mirrors_the_rho_branch_384` ist der einzige Prüfpfad — 648
+Proben über `ρ ∈ {0, 0.5e-9, next_down(1e-9), 1e-9, next_up(1e-9), 1e-6}` und
+sechs Winkel, max `|CPU − fidget| = 6.3·10⁻⁷`.
+
+#### B2 — die Sehnen-Kugel war für die zugelassenen Daten nicht bewiesen
+
+S. o. — ersetzt durch die strukturelle Schranke `r·√(|u|²+|v|²)`, die ohne
+Rahmen-Voraussetzung auskommt, plus endpunkt-exakte `arc_point_at(0/1)`.
+
+#### B3 — `arc_data_valid` band die Autoritäten nicht zusammen
+
+Durchgelassen wurden: ein gültiges `e` mit **beliebigem anderem `D_e`**
+(derselbe Bogen, aber ein anderes `t` und damit ein anderes Material-Gate);
+`sweep = NaN` (weil `NaN < 0` falsch ist und der Bogen-Arm griff);
+`sweep = 3π` mit `e = (−1,0)` (als Halbkreis interpretiert, während die
+Provenienz einen Mehrfachbogen behauptet); nicht endliche `m`-Vektoren; und der
+Segment-Zweig kehrte zurück, bevor irgendetwas davon geprüft war.
+
+Ergänzt: `sweep.is_finite()`, für gekrümmte Bögen `0 < sweep ≤ π` als
+GÜLTIGKEITS-Kriterium (auch wenn die Auswertung den Winkel nicht liest),
+**bit-identische** Konsistenz `D_e == diamond(e)`, endliche `m`-Vektoren, und
+der Segment-Zweig prüft die gemeinsamen Felder mit. Die Tape-Leser brauchen
+keine redundanten Prüfungen, weil ein Tape ausschliesslich nach dieser
+Konstruktor-Prüfung entstehen kann — aber die Konstruktor-Prüfung ist jetzt
+vollständig.
+
+#### Golden der Korrektur — Feld bit-identisch
+
+| | v0.61.0 | v0.61.1 |
+|---|---|---|
+| Szenen byte-identisch | — | **32 von 35** |
+| **PT-Werte bewegt** | — | **0** |
+| Tape-Worte bewegt | — | 264 |
+
+**Kein einziger Feldwert bewegt sich** — die alte Kugel hat auf den Fixturen
+also nie falsch geprunt; die Korrektur beseitigt eine Beweis-Lücke, keinen
+gemessenen Fehler. Die 264 Worte sind vollständig attribuiert:
+
+* **Arc-Records** (Abstand 30): `bc`/`br` der gekrümmten Bögen
+  (Steinmetz 36 × 4 = 144), `br` der Segmente (notch 1 × 1, Ecken-Schale 48 × 1).
+* **Knock-on** (Abstand 14, Verhältnis exakt 1 + 10⁻⁷): die Arc-Kugel speist die
+  Kanal-Kugel, die den Fernfeld-Radius `skip_r` des `L`-Blocks speist, und der
+  geht in die Reichweite `R` und damit in das `emax`-Budget **jedes**
+  `Tri`-Stücks ein. `emax` ist dokumentiert reine Beschleunigung ohne
+  Feldwert-Einfluss — konsistent mit den null bewegten PT-Werten.
+
+`check_interp` unverändert **35 / 17 920 / 0**.
+
+#### Zwei Sollte-Punkte
+
+* **`ARC_NLERP_COS_MIN` → `ARC_NLERP_CONDITION_MIN`**, mit ehrlicher Doku: es
+  ist ein **Konditionswächter**, kein beziffertes Budget (s. o.).
+* **`ε_D ≤ 0.0911` ist numerisch abgetastet, nicht bewiesen** — die
+  Formulierung ist zurückgenommen, die geschlossene Form als Weg zur echten
+  Herleitung benannt. Ebenso die nlerp-Lipschitz-Formel: sie setzt exakt
+  normierte Endvektoren voraus, die f32-`m` sind es nur näherungsweise.
+
 ### Was OFFEN bleibt
 
 * **A1 — die Intervall-Einschliessung der NEUEN Op-Kette.** A0 hat die
@@ -6216,7 +6345,10 @@ rechnet eine andere, clamp-basierte Formel und behält ihr `atan2`.
   Paket.
 * **Der geometrische Gegencheck** des interpolierten `m̂` gegen den aus den
   Member-Gradienten berechneten `dual_cone` an den Trace-Stützstellen: nicht
-  gebaut. Die Abweichung ist über das Lemma beziffert (2.37 mm Schranke,
+  gebaut (benanntes Folgethema).
+* **Eine echte Extremwert-Herleitung für `ε_D`** aus der geschlossenen Form,
+  und die Rundungsbrücke für die nlerp-Lipschitz-Konstante bei nur
+  näherungsweise normierten f32-`m`. Die Abweichung ist über das Lemma beziffert (2.37 mm Schranke,
   0.03 mm gemessen), aber ein direkter Vergleich an den Stützstellen fehlt.
 * **P5b, P6a**: unverändert.
 

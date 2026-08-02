@@ -1543,49 +1543,68 @@ fn segment_arc(p0: [f32; 3], p1: [f32; 3]) -> Option<ChannelArc> {
     }))
 }
 
-/// Bounding-Sphere eines Bogens nachtragen — **die Sehnen-Kugel, bewiesen
-/// umfassend** (#384 §8y).
+/// Bounding-Sphere eines Bogens nachtragen (#384 §8y, korrigiert nach dem
+/// zehnten Review).
 ///
-/// Bis §8y wurden drei Punkte bei `t ∈ {0, 0.5, 1}` genommen und ihr Schwerpunkt
-/// als Mittelpunkt. Das stand auf der Annahme, `t = 0.5` sei der WINKEL-Mittelpunkt
-/// — mit der Diamant-Parametrisierung ist es das nicht mehr, und eine darauf
-/// gestützte Kugel dürfte nicht ungeprüft weiterlaufen.
+/// **Segment** — die Sehnen-Kugel ist hier EXAKT: das Segment IST seine Sehne,
+/// also enthält die Kugel um die Sehnenmitte mit Radius `|A−B|/2` es
+/// vollständig, ohne jede Annahme über `u`.
 ///
-/// Die Sehnen-Kugel braucht den Mittelpunkt gar nicht: Mittelpunkt `M` ist die
-/// Sehnenmitte `(A+B)/2`, Radius `|A−B|/2`.
+/// **Bogen** — hier stand bis zur Korrektur ebenfalls die Sehnen-Kugel, und ihr
+/// Beweis brauchte einen ORTHONORMALEN Rahmen `(u,v)`. Den prüfte niemand: mit
+/// `u = v = (1,0,0)` und einem Viertelbogen fallen beide Endpunkte zusammen,
+/// die Kugel schrumpft auf die Reserve, und der Prune darf einen Bogenpunkt
+/// überspringen, der `√2 − 1` entfernt liegt. Dazu skalierte die feste
+/// `1e-4`-Reserve nicht mit `r`.
 ///
-/// **Lemma (umfassend für `α ≤ π`).** Mit `P − c = r(cos φ, sin φ)` und
-/// `M − c = r cos(α/2)·(cos(α/2), sin(α/2))` ist
-/// `|P−M|² = r²(1 + cos²(α/2)) − 2r² cos(α/2) cos(φ − α/2)`.
-/// Der Ausdruck wächst monoton mit `|φ − α/2|`, ist also über `φ ∈ [0, α]` an
-/// den ENDPUNKTEN maximal. Damit gilt `|P − M| ≤ |A − M| = |A−B|/2` für jeden
-/// Bogenpunkt. ∎
+/// Jetzt eine **strukturelle** Schranke, die für JEDES `u`, `v` gilt:
 ///
-/// Für das Segment ist es dieselbe Formel (Sehne = Segment). Der Zuschlag
-/// `1e-4` bleibt als Rundungs-Reserve.
+/// ```text
+/// |P − c| = r·|u·cos φ + v·sin φ| ≤ r·√(|u|² + |v|²)
+/// ```
+///
+/// *Beweis:* `|u cos φ + v sin φ|²` ist die quadratische Form der Gram-Matrix
+/// `[[|u|², u·v], [u·v, |v|²]]` auf dem Einheitskreis, also höchstens deren
+/// grösster Eigenwert, und der ist höchstens die Spur `|u|² + |v|²`. ∎
+///
+/// Damit braucht die Kugel **keine Rahmen-Voraussetzung**, und
+/// [`arc_data_valid`] muss `u`,`v` nicht auf Orthonormalität prüfen. Sie ist
+/// lockerer als die Sehnen-Kugel; das ist unkritisch, weil die Kugel
+/// ausschliesslich ein PRUNE ist: Überschätzen kostet Rechenzeit, nie
+/// Korrektheit — übersprungen wird nur, was das `min` nachweislich nicht
+/// gewinnen kann. Die Reserve skaliert jetzt relativ mit der Grösse.
 fn finish_arc(mut arc: ChannelArc) -> ChannelArc {
-    let a = arc_point_at(&arc, 0.0);
-    let b = arc_point_at(&arc, 1.0);
-    let bc = [
-        0.5 * (a[0] + b[0]),
-        0.5 * (a[1] + b[1]),
-        0.5 * (a[2] + b[2]),
-    ];
-    let br = norm(sub(a, bc)).max(norm(sub(b, bc))) + 1e-4;
-    arc.bc = bc;
-    arc.br = br;
+    if arc.sweep < 0.0 {
+        let a = arc_point_at(&arc, 0.0);
+        let b = arc_point_at(&arc, 1.0);
+        let bc = [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1]), 0.5 * (a[2] + b[2])];
+        let br = norm(sub(a, bc)).max(norm(sub(b, bc)));
+        arc.bc = bc;
+        arc.br = br * (1.0 + 1.0e-5) + 1.0e-4;
+        return arc;
+    }
+    let g = (dot(arc.u, arc.u) + dot(arc.v, arc.v)).max(0.0).sqrt();
+    arc.bc = arc.c;
+    arc.br = arc.r * g * (1.0 + 1.0e-5) + 1.0e-4;
     arc
 }
 
-/// #384 §8y — **das A0-Änderungsbudget als Kosinus-Gate.** Unterhalb dieses
-/// Skalarprodukts der Dual-Endvektoren explodiert die nlerp-Lipschitz-Konstante
-/// `2√((1−c)/(1+c))` und mit ihr die Feldabweichungs-Schranke des
-/// Parameterwechsels; solche Bögen lehnt die Synthese ab.
+/// #384 §8y — **der Konditionswächter der nlerp-Interpolation.**
 ///
-/// `−0.95` entspricht einer Schranke von rund 4.5 mm bei `K = 3.91`. Die
-/// echten Bögen der §8p-Matrix liegen bei `c = −0.835` (Schranke 2.37 mm), das
-/// Gate hat also echten Abstand und ist trotzdem wirksam.
-pub const ARC_NLERP_COS_MIN: f32 = -0.95;
+/// **Kein beziffertes Änderungsbudget** (Richtigstellung nach dem zehnten
+/// Review): unterhalb dieses Skalarprodukts der Dual-Endvektoren explodiert die
+/// nlerp-Lipschitz-Konstante `2√((1−c)/(1+c))`, und mit ihr jede Schranke, die
+/// darauf steht. Der Wächter fängt genau diese numerische Quasi-Antipodalität
+/// ab — er begrenzt die Abweichung NICHT auf einen Millimeterwert. Bei
+/// `c = −0.835` (dem schlechtesten realen Bogen) liesse die Schranke rein
+/// rechnerisch 2.37 mm zu, an der Schwelle rund 4.5 mm, und sie skaliert mit
+/// `K`. Gemessen wurden 0.0315 mm.
+///
+/// Auf der §8p-Matrix ist der Wächter **inert** (schlechtestes `c = −0.835`);
+/// er greift erst bei Bögen, deren Dual-Endvektoren fast entgegengesetzt
+/// stehen — dort ist die Interpolation numerisch sinnlos, unabhängig von der
+/// Parametrisierung.
+pub const ARC_NLERP_CONDITION_MIN: f32 = -0.95;
 
 /// #384 §8y — **die Dateninvariante eines Bogens.** Sie ersetzt das alte
 /// `sweep ≤ π`-Laufzeitkriterium: `sweep` ist keine Autorität mehr.
@@ -1595,26 +1614,42 @@ pub const ARC_NLERP_COS_MIN: f32 = -0.95;
 /// ist (`e₁ ≥ 0`) und `0 < D_e ≤ 2`. Major- und Vollbögen werden
 /// **fail-closed verweigert** statt mit totem Beweis-Code bedient.
 pub fn arc_data_valid(arc: &ChannelArc) -> bool {
-    if !(arc.c.iter().all(|v| v.is_finite())
-        && arc.u.iter().all(|v| v.is_finite())
+    let fin3 = |v: [f32; 3]| v.iter().all(|x| x.is_finite());
+    // Für JEDEN Bogen — auch Segmente. (Der Segment-Zweig kehrte vorher
+    // zurück, bevor `v`, die `m`-Vektoren oder `sweep` geprüft waren.)
+    if !(fin3(arc.c)
+        && fin3(arc.u)
+        && fin3(arc.v)
         && arc.r.is_finite()
         && arc.r > 0.0
-        && arc.bc.iter().all(|v| v.is_finite())
-        && arc.br.is_finite())
+        && arc.sweep.is_finite()
+        && fin3(arc.bc)
+        && arc.br.is_finite()
+        && fin3(arc.m1s)
+        && fin3(arc.m2s)
+        && fin3(arc.m1e)
+        && fin3(arc.m2e))
     {
         return false;
     }
     if arc.sweep < 0.0 {
         return true;
     }
-    arc.v.iter().all(|v| v.is_finite())
-        && arc.e.iter().all(|v| v.is_finite())
+    arc.e.iter().all(|v| v.is_finite())
         && arc.d_e.is_finite()
+        // Die Winkel-PROVENIENZ muss zum Minor-Bogen passen, auch wenn die
+        // Auswertung sie nicht liest: `sweep = 3π` mit `e = (−1,0)` wäre sonst
+        // ein Mehrfachbogen, den die Auswertung als Halbkreis behandelt.
+        && arc.sweep > 0.0
+        && arc.sweep <= std::f32::consts::PI
         && arc.e[1] >= 0.0
         && arc.d_e > 0.0
         && arc.d_e <= 2.0
-        // `e` muss ein Einheitsvektor sein (Rundungsreserve).
         && (arc.e[0] * arc.e[0] + arc.e[1] * arc.e[1] - 1.0).abs() <= 1.0e-3
+        // **Eine Autorität**: `D_e` muss BIT-IDENTISCH aus `e` stammen. Sonst
+        // beschreiben beide denselben Bogen, liefern aber verschiedene `t` —
+        // und damit ein anderes Material-Gate.
+        && arc.d_e.to_bits() == diamond(arc.e[0], arc.e[1]).to_bits()
 }
 
 /// Punkt bei Parameter t ∈ [0,1] (Bogen: φ = t·sweep; Segment linear).
@@ -1624,6 +1659,23 @@ pub fn arc_point_at(arc: &ChannelArc, t: f32) -> [f32; 3] {
             arc.c[0] + arc.u[0] * (t * arc.r),
             arc.c[1] + arc.u[1] * (t * arc.r),
             arc.c[2] + arc.u[2] * (t * arc.r),
+        ]
+    } else if t <= 0.0 {
+        // #384 §8y-Korrektur: die Endpunkte kommen aus GENAU denselben Zahlen
+        // wie in `arc_closest` — Start `c + r·u`, Ende `c + r·(u·e₀ + v·e₁)`.
+        // Über `normalize(diamond_dir(D_e))` wären sie reell gleich, in f32
+        // aber nicht bitgleich; die Punkt-API hätte dann eine zweite Autorität
+        // neben der Produktion.
+        [
+            arc.c[0] + arc.r * arc.u[0],
+            arc.c[1] + arc.r * arc.u[1],
+            arc.c[2] + arc.r * arc.u[2],
+        ]
+    } else if t >= 1.0 {
+        [
+            arc.c[0] + arc.r * (arc.u[0] * arc.e[0] + arc.v[0] * arc.e[1]),
+            arc.c[1] + arc.r * (arc.u[1] * arc.e[0] + arc.v[1] * arc.e[1]),
+            arc.c[2] + arc.r * (arc.u[2] * arc.e[0] + arc.v[2] * arc.e[1]),
         ]
     } else {
         // #384 §8y: `t` hat PROJEKTWEIT Diamant-Semantik. `t = 0.5` ist
@@ -3250,7 +3302,7 @@ fn build_channel(
         a.sweep < 0.0
             || [(a.m1s, a.m1e), (a.m2s, a.m2e)]
                 .iter()
-                .all(|(p, q)| dot(*p, *q) >= ARC_NLERP_COS_MIN)
+                .all(|(p, q)| dot(*p, *q) >= ARC_NLERP_CONDITION_MIN)
     });
     if !nlerp_ok {
         return None;

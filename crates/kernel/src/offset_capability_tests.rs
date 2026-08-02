@@ -11724,9 +11724,227 @@ fn arc_parameter_deviation_bound_384() {
     // Gate bei c = −0.95. Ein schärferes Budget würde gesunde Bögen verwerfen,
     // ein weicheres den antipodalen Fall durchlassen.
     assert!(
-        worst_c > crate::offset_channel::ARC_NLERP_COS_MIN as f64,
+        worst_c > crate::offset_channel::ARC_NLERP_CONDITION_MIN as f64,
         "die echten Bögen ({worst_c}) unterschreiten das Explosions-Gate ({}) — dann ist \
          das Gate falsch gesetzt",
-        crate::offset_channel::ARC_NLERP_COS_MIN
+        crate::offset_channel::ARC_NLERP_CONDITION_MIN
     );
+}
+
+/// **§8y-Korrektur-Pin: der fidget-Spiegel folgt dem ρ-Zweig der CPU.**
+///
+/// Blocker 1 des zehnten Reviews. Die CPU liefert für `ρ < 1e-9` **zwingend**
+/// `(q₀, t = 0)`; der fidget-Baum ersetzte nur `ρ` durch `max(ρ, 1e-9)` und
+/// projizierte weiter. Auf der Bogenachse (`x = y = 0`) sind dann BEIDE
+/// Diamant-Nenner null, `dm` wird `0/0 = NaN` — und **NaN wandert durch
+/// `select` hindurch**, ein toter Ast vergiftet also den ganzen Baum. Auch
+/// abseits der Achse, bei `0 < ρ < 1e-9`, projizierte fidget auf den Kreis,
+/// während die CPU den Startpunkt nimmt.
+///
+/// `check_interp` deckt fidget nicht ab — dieser Pin ist der einzige Prüfpfad.
+#[test]
+fn arc_fidget_mirrors_the_rho_branch_384() {
+    use fidget::context::Tree;
+    let delta = 2.0f32;
+    let (field, _) = compile_for(stepped_hub_node(3.0, 6.0, 4.0, 0.5, 1.2, 1.8, delta));
+    // Die Achsen-Punkte der gekrümmten Bögen einsammeln.
+    let mut stops = Vec::new();
+    stop_nodes(&field, &mut stops);
+    let mut probes: Vec<[f32; 3]> = Vec::new();
+    for st in &stops {
+        let BoundedCsg::ArcChannel { channels, .. } = st else { continue };
+        for ch in channels {
+            for a in &ch.arcs {
+                if a.sweep < 0.0 {
+                    continue;
+                }
+                // Exakt auf der Achse und knapp daneben, in mehreren Winkeln,
+                // über die ρ-Schwelle hinweg.
+                for rho in [
+                    0.0f32,
+                    0.5e-9,
+                    f32::from_bits(1.0e-9f32.to_bits() - 1),
+                    1.0e-9,
+                    f32::from_bits(1.0e-9f32.to_bits() + 1),
+                    1.0e-6,
+                ] {
+                    for k in 0..6 {
+                        let ang = k as f32 * 1.0472;
+                        let (sa, ca) = (ang.sin(), ang.cos());
+                        for h in [-0.7f32, 0.0, 0.9] {
+                            probes.push([
+                                a.c[0] + (a.u[0] * ca + a.v[0] * sa) * rho + a.u[0] * 0.0 + h * 0.0,
+                                a.c[1] + (a.u[1] * ca + a.v[1] * sa) * rho + h * 0.0,
+                                a.c[2] + (a.u[2] * ca + a.v[2] * sa) * rho + h,
+                            ]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(probes.len() >= 100, "nur {} Achsen-Proben", probes.len());
+    // fidget-Baum aufbauen und punktweise gegen die CPU prüfen.
+    let px = Tree::x();
+    let py = Tree::y();
+    let pz = Tree::z();
+    let tree = crate::fidget_bridge::node_to_tree(&field, &[px, py, pz])
+        .expect("fidget-Baum lässt sich nicht bauen");
+    let mut ctx = fidget::Context::new();
+    let root = ctx.import(&tree);
+    let (mut worst, mut checked) = (0.0f64, 0usize);
+    for p in &probes {
+        let cpu = field.sdf(*p, EvalMode::Visual) as f64;
+        let fid = ctx
+            .eval_xyz(root, p[0] as f64, p[1] as f64, p[2] as f64)
+            .expect("fidget-Auswertung schlägt fehl");
+        assert!(
+            fid.is_finite(),
+            "fidget liefert bei {p:?} {fid} — ein NaN-Ast im Baum (die Diamant-Nenner \
+             sind auf der Achse null)"
+        );
+        assert!(cpu.is_finite(), "CPU liefert bei {p:?} {cpu}");
+        worst = worst.max((cpu - fid).abs());
+        checked += 1;
+    }
+    assert!(checked >= 100, "nur {checked} Proben");
+    assert!(
+        worst < 2.0e-4,
+        "CPU und fidget weichen um {worst:.3e} ab — der ρ-Zweig ist nicht gespiegelt"
+    );
+    println!("§8y fidget-ρ-Parität: {checked} Proben, max |CPU − fidget| = {worst:.3e}");
+}
+
+/// **§8y-Korrektur-Pin: die Dateninvariante bindet die Autoritäten zusammen.**
+///
+/// Blocker 3. Vorher passierten: ein gültiges `e` mit beliebigem anderem `D_e`
+/// (derselbe Bogen, anderes `t`, anderes Material-Gate); `sweep = NaN` (weil
+/// `NaN < 0` falsch ist und der Bogen-Arm griff); `sweep = 3π` mit
+/// `e = (−1,0)`; nicht endliche `m`-Vektoren; und der Segment-Zweig kehrte
+/// zurück, bevor irgendetwas davon geprüft war.
+#[test]
+fn arc_data_invariant_binds_the_authorities_384() {
+    let good = synth_arc(2.0, 1.0, [0.0, 1.0, 0.0], [0.0, 1.0, 0.0]);
+    assert!(arc_data_valid(&good));
+    let cases: Vec<(&str, ChannelArc)> = vec![
+        ("D_e mutiert bei unverändertem e", {
+            let mut a = good.clone();
+            a.d_e = a.d_e * 1.0000001 + 1e-7;
+            a
+        }),
+        ("sweep = NaN", { let mut a = good.clone(); a.sweep = f32::NAN; a }),
+        ("sweep = 3π mit e = (−1,0)", {
+            let mut a = good.clone();
+            a.sweep = 3.0 * std::f32::consts::PI;
+            a.e = [-1.0, 0.0];
+            a.d_e = diamond(-1.0, 0.0);
+            a
+        }),
+        ("sweep = 0", { let mut a = good.clone(); a.sweep = 0.0; a }),
+        ("m1e nicht endlich", { let mut a = good.clone(); a.m1e[2] = f32::NAN; a }),
+        ("m2s unendlich", { let mut a = good.clone(); a.m2s[0] = f32::INFINITY; a }),
+        ("v nicht endlich", { let mut a = good.clone(); a.v[1] = f32::NAN; a }),
+    ];
+    for (tag, bad) in &cases {
+        assert!(!arc_data_valid(bad), "{tag}: wird als gültig akzeptiert");
+    }
+    // Auch der SEGMENT-Zweig prüft jetzt die gemeinsamen Felder.
+    let mut seg = seg_arc(
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0],
+    );
+    assert!(arc_data_valid(&seg), "gültiges Segment wird abgelehnt");
+    for (tag, mut bad) in [
+        ("Segment mit NaN-m", { let mut a = seg.clone(); a.m1s[0] = f32::NAN; a }),
+        ("Segment mit NaN-sweep", { let mut a = seg.clone(); a.sweep = f32::NAN; a }),
+        ("Segment mit NaN-v", { let mut a = seg.clone(); a.v[0] = f32::NAN; a }),
+    ]
+    .into_iter()
+    .map(|(t, a)| (t, a))
+    {
+        assert!(!arc_data_valid(&bad), "{tag}: wird als gültig akzeptiert");
+        bad.r = 1.0;
+    }
+    seg.r = 1.0;
+    // Und die ECHTE Synthese erfüllt die vollständige Invariante.
+    let delta = 2.0f32;
+    let mut n = 0usize;
+    for node in [
+        stepped_hub_node(3.0, 6.0, 4.0, 0.5, 1.2, 1.8, delta),
+        thin_corner_node(2.5 * delta, 40.0, delta),
+        notch_union_node(90.0, delta as f64),
+    ] {
+        let (field, _) = compile_for(node);
+        let mut stops = Vec::new();
+        stop_nodes(&field, &mut stops);
+        for st in stops {
+            let BoundedCsg::ArcChannel { channels, .. } = st else { continue };
+            for ch in channels {
+                for a in &ch.arcs {
+                    assert!(arc_data_valid(a), "Synthese emittiert ungültigen Bogen: {a:?}");
+                    n += 1;
+                }
+            }
+        }
+    }
+    assert!(n >= 20, "nur {n} echte Bögen geprüft");
+}
+
+/// **§8y-Korrektur-Pin: die Bogen-Kugel umfasst auch schiefe Rahmen.**
+///
+/// Blocker 2. Die Sehnen-Kugel brauchte einen orthonormalen Rahmen, den
+/// niemand prüfte — mit `u = v` fielen beide Endpunkte zusammen und der Prune
+/// durfte einen Bogenpunkt überspringen, der `√2 − 1` entfernt lag. Die
+/// strukturelle Schranke `r·√(|u|²+|v|²)` kommt ohne Rahmen-Voraussetzung aus.
+#[test]
+fn arc_bounding_sphere_covers_skew_frames_384() {
+    let mut worst = 0.0f64;
+    let mut cases = 0usize;
+    for (uu, vv) in [
+        ([1.0f32, 0.0, 0.0], [0.0f32, 1.0, 0.0]), // orthonormal
+        ([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]),       // entartet: u = v
+        ([1.0, 0.0, 0.0], [0.7, 0.7, 0.0]),       // schief
+        ([2.0, 0.0, 0.0], [0.0, 0.5, 0.0]),       // nicht normiert
+        ([1.0, 0.0, 0.0], [0.0, 0.0, 3.0]),       // stark anisotrop
+    ] {
+        for (r, alpha) in [(1.0f32, 1.0f64), (40.0, 2.5), (0.01, 0.2)] {
+            let mut arc = synth_arc(r, alpha, [0.0, 1.0, 0.0], [0.0, 1.0, 0.0]);
+            arc.u = uu;
+            arc.v = vv;
+            arc.c = [3.0, -2.0, 1.5];
+            // Kugel wie die Produktion sie baut.
+            let g = ((uu[0] * uu[0] + uu[1] * uu[1] + uu[2] * uu[2])
+                + (vv[0] * vv[0] + vv[1] * vv[1] + vv[2] * vv[2]))
+                .sqrt();
+            arc.bc = arc.c;
+            arc.br = arc.r * g * (1.0 + 1.0e-5) + 1.0e-4;
+            // JEDER Bogenpunkt muss in der Kugel liegen.
+            for i in 0..=400 {
+                let phi = alpha * i as f64 / 400.0;
+                let (cp, sp) = (phi.cos() as f32, phi.sin() as f32);
+                let pt = [
+                    arc.c[0] + r * (uu[0] * cp + vv[0] * sp),
+                    arc.c[1] + r * (uu[1] * cp + vv[1] * sp),
+                    arc.c[2] + r * (uu[2] * cp + vv[2] * sp),
+                ];
+                let d = (((pt[0] - arc.bc[0]) as f64).powi(2)
+                    + ((pt[1] - arc.bc[1]) as f64).powi(2)
+                    + ((pt[2] - arc.bc[2]) as f64).powi(2))
+                .sqrt();
+                assert!(
+                    d <= arc.br as f64,
+                    "u={uu:?} v={vv:?} r={r} α={alpha}: Bogenpunkt {d} > Kugelradius {}",
+                    arc.br
+                );
+                worst = worst.max(d / arc.br as f64);
+            }
+            cases += 1;
+        }
+    }
+    assert!(cases >= 15, "nur {cases} Fälle");
+    println!("§8y Bogen-Kugel: schlechteste Ausnutzung {worst:.4} (≤ 1 = umfassend)");
 }

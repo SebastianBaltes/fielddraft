@@ -203,7 +203,9 @@ fn blend_min(da: &Tree, db: &Tree, r: f64, mode: BlendMode) -> Tree {
 /// `sdf_dual::eval_bounded_d3` (Visual mode) op for op — minus the
 /// AABB-distance pruning shortcuts, which are optimisations that don't
 /// change the field. `Err` for any non-closed-form node.
-fn node_to_tree(node: &BoundedCsg, p: &[Tree; 3]) -> Result<Tree, String> {
+/// #384 §8y-Korrektur: für den CPU↔fidget-Paritätspin sichtbar. `check_interp`
+/// deckt den fidget-Spiegel NICHT ab — er hat keinen anderen Prüfpfad.
+pub(crate) fn node_to_tree(node: &BoundedCsg, p: &[Tree; 3]) -> Result<Tree, String> {
     match node {
         BoundedCsg::Leaf { primitive, world_transform, .. } => {
             let local = world_to_local(world_transform, p);
@@ -553,7 +555,19 @@ fn channel_to_tree(
             let (e0, e1) = (arc.e[0] as f64, arc.e[1] as f64);
             let r = arc.r as f64;
             let zero = Tree::from(0.0);
-            let rho = (x.clone() * x.clone() + y.clone() * y.clone()).sqrt().max(1e-9);
+            // #384 §8y-Korrektur (zehntes Review): der ρ-Zweig war NICHT
+            // gespiegelt. Die CPU liefert für ρ < 1e-9 zwingend (q₀, t = 0);
+            // fidget ersetzte nur ρ durch max(ρ, 1e-9) und projizierte weiter.
+            // Auf der Bogenachse (x = y = 0) sind dann BEIDE Diamant-Nenner
+            // null, `dm` wird 0/0 = NaN — und NaN wandert durch `select`
+            // hindurch, ein toter Ast vergiftet also den ganzen Baum.
+            let rho_raw = (x.clone() * x.clone() + y.clone() * y.clone()).sqrt();
+            let tiny = Tree::from(1.0e-9);
+            let rho = rho_raw.clone().max(1e-9);
+            // Sichere Nenner: auf der Achse (und nur dort) wird `1` addiert,
+            // damit kein NaN entsteht. Der Wert ist dann bedeutungslos — der
+            // äussere ρ-Select verwirft ihn ohnehin.
+            let guard = select_lt(&rho_raw, &tiny, &Tree::from(1.0), &zero);
             // Start- und Endpunkt, algebraisch.
             let q0 = [
                 c[0].clone() + u[0].clone() * r,
@@ -572,9 +586,9 @@ fn channel_to_tree(
                 c[1].clone() + (u[1].clone() * cs.clone() + v[1].clone() * sn.clone()) * r,
                 c[2].clone() + (u[2].clone() * cs.clone() + v[2].clone() * sn.clone()) * r,
             ];
-            // Diamant: `x ≥ 0 ? y/(x+y) : 1 + (−x)/(y−x)`, als select.
-            let dm_q1 = y.clone() / (x.clone() + y.clone());
-            let dm_q2 = Tree::from(1.0) + (-x.clone()) / (y.clone() - x.clone());
+            let dm_q1 = y.clone() / (x.clone() + y.clone() + guard.clone());
+            let dm_q2 =
+                Tree::from(1.0) + (-x.clone()) / (y.clone() - x.clone() + guard.clone());
             let dm = select_lt(&x, &zero, &dm_q2, &dm_q1);
             let t_in = (dm * (1.0 / arc.d_e as f64)).max(0.0).min(1.0);
             let d_in = t_norm(&t_sub(p, &q_in));
@@ -588,19 +602,22 @@ fn channel_to_tree(
                 select_lt(&d1, &d0, &q1[1], &q0[1]),
                 select_lt(&d1, &d0, &q1[2], &q0[2]),
             ];
-            // Sektor: `a = y ≥ 0 ∧ b = x·e₁ − y·e₀ ≥ 0`. Als zwei selects:
-            // ausserhalb, wenn a < 0 ODER b < 0.
+            // Sektor: `a = y ≥ 0 ∧ b = x·e₁ − y·e₀ ≥ 0`.
             let bcr = x.clone() * e1 - y.clone() * e0;
             let pick = |x_in: &Tree, x_out: &Tree| {
                 let after_a = select_lt(&y, &zero, x_out, x_in);
                 select_lt(&bcr, &zero, x_out, &after_a)
             };
-            let de = pick(&d_in, &d_end);
+            // **Der äussere ρ-Select** setzt de/q/t GEMEINSAM auf den
+            // Achsenzweig — genau wie die CPU.
+            let on_axis = |x_ax: &Tree, x_body: &Tree| select_lt(&rho_raw, &tiny, x_ax, x_body);
+            let de = on_axis(&d0, &pick(&d_in, &d_end));
             let q = [
-                pick(&q_in[0], &q_end[0]),
-                pick(&q_in[1], &q_end[1]),
-                pick(&q_in[2], &q_end[2]),
+                on_axis(&q0[0], &pick(&q_in[0], &q_end[0])),
+                on_axis(&q0[1], &pick(&q_in[1], &q_end[1])),
+                on_axis(&q0[2], &pick(&q_in[2], &q_end[2])),
             ];
+            let t = on_axis(&Tree::from(0.0), &pick(&t_in, &t_end));
             let t = pick(&t_in, &t_end);
             (de, q, t)
         };
