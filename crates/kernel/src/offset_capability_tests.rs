@@ -8577,3 +8577,984 @@ fn probe_384_lb_emax_distribution() {
         );
     }
 }
+
+// ══════════════ #384 §8u — die Intervall-Stufe, Zell-Zertifizierung ══════════
+//
+// §8r hat den Zeugen gebaut und ihn Punkte sondieren lassen; §8u fragt nach
+// ZELLEN. Zertifiziert wird „kein x ∈ C erfüllt f(x) ≥ 0 ∧ dist(x,∁Ω) > δ+tol",
+// mit zwei hinreichenden Zweigen (s. `crate::offset_interval`):
+//
+//   Zweig 1  U(c) + ρ ≤ δ + tol       — 1-Lipschitz, ohne Intervall-Arithmetik
+//   Zweig 2  sup_C f < 0              — Intervall-Auswertung des Feldes
+//
+// Der Zeuge bleibt daneben stehen: er sucht ANWESENHEIT, die Zertifizierung
+// beweist ABWESENHEIT. Beide schweigen aus verschiedenen Gründen.
+
+use crate::offset_channel::VertexSphere;
+use crate::offset_interval as iv;
+use crate::offset_interval::CellDomain as _;
+
+/// **Die obere Distanzschranke `U(x) ≥ dist(x,∁Ω)`** — der §8r-Fuss-Zeuge,
+/// aus [`under_cert`]s Kaskade herausgezogen, ohne die `cap`-Abbrüche.
+///
+/// Drei Quellen, alle drei mit demselben Argument: ein Punkt `y` mit
+/// `f_inner(y) > δ + CERT_MARGIN` liegt BEWEISBAR in `∁Ω` (Vorzeichen-
+/// Invariante des naiven Vereinigungsfeldes), also ist `|x − y|` eine obere
+/// Schranke. `None` heisst: kein Aussen-Zeuge gefunden — dann gibt es für
+/// diesen Punkt kein `U`, und Zweig 1 ist stumm.
+fn u_upper(
+    stop: &BoundedCsg,
+    blk: &crate::offset_lb::LbBlock,
+    delta: f32,
+    p: [f64; 3],
+    reach: f64,
+) -> Option<f64> {
+    let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+    let d0 = stop.sdf(pf, EvalMode::Visual);
+    if d0 > delta {
+        return Some(0.0);
+    }
+    let dist_to =
+        |y: [f64; 3]| ((y[0] - p[0]).powi(2) + (y[1] - p[1]).powi(2) + (y[2] - p[2]).powi(2)).sqrt();
+    let pushed = |q: [f32; 3]| -> Option<[f64; 3]> {
+        let dir = [q[0] as f64 - p[0], q[1] as f64 - p[1], q[2] as f64 - p[2]];
+        let n = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+        (n > 1e-9).then(|| {
+            [
+                q[0] as f64 + CERT_PUSH * dir[0] / n,
+                q[1] as f64 + CERT_PUSH * dir[1] / n,
+                q[2] as f64 + CERT_PUSH * dir[2] / n,
+            ]
+        })
+    };
+    let is_outside = |y: [f64; 3]| {
+        stop.sdf([y[0] as f32, y[1] as f32, y[2] as f32], EvalMode::Visual) > delta + CERT_MARGIN
+    };
+    let mut best: Option<f64> = None;
+    let foot = crate::offset_lb::lb_foot(pf, d0, blk);
+    if let Some(y) = foot.and_then(pushed).filter(|y| is_outside(*y)) {
+        best = Some(dist_to(y));
+    }
+    for start in [foot.map(|q| [q[0] as f64, q[1] as f64, q[2] as f64]), Some(p)]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(y) = march_outside(stop, delta, start, reach) {
+            let u = dist_to(y);
+            best = Some(best.map_or(u, |b: f64| b.min(u)));
+        }
+    }
+    best
+}
+
+/// Eine Zeile der §8u-Zertifizierungs-Tabelle.
+#[derive(Default, Clone)]
+struct CellRow {
+    name: String,
+    cells: usize,
+    b1: usize,
+    b2: usize,
+    reasons: std::collections::BTreeMap<&'static str, usize>,
+}
+
+impl CellRow {
+    fn unknown(&self) -> usize {
+        self.cells - self.b1 - self.b2
+    }
+    fn top_reason(&self) -> String {
+        let mut v: Vec<_> = self.reasons.iter().collect();
+        v.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
+        v.iter().take(2).map(|(k, n)| format!("{k}·{n}")).collect::<Vec<_>>().join(", ")
+    }
+}
+
+/// Ein Zell-Lauf über eine Fixture: das Doktrin-Gitter, aber als ZELLEN statt
+/// als Punkte gelesen (`n³` achsenparallele Kästen, lückenlos und
+/// überschneidungsfrei — zusammen decken sie den ganzen Quader).
+///
+/// `depth > 0` schaltet die adaptive Unterteilung zu: eine unentschiedene
+/// Zelle wird halbiert, und sie zählt nur dann als zertifiziert, wenn JEDE
+/// Teilzelle es ist. Das Erreichen der Maximaltiefe ist `Unknown`, nie Erfolg.
+fn cell_scan_at(
+    name: &str,
+    field: &BoundedCsg,
+    u_src: &BoundedCsg,
+    delta: f32,
+    lo: [f64; 3],
+    hi: [f64; 3],
+    n: usize,
+    depth: u32,
+) -> CellRow {
+    let (stop, blk) = stop_with_lb(u_src);
+    let cap = delta as f64 + CERT_TOL;
+    let u_at = |c: [f64; 3]| u_upper(stop, blk, delta, c, 2.0 * cap);
+    let mut row = CellRow { name: name.into(), ..Default::default() };
+    for cell in fixture_cells(lo, hi, n) {
+        let mut ctx = iv::Ctx::new();
+        row.cells += 1;
+        if depth == 0 {
+            match iv::certify_cell(&cell, field, delta as f64, CERT_TOL, &u_at, &mut ctx) {
+                iv::Verdict::Branch1 => row.b1 += 1,
+                iv::Verdict::Branch2 => row.b2 += 1,
+                iv::Verdict::Unknown(why) => *row.reasons.entry(why).or_insert(0) += 1,
+            }
+            continue;
+        }
+        match iv::certify_cell_adaptive(
+            &cell,
+            field,
+            delta as f64,
+            CERT_TOL,
+            &u_at,
+            depth,
+            &mut ctx,
+        ) {
+            Ok((a, b)) => {
+                // Eine Zelle zählt für den Zweig, der die MEISTEN ihrer
+                // Teilzellen getragen hat — die Tabelle bleibt so lesbar.
+                if a >= b {
+                    row.b1 += 1;
+                } else {
+                    row.b2 += 1;
+                }
+            }
+            Err(why) => *row.reasons.entry(why).or_insert(0) += 1,
+        }
+    }
+    row
+}
+
+fn cell_scan(
+    name: &str,
+    field: &BoundedCsg,
+    delta: f32,
+    lo: [f64; 3],
+    hi: [f64; 3],
+    n: usize,
+) -> CellRow {
+    cell_scan_at(name, field, field, delta, lo, hi, n, 0)
+}
+
+/// **§8u-Sonde: die Zertifizierungs-Tabelle über die volle §8p-Matrix.**
+///
+/// Drei Spaltenblöcke: das AUSGELIEFERTE Feld (das ist die Zusage), dasselbe
+/// mit adaptiver Unterteilung (Tiefe 3), und die Vertex-Ablation (der
+/// vollständig unterstützte Ausschnitt — er zeigt, was Zweig 2 kann, sobald
+/// ihm die Naht-Distanz zur Verfügung steht).
+#[test]
+#[ignore]
+fn probe_384_interval_cell_certification() {
+    let delta = 2.0f32;
+    println!(
+        "| Fixture | Zellen | Z1 | Z2 | Unknown | Hauptgründe | Z1 (adaptiv) | Z2 (adaptiv) | \
+         Unknown (adaptiv) | Z2 (Vertex-Ablation) |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|---|");
+    for (name, field, _exact, lo, hi, _n) in cert_matrix(delta) {
+        let r = cell_scan(&name, &field, delta, lo, hi, 12);
+        let a = cell_scan_at(&name, &field, &field, delta, lo, hi, 12, 3);
+        let cut = strip_channels(&field);
+        let v = cell_scan_at(&name, &cut, &field, delta, lo, hi, 12, 0);
+        println!(
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            r.name,
+            r.cells,
+            r.b1,
+            r.b2,
+            r.unknown(),
+            r.top_reason(),
+            a.b1,
+            a.b2,
+            a.unknown(),
+            v.b2
+        );
+    }
+}
+
+/// **§8u-Sonde: das Term-Inventar der Matrix** — wer hat Kanäle, wer
+/// Vertex-Kugeln, woraus besteht der `L`-Block.
+#[test]
+#[ignore]
+fn probe_384_interval_stop_inventory() {
+    let delta = 2.0f32;
+    println!("| Fixture | Kanäle | Vertex-Kugeln | Tri | Rev |");
+    println!("|---|---|---|---|---|");
+    for (name, field, _e, _lo, _hi, _n) in cert_matrix(delta) {
+        let mut stops = Vec::new();
+        stop_nodes(&field, &mut stops);
+        for st in stops {
+            if let BoundedCsg::ArcChannel { channels, verts, lb, .. } = st {
+                let (mut tri, mut rev) = (0usize, 0usize);
+                if let Some(b) = lb {
+                    for p in &b.pieces {
+                        match p {
+                            crate::offset_lb::LbPiece::Tri { .. } => tri += 1,
+                            crate::offset_lb::LbPiece::Rev { .. } => rev += 1,
+                        }
+                    }
+                }
+                println!(
+                    "| {} | {} | {} | {} | {} |",
+                    name,
+                    channels.len(),
+                    verts.len(),
+                    tri,
+                    rev
+                );
+            }
+        }
+    }
+}
+
+/// **§8u-Sonde: welcher Knoten-Typ steht im Baum?** (Für die ehrliche
+/// Benennung der `Unknown("Operator")`-Fälle.)
+#[test]
+#[ignore]
+fn probe_384_interval_node_kinds() {
+    fn walk(n: &BoundedCsg, out: &mut std::collections::BTreeMap<&'static str, usize>) {
+        let k: &'static str = match n {
+            BoundedCsg::Empty => "Empty",
+            BoundedCsg::Leaf { primitive, .. } => match primitive {
+                Primitive::Box { .. } => "Leaf/Box",
+                Primitive::Cylinder { .. } => "Leaf/Cylinder",
+                Primitive::Sphere { .. } => "Leaf/Sphere",
+                _ => "Leaf/ANDERES",
+            },
+            BoundedCsg::Union { .. } => "Union",
+            BoundedCsg::Difference { .. } => "Difference",
+            BoundedCsg::Intersection { .. } => "Intersection",
+            BoundedCsg::Offset { .. } => "Offset",
+            BoundedCsg::InnerWall { .. } => "InnerWall",
+            BoundedCsg::ArcChannel { .. } => "ArcChannel",
+            BoundedCsg::Extrude { .. } => "Extrude",
+            BoundedCsg::Revolve { .. } => "Revolve",
+            _ => "SONSTIGES",
+        };
+        *out.entry(k).or_insert(0) += 1;
+        match n {
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. } => {
+                walk(left, out);
+                walk(right, out);
+            }
+            BoundedCsg::Offset { inner, .. }
+            | BoundedCsg::InnerWall { inner, .. }
+            | BoundedCsg::ArcChannel { inner, .. } => walk(inner, out),
+            _ => {}
+        }
+    }
+    for (name, field, _e, _lo, _hi, _n) in cert_matrix(2.0) {
+        let mut m = std::collections::BTreeMap::new();
+        walk(&field, &mut m);
+        println!("{name:<24} {m:?}");
+    }
+}
+
+/// **§8u-Sonde: wie tief liegt die Kanal-Neutralität?** Für jede Fixture die
+/// Trust-Radien und Bounding-Radien der Kanäle — die Zahlen, an denen die
+/// `channel_skip`-Neutralität scheitert.
+#[test]
+#[ignore]
+fn probe_384_interval_channel_reach() {
+    for (name, field, _e, _lo, _hi, _n) in cert_matrix(2.0) {
+        let mut stops = Vec::new();
+        stop_nodes(&field, &mut stops);
+        for st in stops {
+            if let BoundedCsg::ArcChannel { channels, .. } = st {
+                let mut tr: Vec<f32> = channels.iter().map(|c| c.trust).collect();
+                let mut br: Vec<f32> = channels.iter().map(|c| c.bound_r).collect();
+                let mut ar: Vec<f32> =
+                    channels.iter().flat_map(|c| c.arcs.iter().map(|a| a.r)).collect();
+                for v in [&mut tr, &mut br, &mut ar] {
+                    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                }
+                let med = |v: &Vec<f32>| if v.is_empty() { f32::NAN } else { v[v.len() / 2] };
+                println!(
+                    "{name:<24} K med {:.2} max {:.2} | bound_r med {:.2} max {:.2} | \
+                     arc.r med {:.2} max {:.2}",
+                    med(&tr),
+                    tr.last().copied().unwrap_or(f32::NAN),
+                    med(&br),
+                    br.last().copied().unwrap_or(f32::NAN),
+                    med(&ar),
+                    ar.last().copied().unwrap_or(f32::NAN),
+                );
+            }
+        }
+    }
+}
+
+/// Die **Vertex-Ablation**: derselbe Baum, aber ohne Kanal-Terme. Kein
+/// ausgeliefertes Feld — ein Schnitt, an dem die vollständig unterstützte
+/// Term-Klasse des Pakets 1 (Vertex-Kugeln, `L`-Block, Grenzwert-Klemme) allein
+/// steht. Er beantwortet die Frage, die ein leerer Zweig 2 offenlässt: rechnet
+/// die Einschliessung überhaupt, oder ist sie tote Ausnahme?
+fn strip_channels(n: &BoundedCsg) -> BoundedCsg {
+    match n {
+        BoundedCsg::ArcChannel { inner, verts, rims, lb, aabb, .. } => BoundedCsg::ArcChannel {
+            inner: Box::new(strip_channels(inner)),
+            channels: Vec::new(),
+            verts: verts.clone(),
+            rims: rims.clone(),
+            lb: lb.clone(),
+            aabb: *aabb,
+        },
+        BoundedCsg::Union { left, right, aabb } => BoundedCsg::Union {
+            left: Box::new(strip_channels(left)),
+            right: Box::new(strip_channels(right)),
+            aabb: *aabb,
+        },
+        BoundedCsg::Difference { left, right, aabb } => BoundedCsg::Difference {
+            left: Box::new(strip_channels(left)),
+            right: Box::new(strip_channels(right)),
+            aabb: *aabb,
+        },
+        BoundedCsg::Intersection { left, right, aabb } => BoundedCsg::Intersection {
+            left: Box::new(strip_channels(left)),
+            right: Box::new(strip_channels(right)),
+            aabb: *aabb,
+        },
+        BoundedCsg::Offset { inner, delta, aabb } => BoundedCsg::Offset {
+            inner: Box::new(strip_channels(inner)),
+            delta: *delta,
+            aabb: *aabb,
+        },
+        other => other.clone(),
+    }
+}
+
+/// **§8u-Pin 1: die Algebra rundet nach aussen, und der f32-Schritt trägt.**
+///
+/// Drei Behauptungen, alle drei falsifizierbar:
+///
+/// * `next_up`/`next_down` sind die echten IEEE-Nachbarn (kein Wert liegt
+///   dazwischen), und `f32_down`/`f32_up` klammern jedes f64 zwischen zwei
+///   benachbarte f32.
+/// * **Elementare Inclusion** (Beweispflicht 1): für zufällige f32-Operanden
+///   in den Intervallen liegt das PRODUKTIONS-f32-Ergebnis von `+ − × ÷ √`
+///   in der Einschliessung.
+/// * Der f32-Schritt ist NICHT verzichtbar: es gibt Operanden, bei denen der
+///   f32-Produktionswert die reelle obere Schranke ÜBERSTEIGT (Aufrundung).
+#[test]
+fn interval_arithmetic_is_outward_and_f32_sound_384() {
+    use iv::{f32_down, f32_up, next_down, next_up, Ctx, Iv};
+    // Nachbarschaft.
+    for x in [0.0f64, 1.0, -1.0, 1e-300, 1e300, -3.5, 2.5e-8] {
+        assert!(next_up(x) > x && next_down(x) < x, "next_up/down bei {x} nicht strikt");
+        assert_eq!(next_down(next_up(x)), x, "next_down∘next_up ist keine Identität bei {x}");
+    }
+    for x in [0.3f64, -0.3, 1.0 / 3.0, 1e-45, 7.7e30, -2.0f64.powi(-150)] {
+        assert!(f32_down(x) <= x && f32_up(x) >= x, "f32-Klammer verletzt bei {x}");
+        assert!(
+            (f32_down(x) as f32 as f64) == f32_down(x) && (f32_up(x) as f32 as f64) == f32_up(x),
+            "f32-Klammer liegt nicht auf dem f32-Gitter bei {x}"
+        );
+    }
+    // Elementare Inclusion gegen die echte f32-Arithmetik.
+    let mut s = 0x243f_6a88_85a3_08d3u64;
+    let mut rnd = move || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    };
+    let mut c = Ctx::new();
+    let (mut checked, mut lifted) = (0usize, 0usize);
+    for _ in 0..4000 {
+        let scale = 10f64.powi(((rnd() * 6.0) as i32).clamp(-6, 6));
+        let a0 = (rnd() * scale) as f32;
+        let a1 = a0 + (rnd().abs() * scale) as f32;
+        let b0 = (rnd() * scale) as f32;
+        let b1 = b0 + (rnd().abs() * scale) as f32;
+        let (ia, ib) = (
+            Iv { lo: a0 as f64, hi: a1 as f64 },
+            Iv { lo: b0 as f64, hi: b1 as f64 },
+        );
+        let add = c.fadd(ia, ib).unwrap();
+        let sub = c.fsub(ia, ib).unwrap();
+        let mul = c.fmul(ia, ib).unwrap();
+        for t in 0..5 {
+            let f = t as f32 / 4.0;
+            // Die Interpolation selbst rundet — ohne `clamp` kann die Probe
+            // knapp AUSSERHALB des Intervalls landen und einen Scheinfehler
+            // melden.
+            let x = (a0 + (a1 - a0) * f).clamp(a0, a1);
+            let y = (b1 + (b0 - b1) * f).clamp(b0, b1);
+            checked += 3;
+            assert!(add.contains((x + y) as f64), "f32-Summe {x}+{y} nicht in {add:?}");
+            assert!(sub.contains((x - y) as f64), "f32-Differenz {x}-{y} nicht in {sub:?}");
+            assert!(mul.contains((x * y) as f64), "f32-Produkt {x}*{y} nicht in {mul:?}");
+            // Die Aufrundung: der f32-Wert kann die REELLE Schranke übersteigen —
+            // genau dafür steht der f32-Schritt im `seal`.
+            if (x * y) as f64 > (x as f64) * (y as f64) {
+                lifted += 1;
+            }
+        }
+        if ib.lo > 0.0 {
+            let d = c.fdiv(ia, ib).unwrap();
+            for t in 0..3 {
+                let f = t as f32 / 2.0;
+                let x = (a0 + (a1 - a0) * f).clamp(a0, a1);
+                let y = (b0 + (b1 - b0) * (1.0 - f)).clamp(b0, b1);
+                checked += 1;
+                assert!(d.contains((x / y) as f64), "f32-Quotient {x}/{y} nicht in {d:?}");
+            }
+        }
+        if ia.lo >= 0.0 {
+            let r = c.fsqrt(ia).unwrap();
+            for t in 0..3 {
+                let x = (a0 + (a1 - a0) * (t as f32 / 2.0)).clamp(a0, a1);
+                checked += 1;
+                assert!(r.contains(x.sqrt() as f64), "f32-Wurzel von {x} nicht in {r:?}");
+            }
+        }
+    }
+    assert!(checked > 40_000, "nur {checked} Proben — der Pin misst nichts");
+    assert!(
+        lifted > 0,
+        "kein einziges f32-Produkt lag ÜBER dem exakten reellen Wert — dann kann der Pin \
+         nicht zeigen, dass der f32-Schritt im `seal` tragend ist"
+    );
+    // Die sichere Wurzel über einem nullhaltigen Radikanden.
+    let z = c.fsqrt(Iv { lo: -1e-9, hi: 4.0 }).unwrap();
+    assert!(z.lo == 0.0 && z.hi >= 2.0, "safe_sqrt über nullhaltigem Radikanden falsch: {z:?}");
+    assert!(c.fsqrt(Iv { lo: -4.0, hi: -1e-9 }).is_err(), "sqrt(<0) muss fail-closed sein");
+    assert!(
+        c.fdiv(Iv { lo: 1.0, hi: 2.0 }, Iv { lo: -1.0, hi: 1.0 }).is_err(),
+        "Division durch ein nullhaltiges Intervall muss fail-closed sein"
+    );
+}
+
+/// Punkte einer Zelle: acht Ecken, Mittelpunkt und ein deterministisches
+/// Untergitter. Für eine FALSIFIKATION sind die Ecken das Schärfste — dort
+/// nimmt jede monotone Komponente ihr Extremum an.
+fn cell_samples(cell: &iv::Box3, sub: usize) -> Vec<[f64; 3]> {
+    let mut out = Vec::new();
+    for i in 0..=sub {
+        for j in 0..=sub {
+            for k in 0..=sub {
+                let f = |t: usize, d: usize| {
+                    cell.lo[d] + (cell.hi[d] - cell.lo[d]) * t as f64 / sub as f64
+                };
+                out.push([f(i, 0), f(j, 1), f(k, 2)]);
+            }
+        }
+    }
+    out
+}
+
+/// Ein von Hand gebautes Intervall auf dem **f32-Gitter** — dieselbe Disziplin
+/// wie `Box3::world_f32`: die Einschliessung spricht über f32-Werte, also
+/// müssen auch die Eingangs-Intervalle jede f32-Rundung ihrer Grenzen
+/// enthalten. (Ohne das meldet der Pin Scheinfehler: `-0.006f64` liegt unter
+/// `-0.006f32`.)
+fn ivf(lo: f64, hi: f64) -> iv::Iv {
+    iv::Iv { lo: iv::f32_down(lo), hi: iv::f32_up(hi) }
+}
+
+/// Drei Proben eines Intervalls (Rand, Rand, Mitte).
+fn iv_samples(v: iv::Iv) -> [f32; 3] {
+    let m = 0.5 * (v.lo + v.hi);
+    [v.lo as f32, v.hi as f32, if m.is_finite() { m as f32 } else { v.lo as f32 }]
+}
+
+/// Eine synthetische Vertex-Kugel mit orthogonalen Kegel-Facetten.
+fn synth_vertex(v: [f32; 3], delta: f32, trust: f32, gate: f32, concave: bool) -> VertexSphere {
+    let s = 1.0f32 / 3.0f32.sqrt();
+    VertexSphere {
+        v,
+        gates: [[s, s, s], [-s, s, s], [s, -s, s]],
+        delta,
+        concave,
+        trust,
+        gate,
+        branch: 0x700,
+    }
+}
+
+/// Zählt, an wie vielen Proben der PRODUKTIONS-Wert von `vertex_apply`
+/// ausserhalb der Einschliessung liegt. Null ist die Zusage.
+fn vertex_enclosure_escapes(
+    knobs: iv::Knobs,
+    vs: &VertexSphere,
+    cell: &iv::Box3,
+    base: iv::Iv,
+    d: iv::Iv,
+    extra: iv::Iv,
+    sub: usize,
+) -> (usize, usize) {
+    let mut c = iv::Ctx::with_knobs(knobs);
+    let Ok(enc) = iv::enclose_vertex_apply(&mut c, cell.world_f32(), base, d, vs, extra) else {
+        return (0, 0);
+    };
+    let (mut esc, mut n) = (0usize, 0usize);
+    for p in cell_samples(cell, sub) {
+        let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+        for b in iv_samples(base) {
+            for dd in iv_samples(d) {
+                for e in iv_samples(extra) {
+                    let got = crate::offset_channel::vertex_apply(b, dd, pf, vs, e);
+                    n += 1;
+                    if !got.is_finite() || !enc.contains(got as f64) {
+                        esc += 1;
+                    }
+                }
+            }
+        }
+    }
+    (esc, n)
+}
+
+/// Die adversariale Zellen-/Term-Familie des Pakets: jede Zeile zielt auf EINE
+/// Schaltfläche oder EINE Rundungs-Achse.
+fn adversarial_vertex_cases() -> Vec<(String, VertexSphere, iv::Box3, iv::Iv, iv::Iv, iv::Iv)> {
+    let mut out = Vec::new();
+    let full = iv::Iv { lo: -6.0, hi: 3.0 };
+    for &(scale, tag) in &[(1.0e-3f64, "µ"), (1.0f64, "1"), (1.0e3f64, "k")] {
+        let (delta, trust, gate) = ((2.0 * scale) as f32, (3.91 * scale) as f32, (0.87 * scale) as f32);
+        for &(off, otag) in &[([0.0f64; 3], "origin"), ([1.0e5, -3.0e4, 7.0e4], "translatiert")] {
+            let v = [off[0] as f32, off[1] as f32, off[2] as f32];
+            let vs_cc = synth_vertex(v, delta, trust, gate, true);
+            let vs_cx = synth_vertex(v, delta, trust, gate, false);
+            let ctr = |r: f64| [off[0] + r, off[1] + r * 0.3, off[2] - r * 0.7];
+            let d_full = ivf(full.lo * scale, full.hi * scale);
+            // (1) Radikand enthält NULL: die Zelle umschliesst `v`.
+            out.push((
+                format!("{tag}/{otag} ρ-Null"),
+                vs_cc.clone(),
+                iv::Box3::cube(off, 0.4 * scale),
+                d_full,
+                d_full,
+                ivf(-1.0e30, 1.0),
+            ));
+            // (2) beliebig kleiner positiver Unterrand des Radikanden.
+            out.push((
+                format!("{tag}/{otag} ρ-fast-Null"),
+                vs_cc.clone(),
+                iv::Box3::new(
+                    [off[0] + 1e-7 * scale, off[1] - 0.2 * scale, off[2] - 0.2 * scale],
+                    [off[0] + 0.3 * scale, off[1] + 0.2 * scale, off[2] + 0.2 * scale],
+                ),
+                d_full,
+                d_full,
+                ivf(-1.0e30, 1.0),
+            ));
+            // (3) Zelle schneidet die Skip-Fläche ρ = K.
+            out.push((
+                format!("{tag}/{otag} ρ=K"),
+                vs_cc.clone(),
+                iv::Box3::cube(ctr(trust as f64 * 0.577), 0.25 * scale),
+                d_full,
+                d_full,
+                ivf(-1.0e30, 1.0),
+            ));
+            // (4) Zelle schneidet ρ = δ (die `w_geo`-Schaltfläche).
+            out.push((
+                format!("{tag}/{otag} ρ=δ"),
+                vs_cc.clone(),
+                iv::Box3::cube(ctr(delta as f64 * 0.577), 0.2 * scale),
+                d_full,
+                d_full,
+                ivf(-1.0e30, 1.0),
+            ));
+            // (5) `extra` überspannt die LB_AVAIL-Umschaltung EXAKT.
+            out.push((
+                format!("{tag}/{otag} LB_AVAIL"),
+                vs_cc.clone(),
+                iv::Box3::cube(ctr(delta as f64 * 0.6), 0.3 * scale),
+                d_full,
+                d_full,
+                ivf(crate::offset_channel::LB_AVAIL as f64 - 1.0e28, 0.5),
+            ));
+            // (6) SLIVER: eine Achse verschwindend dünn, quer zur Kegel-Facette.
+            out.push((
+                format!("{tag}/{otag} Sliver"),
+                vs_cc.clone(),
+                iv::Box3::new(
+                    [off[0] - 0.9 * scale, off[1] - 1e-9 * scale, off[2] - 0.9 * scale],
+                    [off[0] + 0.9 * scale, off[1] + 1e-9 * scale, off[2] + 0.9 * scale],
+                ),
+                d_full,
+                d_full,
+                ivf(-1.0e30, 1.0),
+            ));
+            // (7) der KONVEXE Zweig (`d.max(w)`) mit derselben Familie.
+            out.push((
+                format!("{tag}/{otag} konvex"),
+                vs_cx,
+                iv::Box3::cube(ctr(delta as f64 * 0.577), 0.3 * scale),
+                d_full,
+                d_full,
+                ivf(-1.0e30, 1.0),
+            ));
+            // (8) `w = 0` exakt: `gate` als Punkt genau auf der Schwelle.
+            out.push((
+                format!("{tag}/{otag} w=0"),
+                vs_cc.clone(),
+                iv::Box3::cube(ctr(delta as f64 * 0.58), 0.15 * scale),
+                ivf(0.0, 0.0),
+                d_full,
+                ivf(0.0, 0.0),
+            ));
+            // (9) **Der Drei-Wege-Schalter, scharf gestellt.** `w_geo > 0` über
+            //     der ganzen Zelle, `gate` überspannt die Null: Zweig A
+            //     (`min(d,−w)`) und Zweig C (`d`) liegen weit auseinander, und
+            //     `d` ist ein PUNKT weit über null — genau die Konstellation,
+            //     an der ein willkürlich gewählter Zweig auffliegt.
+            let cone = [off[0], off[1], off[2] + 3.0 * scale];
+            out.push((
+                format!("{tag}/{otag} Kegel w±0"),
+                vs_cc.clone(),
+                iv::Box3::cube(cone, 0.1 * scale),
+                ivf(0.5 * scale, 0.5 * scale),
+                ivf(0.5 * scale, 0.5 * scale),
+                ivf(-0.05 * scale, 0.05 * scale),
+            ));
+            // (10) **Die Luftseiten-Klemme auf dem Rand.** `w_geo = ρ − δ`
+            //      knapp negativ, `gate` weit offen, `d` gross: das Ergebnis
+            //      IST `−w_geo` und liegt damit exakt auf der Intervall-
+            //      Schranke — die Stelle, an der ein ulp zu scharf reisst.
+            let band = [off[0], off[1], off[2] + 1.75 * scale];
+            out.push((
+                format!("{tag}/{otag} ρ≲δ-Klemme"),
+                vs_cc,
+                iv::Box3::cube(band, 0.25 * scale),
+                ivf(5.0 * scale, 5.0 * scale),
+                ivf(5.0 * scale, 5.0 * scale),
+                ivf(10.0 * scale, 10.0 * scale),
+            ));
+        }
+    }
+    out
+}
+
+/// **§8u-Pin 2: die Einschliessung von `vertex_apply` hält gegen die
+/// Produktion.**
+///
+/// Die Doktrin des Pakets: dichte Proben sind hier **Falsifikatoren der
+/// Einschliessung**, nicht Belege der Zertifizierung. Jede Familie zielt auf
+/// eine Schaltfläche (Skip, `ρ = δ`, `LB_AVAIL`, `w = 0`), auf die
+/// `safe_sqrt`-Entartung (Radikand enthält null / beliebig kleiner positiver
+/// Unterrand), auf die Dependency-Breite (Sliver) oder auf die
+/// Rundungs-Skalierung (Translation um 10⁵, Massstab 10⁻³ … 10³).
+///
+/// Dazu die ECHTEN Vertex-Kugeln der Ecken-Schale — die synthetische Familie
+/// prüft die Schalter, die echte prüft, dass die Formel dieselbe ist.
+#[test]
+fn interval_encloses_the_production_vertex_term_384() {
+    let (mut cases, mut probes) = (0usize, 0usize);
+    for (name, vs, cell, base, d, extra) in adversarial_vertex_cases() {
+        let (esc, n) = vertex_enclosure_escapes(iv::Knobs::default(), &vs, &cell, base, d, extra, 3);
+        assert_eq!(esc, 0, "{name}: {esc} von {n} Produktionswerten liegen AUSSERHALB der Einschliessung");
+        cases += 1;
+        probes += n;
+    }
+    // Die echten Kugeln der Ecken-Schale.
+    let delta = 2.0f32;
+    let (field, _) = compile_for(thin_corner_node(2.5 * delta, 40.0, delta));
+    let mut stops = Vec::new();
+    stop_nodes(&field, &mut stops);
+    let mut real = 0usize;
+    for st in stops {
+        let BoundedCsg::ArcChannel { verts, .. } = st else { continue };
+        for vs in verts {
+            for h in [0.05f64, 0.4, 1.7] {
+                let cell = iv::Box3::cube(
+                    [vs.v[0] as f64 + 0.11, vs.v[1] as f64 - 0.07, vs.v[2] as f64 + 0.23],
+                    h,
+                );
+                for extra in [ivf(-1.0e30, -1.0e30), ivf(-1.0e30, 0.9), ivf(-0.6, 0.9)] {
+                    let dv = ivf(-7.0, 2.0);
+                    let (esc, n) =
+                        vertex_enclosure_escapes(iv::Knobs::default(), vs, &cell, dv, dv, extra, 2);
+                    assert_eq!(esc, 0, "echte Kugel {:?} h={h}: {esc} von {n} Werte entkommen", vs.v);
+                    real += 1;
+                    probes += n;
+                }
+            }
+        }
+    }
+    assert!(cases >= 40 && real >= 24, "nur {cases} synthetische / {real} echte Fälle");
+    assert!(probes > 120_000, "nur {probes} Proben — der Pin misst nichts");
+}
+
+
+/// Zählt Ausreisser einer Feld-Einschliessung über einer Zelle.
+fn field_enclosure_escapes(node: &BoundedCsg, cell: &iv::Box3, sub: usize) -> (usize, usize, bool) {
+    let mut c = iv::Ctx::new();
+    let Ok(enc) = iv::enclose_node(&mut c, node, cell.world_f32()) else {
+        return (0, 0, false);
+    };
+    let (mut esc, mut n) = (0usize, 0usize);
+    for p in cell_samples(cell, sub) {
+        let v = node.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+        n += 1;
+        if !enc.contains(v as f64) {
+            esc += 1;
+        }
+    }
+    (esc, n, true)
+}
+
+/// Ein Zellen-Raster über einer Fixture (dieselbe Aufteilung wie [`cell_scan`]).
+fn fixture_cells(lo: [f64; 3], hi: [f64; 3], n: usize) -> Vec<iv::Box3> {
+    let step = |k: usize, d: usize| lo[d] + (hi[d] - lo[d]) * k as f64 / n as f64;
+    let mut out = Vec::new();
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                out.push(iv::Box3::new(
+                    [step(ix, 0), step(iy, 1), step(iz, 2)],
+                    [step(ix + 1, 0), step(iy + 1, 1), step(iz + 1, 2)],
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// **§8u-Pin 3: die Feld-Einschliessung hält gegen den Auswerter.**
+///
+/// Zwei Ebenen, beide über der echten §8p-Matrix:
+///
+/// * das **naive Vereinigungsfeld** unter dem Stopp (`Union`/`Difference`/
+///   `Offset`/`Leaf` — inklusive der AABB-Prunes, die NICHT als korrekt
+///   vorausgesetzt, sondern als Fallunterscheidung eingeschlossen werden);
+/// * die **Vertex-Ablation** des ausgelieferten Feldes (Vertex-Kugeln,
+///   `L`-Block, Grenzwert-Klemme) — der vollständig unterstützte Ausschnitt.
+///
+/// Ein Ausreisser wäre der Beweis, dass die Einschliessung lügt.
+#[test]
+fn interval_encloses_the_delivered_field_384() {
+    let delta = 2.0f32;
+    let (mut cells, mut probes, mut evaluated) = (0usize, 0usize, 0usize);
+    for (name, field, _exact, lo, hi, _n) in cert_matrix(delta) {
+        if !(name.starts_with("Stufen")
+            || name == "Ecken-Schale t/δ=2.5"
+            || name == "Rippen-Kamm 4×2/1"
+            || name == "notch α=90")
+        {
+            continue;
+        }
+        let (stop, _blk) = stop_with_lb(&field);
+        let cut = strip_channels(&field);
+        for cell in fixture_cells(lo, hi, 5) {
+            for (tag, node) in [("naiv", stop), ("Vertex-Ablation", &cut)] {
+                let (esc, n, ok) = field_enclosure_escapes(node, &cell, 2);
+                assert_eq!(
+                    esc, 0,
+                    "{name}/{tag}: {esc} von {n} Feldwerten liegen AUSSERHALB der \
+                     Einschliessung, Zelle {cell:?}"
+                );
+                cells += 1;
+                probes += n;
+                evaluated += ok as usize;
+            }
+        }
+    }
+    assert!(cells >= 800, "nur {cells} Zell-Läufe");
+    assert!(probes > 20_000, "nur {probes} Proben — der Pin misst nichts");
+    assert!(
+        evaluated * 4 >= cells * 3,
+        "nur {evaluated} von {cells} Zellen liefern überhaupt eine Einschliessung — \
+         dann prüft der Pin überwiegend `Unknown` und nicht die Arithmetik"
+    );
+}
+
+/// **§8u-Pin 4: Unterteilung erhält die Einschliessung.**
+///
+/// Jede Teilzelle muss den Produktionswert an JEDER ihrer Proben weiterhin
+/// enthalten — und die Unterteilung muss die Intervalle messbar verengen,
+/// sonst ist die adaptive Rekursion ein Placebo.
+#[test]
+fn interval_subdivision_keeps_every_sample_384() {
+    let delta = 2.0f32;
+    let (field, _) = compile_for(thin_corner_node(2.5 * delta, 40.0, delta));
+    let cut = strip_channels(&field);
+    let (stop, _b) = stop_with_lb(&field);
+    let (mut kids, mut narrowed, mut probes) = (0usize, 0usize, 0usize);
+    for cell in fixture_cells([-7.0; 3], [1.0; 3], 4) {
+        for node in [stop, &cut] {
+            let mut c0 = iv::Ctx::new();
+            let Ok(parent) = iv::enclose_node(&mut c0, node, cell.world_f32()) else { continue };
+            let (a, b) = cell.split();
+            for child in [a, b] {
+                let (esc, n, ok) = field_enclosure_escapes(node, &child, 2);
+                assert_eq!(esc, 0, "Kind-Zelle {child:?}: {esc} von {n} Werten entkommen");
+                if !ok {
+                    continue;
+                }
+                let mut c1 = iv::Ctx::new();
+                let kid = iv::enclose_node(&mut c1, node, child.world_f32()).unwrap();
+                assert!(
+                    kid.lo >= parent.lo && kid.hi <= parent.hi,
+                    "Kind-Einschliessung {kid:?} verlässt die Eltern-Einschliessung {parent:?} — \
+                     die Inklusions-Isotonie ist verletzt"
+                );
+                if kid.width() < parent.width() {
+                    narrowed += 1;
+                }
+                kids += 1;
+                probes += n;
+            }
+        }
+    }
+    assert!(kids >= 200, "nur {kids} Kind-Zellen geprüft");
+    assert!(probes > 5_000, "nur {probes} Proben");
+    assert!(
+        narrowed * 4 >= kids,
+        "nur {narrowed} von {kids} Teilzellen sind ENGER als ihre Elternzelle — \
+         dann bringt die Unterteilung nichts"
+    );
+}
+
+/// **§8u-Pin 5: das Zell-Zertifikat ist unter-claim-frei** (Consumer-Lemma).
+///
+/// Für JEDE zertifizierte Zelle gilt an dicht gesetzten Proben: der Punkt ist
+/// KEIN Unter-Claim — gemessen gegen die EXAKTE Komplement-Referenz der §8k-
+/// Fixturen, nicht gegen eine Schranke. Fällt hier auch nur eine Probe, ist
+/// einer der beiden Zweige falsch.
+#[test]
+fn interval_cell_certificate_is_under_claim_free_384() {
+    let delta = 2.0f32;
+    let (mut certified, mut probes, mut checked_fixtures) = (0usize, 0usize, 0usize);
+    for (name, field, exact, lo, hi, _n) in cert_matrix(delta) {
+        if !(name.starts_with("Stufen")
+            || name == "Ecken-Schale t/δ=2.25"
+            || name == "Rippen-Kamm 4×2/1"
+            || name == "notch α=90")
+        {
+            continue;
+        }
+        let (stop, blk) = stop_with_lb(&field);
+        let cap = delta as f64 + CERT_TOL;
+        let u_at = |c: [f64; 3]| u_upper(stop, blk, delta, c, 2.0 * cap);
+        let mut here = 0usize;
+        for cell in fixture_cells(lo, hi, 12) {
+            let mut c = iv::Ctx::new();
+            let v = iv::certify_cell(&cell, &field, delta as f64, CERT_TOL, &u_at, &mut c);
+            if !v.certified() {
+                continue;
+            }
+            certified += 1;
+            here += 1;
+            for p in cell_samples(&cell, 1) {
+                let f = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) as f64;
+                let e = exact(p);
+                probes += 1;
+                assert!(
+                    !(f >= 0.0 && e - delta as f64 > CERT_TOL),
+                    "{name}: die als {v:?} zertifizierte Zelle {cell:?} enthält bei {p:?} einen \
+                     ECHTEN Unter-Claim (f = {f:.6}, exakt − δ = {:.6})",
+                    e - delta as f64
+                );
+            }
+        }
+        assert!(here > 20, "{name}: nur {here} zertifizierte Zellen — der Pin misst dort nichts");
+        checked_fixtures += 1;
+    }
+    assert_eq!(checked_fixtures, 4, "nur {checked_fixtures} Fixturen geprüft");
+    assert!(certified > 1_000 && probes > 8_000, "{certified} Zellen / {probes} Proben");
+}
+
+/// **§8u-Gegenprobe 1: eine um ein ulp ZU SCHARFE Rundung muss reissen.**
+///
+/// Die blosse ABWESENHEIT der Aussen-Rundung ist nachweislich wirkungslos:
+/// nach jedem `seal` liegen beide Schranken auf dem f32-Gitter, und f64
+/// rechnet mit solchen Operanden für `+ − ×` exakt. Die Gegenprobe muss die
+/// Schranke deshalb — wie schon `emax = −0.05` in §8t — aktiv zu eng stellen.
+/// Tut sie es, MUSS die adversariale Familie fallen; sonst trägt Pin 2 nichts.
+#[test]
+fn interval_counter_probe_inward_rounding_384() {
+    let knobs = iv::Knobs { inward_rounding: true, ..Default::default() };
+    let (mut broken, mut esc_total) = (0usize, 0usize);
+    for (_name, vs, cell, base, d, extra) in adversarial_vertex_cases() {
+        let (esc, _n) = vertex_enclosure_escapes(knobs, &vs, &cell, base, d, extra, 3);
+        if esc > 0 {
+            broken += 1;
+            esc_total += esc;
+        }
+    }
+    assert!(
+        broken > 0,
+        "die Gegenprobe blieb still: mit einer um ein ulp nach INNEN gedrehten Rundung muss \
+         mindestens eine Familie Produktionswerte verlieren ({esc_total} Ausreisser gezählt) — \
+         sonst prüft `interval_encloses_the_production_vertex_term_384` die Rundung nicht"
+    );
+}
+
+/// **§8u-Gegenprobe 2: ein willkürlich gewählter Zweig muss reissen.**
+///
+/// Ersetzt man die Hülle unentschiedener Schalter durch „nimm den ersten
+/// erreichbaren Zweig" — der klassische Fehler —, MUSS die Familie fallen. Das
+/// ist der Beweis, dass die Schalter-Pflicht (Beweispflicht 4) in den Tests
+/// wirklich trägt und nicht bloss zufällig nie greift.
+#[test]
+fn interval_counter_probe_first_branch_only_384() {
+    let knobs = iv::Knobs { first_branch_only: true, ..Default::default() };
+    let (mut broken, mut esc_total) = (0usize, 0usize);
+    for (_name, vs, cell, base, d, extra) in adversarial_vertex_cases() {
+        let (esc, _n) = vertex_enclosure_escapes(knobs, &vs, &cell, base, d, extra, 3);
+        if esc > 0 {
+            broken += 1;
+            esc_total += esc;
+        }
+    }
+    assert!(
+        broken > 0,
+        "die Gegenprobe blieb still: ohne Hülle über unentschiedenen Schaltern muss die \
+         Familie Produktionswerte verlieren ({esc_total} Ausreisser) — sonst ist die \
+         Schalter-Pflicht in den Tests nicht belegt"
+    );
+}
+
+/// **§8u-Pin 6: Zweig 2 ist keine tote Ausnahme.**
+///
+/// Am AUSGELIEFERTEN Feld der §8p-Matrix zertifiziert Zweig 2 **null** Zellen —
+/// und der Grund ist benannt und strukturell: `channel_limit` kann nur über
+/// eine UNTERE Schranke der Naht-Distanz `de` nach oben abgeschätzt werden, und
+/// die gibt es in Paket 1 nicht (die Bounding-Sphere des Kanals ist mit
+/// `bound_r = 3.3 … 54.5 mm` gegen `K = 3.91 mm` wertlos — derselbe Befund wie
+/// §8t für die Stück-Hüllkugeln).
+///
+/// Ein leerer Zweig ist von einem kaputten aber nicht zu unterscheiden. Dieser
+/// Pin zeigt deshalb an der **Vertex-Ablation** (Kanäle entfernt, Vertex-
+/// Kugeln + `L`-Block + Klemme unverändert), dass die Maschine rechnet: sie
+/// zertifiziert dort Zellen über Zweig 2, und an jeder davon behauptet das
+/// abladierte Feld an dicht gesetzten Proben tatsächlich Material.
+#[test]
+fn interval_branch_two_is_alive_on_the_vertex_cut_384() {
+    let delta = 2.0f32;
+    let t = 6.0 * delta;
+    let (field, _) = compile_for(thin_corner_node(t, 40.0, delta));
+    let cut = strip_channels(&field);
+    let (mut b2, mut probes) = (0usize, 0usize);
+    let none = |_c: [f64; 3]| None; // Zweig 1 abgeschaltet — nur Zweig 2 zählt.
+    let lo = -(t as f64 + delta as f64 + 1.0);
+    for cell in fixture_cells([lo; 3], [1.0; 3], 11) {
+        let mut c = iv::Ctx::new();
+        match iv::certify_cell(&cell, &cut, delta as f64, CERT_TOL, &none, &mut c) {
+            iv::Verdict::Branch2 => {
+                b2 += 1;
+                for p in cell_samples(&cell, 2) {
+                    let f = cut.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+                    probes += 1;
+                    assert!(
+                        f < 0.0,
+                        "Zweig 2 hat die Zelle {cell:?} zertifiziert, das Feld liefert bei \
+                         {p:?} aber {f} ≥ 0 — die obere Schranke lügt"
+                    );
+                }
+            }
+            iv::Verdict::Branch1 => unreachable!("Zweig 1 ist in diesem Pin abgeschaltet"),
+            iv::Verdict::Unknown(_) => {}
+        }
+    }
+    assert!(
+        b2 >= 30,
+        "Zweig 2 zertifiziert nur {b2} Zellen der Vertex-Ablation — dann ist die \
+         Intervall-Auswertung nicht belegt, sondern bloss still"
+    );
+    assert!(probes > 800, "nur {probes} Proben");
+}

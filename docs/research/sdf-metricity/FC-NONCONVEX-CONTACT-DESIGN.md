@@ -4601,6 +4601,475 @@ Stücke, `κ` median 13.4) fällt am Ein-Punkt-Mass auf 0.87×, am Feld auf 1.00
   statt zweier Auswertungen), solange die Konditions-Schranke die schlecht
   konditionierten Fälle abschaltet — und das tut sie nachweislich.
 
+## 8u. Die Intervall-Stufe, Paket 1 — Zellen statt Stichproben (#384, 2026-08-02)
+
+§8r hat die Frage gestellt und offen gelassen, §8s und §8t haben sie zweimal
+wiederholt: *„Die Intervall-Stufe — Zweig 1 baubar, Zweig 2 braucht eine
+Intervall-Auswertung des korrigierten Feldes."* §8u baut sie. Zweig 1 ganz,
+Zweig 2 für eine scharf umrissene Term-Klasse — und der Rest bekommt ein
+ehrliches `Unknown` mit Namen.
+
+Für eine achsenparallele Zelle `C` (Mittelpunkt `c`, Halbdiagonale `ρ`) ist zu
+zeigen:
+
+```text
+kein x ∈ C erfüllt   f(x) ≥ 0  ∧  dist(x,∁Ω) > δ + tol
+```
+
+Zwei hinreichende Zweige, und sie sind voneinander unabhängig:
+
+1. **`U(c) + ρ ≤ δ + tol`** — kein Punkt der Zelle liegt tief genug, um
+   überhaupt ein Unter-Claim sein zu KÖNNEN. Braucht keine
+   Intervall-Arithmetik und sagt nichts über `f`.
+2. **`sup_C f < 0`** — das Feld behauptet über der ganzen Zelle Material, ein
+   Unter-Claim ist per Definition ausgeschlossen. Sagt nichts über `dist`.
+
+**Das Ergebnis vorweg.** Zweig 1 zertifiziert je nach Fixture 64 bis 1236 von
+1728 Zellen (adaptiv bis 1608). Zweig 2 zertifiziert am AUSGELIEFERTEN Feld
+**null** — und der Grund ist gemessen, benannt und strukturell: er ist der
+neunte in Folge gefallene Vorab-Verdächtige, und er fällt aus genau dem Grund,
+den §8t schon für die Stück-Hüllkugeln gefunden hat.
+
+### Der Architektur-Entscheid: vier Ebenen, ein f32-Modell
+
+`crates/kernel/src/offset_interval.rs`, rund tausend Zeilen, **kein
+Auswerter-Anteil** — Analyse-Code neben dem Feld, wie der §8r-Zeuge.
+
+1. **Die Algebra.** `Iv{lo,hi}` über f64, mit Aussen-Rundung nach jeder
+   Schranke. Umfang bewusst klein: `hull`, `intersect`, `add/sub/mul`,
+   `div` nur mit zertifiziert null-freiem Nenner, `neg`, `abs`, `min`, `max`,
+   `sqrt`, `certainly_lt/le/gt/ge`. Kein `sin`/`cos` — das kommt mit dem
+   Bogen-Paket.
+2. **Geometrische Reichweiten-Funktionen.** Affine Ebenen exakt über der Box,
+   Norm-Einschliessung in Produktions-Reihenfolge, Punkt-Box-Distanz.
+3. **Strukturelle Auswertung.** Jeder Produktions-`if` wird zum Schalter: über
+   der Zelle entschieden ⇒ nur dieser Zweig, sonst Hülle beider.
+4. **Fail-closed.** Nicht unterstützte Operation, Entartung, NaN, Überlauf,
+   Budget ⇒ `Unknown` mit Grund. Niemals optimistisch weiter.
+
+#### Warum keine Fremd-Crate
+
+`inari` ist die einzige ausgereifte Rust-Intervall-Crate und fällt aus: ein
+`compile_error!` für alles ausser x86-64, `wasm32` nicht unterstützt. Der Grund
+ist strukturell und trifft jede Crate dieser Bauart — sie stellt die
+**Rundungsrichtung der FPU** um, und WASM kennt keine gerichteten
+Rundungsmodi. Die Aussen-Rundung muss deshalb explizit per
+`next_down`/`next_up` nach jeder Schranke passieren.
+
+#### Warum kein Lipschitz-Ansatz
+
+`sup_C f ≤ f(c) + Lip·ρ` scheitert an dem, was §8r schon benannt hat: die
+Terme schalten hart (`select`, Kegel-Gates), und §8m hat die latente
+`safe_sqrt`-Entartung dokumentiert — eine endliche Lipschitz-Konstante des
+korrigierten Feldes existiert nicht. Die Intervall-Auswertung braucht keine:
+sie **schaltet mit**, statt zu glätten.
+
+#### Die eine grosse Abweichung von der Empfehlung: das f32-Modell
+
+Eingeschlossen wird **nicht** der reelle Wert des idealen Feldes, sondern der
+Wert, den der f32-Auswerter an einem beliebigen Punkt der Zelle LIEFERT. Das
+ist der Wert, über den die Zusage spricht — und es macht **jede
+Rundungs-Konstante überflüssig**.
+
+Jede Produktions-Operation wird als „exakte reelle Operation, danach Rundung
+nach f32" modelliert: die reelle Reichweite über den Operanden-Intervallen in
+f64 mit `next_down`/`next_up`, danach **gerichtete** Rundung auf das
+f32-Gitter (`f32_down`/`f32_up`). Beides ist exakt darstellbar, weil jedes f32
+ein f64 ist. Es gibt in diesem Modul **keine einzige hergeleitete
+Fehlerkonstante** — nicht weil sie weggelassen wurde, sondern weil das Modell
+keine braucht.
+
+Zwei Nebenbefunde des Modells, beide getestet:
+
+* **Der f32-Schritt ist tragend, nicht kosmetisch.** Der Produktionswert ist
+  `fl32(reell)`, und `fl32` rundet zur nächsten Zahl — also unter Umständen
+  ÜBER die reelle obere Schranke hinaus. Ohne den f32-Schritt wäre das Modell
+  **unsound**. `interval_arithmetic_is_outward_and_f32_sound_384` weist nach,
+  dass solche Aufrundungen in der Stichprobe tatsächlich vorkommen.
+* **Der f64-Schritt ist für `+ − ×` ein No-op.** Nach jedem Abschluss liegen
+  beide Schranken auf dem f32-Gitter, und f64 rechnet mit f32-Operanden exakt
+  (24 + 24 ≤ 53 Mantissenbits). Nur `÷` und `√` brauchen die
+  f64-Aussen-Rundung wirklich. Das hat eine Konsequenz für die Gegenprobe
+  (s. u.).
+
+#### Drei kleinere Abweichungen, alle bewusst
+
+* **`L` wird direkt eingeschlossen, nicht über 1-Lipschitz.** Die Empfehlung
+  lautete `[L(c) − ρ, L(c) + ρ]`. Das schliesst aber den REELLEN Stück-Abstand
+  ein, nicht den f32-Wert, den `lb_value` liefert; die Brücke bräuchte eine
+  **zweiseitige** f32-Fehlerschranke für `tri_dist`, und §8t hat nur eine
+  einseitige hergeleitet — und die auch nur gegen die Trägerebenen-Distanz,
+  nicht gegen `dist(p,T)`. Die direkte Auswertung (Konstanten sind konstant,
+  nur `p` trägt die Zelle) braucht keine solche Konstante. Die
+  1-Lipschitz-Eigenschaft bleibt trotzdem tragend — dort, wo sie ein Satz über
+  eine EXAKTE Grösse ist: in Zweig 1.
+* **`LbPiece::Rev` ist nicht unterstützt.** `rev_dist` projiziert auf die
+  Achse (`rad = d − ax·⟨d,ax⟩`) und erzeugt korrelierte Komponenten; die
+  natürliche Auswertung wird so breit, dass sie nichts entscheidet. Gemessen
+  kostet das nichts: `Rev`-Stücke hat nur die Stufen-Nabe, und die hat gar
+  keine Vertex-Kugeln — ihr `L`-Block wird also nie gelesen.
+* **Die Gegenprobe muss ZU SCHARF sein, nicht bloss ungerundet.** Weil der
+  f64-Schritt für `+ − ×` nachweislich wirkungslos ist, kann „Aussen-Rundung
+  weglassen" durch kein Sampling widerlegt werden. Die Gegenprobe dreht die
+  Rundung deshalb um ein ulp nach INNEN — genau die Bauart, die §8t mit
+  `emax = −0.05` schon gebraucht hat.
+
+### Die zehn Beweispflichten, hergeleitet
+
+**1 — Elementare Inclusion.** Seien `A ∋ a`, `B ∋ b` Einschliessungen der
+f32-Operandenwerte. Zu zeigen: `seal(lo,hi) ∋ fl32(a ∘ b)`.
+*(i)* Für `+`, `−` liefert die Monotonie, für `×` die Vier-Produkte-Regel
+exakt `[inf, sup]` der reellen Operation über `A × B`; für `÷` dasselbe unter
+`0 ∉ B`; für `√` s. Pflicht 8. *(ii)* Die f64-Auswertung dieser
+Endpunkt-Formeln rundet höchstens ein ulp je Operation — `next_down`/`next_up`
+fangen das ab. *(iii)* `fl32` ist monoton nichtfallend, also
+`fl32(a∘b) ≤ fl32(hi_f64) ≤ f32_up(hi_f64)`, symmetrisch unten. ∎
+Schritt *(ii)* ist für `+ − ×` an f32-Endpunkten leer, Schritt *(iii)* nie.
+
+**2 — Domänen-Containment.** Der Auswerter sieht `fl32(x)`, nicht `x`.
+`Box3::world_f32` liefert `[f32_down(lo_k), f32_up(hi_k)]`; mit der Monotonie
+von `fl32` folgt `fl32(x_k) ∈ [fl32(lo_k), fl32(hi_k)]` ⊆ diesem Intervall für
+jedes reelle `x_k ∈ [lo_k, hi_k]`. f32-Primitiv-Parameter werden per
+`Iv::f32p` verlustfrei nach f64 gehoben (f32 ⊂ f64). ∎
+Die Disziplin gilt auch für von Hand gebaute Eingangs-Intervalle: `-0.006f64`
+liegt ÜBER `-0.006f32`, und ohne `f32_down` meldet der Pin Scheinfehler. (Das
+ist beim Bau von Pin 2 tatsächlich passiert.)
+
+**3 — Kompositionslemma.** `min`, `max`, `neg`, `abs`, `hull` sind exakte
+Auswahl- bzw. Spiegel-Operationen auf den Endpunkten: sie rechnen nicht, sie
+wählen. Sie sind inklusions-isoton und führen an f32-Operanden keine Rundung
+ein (`f32::min` gibt einen Operanden zurück). Umfassen die Kinder ihre Werte,
+umfasst die Komposition den zusammengesetzten Ausdruck. ∎
+
+**4 — Schalterlemma.** Produktion: `if c { A } else { B }`. Ist `c` über der
+GANZEN Zelle wahr, ist der Else-Zweig für keinen Zellpunkt erreichbar, und die
+Einschliessung von `A` genügt; symmetrisch für falsch. Sonst ist die Wertemenge
+`⊆ A ∪ B ⊆ hull(A,B)`. **Die Beweisrichtung ist asymmetrisch:** einen Zweig
+WEGLASSEN verlangt einen Beweis seiner Unerreichbarkeit; einen Zweig BEHALTEN
+verlangt nichts. Der Drei-Wege-Schalter am Ende von `vertex_apply` ist als
+geschachtelter Zwei-Wege-Schalter implementiert; das `||` in `lb_value` ist
+wahr, sobald EINE Seite wahr ist, falsch nur wenn BEIDE falsch sind, sonst
+unentschieden. ∎
+
+**5 — Sequenzielle Induktion.** Behauptet wird: das Intervall nach der k-ten
+Operation umfasst jeden möglichen laufenden Wert nach genau diesen k
+Produktions-Operationen — gegen die ECHTE Reihenfolge in `vertex_apply`, nicht
+gegen eine idealisierte. Induktionsanfang: die Eingangs-Intervalle umfassen
+`p`, `base`, `d`, `extra` (Pflicht 2). Induktionsschritt: jede Operation ist
+entweder eine modellierte Arithmetik (Pflicht 1), eine Komposition (Pflicht 3)
+oder ein Schalter (Pflicht 4). Die gespiegelte Kette ist
+
+```text
+dq = p ⊖ v (3×)  →  dot(dq,dq) = ((m₀⊕m₁)⊕m₂)  →  ρ = √·
+→  lhs = K ⊖ ρ  →  SKIP-Schalter gegen ∓d
+→  s₁,s₂,s₃ = dot(dq, ĝᵢ)  →  gate-Schalter (L/G)
+→  rd = ρ ⊖ δ,  tr = K ⊖ ρ  →  w_geo = min⁵  →  w = min(w_geo, gate)
+→  Drei-Wege-Schalter
+```
+
+Die **Links-Assoziativität** von `dot` (`(a₀b₀ + a₁b₁) + a₂b₂`) ist Teil des
+Modells: sie bestimmt, welche Rundung wann passiert. ∎
+
+**6 — Skip-Lemma.** Der Fernfeld-Skip `if K − ρ ≤ ∓d { return d }` ist ein
+Schalter wie jeder andere. Er darf nur allein stehen, wenn die Ungleichung für
+JEDEN Punkt der Zelle UND für den ganzen laufenden `d`-Bereich gilt — die
+Bedingung koppelt Geometrie mit dem laufenden Wert, „die Zelle ist weit weg"
+genügt also gerade nicht. Bei `Both` wird `d` mit dem Rumpf gehüllt. ∎
+
+**7 — L-Intervall-Lemma.** `lb_value` hat drei Bestandteile, und alle drei
+sind im Modell:
+*(a)* der **Innen-Indikator** `base > δ` ⇒ `LB_NONE` — `base` ist `d₀` und
+damit selbst ein Intervall; überspannt die Zelle die Schwelle, werden beide
+Fälle gehüllt;
+*(b)* die **Fernfeld-Kugel** `|p − center| > skip_r` ⇒ `LB_NONE`, ebenso;
+*(c)* das `min` über die Randstücke, danach `− slack` (eine f32-Subtraktion).
+Der §8t-Prune ist bit-identisch zum flachen Lauf (Budget-Lemma in
+`LbPiece::tri`, gepinnt von `lb_pruning_is_bit_exact_384`); die Einschliessung
+des flachen Laufs deckt ihn also mit ab. Innerhalb von `tri_dist` sind
+`ba`/`cb`/`ac`/`nor`/`nn` **Konstanten** — nur `p` trägt die Zelle. Der
+Orientierungstest `inside ≥ 2` ist damit ein Schalter über drei affinen
+Formen: alle drei sicher `≥ 0` ⇒ Ebenen-Zweig allein; einer sicher `< 0` ⇒
+Kanten-Zweig allein; sonst Hülle. ∎
+
+**8 — Safe-sqrt-Lemma.** `√([l,h] ∩ [0,∞)) = [√max(0,l), √max(0,h)]` ist eine
+korrekte Einschliessung, AUCH wenn `l < 0 ≤ h`: der Produktions-Radikand ist an
+allen benutzten Stellen eine Quadratsumme bzw. ein Quotient nichtnegativer
+Grössen und in f32 nie negativ; ein negatives `l` ist ausschliesslich die
+eigene Aussen-Rundung. Die untere Schranke wird auf `0` geklemmt, weil die
+f32-Wurzel eines nichtnegativen Radikanden nichtnegativ ist. Ist das GANZE
+Intervall negativ, ist etwas anderes als die Rundung kaputt ⇒ `Unknown`.
+**Daraus folgt KEINE endliche Ableitungsschranke.** Die unbeschränkte Ableitung
+bei null zerstört Lipschitz-Beweise, nicht Einschliessungen. Die Gefahr ist der
+UMGEBENDE Ausdruck: durch ein nullhaltiges Intervall wird nie dividiert
+(`fdiv` verweigert), und ein `v/‖v‖` mit nullhaltiger Norm käme ohne
+Richtungs-Hülle `[−1,1]³` nicht aus — in diesem Paket kommt kein solcher
+Quotient vor (die Vertex-Kugel benutzt `ρ`, nicht `dq/ρ`). ∎
+
+**9 — Consumer-Lemma.**
+*Zweig 2:* `hi(f(C)) < 0` ⇒ `f(x) < 0` für alle `x ∈ C` ⇒ die erste Hälfte der
+Unter-Claim-Bedingung (`f ≥ 0`) ist für keinen Zellpunkt erfüllbar. ∎
+*Zweig 1:* `dist(·,∁Ω)` ist 1-Lipschitz — für jedes `y ∈ ∁Ω` gilt
+`dist(x,∁Ω) ≤ |x−y| ≤ |x−c| + |c−y|`, und das Infimum über `y` gibt
+`dist(x,∁Ω) ≤ |x−c| + dist(c,∁Ω)`. Mit `|x−c| ≤ ρ` und
+`dist(c,∁Ω) ≤ U(c)` (der §8r-Fuss-Zeuge: ein Punkt mit bewiesenem
+`f_inner > δ + CERT_MARGIN` liegt in `∁Ω`) folgt für JEDES `x ∈ C`
+`dist(x,∁Ω) ≤ U(c) + ρ ≤ δ + tol` — die zweite Hälfte (`dist − δ > tol`) ist
+für keinen Zellpunkt erfüllbar. ∎
+`ρ` wird in jedem Schritt AUFWÄRTS gerundet, die Summe `U + ρ` ebenfalls: `ρ`
+ist eine Zusage („weiter kann kein Zellpunkt vom Mittelpunkt weg sein") und
+darf nie zu klein sein.
+Die beiden Zweige sind unabhängig — Zweig 1 sagt nichts über `f`, Zweig 2
+nichts über `dist`, und jeder allein genügt.
+
+**10 — Fail-closed und Terminierung.** Jeder nicht unterstützte Operator, jedes
+NaN, jeder Überlauf, jeder entartete Nenner, jeder negative Radikand und jede
+Budget-Überschreitung endet in einem BENANNTEN `Unknown`; es gibt keinen Pfad,
+der optimistisch weiterrechnet. `hull_enc` propagiert `Unknown` — eine Hülle
+über einem unbekannten Zweig wäre eine Erfindung. Terminierung: 4·10⁶
+Operationen je Zelle als hartes Budget, und `certify_cell_adaptive` ist durch
+`max_depth` beschränkt (`≤ 2^max_depth` Teilzellen); **das Erreichen der Tiefe
+ist `Unknown`, nie Erfolg**. ∎
+
+### Die Abgrenzung, die stehen bleiben muss
+
+**`|f| ≤ ε` über einer Menge beweist NICHT, dass die Menge auf `∂Ω` liegt.**
+Das ist die Pseudo-SDF-Falle, und ein noch so enges Intervall um null ändert
+daran nichts. Die Naht-Zertifizierung — `channel_limit` steht auf dem
+§8j-Satz *„jeder Naht-Punkt liegt auf `∂Ω`"*, und der ist seit §8s
+ausdrücklich eine Modell-Annahme auf Trace-Auflösung — ist deshalb **nicht**
+Teil dieses Pakets und lässt sich mit seinen Mitteln auch nicht nachreichen.
+Was fehlt, ist ein geometrischer AUSSEN-Zeuge (ein Punkt mit bewiesenem
+`f > 0` in kontrolliertem Abstand) bzw. eine η-fehlerbehaftete Klemme
+`δ − de − η`. Nichts in `offset_interval.rs` und nichts in diesem Abschnitt
+darf so gelesen werden, als sei diese Lücke geschlossen.
+
+### Der neunte gefallene Verdächtige: warum Zweig 2 am Feld schweigt
+
+Zweig 2 zertifiziert am ausgelieferten Feld null Zellen. Der Grund ist keine
+Schwäche der Arithmetik, sondern ein fehlender geometrischer Baustein, und er
+lässt sich genau benennen.
+
+Für einen konkaven Stopp ist `f = max(d_nach_Termen, lim)`. Der erste Teil ist
+harmlos: jeder konkave Term ist ein `min`, also `d_nach ≤ d₀`. Der zweite ist
+die **Grenzwert-Klemme** `lim = max_j channel_limit_j`, und
+
+```text
+channel_limit = δ − min(de, s₄ + δ)      (innerhalb K der Naht)
+```
+
+Eine OBERE Schranke davon verlangt eine UNTERE Schranke der Naht-Distanz `de`.
+Ohne sie ist nur `de ≥ 0` bekannt, und damit `lim ≤ δ = 2 mm > 0` — die
+Zertifizierung `sup_C f < 0` ist tot, egal wie eng `d₀` eingeschlossen ist.
+
+Zwei billige Kandidaten für `de ≥ …` gibt es, und **beide fallen aus demselben
+Grund, den §8t schon für die Stück-Hüllkugeln gefunden hat**:
+
+| Kandidat | Radius (Median … max) | gegen `K = 3.91 mm` |
+|---|---|---|
+| Kanal-Bounding-Sphere `bound_r` | 3.3 … 54.5 mm | `dbs ≥ K` verlangt 7 … 58 mm Abstand vom Kugelmittelpunkt — ausserhalb des Bauteils |
+| Bogen-Ball `B(arc.c, arc.r)` | 4.9 … 98.4 mm | noch schlechter: eine fast gerade Naht wird als Bogen mit GROSSEM Radius gefittet |
+
+Ein Bounding-Volume ist ein guter Proxy für kompakte Objekte und ein
+schlechter für grosse flache — und eine Naht ist eine lange dünne Kurve.
+Dass der Bogen-Ball noch grösser ist als die Kanal-Kugel, ist die
+Pointe: die Fitting-Konstruktion drückt gerade Nähte in Kreise mit riesigem
+Radius, deren Ball dann die halbe Welt umfasst.
+
+Zwei Teilergebnisse sind trotzdem gefallen und stehen im Code:
+
+* **`channel_apply` allein ist ohne jede Naht-Geometrie neutralisierbar.** Aus
+  `w_geo ≤ K − de ≤ K` (denn `de ≥ 0`) folgt `−w_geo ≥ de − K ≥ −K`, und für
+  `d ≤ −K` ist `min(d, −w_geo) = d` in allen drei Zweigen. Der Term kann
+  höchstens `K` an Material addieren; wer tiefer als `K` im Material sitzt,
+  merkt ihn nicht. Das hilft nur nicht, weil `channel_limit` bindet.
+* **Die Asymmetrie ist ehrlich zu benennen:** `channel_limit` ist ein reiner
+  ÜBER-Claim-Tilger (§8j) — er kann den Wert nur ANHEBEN. Genau deshalb ist er
+  für eine obere Schranke der Preis, den §8j erhoben hat, und genau deshalb
+  ist der `de`-Unterschranken-Baustein das eigentliche Paket 2.
+
+Das ist der **neunte** Fall in Folge, in dem der vorab benannte Verdächtige
+nicht der Schuldige war: erwartet worden war eine Schwäche der
+Intervall-Arithmetik (Dependency-Breite, Schalter-Hüllen), gemessen wurde eine
+fehlende geometrische Unterschranke.
+
+### Messung
+
+Zell-Zertifizierung über das Doktrin-Gitter jeder Fixture, als 12³ = 1728
+lückenlose Zellen gelesen (Sonde `probe_384_interval_cell_certification`,
+`δ = 2 mm`, `tol = 10⁻³`). „adaptiv" = Unterteilung bis Tiefe 3, eine Zelle
+zählt nur als zertifiziert, wenn JEDE Teilzelle es ist.
+
+| Fixture | Zellen | Zweig 1 | Zweig 2 | Unknown | Hauptgrund | Z1 adaptiv | Unknown adaptiv | Z2 (Vertex-Ablation) |
+|---|---|---|---|---|---|---|---|---|
+| Stufen-Nabe | 1728 | **1236** | 0 | 492 | Kanal-Term | 1608 | 120 | 0 |
+| Ecken-Schale `t/δ = 2` | 1728 | 1023 | 0 | 705 | Kanal-Term | 1083 | 645 | 22 |
+| Ecken-Schale `t/δ = 2.1` | 1728 | 876 | 0 | 852 | Kanal-Term | 1023 | 705 | 43 |
+| Ecken-Schale `t/δ = 2.25` | 1728 | 722 | 0 | 1006 | Kanal-Term | 830 | 898 | 35 |
+| Ecken-Schale `t/δ = 2.4` | 1728 | 700 | 0 | 1028 | Kanal-Term | 700 | 1028 | 41 |
+| Ecken-Schale `t/δ = 2.5` | 1728 | 658 | 0 | 1070 | Kanal-Term | 668 | 1060 | 38 |
+| Ecken-Schale `t/δ = 3` | 1728 | 450 | 0 | 1278 | Kanal-Term | 480 | 1248 | 26 |
+| Ecken-Schale `t/δ = 4` | 1728 | 216 | 0 | 1512 | Kanal-Term | 216 | 1512 | 8 |
+| Ecken-Schale `t/δ = 6` | 1728 | 64 | 0 | 1664 | Kanal-Term | 91 | 1637 | 125 |
+| Rippen-Kamm 4×1.5/0.8 | 1728 | 432 | 0 | 1296 | **Operator** | 576 | 1152 | 0 |
+| Rippen-Kamm 4×2/1 | 1728 | 432 | 0 | 1296 | Kanal-Term | 528 | 1200 | 0 |
+| notch α = 90° | 1728 | **972** | 0 | 756 | Kanal-Term | 1056 | 672 | 60 |
+| notch α = 60° | 1728 | 916 | 0 | 812 | Kanal-Term | 965 | 763 | 10 |
+
+Drei Ablesungen:
+
+* **Zweig 1 trägt, und er trägt dort, wo es zählt.** Er deckt genau die
+  randnahen Zellen — die Menge, in der ein Unter-Claim geometrisch überhaupt
+  Platz hätte. Je dicker die Schale, desto kleiner sein Anteil (`t/δ = 6`:
+  64 von 1728), denn dann liegt der grösste Teil des Quaders tief im Material,
+  und dort ist Zweig 2 zuständig.
+* **Die adaptive Unterteilung hilft, aber nicht dramatisch** (Nabe
+  1236 → 1608, notch 972 → 1056). Sie schärft Zweig 1 an den Zellrändern; am
+  Kanal-Blocker ändert sie nichts — der ist strukturell, nicht auflösungsbedingt.
+* **Der Rippen-Kamm 4×1.5/0.8 ist `Unknown("Operator")`, nicht „Kanal".** Sein
+  Baum trägt drei `BoundedCsg::Extrude`-Blätter (die Rippen entstehen als
+  Skizzen-Extrusion); der Intervall-Auswerter unterstützt nur `Box`, `Sphere`
+  und `Cylinder`. Genannt, nicht versteckt.
+
+**Der Term-Bestand der Matrix** (Sonde `probe_384_interval_stop_inventory`) —
+er erklärt, warum die Vertex-Ablation nur an der Ecken-Schale und am notch
+etwas zeigt:
+
+| Fixture | Kanäle | Vertex-Kugeln | `Tri` | `Rev` |
+|---|---|---|---|---|
+| Stufen-Nabe | 2 | 0 | 10 | 5 |
+| Ecken-Schale (alle acht) | 24 | 8 | 72 | 0 |
+| Rippen-Kamm 4×1.5/0.8 | 19 | 0 | 296 | 0 |
+| Rippen-Kamm 4×2/1 | 22 | 0 | 140 | 0 |
+| notch α = 90° / 60° | 1 / 2 | 0 | 28 | 0 |
+
+Nur die Ecken-Schale hat überhaupt Vertex-Kugeln, und nur die Stufen-Nabe hat
+`Rev`-Stücke — die beiden Mengen sind disjunkt. Deshalb kostet die fehlende
+`Rev`-Unterstützung gemessen nichts.
+
+**Ein leerer Zweig ist von einem kaputten nicht zu unterscheiden.** Deshalb
+misst der Pin `interval_branch_two_is_alive_on_the_vertex_cut_384` Zweig 2 an
+der **Vertex-Ablation** (derselbe Baum, Kanäle entfernt, Vertex-Kugeln +
+`L`-Block + Grenzwert-Klemme unverändert): dort zertifiziert er, mit
+abgeschaltetem Zweig 1, Zellen — und an jeder behauptet das abladierte Feld an
+dicht gesetzten Proben tatsächlich Material. Die Ablation ist **kein
+ausgeliefertes Feld** und wird auch nirgends als eines ausgegeben; sie ist der
+Nachweis, dass die Maschine rechnet.
+
+### Die adversarialen Familien
+
+Dichte Proben sind hier **Falsifikatoren der Einschliessung**, nicht Belege der
+Zertifizierung. Die Familie in `adversarial_vertex_cases` zielt Zeile für Zeile
+auf eine Schwachstelle, jeweils in drei Massstäben (10⁻³ / 1 / 10³) und an zwei
+Orten (Ursprung / um 10⁵ mm translatiert):
+
+| Familie | Zielt auf |
+|---|---|
+| ρ-Null (Zelle umschliesst `v`) | `safe_sqrt` mit nullhaltigem Radikanden |
+| ρ-fast-Null | beliebig kleiner positiver Unterrand des Radikanden |
+| ρ = K | die Skip-Schaltfläche |
+| ρ = δ | die `w_geo`-Schaltfläche |
+| `LB_AVAIL` | die `L`/`G`-Umschaltung, exakt überspannt |
+| Sliver (eine Achse 10⁻⁹) | Dependency-Breite zwischen Gitterpunkten |
+| konvex | der `d.max(w)`-Zweig |
+| `w = 0` | `gate` als Punkt genau auf der Schwelle |
+| Kegel `w ± 0` | der Drei-Wege-Schalter mit weit auseinanderliegenden Zweigen |
+| ρ ≲ δ-Klemme | das Ergebnis liegt EXAKT auf der Intervall-Schranke |
+
+Dazu die ECHTEN acht Vertex-Kugeln der Ecken-Schale in drei Zellgrössen und
+drei `extra`-Regimen. Zusammen rund 135 000 Proben; **null Ausreisser**.
+
+**Die Rückdreh-Gegenproben.** Beide Sicherungen werden einzeln gezogen, und
+beide Familien MÜSSEN dann fallen:
+
+* `interval_counter_probe_inward_rounding_384` — Rundung um ein ulp nach
+  INNEN statt nach aussen: Familien verlieren Produktionswerte. (Die blosse
+  ABWESENHEIT der Aussen-Rundung wäre, wie oben hergeleitet, für `+ − ×` an
+  f32-Endpunkten wirkungslos und deshalb keine Gegenprobe.)
+* `interval_counter_probe_first_branch_only_384` — statt der Hülle den ersten
+  erreichbaren Zweig nehmen: Familien verlieren Produktionswerte.
+
+Beide Schalter sitzen in `Knobs` und werden von der Zertifizierung nie gesetzt
+(sie baut den Kontext immer mit `Default`).
+
+### Prüfungen
+
+* **Golden**: `cmp` über die ganze Datei — **byte-identisch**, Tape UND
+  Feldwerte. Erwartete Richtung: kein Auswerter, kein Opcode, kein Payload-Wort,
+  kein Spiegel berührt; das Modul liest das Feld, es ändert es nicht.
+* **`just test`**: Fast-Tier **1482** (Baseline 1474, acht neue Pins) / Web
+  **2082** (unverändert). `cargo test --workspace` **1587** (Baseline 1579).
+* **`OFFSET_FUZZ_ITERS=200 … offset_fuzz --release`**: 5/5.
+
+### Neue Pins
+
+* `interval_arithmetic_is_outward_and_f32_sound_384` — die Algebra: IEEE-
+  Nachbarschaft, f32-Klammer, elementare Inclusion gegen die echte
+  f32-Arithmetik (rund 135 000 Proben), der Nachweis dass der f32-Schritt
+  tragend ist, und die drei Fail-closed-Zweige (`√(<0)`, Division durch ein
+  nullhaltiges Intervall, nullhaltiger Radikand).
+* `interval_encloses_the_production_vertex_term_384` — die adversariale
+  Familie plus die echten Kugeln der Ecken-Schale.
+* `interval_encloses_the_delivered_field_384` — die Feld-Einschliessung gegen
+  den Auswerter, auf dem naiven Vereinigungsfeld UND auf der Vertex-Ablation,
+  über vier Matrix-Fixturen.
+* `interval_subdivision_keeps_every_sample_384` — Unterteilungs-Konsistenz:
+  jede Teilzelle enthält weiterhin jeden gesampelten Produktionswert, die
+  Kind-Einschliessung verlässt die Eltern-Einschliessung nie
+  (Inklusions-Isotonie), und die Unterteilung verengt messbar.
+* `interval_cell_certificate_is_under_claim_free_384` — das Consumer-Lemma
+  gegen die EXAKTE §8k-Referenz: keine zertifizierte Zelle enthält einen
+  echten Unter-Claim.
+* `interval_counter_probe_inward_rounding_384` und
+  `interval_counter_probe_first_branch_only_384` — die beiden Rückdreh-
+  Gegenproben.
+* `interval_branch_two_is_alive_on_the_vertex_cut_384` — Zweig 2 ist keine
+  tote Ausnahme.
+* Sonden (`#[ignore]`): `probe_384_interval_cell_certification` (die grosse
+  Tabelle), `probe_384_interval_stop_inventory` (der Term-Bestand),
+  `probe_384_interval_node_kinds` (welcher Knoten das `Unknown("Operator")`
+  auslöst), `probe_384_interval_channel_reach` (die Radien-Tabelle des
+  Kanal-Blockers).
+
+**Keine bestehende Pin-Zeile bewegt sich**; insbesondere stehen
+`FEHLENDES Material`, `Stück-Schranke L` und `≤ 0.01 mm` unverändert im
+Zusagen-Text.
+
+### Was §8u NICHT gebaut hat
+
+* **Keine Zusagen-Änderung.** Die Unter-Seiten-Ausnahme bleibt wörtlich stehen.
+  Die Zertifizierung ist ein zweiter, unabhängiger Nachweis über Zellen — sie
+  ersetzt den Stichproben-Zeugen nicht und darf ihn nicht ersetzen, solange
+  Zweig 2 am ausgelieferten Feld schweigt.
+* **Keine Naht-Zertifizierung.** S. o., Abgrenzung.
+* **Keine Domänen-Adapter jenseits `Box3`.** Die Trait-Grenze
+  (`CellDomain → [Iv; 3]`) ist so geschnitten, dass `LineParam` und `ArcParam`
+  andocken können, ohne die Algebra anzufassen — gebaut sind sie nicht.
+
+### Was OFFEN bleibt
+
+* **Paket 2 — die Unterschranke der Naht-Distanz.** Der eine Baustein, der
+  Zweig 2 am ausgelieferten Feld freischaltet: gerade Kanal-Segmente mit
+  eindeutiger Nearest-Zuordnung, dazu eine hergeleitete f32-Schranke für
+  `arc_closest` (die Bälle sind gemessen wertlos, s. o.).
+* **Paket 3 — Argmin-Wechsel und adaptive Unterteilung IM Kanal-Scan.**
+  `channel_nearest` minimiert über die Bögen; über einer Zelle kann der
+  Gewinner wechseln, und dann müssen alle erreichbaren Kandidaten gehüllt
+  werden.
+* **Paket 4 — Kreisbögen mit trigonometrischem Enclosure.** `sin`/`cos` mit
+  Aussen-Rundung und Perioden-Reduktion; heute bewusst nicht in der Algebra.
+* **Paket 5 — der geometrische Naht-Aussenzeuge und die η-Klemme.** Erst er
+  macht aus „die Naht liegt auf `∂Ω`" einen Satz statt einer Modell-Annahme.
+* **`LbPiece::Rev`** — die affine Zerlegung `rad = (I − ax·axᵀ)·d` wäre exakt,
+  gilt aber für den REELLEN Wert; die Produktions-Form `d − ax·t` müsste
+  danach mit einer hergeleiteten Rundungsschranke re-inflatiert werden.
+* **Skizzen-gestützte Blätter** (`Extrude`, `Revolve`) — heute
+  `Unknown("Operator")`; sie kosten den Rippen-Kamm 4×1.5/0.8 vollständig.
+* **Dependency-Breite der Rotation.** `quat_inverse_rotate` wird natürlich
+  ausgewertet; für die Identität ist das exakt, für eine echte Drehung nicht.
+  Betrifft heute nur den notch.
+* **Der konvexe Zweig**, **Member-Formen jenseits Box/Zylinder/konvexem
+  Geraden-Extrude**, **spitze Nähte**: unverändert §8j/§8m/§8n/§8q/§8r.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -4671,6 +5140,17 @@ Stücke, `κ` median 13.4) fällt am Ein-Punkt-Mass auf 0.87×, am Feld auf 1.00
   ihm fallen `at_vertex`/`at_face` und der `verts`-Parameter).
   **Kein Auswerter, kein Opcode, kein Payload-Wort, kein Spiegel** — Golden
   35/35 byte-identisch, `check_interp` 35 Szenen / 0 failures.
+- Produktionscode §8u: **neu** `crates/kernel/src/offset_interval.rs` — die
+  Intervall-Stufe (Algebra mit Aussen-Rundung und f32-Modell, `CellDomain`/
+  `Box3`, `enclose_lb_value`, `enclose_vertex_apply`, `channel_is_neutral`,
+  `enclose_node`, `certify_cell`, `certify_cell_adaptive`), plus die
+  Modul-Zeile in `lib.rs`. **Kein Auswerter, kein Opcode, kein Payload-Wort,
+  kein Spiegel** — Golden byte-identisch.
+- Pins/Sonden §8u in `offset_capability_tests.rs`: `u_upper` (die obere
+  Distanzschranke, aus `under_cert` herausgezogen), `strip_channels` (die
+  Vertex-Ablation), `cell_scan`/`cell_scan_at`/`fixture_cells`,
+  `adversarial_vertex_cases`, die acht `interval_*_384`-Pins und die vier
+  `probe_384_interval_*`-Sonden.
 - Pins §8s: `seam_end_fix_is_load_bearing_384` (Rückdreh-Gegenprobe, beide
   Hälften) und `every_seam_point_lies_on_the_boundary_384` (die Invariante
   „jeder Naht-Punkt liegt auf `∂Ω`" als Pin) in `offset_capability_tests.rs`;
