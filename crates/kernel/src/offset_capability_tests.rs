@@ -12103,3 +12103,268 @@ fn arc_fidget_t_and_diagonals_are_exact_384() {
          max |Δde| = {worst_de:.3e}"
     );
 }
+
+/// **§8z-Sonde: wo trägt die Bogen-Einschliessung?**
+#[test]
+#[ignore]
+fn probe_384_arc_interval_reach() {
+    let delta = 2.0f32;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+    let none = |_c: [f64; 3]| None;
+    println!("| Gebiet | n³ | Z2 | davon mit Bogen | Hauptgründe |");
+    println!("|---|---|---|---|---|");
+    for (tag, lo, hi, n) in [
+        ("Doktrin-Gitter", [-9.0f64, -9.0, -4.5], [9.0f64, 9.0, 0.5], 12usize),
+        ("Doktrin fein", [-9.0, -9.0, -4.5], [9.0, 9.0, 0.5], 24),
+        ("Plattenkern", [-8.5, -8.5, -2.6], [-6.5, -6.5, -1.0], 10),
+        ("Nabe nah", [-7.0, -7.0, -3.0], [-3.0, -3.0, -0.5], 14),
+        // Tief IM oberen Zylinder (r2 = 4, z bis 6), nahe der Kreisnaht
+        // r = 4 / z = 0.5 — dort gibt es echtes Material UND der Kanal ist
+        // im Trust-Radius.
+        ("Zylinder b, nahtnah", [-1.5, -1.5, 1.2], [1.5, 1.5, 3.2], 12),
+        ("Zylinder b, tiefer", [-1.2, -1.2, 2.0], [1.2, 1.2, 4.0], 10),
+        // Ring knapp innerhalb r = 6 über der Platte (Naht r = 6 / z = 0).
+        ("Zylinder a, nahtnah", [2.0, 2.0, -0.9], [3.6, 3.6, 0.3], 10),
+    ] {
+        let (mut b2, mut b2_arc) = (0usize, 0usize);
+        let mut unk = std::collections::BTreeMap::new();
+        for cell in fixture_cells(lo, hi, n) {
+            let mut c = iv::Ctx::new();
+            match iv::certify_cell(&cell, &field, delta as f64, CERT_TOL, &none, &mut c) {
+                iv::Verdict::Branch2 => {
+                    b2 += 1;
+                    if c.curved_arc_evals() > 0 {
+                        b2_arc += 1;
+                    }
+                }
+                iv::Verdict::Unknown(w) => *unk.entry(w).or_insert(0usize) += 1,
+                _ => {}
+            }
+        }
+        let mut v: Vec<_> = unk.iter().collect();
+        v.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
+        let top: String =
+            v.iter().take(2).map(|(k, c)| format!("{k}·{c}")).collect::<Vec<_>>().join(", ");
+        println!("| {tag} | {} | {b2} | {b2_arc} | {top} |", n * n * n);
+    }
+}
+
+/// **§8z-Pin 1: die Bogen-Alternativen enthalten den Produktionswert —
+/// GEMEINSAM.**
+///
+/// Der Falsifikator von A1 (Beweispflicht 7). Für dicht gesetzte Proben muss es
+/// eine Alternative geben, deren `de`, `q` UND `t` den Produktionswert
+/// **zusammen** enthalten. Getrennt zu prüfen wäre schwächer: es liesse die
+/// Kombination „`q` vom Endpunkt-Ast, `t` vom Fusspunkt-Ast" durchgehen, ein
+/// Paar, das `arc_closest` nie erzeugt.
+#[test]
+fn arc_interval_alternatives_contain_production_384() {
+    use iv::CellDomain;
+    let (mut cases, mut probes) = (0usize, 0usize);
+    for alpha in [0.05f64, 0.6, 1.5707963, 2.4, 3.14159265] {
+        for r in [0.3f32, 2.0, 25.0] {
+            let arc = synth_arc(r, alpha, [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+            // Zellen quer zu jeder Schaltfläche: Achse, ρ-Schwelle,
+            // Sektorgrenzen, Diagonalen, Endpunkt-Voronoi.
+            let cells: Vec<iv::Box3> = vec![
+                iv::Box3::cube([0.0, 0.0, 0.0], (0.3 * r) as f64),
+                iv::Box3::cube([0.0, 0.0, 0.0], 5.0e-10),
+                iv::Box3::cube([0.0, 0.0, 0.0], 2.0e-9),
+                iv::Box3::cube([(0.9 * r) as f64, 0.0, 0.0], (0.2 * r) as f64),
+                iv::Box3::cube([(0.7 * r) as f64, (0.7 * r) as f64, 0.0], (0.3 * r) as f64),
+                iv::Box3::cube([-(0.7 * r) as f64, (0.7 * r) as f64, 0.0], (0.3 * r) as f64),
+                iv::Box3::cube([0.0, (1.4 * r) as f64, (0.5 * r) as f64], (0.4 * r) as f64),
+                iv::Box3::new(
+                    [-(2.0 * r) as f64, -(2.0 * r) as f64, -(0.1 * r) as f64],
+                    [(2.0 * r) as f64, (2.0 * r) as f64, (0.1 * r) as f64],
+                ),
+            ];
+            for cell in cells {
+                let mut c = iv::Ctx::new();
+                let Ok(alts) = iv::enc_arc_closest(&mut c, cell.world_f32(), &arc) else {
+                    continue;
+                };
+                cases += 1;
+                for p in cell_samples(&cell, 3) {
+                    let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                    let (de, q, t) = crate::offset_channel::arc_closest(&arc, pf);
+                    let hit = alts.iter().any(|a| {
+                        a.de.contains(de as f64)
+                            && a.t.contains(t as f64)
+                            && (0..3).all(|k| a.q[k].contains(q[k] as f64))
+                    });
+                    assert!(
+                        hit,
+                        "α={alpha} r={r} p={pf:?}: (de={de}, q={q:?}, t={t}) liegt in KEINER \
+                         gemeinsamen Alternative — {} Alternativen: {alts:?}",
+                        alts.len()
+                    );
+                    probes += 1;
+                }
+            }
+        }
+    }
+    assert!(cases >= 70 && probes > 4_000, "{cases} Zellen / {probes} Proben");
+    println!("§8z: {cases} Zellen, {probes} Proben — jede in einer gemeinsamen Alternative");
+}
+
+/// **§8z-Pin 2: der A1-Erfolg hängt kausal an der Bogen-Einschliessung.**
+///
+/// Das Erfolgskriterium: mindestens eine Zelle der Stufen-Nabe wird durch
+/// Zweig 2 zertifiziert, mit einem **tatsächlich beteiligten** gekrümmten
+/// Kandidaten — und die Ablation (`arc_refuse_curved`) entfernt GENAU diesen
+/// Erfolg wieder.
+#[test]
+fn arc_interval_unlocks_the_hub_384() {
+    let delta = 2.0f32;
+    let (field, _) = compile_for(stepped_hub_node(3.0, 6.0, 4.0, 0.5, 1.2, 1.8, delta));
+    let none = |_c: [f64; 3]| None;
+    // Tief im oberen Zylinder, im Trust-Radius der Kreisnaht r = 4 / z = 0.5.
+    let cells = fixture_cells([-1.5, -1.5, 1.2], [1.5, 1.5, 3.2], 8);
+    let run = |knobs: iv::Knobs, cells: &Vec<iv::Box3>| -> (usize, usize) {
+        let (mut b2, mut with_arc) = (0usize, 0usize);
+        for cell in cells {
+            let mut c = iv::Ctx::with_knobs(knobs);
+            if matches!(
+                iv::certify_cell(cell, &field, delta as f64, CERT_TOL, &none, &mut c),
+                iv::Verdict::Branch2
+            ) {
+                b2 += 1;
+                if c.curved_arc_evals() > 0 {
+                    with_arc += 1;
+                }
+            }
+        }
+        (b2, with_arc)
+    };
+    let (b2, with_arc) = run(iv::Knobs::default(), &cells);
+    assert!(
+        b2 > 0 && with_arc == b2,
+        "Zweig 2 zertifiziert {b2} Zellen der Nabe, davon {with_arc} mit gekrümmtem \
+         Kandidaten — erwartet: mindestens eine, und ALLE mit Bogen"
+    );
+    // Und an jeder behauptet das Feld an dichten Proben tatsächlich Material.
+    let mut probes = 0usize;
+    for cell in &cells {
+        let mut c = iv::Ctx::new();
+        if !matches!(
+            iv::certify_cell(cell, &field, delta as f64, CERT_TOL, &none, &mut c),
+            iv::Verdict::Branch2
+        ) {
+            continue;
+        }
+        for p in cell_samples(cell, 2) {
+            let f = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+            probes += 1;
+            assert!(f < 0.0, "zertifizierte Zelle {cell:?} liefert bei {p:?} {f} ≥ 0");
+        }
+    }
+    assert!(probes > 500, "nur {probes} Proben");
+    // **Die Ablation entfernt genau diesen Erfolg.**
+    let (b2_abl, _) = run(
+        iv::Knobs { arc_refuse_curved: true, ..Default::default() },
+        &cells,
+    );
+    assert_eq!(
+        b2_abl, 0,
+        "mit abgeschalteter Bogen-Einschliessung bleiben {b2_abl} Zertifikate übrig — \
+         dann hängt der Erfolg nicht an A1"
+    );
+    println!("§8z: Nabe {b2} Zellen über Zweig 2 (alle mit Bogen), Ablation ⇒ {b2_abl}");
+}
+
+/// **§8z-Pin 3: die Rückdreh-Gegenproben der Bogen-Kette.**
+///
+/// Fünf Sicherungen, einzeln gezogen. Jede MUSS an der adversarialen Familie
+/// reissen (Produktionswert fällt aus allen Alternativen) — ausser der
+/// `q`/`t`-Frühhüllung, die sound bleibt und deshalb über ihre BREITE
+/// widerlegt wird.
+#[test]
+fn arc_interval_counter_probes_384() {
+    use iv::CellDomain;
+    let mut fams: Vec<(ChannelArc, iv::Box3)> = Vec::new();
+    for alpha in [0.6f64, 1.5707963, 2.4] {
+        for r in [1.0f32, 8.0] {
+            let arc = synth_arc(r, alpha, [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+            for ctr in [
+                [0.0f64, 0.0, 0.0],
+                [(0.8 * r) as f64, (0.4 * r) as f64, 0.0],
+                [-(0.6 * r) as f64, (0.6 * r) as f64, (0.2 * r) as f64],
+                [0.0, (1.5 * r) as f64, 0.0],
+            ] {
+                fams.push((arc.clone(), iv::Box3::cube(ctr, (0.35 * r) as f64)));
+            }
+        }
+    }
+    let escapes = |knobs: iv::Knobs| -> usize {
+        let mut esc = 0usize;
+        for (arc, cell) in &fams {
+            let mut c = iv::Ctx::with_knobs(knobs);
+            let Ok(alts) = iv::enc_arc_closest(&mut c, cell.world_f32(), arc) else {
+                continue;
+            };
+            for p in cell_samples(cell, 3) {
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let (de, q, t) = crate::offset_channel::arc_closest(arc, pf);
+                let hit = alts.iter().any(|a| {
+                    a.de.contains(de as f64)
+                        && a.t.contains(t as f64)
+                        && (0..3).all(|k| a.q[k].contains(q[k] as f64))
+                });
+                if !hit {
+                    esc += 1;
+                }
+            }
+        }
+        esc
+    };
+    assert_eq!(escapes(iv::Knobs::default()), 0, "die Produktion entkommt schon ohne Mutation");
+    for (tag, knobs) in [
+        ("nur erste Alternative", iv::Knobs { arc_first_alt_only: true, ..Default::default() }),
+        ("letzte Alternative gestrichen", iv::Knobs { arc_drop_last_alt: true, ..Default::default() }),
+        ("Fusspunkt-Ast fehlt", iv::Knobs { arc_drop_foot_alt: true, ..Default::default() }),
+        ("Endpunkt-Ast fehlt", iv::Knobs { arc_drop_end_alt: true, ..Default::default() }),
+    ] {
+        let e = escapes(knobs);
+        assert!(e > 0, "die Gegenprobe {tag} blieb still — dann prüft die Familie sie nicht");
+    }
+    // Die ρ-Intersektion: ohne sie verliert die Kette Zellen an die Division
+    // (fail-closed), statt sie auszuwerten.
+    // **Der ρ-Schnitt, auf der Mechanismus-Ebene gepinnt — mit ehrlichem
+    // Nebenbefund.**
+    //
+    // Die naheliegende Familie („Zelle enthält die Bogenachse, ohne Schnitt
+    // geht sie an der Division verloren") ist NICHT baubar, und der Grund ist
+    // strukturell: enthält die Zelle die Achse, so überspannen `x` und `y`
+    // beide die Null, und dann überspannt auch der Diamant-Nenner `x + y` die
+    // Null — `fdiv` verweigert dort ZUERST. Umgekehrt: ist der Diamant-Nenner
+    // beweisbar nullfrei (`min y > max |x|`), dann ist `ρ ≥ min y` ebenfalls
+    // von der Null weg, und der ρ-Schalter ist gar nicht gemischt. Beide
+    // Bedingungen schliessen einander aus.
+    //
+    // Der Schnitt bleibt trotzdem eine SOUNDNESS-Pflicht, keine Optimierung:
+    // ohne ihn stünde im Code eine Division durch ein Intervall, das die Null
+    // enthalten KANN, und die Verweigerung hinge an einer Koinzidenz zweier
+    // Nenner statt an einem Argument. Gepinnt wird deshalb der Mechanismus.
+    let raw = iv::Iv { lo: 0.0, hi: 1.0 };
+    let cut = raw
+        .intersect(iv::Iv { lo: 1.0e-9, hi: f64::INFINITY })
+        .expect("ρ-Schnitt ist leer");
+    assert!(cut.lo >= 1.0e-9, "der Schnitt hebt die untere Schranke nicht an");
+    let mut c = iv::Ctx::new();
+    assert!(
+        c.fdiv(iv::Iv { lo: -1.0, hi: 1.0 }, raw).is_err(),
+        "die Division durch das ROHE ρ-Intervall wird nicht verweigert"
+    );
+    assert!(
+        c.fdiv(iv::Iv { lo: -1.0, hi: 1.0 }, cut).is_ok(),
+        "die Division durch das GESCHNITTENE ρ-Intervall schlägt fehl"
+    );
+    println!(
+        "§8z-Gegenproben: ρ-Schnitt hebt lo auf {:.1e}; rohe Division verweigert, \
+         geschnittene nicht. Achsenhaltige Zellen scheitern strukturell schon am \
+         Diamant-Nenner (Nebenbefund).",
+        cut.lo
+    );
+}

@@ -388,6 +388,22 @@ pub struct Knobs {
     /// nach `+∞` über, überspringt die Produktion auch den ersten Bogen und
     /// liefert `None`.
     pub assume_first_arc_evaluated: bool,
+    /// #384 §8z: nur die ERSTE Alternative eines Bogens nehmen (Gegenprobe).
+    pub arc_first_alt_only: bool,
+    /// #384 §8z: die letzte Alternative streichen (Gegenprobe).
+    pub arc_drop_last_alt: bool,
+    /// #384 §8z: den Fusspunkt-Ast weglassen (Gegenprobe).
+    pub arc_drop_foot_alt: bool,
+    /// #384 §8z: den Endpunkt-Ast weglassen (Gegenprobe).
+    pub arc_drop_end_alt: bool,
+    /// #384 §8z: `q`/`t` VOR dem Downstream getrennt hüllen (Gegenprobe —
+    /// sound, aber nachweislich breiter).
+    pub arc_hull_qt_early: bool,
+    /// #384 §8z: `ρ` NICHT vor der Division schneiden (Gegenprobe).
+    pub arc_skip_rho_intersect: bool,
+    /// #384 §8z: gekrümmte Bögen wieder pauschal verweigern — die **Ablation**,
+    /// die den A1-Erfolg gezielt entfernt.
+    pub arc_refuse_curved: bool,
     /// Den `best.is_finite()`-Schalter in `lb_value` **weglassen**. Genau der
     /// fehlte in der ersten §8u-Fassung; ein modelliertes `+∞` wählt dann den
     /// `L`-Zweig, während die Produktion den `G`-Zweig nimmt.
@@ -402,6 +418,7 @@ pub struct Ctx {
     max_ops: u64,
     channel_evals: u64,
     max_candidates: usize,
+    curved_arc_evals: u64,
 }
 
 impl Ctx {
@@ -419,6 +436,7 @@ impl Ctx {
             max_ops: 4_000_000,
             channel_evals: 0,
             max_candidates: 0,
+            curved_arc_evals: 0,
         }
     }
 
@@ -444,6 +462,14 @@ impl Ctx {
     /// „mindestens einmal gehüllt".
     pub fn max_candidates(&self) -> usize {
         self.max_candidates
+    }
+
+    /// #384 §8z: wie oft ein GEKRÜMMTER Bogen eingeschlossen wurde. Das
+    /// Erfolgskriterium von A1 verlangt eine Zertifizierung, an der ein
+    /// gekrümmter Kandidat tatsächlich beteiligt war — nicht bloss eine, die
+    /// zufällig neben einem liegt.
+    pub fn curved_arc_evals(&self) -> u64 {
+        self.curved_arc_evals
     }
 
     #[inline]
@@ -520,6 +546,25 @@ impl Ctx {
         let lo = p.iter().copied().fold(f64::INFINITY, f64::min);
         let hi = p.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         self.seal(lo, hi)
+    }
+
+    /// **Das Quadrat** — `x*x` mit DEMSELBEN Operanden (#384 §8z).
+    ///
+    /// Die generische Vier-Produkte-Regel behandelt die beiden Faktoren als
+    /// unabhängig und liefert für ein nullüberspannendes `x` fälschlich eine
+    /// NEGATIVE untere Schranke (`x.lo·x.hi < 0`). Die Produktion rechnet aber
+    /// `x*x`, und ein f32-Quadrat ist nie negativ. Die korrekte — und engere —
+    /// Einschliessung ist `[0, max(x.lo², x.hi²)]`, sobald `x` die Null
+    /// enthält, sonst das Intervall der Endpunkt-Quadrate.
+    #[inline]
+    pub fn fsquare(&mut self, a: Iv) -> Enc {
+        self.tick()?;
+        let (l2, h2) = (a.lo * a.lo, a.hi * a.hi);
+        if l2.is_nan() || h2.is_nan() {
+            return Err(Unknown("NaN(square)"));
+        }
+        let lo = if a.lo <= 0.0 && a.hi >= 0.0 { 0.0 } else { l2.min(h2) };
+        self.seal(lo, l2.max(h2))
     }
 
     /// **Die sichere Wurzel** (§8u-Lemma 8).
@@ -1036,8 +1081,20 @@ fn enclose_stop(
     // wird sequenziell voll ausgewertet — dann kostet `L` seinen Preis.
     let all_neutral = channels.iter().all(|ch| channel_is_neutral(c, p, d0, ch));
     let need_lb = !verts.is_empty() || !all_neutral;
+    // #384 §8z — **ein unbekanntes `L` darf den Stopp nicht verwerfen.**
+    //
+    // Bis A1 propagierte ein `Unknown` aus `enclose_lb_value` (etwa wegen
+    // `LbPiece::Rev`) und machte den ganzen Stopp unbekannt. Das ist strenger
+    // als nötig: `L` erreicht das Ergebnis ausschliesslich über
+    // `extra → concave_gate → gate` und dort über `w = min(w_geo, gate)`. Im
+    // konkaven Zweig liefert JEDER der drei Ausgänge `min(d, ·)` oder `d`,
+    // also stets `≤ d` — die OBERE Schranke hängt damit gar nicht von `gate`
+    // ab. Ein `Entire` für `lbv` ist deshalb eine gültige (maximal
+    // konservative) Einschliessung: sie kostet nur die untere Schranke.
+    //
+    // Fail-closed bleibt gewahrt — `Entire` behauptet nichts.
     let lbv = match lb {
-        Some(b) if need_lb => enclose_lb_value(c, p, d0, b)?,
+        Some(b) if need_lb => enclose_lb_value(c, p, d0, b).unwrap_or(Iv::ENTIRE),
         _ => Iv::f32p(LB_NONE),
     };
     if !all_neutral {
@@ -1171,11 +1228,202 @@ fn enc_nlerp(
 
 /// Das Ergebnis von [`crate::offset_channel::channel_nearest`], sofern über der
 /// ganzen Zelle EIN Bogen beweisbar gewinnt.
-struct NearestSeg {
-    de: Iv,
-    q: [Iv; 3],
-    m1: [Iv; 3],
-    m2: [Iv; 3],
+/// #384 §8z (P4-A1) — **eine erreichbare Produktions-Alternative EINES Bogens.**
+///
+/// `arc_closest` hat für einen gekrümmten Bogen drei erreichbare Ausgänge:
+/// Achse (`ρ < 1e-9`), Fusspunkt (`ρ ≥ 1e-9` ∧ Sektor innen) und Endpunkt
+/// (`ρ ≥ 1e-9` ∧ Sektor aussen, dort Start oder Ende). Über einer Zelle können
+/// mehrere davon erreichbar sein.
+///
+/// **`de`, `q` und `t` werden GEMEINSAM geführt** (Beweispflicht 7). Sie
+/// getrennt zu hüllen wäre zwar sound, aber unnötig breit — es kombinierte den
+/// `q` des Endpunkt-Astes mit dem `t` des Fusspunkt-Astes, ein Paar, das die
+/// Produktion nie erzeugt.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ArcAlt {
+    pub de: Iv,
+    pub q: [Iv; 3],
+    pub t: Iv,
+}
+
+/// #384 §8z — **ein Bogen als GENAU EIN §8w-Kandidat.**
+///
+/// Die Produktionsschleife hat je Bogen genau einen Index und genau einen
+/// Abstand in der strikten `< best`-Reihenfolge. Die internen Äste als eigene
+/// §8w-Kandidaten zu führen würde deshalb die Tie-Reihenfolge, den
+/// Prune-Zustand und den „letzten sicheren Aktualisierer" verfälschen —
+/// deshalb: ein Bogen, ein Kandidat, mit `de_hull` für Argmin und
+/// `channel_limit`, und den Alternativen für den Downstream.
+#[derive(Debug, Clone)]
+struct ArcCand {
+    /// Der Index des Bogens im Kanal — der Downstream braucht GENAU dessen
+    /// `m`-Vektoren für `enc_nlerp`.
+    idx: usize,
+    alts: Vec<ArcAlt>,
+    de_hull: Iv,
+}
+
+/// #384 §8z (P4-A1) — **`arc_closest` für einen GEKRÜMMTEN Bogen,
+/// eingeschlossen.**
+///
+/// Bis §8y verweigerte die Intervall-Stufe Krümmung pauschal („Paket 4"). A0
+/// hat die Auswertung algebraisch gemacht — hier wird sie eingeschlossen,
+/// Operation für Operation in der PRODUKTIONS-Klammerung (Beweispflicht 1).
+///
+/// ## Die drei erreichbaren Ausgänge
+///
+/// | Ausgang | Bedingung | Rückgabe |
+/// |---|---|---|
+/// | Achse | `ρ < 1e-9` | `(\|p−q₀\|, q₀, 0)` |
+/// | Fusspunkt | `ρ ≥ 1e-9` ∧ `a ≥ 0` ∧ `b ≥ 0` | Projektion, `t = D/D_e` |
+/// | Endpunkt | `ρ ≥ 1e-9` ∧ Sektor aussen | näherer Endpunkt, Tie → START |
+///
+/// Jeder über der Zelle ERREICHBARE Ausgang wird als eigene [`ArcAlt`]
+/// geführt; die Hülle über sie ist sound (Beweispflicht 7).
+///
+/// ## Die tragende Stelle: `ρ` vor der Division schneiden
+///
+/// Ist der ρ-Schalter gemischt, MUSS der Nicht-Achsen-Ast mit
+/// `ρ ∩ [1e-9, ∞)` rechnen, **bevor** `x/ρ` gebildet wird. Das rohe
+/// ρ-Intervall enthält dann die Null, und eine Division dadurch ist
+/// **unzulässig** — nicht bloss breit. Der Schnitt ist zulässig, weil auf
+/// diesem Ast die Produktion `ρ ≥ 1e-9` bereits geprüft hat.
+///
+/// Die Kondition `1/ρ` bleibt bei nullfreiem Intervall ein reines
+/// BREITEN-Problem; dagegen hilft Unterteilung oder `Unknown` — **nie ein
+/// Fehlerbudget**.
+///
+/// ## Die Diamant-Nenner
+///
+/// `x + y` bzw. `y − x` müssen per [`Ctx::fdiv`] als **nullfrei bewiesen**
+/// werden. Aus der punktweisen Beziehung „`ρ > 0` ⇒ `x + y > 0` im ersten
+/// Quadranten" darf KEINE Box-Untergrenze werden: über einer Zelle ist die
+/// Korrelation zwischen `x` und `y` verloren. Nicht beweisbar nullfrei ⇒
+/// `Unknown` und Unterteilung.
+pub(crate) fn enc_arc_closest(
+    c: &mut Ctx,
+    p: [Iv; 3],
+    arc: &ChannelArc,
+) -> Result<Vec<ArcAlt>, Unknown> {
+    // Fail-closed: ungültige A0-Daten werden nie eingeschlossen.
+    if c.knobs.arc_refuse_curved {
+        return Err(Unknown("Kanal-Bogen mit Krümmung (Ablation)"));
+    }
+    if !crate::offset_channel::arc_data_valid(arc) {
+        return Err(Unknown("Bogen-Daten ungültig"));
+    }
+    c.curved_arc_evals += 1;
+    let zero = Iv::point(0.0);
+    let d = fsub3(c, p, c3(arc.c))?;
+    let x = c.fdot(d, c3(arc.u))?;
+    let y = c.fdot(d, c3(arc.v))?;
+    // `ρ = sqrt(x*x + y*y)` — ZWEI Summanden, in Produktions-Klammerung.
+    // `fnorm` wäre ein Drei-Term-Skalarprodukt und damit eine andere Op-Kette.
+    let xx = c.fsquare(x)?;
+    let yy = c.fsquare(y)?;
+    let rho2 = c.fadd(xx, yy)?;
+    let rho = c.fsqrt(rho2)?;
+    let (e0, e1) = (Iv::f32p(arc.e[0]), Iv::f32p(arc.e[1]));
+    let r = Iv::f32p(arc.r);
+    // Start- und Endpunkt.
+    let mut q0 = [zero; 3];
+    let mut q1 = [zero; 3];
+    for k in 0..3 {
+        let m = c.fmul(r, Iv::f32p(arc.u[k]))?;
+        q0[k] = c.fadd(Iv::f32p(arc.c[k]), m)?;
+        let a = c.fmul(Iv::f32p(arc.u[k]), e0)?;
+        let b = c.fmul(Iv::f32p(arc.v[k]), e1)?;
+        let sum = c.fadd(a, b)?;
+        let rm = c.fmul(r, sum)?;
+        q1[k] = c.fadd(Iv::f32p(arc.c[k]), rm)?;
+    }
+    let d0 = {
+        let v = fsub3(c, p, q0)?;
+        c.fnorm(v)?
+    };
+    let mut alts: Vec<ArcAlt> = Vec::new();
+    let thr = Iv::f32p(1.0e-9);
+    let on_axis = decide_lt(rho, thr);
+    if on_axis != Decision::False {
+        alts.push(ArcAlt { de: d0, q: q0, t: zero });
+    }
+    if on_axis != Decision::True {
+        // **Der Schnitt vor jeder Division.**
+        let rho_nz = if c.knobs.arc_skip_rho_intersect {
+            rho
+        } else {
+            rho.intersect(Iv { lo: thr.lo, hi: f64::INFINITY })
+                .ok_or(Unknown("ρ-Schnitt leer"))?
+        };
+        // Sektor: `a = y ≥ 0` UND `b = x·e₁ − y·e₀ ≥ 0`.
+        let bv = {
+            let m0 = c.fmul(x, e1)?;
+            let m1 = c.fmul(y, e0)?;
+            c.fsub(m0, m1)?
+        };
+        let a_ge = decide_ge(y, zero);
+        let b_ge = decide_ge(bv, zero);
+        let inside = match (a_ge, b_ge) {
+            (Decision::True, Decision::True) => Decision::True,
+            (Decision::False, _) | (_, Decision::False) => Decision::False,
+            _ => Decision::Both,
+        };
+        if inside != Decision::False && !c.knobs.arc_drop_foot_alt {
+            let cs = c.fdiv(x, rho_nz)?;
+            let sn = c.fdiv(y, rho_nz)?;
+            let mut q = [zero; 3];
+            for k in 0..3 {
+                let a = c.fmul(Iv::f32p(arc.u[k]), cs)?;
+                let b = c.fmul(Iv::f32p(arc.v[k]), sn)?;
+                let sum = c.fadd(a, b)?;
+                let rm = c.fmul(r, sum)?;
+                q[k] = c.fadd(Iv::f32p(arc.c[k]), rm)?;
+            }
+            let de = {
+                let v = fsub3(c, p, q)?;
+                c.fnorm(v)?
+            };
+            // Diamant: `x ≥ 0 ? y/(x+y) : 1 + (−x)/(y−x)`.
+            let xq = decide_ge(x, zero);
+            let dm_q1 = |c: &mut Ctx| -> Enc {
+                let den = c.fadd(x, y)?;
+                c.fdiv(y, den)
+            };
+            let dm_q2 = |c: &mut Ctx| -> Enc {
+                let den = c.fsub(y, x)?;
+                let num = c.fdiv(x.neg(), den)?;
+                c.fadd(Iv::point(1.0), num)
+            };
+            let dm = sw(c, xq, dm_q1, dm_q2)?;
+            let t = c.fdiv(dm, Iv::f32p(arc.d_e))?;
+            let t = t.max(zero).min(Iv::point(1.0));
+            alts.push(ArcAlt { de, q, t });
+        }
+        if inside != Decision::True {
+            let d1 = {
+                let v = fsub3(c, p, q1)?;
+                c.fnorm(v)?
+            };
+            // `d0 <= d1` — **Gleichheit gehört zum START**.
+            let pick_start = decide_le(d0, d1);
+            if pick_start != Decision::False {
+                alts.push(ArcAlt { de: d0, q: q0, t: zero });
+            }
+            if pick_start != Decision::True && !c.knobs.arc_drop_end_alt {
+                alts.push(ArcAlt { de: d1, q: q1, t: Iv::point(1.0) });
+            }
+        }
+    }
+    if alts.is_empty() {
+        return Err(Unknown("leere Bogen-Alternativen"));
+    }
+    if c.knobs.arc_first_alt_only {
+        alts.truncate(1);
+    }
+    if c.knobs.arc_drop_last_alt && alts.len() > 1 {
+        alts.pop();
+    }
+    Ok(alts)
 }
 
 /// **Das Selektions-Lemma** (§8w) — welche Bögen kann die Produktion an einem
@@ -1250,7 +1498,7 @@ struct NearestSeg {
 /// Kanal auch nur einen gekrümmten Bogen, verweigert diese Funktion — auch für
 /// die Konkurrenz-Schranken, damit kein halber Beweis entsteht.
 struct Candidates {
-    segs: Vec<NearestSeg>,
+    arcs: Vec<ArcCand>,
     /// Kann die Produktion über dieser Zelle `None` liefern (alle Bögen
     /// übersprungen)? Dann gehört der neutrale Ausgang in die Hülle.
     none_possible: bool,
@@ -1265,13 +1513,22 @@ fn enc_channel_candidates(
     if ch.arcs.is_empty() {
         return Err(Unknown("Kanal ohne Bogen"));
     }
-    if ch.arcs.iter().any(|a| !(a.sweep < 0.0)) {
-        return Err(Unknown("Kanal-Bogen mit Krümmung (Paket 4)"));
-    }
     let n = ch.arcs.len();
-    let mut geo = Vec::with_capacity(n);
+    let mut geo: Vec<(Iv, Vec<ArcAlt>)> = Vec::with_capacity(n);
     for arc in &ch.arcs {
-        let g = enc_segment_closest(c, p, arc)?;
+        // #384 §8z: Segmente behalten ihren Ein-Alternativen-Pfad; gekrümmte
+        // Bögen liefern seit A1 ihre erreichbaren Alternativen.
+        let alts: Vec<ArcAlt> = if arc.sweep < 0.0 {
+            let (de, q, t) = enc_segment_closest(c, p, arc)?;
+            vec![ArcAlt { de, q, t }]
+        } else {
+            enc_arc_closest(c, p, arc)?
+        };
+        let mut hull = alts[0].de;
+        for a in &alts[1..] {
+            hull = hull.hull(a.de);
+        }
+        let g = (hull, alts);
         // Ein nicht-endliches `de` hiesse Überlauf in der Quadratsumme; dann
         // ist die Argmin-Logik nicht mehr modellierbar.
         if !g.0.lo.is_finite() || !g.0.hi.is_finite() {
@@ -1319,11 +1576,7 @@ fn enc_channel_candidates(
         if !can_update[k] {
             continue;
         }
-        let (de, q, t) = geo[k];
-        let arc = &ch.arcs[k];
-        let m1 = enc_nlerp(c, arc.m1s, arc.m1e, t)?;
-        let m2 = enc_nlerp(c, arc.m2s, arc.m2e, t)?;
-        out.push(NearestSeg { de, q, m1, m2 });
+        out.push(ArcCand { idx: k, alts: geo[k].1.clone(), de_hull: geo[k].0 });
         if c.knobs.first_arc_wins {
             break;
         }
@@ -1339,7 +1592,7 @@ fn enc_channel_candidates(
         return Err(Unknown("leere Kandidaten-Menge"));
     }
     c.max_candidates = c.max_candidates.max(out.len());
-    Ok(Candidates { segs: out, none_possible })
+    Ok(Candidates { arcs: out, none_possible })
 }
 
 /// [`crate::offset_channel::channel_limit`], eingeschlossen.
@@ -1357,9 +1610,11 @@ pub fn enclose_channel_limit(c: &mut Ctx, p: [Iv; 3], ch: &OffsetChannel) -> Enc
     // Der `None`-Ausgang von `channel_nearest`: `channel_limit` gibt dann das
     // neutrale `−1e30` zurück.
     let mut inner: Option<Iv> = if cands.none_possible { Some(neutral) } else { None };
-    for near in &cands.segs {
-        let far = decide_ge(near.de, Iv::f32p(ch.trust));
-        let de = near.de;
+    for near in &cands.arcs {
+        // **Limit-Lemma**: `channel_limit` liest ausschliesslich `de`; die
+        // `de`-Projektion der Alternativen genügt.
+        let far = decide_ge(near.de_hull, Iv::f32p(ch.trust));
+        let de = near.de_hull;
         let val = |c: &mut Ctx| -> Enc {
             let h = c.fadd(s4, Iv::f32p(ch.delta))?;
             c.fsub(Iv::f32p(ch.delta), de.min(h))
@@ -1440,23 +1695,46 @@ pub fn enclose_channel_apply(
         let s4 = enc_gate_planes(c, p, &ch.face_planes)?;
         // Der `None`-Ausgang: `channel_apply` gibt dann `d` unverändert zurück.
         let mut out: Option<Iv> = if cands.none_possible { Some(d) } else { None };
-        for near in &cands.segs {
-            let dq = fsub3(c, p, near.q)?;
-            let s1 = c.fdot(dq, near.m1)?;
-            let s2 = c.fdot(dq, near.m2)?;
-            let rd = c.fsub(near.de, Iv::f32p(ch.delta))?;
-            let tr = c.fsub(Iv::f32p(ch.trust), near.de)?;
-            let w_geo = s1.min(s2).min(s3).min(s4).min(rd).min(tr);
-            let w = w_geo.min(gate);
-            let v = if !ch.concave {
-                d.max(w)
+        for near in &cands.arcs {
+            // **Downstream-Lemma**: JEDE erreichbare Alternative läuft
+            // vollständig durch `t → enc_nlerp → channel_apply`; erst die
+            // ERGEBNISSE werden gehüllt. `q`/`t` vorher getrennt zu hüllen wäre
+            // sound, aber breiter — es kombinierte Paare, die die Produktion
+            // nie erzeugt (Gegenprobe: `Knobs::arc_hull_qt_early`).
+            let alts: Vec<ArcAlt> = if c.knobs.arc_hull_qt_early {
+                let mut q = near.alts[0].q;
+                let mut t = near.alts[0].t;
+                for a in &near.alts[1..] {
+                    for k in 0..3 {
+                        q[k] = q[k].hull(a.q[k]);
+                    }
+                    t = t.hull(a.t);
+                }
+                vec![ArcAlt { de: near.de_hull, q, t }]
             } else {
-                three_way_concave(c, d, w, w_geo)?
+                near.alts.clone()
             };
-            out = Some(match out {
-                Some(o) => o.hull(v),
-                None => v,
-            });
+            let arc = &ch.arcs[near.idx];
+            for alt in &alts {
+                let m1 = enc_nlerp(c, arc.m1s, arc.m1e, alt.t)?;
+                let m2 = enc_nlerp(c, arc.m2s, arc.m2e, alt.t)?;
+                let dq = fsub3(c, p, alt.q)?;
+                let s1 = c.fdot(dq, m1)?;
+                let s2 = c.fdot(dq, m2)?;
+                let rd = c.fsub(alt.de, Iv::f32p(ch.delta))?;
+                let tr = c.fsub(Iv::f32p(ch.trust), alt.de)?;
+                let w_geo = s1.min(s2).min(s3).min(s4).min(rd).min(tr);
+                let w = w_geo.min(gate);
+                let v = if !ch.concave {
+                    d.max(w)
+                } else {
+                    three_way_concave(c, d, w, w_geo)?
+                };
+                out = Some(match out {
+                    Some(o) => o.hull(v),
+                    None => v,
+                });
+            }
         }
         out.ok_or(Unknown("leere Kandidaten-Menge"))
     };

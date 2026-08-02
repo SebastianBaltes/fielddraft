@@ -6404,6 +6404,153 @@ gemessenen Fehler. Die 264 Worte sind vollständig attribuiert:
   0.03 mm gemessen), aber ein direkter Vergleich an den Stützstellen fehlt.
 * **P5b, P6a**: unverändert.
 
+## 8z. P4-A1 — die algebraische Bogen-Kette, eingeschlossen (#384, 2026-08-02)
+
+A0 hat die Bogen-Auswertung algebraisch gemacht; A1 schliesst sie ein. Bis
+hierher verweigerte die Intervall-Stufe Krümmung **pauschal**
+(`Unknown("Kanal-Bogen mit Krümmung (Paket 4)")`), und die Stufen-Nabe — das
+einzige Bogen-Fixture der Matrix — war strukturell unzertifizierbar.
+
+**Kein Produktions-Evaluator wurde angefasst**: Golden byte-identisch,
+`check_interp` unberührt.
+
+### Die Konstruktion
+
+**Ein Bogen ist genau EIN §8w-Kandidat.** Intern führt er seine erreichbaren
+Alternativen; nach aussen hat er eine `de_hull` für Argmin-Auswahl und
+`channel_limit`. Der Grund ist die Selektions-Semantik aus §8w: die
+Produktionsschleife hat je Bogen **genau einen Index und genau einen Abstand**
+in der strikten `< best`-Reihenfolge. Die internen Äste als eigene Kandidaten
+zu führen würde Tie-Reihenfolge, Prune-Zustand und „letzter sicherer
+Aktualisierer" verfälschen.
+
+Drei erreichbare Produktionsausgänge je Zelle:
+
+| Ausgang | Bedingung | Rückgabe |
+|---|---|---|
+| Achse | `ρ < 1e-9` | `(\|p−q₀\|, q₀, 0)` |
+| Fusspunkt | `ρ ≥ 1e-9` ∧ `a ≥ 0` ∧ `b ≥ 0` | Projektion, `t = D/D_e` |
+| Endpunkt | `ρ ≥ 1e-9` ∧ Sektor aussen | näherer Endpunkt, **Tie → Start** |
+
+**`de`, `q` und `t` werden GEMEINSAM geführt.** Sie getrennt zu hüllen wäre
+sound, aber unnötig breit: es kombinierte den `q` des Endpunkt-Astes mit dem
+`t` des Fusspunkt-Astes — ein Paar, das `arc_closest` nie erzeugt. Erst wenn
+ein Bogen möglicher Produktionsgewinner ist, läuft **jede** Alternative
+vollständig durch `t → enc_nlerp → channel_apply`; erst die ERGEBNISSE werden
+gehüllt.
+
+### Die tragende Stelle: `ρ` vor der Division schneiden
+
+Ist der ρ-Schalter gemischt, MUSS der Nicht-Achsen-Ast mit `ρ ∩ [1e-9, ∞)`
+rechnen, **bevor** `x/ρ` gebildet wird. Das rohe ρ-Intervall enthält dann die
+Null, und eine Division dadurch ist **unzulässig** — nicht bloss breit. Der
+Schnitt ist zulässig, weil die Produktion auf diesem Ast `ρ ≥ 1e-9` bereits
+geprüft hat.
+
+Die Kondition `1/ρ` bleibt bei nullfreiem Intervall ein reines BREITEN-Problem;
+dagegen hilft Unterteilung oder `Unknown` — **nie ein Fehlerbudget**.
+
+**Ehrlicher Nebenbefund:** die naheliegende Gegenprobe („Zelle enthält die
+Achse, ohne Schnitt geht sie an der Division verloren") ist **nicht baubar**,
+und der Grund ist strukturell. Enthält die Zelle die Achse, überspannen `x` und
+`y` beide die Null — dann überspannt auch der Diamant-Nenner `x + y` die Null,
+und `fdiv` verweigert dort ZUERST. Umgekehrt: ist der Diamant-Nenner beweisbar
+nullfrei (`min y > max |x|`), dann ist `ρ ≥ min y` ebenfalls von der Null weg,
+und der ρ-Schalter ist gar nicht gemischt. Beide Bedingungen schliessen
+einander aus. Der Schnitt bleibt trotzdem SOUNDNESS-Pflicht: ohne ihn stünde im
+Code eine Division durch ein Intervall, das die Null enthalten KANN, und die
+Verweigerung hinge an einer Koinzidenz zweier Nenner statt an einem Argument.
+Gepinnt wird deshalb der Mechanismus, nicht eine erfundene Familie.
+
+### Was mitgefunden wurde
+
+* **`x*x` ist ein QUADRAT, kein Produkt zweier Unabhängiger.** Die generische
+  Vier-Produkte-Regel liefert für ein nullüberspannendes `x` eine NEGATIVE
+  untere Schranke (`x.lo·x.hi < 0`); die Produktion rechnet aber `x*x`, und ein
+  f32-Quadrat ist nie negativ. Neu `Ctx::fsquare` mit `[0, max(lo², hi²)]` —
+  faithful UND enger.
+* **Ein unbekanntes `L` darf den Stopp nicht verwerfen.** Bis A1 propagierte
+  ein `Unknown` aus `enclose_lb_value` (etwa wegen `LbPiece::Rev`) und machte
+  den ganzen Stopp unbekannt — an der Nabe waren das **480 von 492**
+  Rest-Zellen. Das ist strenger als nötig: `L` erreicht das Ergebnis nur über
+  `extra → concave_gate → gate` und dort über `w = min(w_geo, gate)`. Im
+  konkaven Zweig liefert JEDER der drei Ausgänge `min(d, ·)` oder `d`, also
+  stets `≤ d` — die OBERE Schranke hängt gar nicht von `gate` ab. `Entire` für
+  `lbv` ist deshalb eine gültige, maximal konservative Einschliessung; sie
+  kostet nur die untere Schranke. Fail-closed bleibt gewahrt: `Entire`
+  behauptet nichts.
+
+### Messung
+
+**Die volle Matrix bewegt sich nur an der Nabe** — kein Fixture verliert eine
+Zelle:
+
+| Fixture | Z1 | Z2 | Unknown | Hauptgrund vorher (§8y) | Hauptgrund jetzt |
+|---|---|---|---|---|---|
+| Stufen-Nabe | 1236 | 0 | 492 | `LbPiece::Rev` 480, Krümmung 12 | `sup f ≥ 0` 450, Division 42 |
+| alle übrigen | — | unverändert | unverändert | — | — |
+
+Auf dem **Doktrin-Gitter** der Nabe bleibt `Z2 = 0`, und das ist keine Schwäche
+der Kette: das Gitter deckt die dünne Platte (3 mm, bei `δ = 2` fast vollständig
+erodiert), dort gibt es schlicht kein Material, über dem `sup_C f < 0` gelten
+könnte. Die Blocker-Ursache hat sich aber **vollständig verschoben** — von
+„strukturell nicht auswertbar" zu „ausgewertet, Feld nicht negativ".
+
+**Wo es Material gibt, trägt die Kette** (Sonde `probe_384_arc_interval_reach`,
+oberer Zylinder `r = 4`, im Trust-Radius der Kreisnaht `r = 4 / z = 0.5`):
+
+| Gebiet | Zellen | Zweig 2 | davon mit gekrümmtem Kandidaten |
+|---|---|---|---|
+| Zylinder b, nahtnah | 1728 | **616** | **616** |
+| Zylinder b, tiefer | 1000 | **479** | **479** |
+
+**Jede** dieser Zertifizierungen hat einen gekrümmten Bogen tatsächlich
+ausgewertet — und die Ablation (`Knobs::arc_refuse_curved`, Krümmung wieder
+pauschal verweigert) entfernt sie **restlos** (`56 → 0` im Pin-Ausschnitt). Der
+Erfolg hängt damit kausal an A1, nicht an einer Nachbarwirkung.
+
+### Die zwölf Beweispflichten
+
+| # | Pflicht | Ort |
+|---|---|---|
+| 1 | Op-Ketten-Lemma (`x,y,ρ,q₀,q₁,a,b,d₀,d₁`, Projektion, `diamond`, `t`, `de` in Produktions-Reihenfolge) | `enc_arc_closest`; `ρ = sqrt(x*x + y*y)` bewusst NICHT über `fnorm` (das wäre ein Drei-Term-Skalarprodukt) |
+| 2 | ρ-Schalter (strikt `< 1e-9`, Division nur mit geschnittenem ρ) | s. o. |
+| 3 | Sektor-Lemma (dreiwertiges UND) | `inside`-Match: beide sicher-wahr ⇒ True, einer sicher-falsch ⇒ False, sonst Both |
+| 4 | Endpunkt-Lemma (`d₀ ≤ d₁`, **Gleichheit zum Start**) | `decide_le(d0, d1)`, eigener Rückdreh-Knopf |
+| 5 | Diamant-Schalter (`x ≥ 0` inkl. Null, beide Formeln, Nennerfreiheit) | `sw(c, decide_ge(x, 0), …)` mit `fdiv` |
+| 6 | Divisionslemma | ausschliesslich `Ctx::fdiv` (Endpunkt-Enumeration, Verweigerung bei nullhaltigem Nenner, f64/f32-Versiegelung) — **keine ε-Pauschale** |
+| 7 | Alternative-Union (gemeinsam geführtes `(de,q,t)`) | `ArcAlt`; Pin `arc_interval_alternatives_contain_production_384` |
+| 8 | Arc-/Argmin-Komposition (ein Bogen = ein Kandidat) | `ArcCand { idx, alts, de_hull }`; Argmin liest nur `de_hull` |
+| 9 | Downstream (je Alternative voll, dann Hull) | `enclose_channel_apply` |
+| 10 | Limit-Lemma (`de` genügt) | `enclose_channel_limit` liest nur `de_hull` |
+| 11 | Fail-closed | `arc_data_valid`, `fdiv`, Endlichkeits-Prüfung, Budget |
+| 12 | Unterteilung | unverändert `certify_cell_adaptive` |
+
+### Neue Pins
+
+* `arc_interval_alternatives_contain_production_384` — 75 Zellen, 4800 Proben:
+  jeder Produktionswert `(de, q, t)` liegt in einer **gemeinsamen**
+  Alternative. Getrennt zu prüfen wäre schwächer.
+* `arc_interval_unlocks_the_hub_384` — das Erfolgskriterium: Zertifikate an der
+  Nabe, **alle** mit gekrümmtem Kandidaten, an jeder Zelle gegen dichte Proben
+  validiert, und die Ablation entfernt sie vollständig.
+* `arc_interval_counter_probes_384` — vier Rückdrehungen reissen (nur erste
+  Alternative, letzte gestrichen, Fusspunkt-Ast weg, Endpunkt-Ast weg), plus
+  der Mechanismus-Pin des ρ-Schnitts.
+* Sonde `probe_384_arc_interval_reach`.
+
+### Was OFFEN bleibt
+
+* **Das dritte Kriterium** (§8w) — unverändert der grösste Posten.
+* **`LbPiece::Rev` als SCHÄRFE-Thema.** Es blockiert nicht mehr, aber solange
+  `L` an der Nabe `Entire` ist, fehlt dort die untere Schranke — für Zweig 2
+  irrelevant, für alles, was `L` braucht, nicht.
+* **Der Diamant-Nenner** ist der neue Feinblocker der Nabe (42 Zellen der
+  Matrix, „Division durch nullhaltiges Intervall"). Eine schärfere abgeleitete
+  Nennergrenze wäre ein eigenes Lemma — sie ist NICHT geführt, und ohne Beweis
+  bleibt es bei Unterteilung/Unknown.
+* **Skizzen-Blätter** (Rippen-Kamm 4×1.5/0.8), **P5b**, **P6a**: unverändert.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -6474,6 +6621,11 @@ gemessenen Fehler. Die 264 Worte sind vollständig attribuiert:
   ihm fallen `at_vertex`/`at_face` und der `verts`-Parameter).
   **Kein Auswerter, kein Opcode, kein Payload-Wort, kein Spiegel** — Golden
   35/35 byte-identisch, `check_interp` 35 Szenen / 0 failures.
+- Analyse-Code §8z/P4-A1: `offset_interval.rs` (`ArcAlt`, `ArcCand`,
+  `enc_arc_closest`, `Ctx::fsquare`, `lbv`-Entire-Rückfall, sechs neue
+  `Knobs`, `Ctx::curved_arc_evals`), Pins `arc_interval_*_384` und die Sonde
+  `probe_384_arc_interval_reach` in `offset_capability_tests.rs`. **Kein
+  Produktions-Evaluator** — Golden byte-identisch.
 - Produktionscode §8y/P4-A0 (**erste Feldänderung der Kette**):
   `offset_channel.rs` (`ChannelArc.e`/`.d_e`, `diamond`/`diamond_dir`,
   `arc_closest`, `arc_point_at`, `arc_tangent_at`, `finish_arc` als
