@@ -52,7 +52,7 @@ import {
   OP_WARP_TRANSFORM, OP_WARP_REVOLVE,
   OP_WARP_HELIX, OP_HELIX_SCALE, OP_WARP_SWEEP, OP_LOFT_MORPH,
   OP_MASKED_BLEND, OP_ARC_CHANNEL, OP_VERTEX_SPHERE, OP_RIM_FILLET, OP_RIM_FILLET_ARC,
-  OP_STOP_BASE, OP_END,
+  OP_STOP_BASE, OP_STOP_LIMIT, OP_END,
   worldToLocalFn, halfspaceLocalFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
   sdfTorusFn, sdfConeFn, sdfCapsuleFn, sdfHexPrismFn,
   sdfEllipsoidFn, sdfGyroidFn, sdfThreadFn,
@@ -104,6 +104,9 @@ export function buildVmSdfEvalFn(
     // #384 §8i: Basis-Register eines Offset-Stopps — der naive Stopp-Wert d₀,
     // gesetzt von OP_STOP_BASE, gelesen von OP_ARC_CHANNEL/OP_VERTEX_SPHERE.
     const stopBase = float(0).toVar();
+    // #384 §8j: Grenzwert-Register — `max_j(δ − de_j)` in konkaver
+    // Orientierung; OP_STOP_BASE setzt es zurück, OP_STOP_LIMIT wendet es an.
+    const stopLim = float(-1e30).toVar();
 
     const ps0x = float(0).toVar(), ps0y = float(0).toVar(), ps0z = float(0).toVar();
     const ps1x = float(0).toVar(), ps1y = float(0).toVar(), ps1z = float(0).toVar();
@@ -789,16 +792,26 @@ export function buildVmSdfEvalFn(
         // OP_STOP_BASE / `offset_channel::stop_apply`.
         const d = popV().toVar();
         stopBase.assign(d);
+        stopLim.assign(float(-1e30));
         pushV(d);
+
+      }).ElseIf(tag.equal(int(OP_STOP_LIMIT)), () => {
+        // offset_tree §8j (#384): d ← max(d, lim) konkav bzw. min(d, −lim)
+        // konvex. Spiegel von `eval_opcodes` OP_STOP_LIMIT /
+        // `offset_channel::stop_apply`.
+        const concave = rd().toVar();
+        const d = popV().toVar();
+        pushV(concave.greaterThan(0.5).select(max(d, stopLim), min(d, stopLim.negate())));
 
       }).ElseIf(tag.equal(int(OP_ARC_CHANNEL)), () => {
         // offset_tree Phase B (#384): Kanal-Korrekturkörper an einem dualen
         // Offset-Stopp — 1:1-Spiegel der CPU-Referenz
         // (`kernel offset_channel::channel_apply` / `eval_opcodes`
         // OP_ARC_CHANNEL-Arm), inklusive des exakten Bounding-Sphere-Skips
-        // (feldwert-identisch). Header 25: n(1) concave(1) delta(1) trust(1)
+        // (feldwert-identisch). Header 41: n(1) concave(1) delta(1) trust(1)
         // gate(1) bound_c(3) bound_r(1) end_planes(4×4 — das dritte Gate,
-        // #384 §8f); je Bogen 27 Floats:
+        // #384 §8f) face_planes(4×4 — das vierte Gate, #384 §8j, identisches
+        // Slot-Format und derselbe min); je Bogen 27 Floats:
         // c(3) u(3) v(3) r(1) sweep(1; <0 = Segment) bc(3) br(1)
         // m1s(3) m2s(3) m1e(3) m2e(3).
         const nArcs = floatToIntFn({ v: rd() }).toVar();
@@ -816,6 +829,14 @@ export function buildVmSdfEvalFn(
           const gc = rd();
           s3.assign(min(s3, vec3(ptx, pty, ptz).dot(gn).sub(gc)));
         }
+        // Viertes Gate: s₄ = min_k(⟨x, n̂ₖ⟩ − cₖ) — Spiegel von
+        // `offset_channel::face_plane_gate`. Gleicher Sentinel.
+        const s4 = float(1e30).toVar();
+        for (let g = 0; g < 4; g++) {
+          const gn = vec3(rd(), rd(), rd());
+          const gc = rd();
+          s4.assign(min(s4, vec3(ptx, pty, ptz).dot(gn).sub(gc)));
+        }
         const arcBase = pc.toVar();
         pc.addAssign(nArcs.mul(27));
         const d = popV().toVar();
@@ -824,7 +845,9 @@ export function buildVmSdfEvalFn(
         const dbs = p.sub(vec3(bcx, bcy, bcz)).length().sub(br);
         const signedD = concave.greaterThan(0.5).select(d.negate(), d);
         const result = float(0).toVar();
-        If(trust.sub(dbs).lessThanEqual(signedD), () => {
+        // §8j: Der Skip muss auch den `lim`-Beitrag neutral halten —
+        // `dbs ≥ trust` beweist `de ≥ trust`.
+        If(trust.sub(dbs).lessThanEqual(signedD).and(dbs.greaterThanEqual(trust)), () => {
           result.assign(d);
         }).Else(() => {
           // argmin über die Bögen (Bounding-Sphere-Pruning je Bogen).
@@ -921,8 +944,12 @@ export function buildVmSdfEvalFn(
               .select(gateW.sub(stopBase), gateW.add(stopBase));
             // Rollen-Trennung (C4, CPU-Referenz channel_apply):
             // Geometrie-Klemme (Luft-Distanzschranke) vs. Add-Gate.
-            const wGeo = min(min(min(s1, s2), s3), min(best.sub(delta), trust.sub(best)));
+            const wGeo = min(min(min(min(s1, s2), s3), s4), min(best.sub(delta), trust.sub(best)));
             const w = min(wGeo, gate);
+            // §8j: Beitrag zum Grenzwert-Register.
+            If(best.lessThan(trust), () => {
+              stopLim.assign(max(stopLim, delta.sub(min(best, s4.add(delta)))));
+            });
             const inactive = wGeo.greaterThan(0.0).select(d, min(d, wGeo.negate()));
             const concRes = w.greaterThan(0.0).select(min(d, w.negate()), inactive);
             result.assign(
@@ -951,6 +978,10 @@ export function buildVmSdfEvalFn(
         const p = vec3(ptx, pty, ptz).toVar();
         const dq = p.sub(vec3(vx, vy, vz)).toVar();
         const rho = dq.length().toVar();
+        // §8j: Beitrag zum Grenzwert-Register (v liegt auf ∂Ω) — vor dem Skip.
+        If(rho.lessThan(trust), () => {
+          stopLim.assign(max(stopLim, delta.sub(rho)));
+        });
         const signedD = concave.greaterThan(0.5).select(d.negate(), d);
         const result = float(0).toVar();
         If(trust.sub(rho).lessThanEqual(signedD), () => {

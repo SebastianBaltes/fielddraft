@@ -280,11 +280,34 @@ fn node_to_tree(node: &BoundedCsg, p: &[Tree; 3]) -> Result<Tree, String> {
             // Knoten `d0` wird in jedes Gate hineingehängt (der DAG teilt ihn,
             // also kostet die Mehrfachnutzung nichts).
             let d0 = d.clone();
+            // #384 §8j: das Grenzwert-Register ist im DAG ebenfalls kein
+            // State, sondern ein `max` über die Term-Beiträge.
+            let mut lim: Option<Tree> = None;
+            let mut acc = |l: Tree, lim: &mut Option<Tree>| {
+                *lim = Some(match lim.take() {
+                    Some(prev) => prev.max(l),
+                    None => l,
+                });
+            };
             for ch in channels {
-                d = channel_to_tree(&d0, &d, p, ch);
+                let (nd, l) = channel_to_tree(&d0, &d, p, ch);
+                d = nd;
+                acc(l, &mut lim);
             }
             for vs in verts {
-                d = vertex_to_tree(&d0, &d, p, vs);
+                let (nd, l) = vertex_to_tree(&d0, &d, p, vs);
+                d = nd;
+                acc(l, &mut lim);
+            }
+            // #384 §8j: die gemeinsame Klemme (Spiegel von `OP_STOP_LIMIT`).
+            if let (Some(l), Some(concave)) = (
+                lim,
+                channels
+                    .first()
+                    .map(|c| c.concave)
+                    .or_else(|| verts.first().map(|v| v.concave)),
+            ) {
+                d = if concave { d.max(l) } else { d.min(neg(l)) };
             }
             // offset_tree Phase 4 (#398): ∂P-Rand-Fillet als Tree — symbolischer
             // Spiegel von `offset_rim::apply_rims_f32`.
@@ -340,7 +363,7 @@ fn channel_to_tree(
     d: &Tree,
     p: &[Tree; 3],
     ch: &crate::offset_channel::OffsetChannel,
-) -> Tree {
+) -> (Tree, Tree) {
     // Laufende argmin-Register: (best, q, m1, m2) als Trees.
     let mut best = Tree::from(f64::INFINITY.min(1e30));
     let mut best_q = p.clone();
@@ -466,14 +489,38 @@ fn channel_to_tree(
             None => v,
         });
     }
+    // #384 §8j: viertes Gate — vier Fremdflächen-Halbräume (Konstanten).
+    let mut s4: Option<Tree> = None;
+    for g in &ch.face_planes {
+        let v = p[0].clone() * g[0] as f64
+            + p[1].clone() * g[1] as f64
+            + p[2].clone() * g[2] as f64
+            - g[3] as f64;
+        s4 = Some(match s4 {
+            Some(prev) => prev.min(v),
+            None => v,
+        });
+    }
+    let s4 = s4.expect("face_planes ist ein Array fester Länge");
+    // #384 §8j: Grenzwert-Beitrag `δ − min(de, h)`, neutral ab `de ≥ K`.
+    let trust_t = Tree::from(ch.trust as f64);
+    let lim_on = Tree::from(ch.delta as f64)
+        - best.clone().min(s4.clone() + ch.delta as f64);
+    // NICHT über `select_lt`: dessen `y + (x−y)·m` löscht bei einem
+    // 1e30-Sentinel die Mantisse aus (x + 1e30 == 1e30 in f32).
+    // Additive Maske stattdessen — exakt für beide Zweige.
+    let on = relu(trust_t.compare(best.clone()));
+    let lim = lim_on
+        - (Tree::from(1.0) - on) * (crate::offset_channel::END_PLANE_OFF as f64);
     // Rollen-Trennung (C4) — Spiegel von `channel_apply`.
     let w_geo = s1
         .min(s2)
         .min(s3.expect("end_planes ist ein Array fester Länge"))
+        .min(s4)
         .min(best.clone() - ch.delta as f64)
         .min(neg(best) + ch.trust as f64);
     let w = w_geo.clone().min(gate);
-    if ch.concave {
+    let out = if ch.concave {
         let zero = Tree::from(0.0);
         let clamp = d.clone().min(neg(w_geo.clone()));
         let inactive = select_lt(&zero, &w_geo, d, &clamp);
@@ -481,7 +528,8 @@ fn channel_to_tree(
         select_lt(&zero, &w, &active, &inactive)
     } else {
         d.clone().max(w)
-    }
+    };
+    (out, lim)
 }
 
 /// Spiegel von [`crate::offset_channel::vertex_apply`] als Tree
@@ -493,10 +541,11 @@ fn vertex_to_tree(
     d: &Tree,
     p: &[Tree; 3],
     vs: &crate::offset_channel::VertexSphere,
-) -> Tree {
+) -> (Tree, Tree) {
     let v = t_const3(vs.v);
     let dq = t_sub(p, &v);
     let rho = t_norm(&dq);
+    let rho_l = rho.clone();
     let s1 = t_dot(&dq, &t_const3(vs.gates[0]));
     let s2 = t_dot(&dq, &t_const3(vs.gates[1]));
     let s3 = t_dot(&dq, &t_const3(vs.gates[2]));
@@ -512,7 +561,11 @@ fn vertex_to_tree(
         .min(rho.clone() - vs.delta as f64)
         .min(neg(rho) + vs.trust as f64);
     let w = w_geo.clone().min(gate);
-    if vs.concave {
+    // #384 §8j: Grenzwert-Beitrag `δ − ρ`, neutral ab `ρ ≥ K`.
+    let on = relu(Tree::from(vs.trust as f64).compare(rho_l.clone()));
+    let lim = (Tree::from(vs.delta as f64) - rho_l)
+        - (Tree::from(1.0) - on) * (crate::offset_channel::END_PLANE_OFF as f64);
+    let out = if vs.concave {
         let zero = Tree::from(0.0);
         let clamp = d.clone().min(neg(w_geo.clone()));
         let inactive = select_lt(&zero, &w_geo, d, &clamp);
@@ -520,7 +573,8 @@ fn vertex_to_tree(
         select_lt(&zero, &w, &active, &inactive)
     } else {
         d.clone().max(w)
-    }
+    };
+    (out, lim)
 }
 
 /// Spiegel von [`crate::offset_rim::apply_rims_f32`] als Tree (offset_tree

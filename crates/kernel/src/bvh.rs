@@ -884,7 +884,10 @@ impl BoundedCsg {
             BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
                 let (d0, mut c) = inner.evaluate_open(p, eps, mode, open);
                 let mut d = d0;
+                // #384 §8j: gemeinsame Grenzwert-Klemme (`OP_STOP_LIMIT`).
+                let mut lim = -crate::offset_channel::END_PLANE_OFF;
                 for ch in channels {
+                    lim = lim.max(crate::offset_channel::channel_limit(p, ch));
                     // #384 §8i: Gate gegen den naiven Stopp-Wert `d0`.
                     let nd = crate::offset_channel::channel_apply(d0, d, p, ch);
                     if nd != d {
@@ -898,6 +901,7 @@ impl BoundedCsg {
                 }
                 // Phase C4: Vertex-Kugeln mit derselben Provenance-Regel.
                 for vs in verts {
+                    lim = lim.max(crate::offset_channel::vertex_limit(p, vs));
                     let nd = crate::offset_channel::vertex_apply(d0, d, p, vs);
                     if nd != d {
                         if (nd - d).abs() > eps {
@@ -912,6 +916,16 @@ impl BoundedCsg {
                 // Branch-Id — die Fillet-Fläche rundet die Kontakt-WÄNDE, deren
                 // Provenance (Eltern/Kanal) erhalten bleibt. Der Feldwert MUSS
                 // hier mit `sdf_open` übereinstimmen, sonst driften Meshing/Pick.
+                // #384 §8j: die Untergrenze wirkt VOR den Rim-Fillets, genau
+                // wie `OP_STOP_LIMIT` im Tape zwischen Termen und Rims steht.
+                if let Some(concave) =
+                    channels.first().map(|c| c.concave).or_else(|| verts.first().map(|v| v.concave))
+                {
+                    let nd = if concave { d.max(lim) } else { d.min(-lim) };
+                    if nd != d {
+                        d = nd;
+                    }
+                }
                 for block in rims {
                     d = crate::offset_rim::apply_rims_f32(d, p, block.concave, &block.recs);
                     d = crate::offset_rim::apply_rims_arc_f32(d, p, block.concave, &block.arc_recs);

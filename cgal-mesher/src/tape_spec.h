@@ -106,8 +106,9 @@ inline int payload_len(const float* buf, int n, uint32_t tag, int pc) {
     case OP_ARC_CHANNEL: {
       if (pc >= n) return -1;
       int np = (int)buf[pc];
-      // Header 25 (inkl. der 4x4 End-Halbraeume, #384 §8f), je Bogen 27.
-      return 25 + 27 * np;
+      // Header 41 (9 + 4x4 End-Halbraeume §8f + 4x4 Fremdflaechen-
+      // Halbraeume §8j), je Bogen 27.
+      return 41 + 27 * np;
     }
     case OP_VERTEX_SPHERE: return 16;
     case OP_RIM_FILLET: {
@@ -126,6 +127,8 @@ inline int payload_len(const float* buf, int n, uint32_t tag, int pc) {
     }
     // #384 §8i: payload-loses Basis-Register (base <- top of stack).
     case OP_STOP_BASE: return 0;
+    // #384 §8j: Grenzwert-Klemme, EIN Payload-Float (concave).
+    case OP_STOP_LIMIT: return 1;
     case OP_END: return 0;
     default: return -1;
   }
@@ -151,6 +154,9 @@ inline int value_pops(uint32_t tag) {
     // Nicht-Boolean-Konsumenten zu EINEM opaken Blatt verschmilzt (der
     // Opcode darf nie von seinen Kanal-Termen getrennt werden).
     case OP_STOP_BASE:
+    // #384 §8j: OP_STOP_LIMIT popt den korrigierten Wert und pusht ihn
+    // geklemmt — 1-pop/1-push, aus demselben Grund wie OP_STOP_BASE.
+    case OP_STOP_LIMIT:
     case OP_ARC_CHANNEL:
     case OP_VERTEX_SPHERE:
     case OP_RIM_FILLET:

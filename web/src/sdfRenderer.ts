@@ -95,6 +95,15 @@ export const OP_RIM_FILLET_ARC = 0x44;
 // das macht die Ein-Term-Schranke global und die Term-Reihenfolge
 // feldwert-neutral. Spiegel von `kernel/src/offset_channel.rs::stop_apply`.
 export const OP_STOP_BASE      = 0x45;
+// offset_tree §8j (#384): Grenzwert-Klemme eines Offset-Stopps. EIN Payload-
+// Float (concave) — pops den korrigierten Stopp-Wert und pusht ihn, nach unten
+// (konkav) bzw. oben (konvex) durch das Register `lim` geklemmt. `lim` setzt
+// OP_STOP_BASE auf −1e30 zurück; jeder OP_ARC_CHANNEL/OP_VERTEX_SPHERE zieht es
+// mit `δ − min(de, h)` bzw. `δ − ρ` hoch (nur innerhalb des Trust-Radius).
+// Jeder Naht-/Eckpunkt liegt auf ∂Ω, also ist `δ − de` eine gültige UNTERE
+// Schranke des Zielfelds — die Klemme tilgt Über-Claims und kann selbst keinen
+// erzeugen. Spiegel von `kernel/src/offset_channel.rs::stop_apply`.
+export const OP_STOP_LIMIT     = 0x46;
 
 export const OP_END            = 0xFF;
 

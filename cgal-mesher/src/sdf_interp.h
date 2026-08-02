@@ -76,6 +76,8 @@ enum : uint32_t {
   // #384 §8i: payload-loses Basis-Register eines Offset-Stopps
   // (base <- top of stack, stack-neutral).
   OP_STOP_BASE      = 0x45,
+  // #384 §8j: Grenzwert-Klemme eines Offset-Stopps (+1 Float: concave).
+  OP_STOP_LIMIT     = 0x46,
 
   OP_END            = 0xFF,
 };
@@ -627,6 +629,10 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
   // NICHT `base` nennen: mehrere Opcode-Arme haben ein lokales `int base = pc`,
   // das den Namen sonst still verschattet (und das Gate abschaltet).
   float stop_base = 0.0f;
+  // #384 §8j: Grenzwert-Register — max_j(delta - de_j) in konkaver
+  // Orientierung. OP_STOP_BASE setzt es zurueck, OP_STOP_LIMIT wendet es an.
+  // Ebenfalls NICHT `lim` in den Opcode-Armen wiederverwenden.
+  float stop_lim = -1.0e30f;
 
   auto push_v = [&](float v) { vs[vsp++] = v; };
   auto pop_v = [&]() { return vs[--vsp]; };
@@ -1121,7 +1127,18 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         // offset_channel::stop_apply.
         float d = pop_v();
         stop_base = d;
+        stop_lim = -1.0e30f;
         push_v(d);
+        break;
+      }
+
+      case OP_STOP_LIMIT: {
+        // #384 §8j: d <- max(d, lim) konkav bzw. min(d, -lim) konvex.
+        // Spiegel von sdf_compiler.rs OP_STOP_LIMIT /
+        // offset_channel::stop_apply.
+        bool concave = rd() > 0.5f;
+        float d = pop_v();
+        push_v(concave ? fmaxf_(d, stop_lim) : fminf_(d, -stop_lim));
         break;
       }
 
@@ -1129,8 +1146,9 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         // offset_tree Phase B (#384): Kanal-Korrekturkoerper an einem
         // dualen Offset-Stopp — 1:1-Spiegel des Rust-CPU-Interpreters
         // (sdf_compiler.rs OP_ARC_CHANNEL / offset_channel::channel_apply),
-        // inklusive des exakten Bounding-Sphere-Skips. Header 25 Floats
-        // (9 + 4x4 End-Halbraeume, #384 §8f), je Bogen 27:
+        // inklusive des exakten Bounding-Sphere-Skips. Header 41 Floats
+        // (9 + 4x4 End-Halbraeume §8f + 4x4 Fremdflaechen-Halbraeume §8j),
+        // je Bogen 27:
         // c(3) u(3) v(3) r sweep(<0 = Segment) bc(3) br
         // m1s(3) m2s(3) m1e(3) m2e(3).
         const int kArc = 27;
@@ -1150,12 +1168,23 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
           float v = pt[0] * gn[0] + pt[1] * gn[1] + pt[2] * gn[2] - gc;
           s3 = fminf_(s3, v);
         }
+        // Viertes Gate: s4 = min_k(<x, n_k> - c_k) (offset_channel::
+        // face_plane_gate). Gleicher Sentinel.
+        float s4 = FD_FLT_MAX;
+        for (int g = 0; g < 4; ++g) {
+          float gn[3] = {rd(), rd(), rd()};
+          float gc = rd();
+          float v = pt[0] * gn[0] + pt[1] * gn[1] + pt[2] * gn[2] - gc;
+          s4 = fminf_(s4, v);
+        }
         int base = pc;
         pc += n * kArc;
         float d = pop_v();
         float dbs = std::sqrt(sq_(pt[0] - bc[0]) + sq_(pt[1] - bc[1]) +
                               sq_(pt[2] - bc[2])) - br;
-        if (trust - dbs <= (concave ? -d : d)) {
+        // §8j: der Skip muss auch den stop_lim-Beitrag neutral halten —
+        // `dbs >= trust` beweist `de >= trust`.
+        if ((trust - dbs <= (concave ? -d : d)) && dbs >= trust) {
           push_v(d);
           break;
         }
@@ -1260,9 +1289,13 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float gate = concave ? gate_w - stop_base : gate_w + stop_base;
         // Rollen-Trennung (C4, CPU-Referenz channel_apply): Geometrie-
         // Klemme (Luft-Distanzschranke) vs. Add-Gate.
-        float w_geo = fminf_(fminf_(fminf_(s1, s2), s3),
+        float w_geo = fminf_(fminf_(fminf_(fminf_(s1, s2), s3), s4),
                              fminf_(best - delta, trust - best));
         float w = fminf_(w_geo, gate);
+        // §8j: Beitrag zum Grenzwert-Register.
+        if (best < trust) {
+          stop_lim = fmaxf_(stop_lim, delta - fminf_(best, s4 + delta));
+        }
         push_v(concave
                    ? (w > 0.0f ? fminf_(d, -w)
                                : (w_geo <= 0.0f ? fminf_(d, -w_geo) : d))
@@ -1286,6 +1319,10 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float d = pop_v();
         float dq[3] = {pt[0] - v[0], pt[1] - v[1], pt[2] - v[2]};
         float rho = std::sqrt(sq_(dq[0]) + sq_(dq[1]) + sq_(dq[2]));
+        // §8j: Beitrag zum Grenzwert-Register (v liegt auf dOmega).
+        if (rho < trust) {
+          stop_lim = fmaxf_(stop_lim, delta - rho);
+        }
         if (trust - rho <= (concave ? -d : d)) {
           push_v(d);
           break;

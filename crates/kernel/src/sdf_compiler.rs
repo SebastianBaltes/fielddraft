@@ -97,12 +97,15 @@ pub const OP_MASKED_BLEND: u32   = 0x40; // +var: n + n×point(3) + mask_r+blend
 // offset_tree Phase B (#384): Kanal-Korrekturkörper an einem dualen
 // Offset-Stopp — pops den naiven Stopp-Wert d, pusht die korrigierte
 // Distanz (CPU-Referenz: `offset_channel::channel_apply`).
-// Header (25): n_arcs(1) + concave(1) + delta(1) + trust(1) + gate(1) +
+// Header (41): n_arcs(1) + concave(1) + delta(1) + trust(1) + gate(1) +
 //   bound_c(3) + bound_r(1) + end_planes(4×4 = 16; #384 §8f, je Slot
-//   [nx,ny,nz,c] mit s₃ₖ = ⟨x,n̂ₖ⟩ − cₖ, neutraler Slot [0,0,0,−1e30]).
+//   [nx,ny,nz,c] mit s₃ₖ = ⟨x,n̂ₖ⟩ − cₖ, neutraler Slot [0,0,0,−1e30]) +
+//   face_planes(4×4 = 16; #384 §8j, IDENTISCHES Slot-Format und derselbe
+//   `min` — die Quelle unterscheidet sich: das dritte Gate begrenzt ENTLANG
+//   der Naht, das vierte QUER dazu gegen die nächste stützende Fremdfläche).
 // je Bogen (27): c(3) u(3) v(3) r(1) sweep(1; −1 = Segment) bc(3) br(1)
 //   m1s(3) m2s(3) m1e(3) m2e(3).
-pub const OP_ARC_CHANNEL: u32    = 0x41; // +25+27N
+pub const OP_ARC_CHANNEL: u32    = 0x41; // +41+27N
 
 // offset_tree Phase C4 (#384): Rossignac–Requicha-Vertex-Kugel an einer
 // Triple-Junction — pops den Stopp-Wert d, pusht die korrigierte Distanz
@@ -152,6 +155,22 @@ pub const OP_RIM_FILLET_ARC: u32 = 0x44; // +2+20N
 // `base` setzt. Emittiert wird er nur, wenn der Stopp überhaupt Kanäle
 // oder Vertex-Kugeln trägt.
 pub const OP_STOP_BASE: u32      = 0x45; // +0
+
+// offset_tree §8j (#384): **Grenzwert-Klemme eines Offset-Stopps.** Ein
+// Payload-Float (`concave`); pops den korrigierten Stopp-Wert und pusht ihn,
+// nach unten (konkav) bzw. oben (konvex) durch das Grenzwert-Register `lim`
+// geklemmt. `lim` wird von `OP_STOP_BASE` auf −1e30 zurückgesetzt und von
+// jedem OP_ARC_CHANNEL/OP_VERTEX_SPHERE mit `δ − min(de, h)` bzw. `δ − ρ`
+// hochgezogen (nur innerhalb des Trust-Radius).
+//
+// Warum: jeder Naht-/Ecken-Punkt liegt auf `∂Ω`, also ist `de` eine OBERE
+// Schranke von `dist(x,∁Ω)` und `δ − de` eine gültige UNTERE Schranke des
+// Zielfelds. Die Terme selbst liefern nur obere Schranken (`min`) — genau
+// deshalb konnte eine WEITER entfernte Naht den `min` gewinnen und über eine
+// nähere hinweg Material behaupten. Die Klemme hebt den Wert höchstens bis
+// zur Wahrheit an; sie kann keinen Über-Claim erzeugen (CPU-Referenz:
+// `offset_channel::stop_apply`).
+pub const OP_STOP_LIMIT: u32     = 0x46; // +1
 
 pub const OP_END: u32            = 0xFF;
 
@@ -677,6 +696,10 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
                 for g in &ch.end_planes {
                     out.extend_from_slice(g);
                 }
+                // #384 §8j: die vier Fremdflächen-Halbräume (viertes Gate).
+                for g in &ch.face_planes {
+                    out.extend_from_slice(g);
+                }
                 for a in &ch.arcs {
                     out.extend_from_slice(&a.c);
                     out.extend_from_slice(&a.u);
@@ -701,6 +724,16 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
                 out.extend_from_slice(&vs.gates[0]);
                 out.extend_from_slice(&vs.gates[1]);
                 out.extend_from_slice(&vs.gates[2]);
+            }
+            // #384 §8j: die Grenzwert-Klemme steht NACH allen Termen und VOR
+            // den Rim-Fillets (Spiegel von `bvh::evaluate_open`).
+            if !channels.is_empty() || !verts.is_empty() {
+                out.push(op(OP_STOP_LIMIT));
+                let concave = channels
+                    .first()
+                    .map(|c| c.concave)
+                    .unwrap_or_else(|| verts[0].concave);
+                out.push(if concave { 1.0 } else { 0.0 });
             }
             for block in rims {
                 // GENAU eine der beiden Listen ist gefüllt: rein gerade Kontakte
@@ -1540,6 +1573,10 @@ pub fn eval_opcodes_with_volumes(
     // gesetzt von `OP_STOP_BASE`, gelesen von OP_ARC_CHANNEL/OP_VERTEX_SPHERE.
     // Ein wohlgeformtes Tape schreibt es immer, bevor ein Term es liest.
     let mut base: f32 = 0.0;
+    // #384 §8j: Grenzwert-Register eines Offset-Stopps — `max_j(δ − de_j)`
+    // in konkaver Orientierung; `OP_STOP_BASE` setzt es zurück,
+    // `OP_STOP_LIMIT` wendet es an (Spiegel: `offset_channel::stop_apply`).
+    let mut lim: f32 = -crate::offset_channel::END_PLANE_OFF;
 
     macro_rules! push_v {
         ($v:expr) => {{
@@ -2022,7 +2059,15 @@ pub fn eval_opcodes_with_volumes(
             OP_STOP_BASE => {
                 let d = pop_v!();
                 base = d;
+                lim = -crate::offset_channel::END_PLANE_OFF;
                 push_v!(d);
+            }
+
+            // ── Grenzwert-Klemme eines Offset-Stopps (#384 §8j) ────
+            OP_STOP_LIMIT => {
+                let concave = rd!() > 0.5;
+                let d = pop_v!();
+                push_v!(if concave { d.max(lim) } else { d.min(-lim) });
             }
 
             // ── Kanal-Korrekturkörper (offset_tree Phase B) ────
@@ -2046,6 +2091,14 @@ pub fn eval_opcodes_with_volumes(
                     let c = rd!();
                     s3 = s3.min(pt[0] * n[0] + pt[1] * n[1] + pt[2] * n[2] - c);
                 }
+                // #384 §8j: viertes Gate — vier Fremdflächen-Halbräume,
+                // `s₄ = min_k(⟨x,n̂ₖ⟩ − cₖ)` (Spiegel von `face_plane_gate`).
+                let mut s4 = f32::INFINITY;
+                for _ in 0..4 {
+                    let n = rd3!();
+                    let c = rd!();
+                    s4 = s4.min(pt[0] * n[0] + pt[1] * n[1] + pt[2] * n[2] - c);
+                }
                 let arc_base = pc;
                 pc += n * ARC_STRIDE;
                 let d = pop_v!();
@@ -2055,7 +2108,9 @@ pub fn eval_opcodes_with_volumes(
                         .sqrt()
                 };
                 let dbs = dist3(pt, bc) - br;
-                if trust - dbs <= if concave { -d } else { d } {
+                // #384 §8j: der Skip muss auch den `lim`-Beitrag neutral
+                // halten — `dbs ≥ trust` beweist `de ≥ trust`.
+                if (trust - dbs <= if concave { -d } else { d }) && dbs >= trust {
                     push_v!(d);
                     continue;
                 }
@@ -2158,8 +2213,12 @@ pub fn eval_opcodes_with_volumes(
                 let gate = if concave { gate_w - base } else { gate_w + base };
                 // Rollen-Trennung (C4): Geometrie-Klemme vs. Add-Gate —
                 // 1:1-Spiegel von `channel_apply`.
-                let w_geo = s1.min(s2).min(s3).min(best - delta).min(trust - best);
+                let w_geo = s1.min(s2).min(s3).min(s4).min(best - delta).min(trust - best);
                 let w = w_geo.min(gate);
+                // #384 §8j: Beitrag zum Grenzwert-Register.
+                if best < trust {
+                    lim = lim.max(delta - best.min(s4 + delta));
+                }
                 push_v!(if concave {
                     if w > 0.0 {
                         d.min(-w)
@@ -2187,6 +2246,10 @@ pub fn eval_opcodes_with_volumes(
                 let d = pop_v!();
                 let dq = [pt[0] - v[0], pt[1] - v[1], pt[2] - v[2]];
                 let rho = (dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2]).sqrt();
+                // #384 §8j: Beitrag zum Grenzwert-Register (v liegt auf ∂Ω).
+                if rho < trust {
+                    lim = lim.max(delta - rho);
+                }
                 if trust - rho <= if concave { -d } else { d } {
                     push_v!(d);
                     continue;

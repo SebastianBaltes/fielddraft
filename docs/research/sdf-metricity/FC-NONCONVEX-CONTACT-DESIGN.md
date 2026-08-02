@@ -1391,6 +1391,269 @@ was zugesagt wird, muss halten) statt eines eingefrorenen Status.
   Stichprobe.
 * **Der Wächter bleibt eine Stichprobe** (§8h unverändert).
 
+## 8j. Das vierte Gate — Fremdgeometrie QUER zur Naht (#384, 2026-08-02)
+
+§8i machte die Ein-Term-Schranke `G` global und ließ genau EINEN Grund
+stehen, warum die Stufen-Nabe keine enge Zusage bekam: **quer zur Naht.**
+Liegt eine fremde Fläche innerhalb des Normalkegels näher als der
+Trust-Radius, greift `de − δ` durch sie hindurch. Restfehler 0.841 mm bei
+ehrlich zugesagten ≤ 0.868 statt der Bau-Toleranz.
+
+Dieses Paket schließt ihn — mit ZWEI Schärfungen, die beide dasselbe
+Beweismuster teilen und deshalb beide nur Über-Claims tilgen können.
+
+### Der Rest, Term für Term (die Messung vor dem Design)
+
+Platte `z ∈ [−3,0]`, Zylinder A (r = 6, `z ∈ [−1.2, 0.5]`), Zylinder B
+(r = 4, `z ∈ [−1.8, 6]`), δ = 2, `G = 0.868`, `K = 3.908`. Zwei Kanäle,
+beide Spines geschlossene Kreise: ch0 = Platte-Deckel × A-Mantel (r = 6,
+z = 0), ch1 = A-Deckel × B-Mantel (r = 4, z = 0.5). Worst-Punkt der
+26³-Sonde: `[−4.700, −1.677, −1.848]` (im Material der Platte,
+0.35 mm über deren Unterseite).
+
+| Schritt | Zahlen | `d` |
+|---|---|---|
+| naiv | `d₀ = +0.8483` (korrekt: die Platte ist an der Stelle 1.152 tief) | **+0.8483** |
+| ch0 | `de = 2.1062`, im Kegel (`s₁ = 1.8483`, `s₂ = 0.9434`), `w_geo = de − δ = 0.1062`, `gate = G − d₀ = 0.0201` | +0.8483 → **−0.0201** |
+| ch1 | `de = 2.5485`, `s₂ = −0.9247` ⇒ ausserhalb des Kegels, neutral | unverändert |
+| exakte Referenz | `dist(x,∁Ω) = 1.1589` (Platten-UNTERSEITE, Strahl-Minimum über 160 Richtungen) | wahr: **+0.8411** |
+
+**Der Term ist ch0, die nähere Fläche ist die Platten-Unterseite.** ch0
+behauptet, der nächste Randpunkt sei seine Naht in 2.106 mm Entfernung; in
+Wahrheit liegt die freie Unterseite 1.159 mm entfernt. Das ist exakt der
+§8g-Fall „Fremdgeometrie ohne Trieder-Punkt" — ein Deckel, der ohne eigene
+Ecke am Kegel vorbeizieht, für den die Nachbar-Kegel-Klemme also keinen
+Kandidaten `D` findet.
+
+### Der Satz (er trägt beide Schärfungen)
+
+`de` ist eine **obere** Schranke von `dist(x,∁Ω)`, weil `q*` auf `∂Ω`
+liegt — der Term ist nur deshalb exakt, weil die C2-Hypothese
+`de = dist` im Normalkegel gilt. Fällt sie (Fremdgeometrie näher), bleibt
+`de ≥ dist`, und der Fehler ist genau die Differenz. Daraus folgt beides:
+
+1. **Jede weitere gültige obere Schranke schärft.** `min(de, h) ≥ dist`
+   bleibt eine obere Schranke, ist aber näher an der Wahrheit. Ein
+   UNTER-Claim ist strukturell ausgeschlossen — vorausgesetzt, `h` ist
+   gültig.
+2. **`δ − de` ist eine gültige UNTERE Schranke des Zielfelds**
+   (`f_wahr = δ − dist ≥ δ − de`), und zwar BEDINGUNGSLOS: ohne Kegel-Gate,
+   für jeden Punkt. Die Terme liefern bisher ausschließlich obere Schranken
+   und komponieren mit `min` — genau deshalb konnte die WEITER entfernte
+   Naht den `min` gewinnen. Eine Klemme von unten dreht das um.
+
+### Schärfung 1 — das vierte Gate (`face_planes`)
+
+Je Kanal bis zu vier affine Halbräume `s₄ = ⟨x−F, n̂⟩ − δ`, im selben `min`
+von `w_geo` wie das dritte Gate und im identischen Slot-Format
+(`[nx,ny,nz,c]`, `c` trägt den δ-Versatz, Sentinel `[0,0,0,−1e30]`).
+
+Gültigkeit ist **rein strukturell** und wird von der Synthese bewiesen, nicht
+gehofft: eine Kandidaten-Ebene wird nur belegt, wenn sie eine **lokal
+stützende Ebene** ist,
+
+    Ω ∩ B(Naht, 2·K) ⊆ { h ≥ 0 },   h(x) = ⟨x − F, n̂⟩
+
+Dann ist jeder Punkt mit `h = 0` in dieser Umgebung höchstens Randpunkt, nie
+innerer Punkt — und wo das Gate überhaupt bindet (`h(x) < de ≤ K`), liegt der
+Lotfußpunkt wegen `|f − q*| ≤ h(x) + de ≤ 2·K` genau in ihr. `h` ist dort
+also eine gültige obere Schranke von `dist(x,∁Ω)`.
+
+Geprüft wird mit den Member-AABBs (Obermengen von `Ω`) gegen die um `2·K`
+geweitete Naht-AABB — konservativ in der richtigen Richtung: eine gültige
+Ebene kann verworfen, eine ungültige nie angenommen werden. Kandidaten sind
+ausschließlich die **planaren Carrier der Member** (`branch_halfspace_map` —
+dieselbe analytische Quelle, aus der die SSI-Seeds kommen). Keine
+Feld-Stichprobe, keine Heuristik.
+
+An der Nabe belegt das je Kanal genau zwei Slots: die Platten-Unterseite
+(`z ≥ −3`, alle drei Member darüber) und den B-Deckel (`z ≤ 6`). Die erste
+ist die gesuchte; die zweite ist feldneutral (`h ≥ 6 ≫ de`). Die
+Platten-OBERSEITE (`z = 0`) fällt durch — die Zylinder ragen darüber hinaus,
+sie stützt nicht. Genau das ist die Trennschärfe, auf die es ankommt: an
+der Ecken-Schale und am Rippen-Kamm findet die Bedingung **keine** Ebene, und
+das ist kein Versagen, sondern das richtige Ergebnis (dort konkurriert eine
+NACHBAR-NAHT bzw. ein von einer Rippe verschatteter Deckel, nicht eine freie
+Fläche).
+
+**Der konvexe Zweig bekommt keine Kandidaten.** Am Dilations-Stopp ist das
+Ziel `Ω` selbst, die duale Bedingung also `∁Ω ∩ B ⊆ {h ≥ 0}` — und `∁Ω` ist
+dort eine VEREINIGUNG unbeschränkter Komplemente, für die keine Member-AABB
+eine Obermenge liefert. Dokumentierte Grenze, kein Nebeneffekt: alle
+Dilations-Felder bleiben davon unberührt.
+
+### Schärfung 2 — die Grenzwert-Klemme (`OP_STOP_LIMIT`)
+
+Das vierte Gate allein bringt die Nabe von 661 auf 68 Fehlklassifikationen
+(0.841 → 0.646 mm). Der neue Worst-Punkt `[−2.623, 1.092, −0.118]` zeigt,
+was übrig ist:
+
+| Term | Zahlen |
+|---|---|
+| naiv | `d₀ = +0.8412` |
+| ch0 (r = 6) | `de = 3.1610`, `s₁ = 0.1176`, `s₄ = 0.882` ⇒ `w_geo = 0.1176`, `gate = 0.0273` ⇒ `d = −0.0273` |
+| ch1 (r = 4) | `de = 1.3131` — **kleiner als δ**, der Punkt ist nachweislich weniger als δ von `∂Ω` entfernt |
+| exakte Referenz | `dist = 1.354` (die Stufen-Ecke r = 4, z = 0.5) |
+
+ch1 WEISS, dass hier kein Material sein darf — es kann es nur nicht sagen:
+sein Zweig ist die march-sichere Klemme `min(d, −w_geo)`, ein `min`, und ch0
+hat den Wert schon unter null gezogen. Kein Halbraum kann das heilen; der
+Konkurrent ist eine Kreis-Kante, keine Ebene.
+
+Also die zweite Hälfte des Satzes: ein Register `lim`, von `OP_STOP_BASE` auf
+`−1e30` zurückgesetzt, von jedem Term mit `δ − min(de, h)` (Kanal) bzw.
+`δ − ρ` (Vertex-Kugel) hochgezogen, am Ende des Stopps von `OP_STOP_LIMIT`
+angewandt: `d ← max(d, lim)` konkav, `d ← min(d, −lim)` konvex
+(Komplement-Dualität, EIN Akkumulator für beide Vorzeichen).
+
+* **Sie kann keinen Über-Claim erzeugen:** `lim ≤ f_wahr` je Beitrag.
+* **Sie hebt nie über das naive Feld:** `d₀ = δ − max_k Tiefe_k ≥ δ − dist ≥ lim`.
+  Pin `stop_limit_never_exceeds_the_naive_field_384`.
+* **Sie bleibt reihenfolge-neutral:** `lim` ist ein `max` über Konstanten,
+  die Terme bleiben `min`/`max` über Konstanten (§8i-Pin unverändert grün).
+* **Der Beitrag ist auf `de < K` beschränkt.** Ohne diese Schranke würde die
+  Klemme auch tief im Material greifen und den bekannten
+  Union-Innen-Artefakt „reparieren" — ein ganz anderes Paket mit ganz
+  anderen Golden-Folgen. Weniger scharf ist immer erlaubt.
+* Der Bounding-Sphere-Skip musste dafür um `dbs ≥ K` verschärft werden
+  (nur dann ist auch der `lim`-Beitrag beweisbar neutral). Feldwert-identisch,
+  kostet Auswertungen nur im schmalen Band `dbs < K`.
+
+### Die Kandidaten-Messtabelle (inkl. des Verworfenen)
+
+δ = 2, `G = 0.868`. **über** = Nullmengen-Fehler (Feld behauptet Material,
+die exakte Strahl-Referenz widerlegt es); **unter** = Feld behauptet Luft,
+obwohl die (zweistufig verdichtete, 2400 Richtungen) Referenz `dist ≥ δ`
+zeigt. Gitter 26³ (Nabe/Schale) bzw. 28³ (Kamm).
+
+| Variante | Nabe über | Nabe unter | Schale 2.0 über | Schale 2.5 über | Kamm 1.5/0.8 | Kamm 2.0/1.0 | Nabe-Zusage |
+|---|---|---|---|---|---|---|---|
+| §8i (Ausgangsstand) | 661 / **0.841** | 41 / 0.198 | 741 / 0.806 | 1594 / 0.808 | 1904 / 0.819 | 1624 / 0.819 | ≤ 0.868 (wahr) |
+| (a) Trust-Klemme gegen die nächste fremde Naht | **0** | 161 / **1.199** | 639 / 0.806 | **0** | 504 / 0.819 | **0** | ≤ 0.010 — **gelogen** |
+| (b) nur viertes Gate | 68 / 0.646 | 41 / 0.198 | 741 / 0.806 | 1594 / 0.808 | 1904 / 0.819 | 1624 / 0.819 | ≤ 0.868 (wahr) |
+| **(c) viertes Gate + Grenzwert-Klemme** | **0 / 0.000** | 41 / 0.198 | **114 / 0.764** | **157 / 0.808** | **644 / 0.819** | **616 / 0.819** | **≤ 0.010 — wahr** |
+
+**(a) ist gemessen und verworfen.** Sie ist der §8g-Spiegel für Kanäle
+(`K ← min(K, max(D−δ, δ))` mit `D` = Abstand zur nächsten fremden Naht,
+Junction-Nachbarn ausgenommen — dort trennt der §8f-Bisektor bereits exakt).
+Sie schließt mehr Über-Claims als (c), tauscht sie aber gegen GRÖSSERE
+Unter-Claims: an der Nabe von 0.198 auf **1.199 mm**, an der Ecken-Schale
+2.5 von 1.248 auf 1.436 mm, am Rippen-Kamm 2.0/1.0 von 0 auf 0.093 mm — und
+weil der Zeugen-Wächter nur Über-Claims sieht, sagt der Stopp darüber die
+Bau-Toleranz zu. Genau das hatte §8h vorhergesagt („kein Gewinn, nur eine
+andere Lüge"); hier sind die Zahlen. Der Mechanismus ist elementar: die
+Klemme leert das materialaddierende Band `(δ, K)` und schaltet damit an
+dicht stehenden Nähten den Kanal GANZ ab — an der Nabe ist `D = 2.06`
+zwischen den beiden Kreisen, also `K = δ`.
+
+(b) und (c) sind dagegen beide `min`/`max` über BEWIESENE Schranken; sie
+konnten die Unter-Claim-Spalte per Konstruktion nicht verschlechtern, und
+die Messung bestätigt es (Nabe 41/0.198 in allen drei Zeilen).
+
+### Die Spiegel (sieben plus drei Formatstellen)
+
+| # | Spiegel | Was | Datei |
+|---|---|---|---|
+| 1 | CPU-Referenz | `face_plane_gate`, `channel_limit`, `vertex_limit`, `stop_apply`, `channel_skip` | `crates/kernel/src/offset_channel.rs` |
+| 2 | Opcode-Interpreter (Autorität) | `s4`-Schleife + `lim`-Register + `OP_STOP_LIMIT` | `crates/kernel/src/sdf_compiler.rs` |
+| 3 | Dual-Zahlen-Eval | `s4` als Konstanten-Halbräume, `lim` als Dualzahl | `crates/kernel/src/sdf_dual.rs` |
+| 4 | fidget-Baum | `channel_to_tree`/`vertex_to_tree` liefern `(d, lim)` | `crates/kernel/src/fidget_bridge.rs` |
+| 5 | WebGPU/TSL-VM | `s4`, `stopLim`, `OP_STOP_LIMIT`-Arm | `web/src/sdfVmInterpreter.ts` |
+| 6 | C++-Port | `s4`, `stop_lim`, `OP_STOP_LIMIT` | `cgal-mesher/src/sdf_interp.h` |
+| 7 | BVH-Baum-Eval | `evaluate_open` akkumuliert `lim` vor den Rims | `crates/kernel/src/bvh.rs` |
+| + | Opcode-Encoder | `face_planes` + `OP_STOP_LIMIT`-Emission | `crates/kernel/src/sdf_compiler.rs` |
+| + | Tape-Längentabelle | `payload_len` 25+27N → **41+27N**, `OP_STOP_LIMIT` = 1, `value_pops` = 1 | `cgal-mesher/src/tape_spec.h` |
+| + | Opcode-Konstante + Layout-Kommentar | `OP_STOP_LIMIT = 0x46` | `web/src/sdfRenderer.ts` |
+
+**Die Falle, die zuschlug** (Warnung wie die C++-Verschattung in §8i): im
+fidget-Spiegel war der Grenzwert zuerst als `select_lt(best, K, lim, −1e30)`
+gebaut. Dessen Form `y + (x−y)·m` löscht bei einem 1e30-Sentinel in f32 die
+ganze Mantisse aus (`x + 1e30 == 1e30`), der aktive Zweig lieferte also 0
+statt `lim` — Abweichung 1.435 mm gegen die CPU-Referenz. Richtig ist die
+ADDITIVE Maske `lim − (1−m)·1e30`: exakt in beiden Zweigen. Der
+fidget-Paritätstest fand es sofort.
+
+`check_interp` (Rust `eval_opcodes` ↔ C++ `sdf_interp.h`): **35 Szenen,
+17920 Checks, 0 Failures, worst_err 0.000002** (`sweep_open_twist`) —
+identisch zum Stand vor dem Paket.
+
+### Golden — was sich bewegt und warum
+
+| Szene | Tape | Feldwerte |
+|---|---|---|
+| 32 Szenen ohne Kanäle/Vertex-Kugeln | byte-identisch | byte-identisch |
+| `arc_channel_notch` (1 Kanal) | +18 Floats | **5 von 515** Punkten, größtes Δ = 0.0000119 |
+| `arc_channel_steinmetz` (2 Kanäle, konvex) | +34 Floats | **1 von 515**, Δ = 0.000657 |
+| `vertex_sphere_corner` (13 Kanäle + Kugeln) | +210 Floats | **17 von 515**, größtes Δ = 0.0000200 |
+
+Der Tape-Zuwachs ist arithmetisch: 16 Floats je Kanal (`face_planes`) plus
+2 für `OP_STOP_LIMIT` samt seinem `concave`-Float. **Alle** Feldbewegungen
+sind die Grenzwert-Klemme, und alle gehen in die beweisbare Richtung — konkav
+nach OBEN, konvex nach UNTEN. Zeugen:
+
+* `vertex_sphere_corner`, Ecken-Zentrum `(0,0,0)`: **1.49999 → 1.500000**.
+  Der exakte Wert ist 1.5; die Klemme stellt Exaktheit her.
+* `vertex_sphere_corner`, `(0,0,−1.1)`: 0.4000001 → 0.400010.
+* `arc_channel_steinmetz`, `(−7.3, 6.5, 0)`: −0.725544 → −0.726201 — der
+  konvexe Zweig, `de − δ = −0.7262` war die schärfere Schranke.
+
+Keine Szene ohne Kanäle bewegt sich; kein Feldwert bewegt sich um mehr als
+0.00066 mm.
+
+### Bilanz
+
+| Szene | §8i | §8j | Zusage nachher |
+|---|---|---|---|
+| **Stufen-Nabe** | 661 Fehler, 0.841 mm | **0**, 0.000 | **≤ 0.010 — wahr** |
+| **Ecken-Schale** t/δ = 2.0 | 741, 0.806 | 114, 0.764 | ≤ 0.868 (ehrlich) |
+| **Ecken-Schale** t/δ = 2.5 | 1594, 0.808 | 157, 0.808 | ≤ 0.868 (ehrlich) |
+| **Ecken-Schale** t/δ ≥ 3.0 | 0 | **0** | ≤ 0.010 |
+| **Rippen-Kamm** 4×1.5/0.8 | 1904, 0.819 | 644, 0.819 | `conservative` (ehrlich) |
+| **Rippen-Kamm** 4×2.0/1.0 | 1624, 0.819 | 616, 0.819 | `conservative` (ehrlich) |
+| Tasche `s ≥ 2δ`, notch 90°/60°, Tasche `f ∈ {1,4,16}`, Zapfen-Reihe, V-Rippen, Steinmetz-Pin, Reihenfolge-Sonde | — | **unverändert grün** | — |
+| `cargo test --workspace` | 1543 | **1546** (drei neue Pins) | — |
+| `offset_fuzz` (`OFFSET_FUZZ_ITERS=200`) | 5/5 | **5/5** | — |
+| Web | — | `tsc -b` sauber, **2082/2082** | — |
+
+Neue Pins: `erosion_stepped_hub_cross_gate_is_exact_384` (Nabe fehlerfrei UND
+enge Zusage), `face_plane_gates_are_supporting_halfspaces_384` (kein Punkt im
+Körper liegt in der Naht-Umgebung auf der falschen Seite einer belegten
+Ebene — die Gültigkeitsbedingung selbst, am Feld geprüft),
+`stop_limit_never_exceeds_the_naive_field_384` (die Klemme tilgt nur). Keine
+bestehende Erwartung bewegt sich.
+
+### Was OFFEN bleibt
+
+* **Naht gegen Naht.** Wo der nähere Konkurrent eine ANDERE Naht ist statt
+  einer freien Fläche, kann kein Halbraum helfen, und die Grenzwert-Klemme
+  greift nur, wo der Konkurrent näher als δ liegt. Rippen-Kamm und
+  Ecken-Schale unter `3·δ` bleiben deshalb bei 0.76–0.82 mm — ehrlich
+  gemeldet, aber nicht geschlossen. Der saubere Fix ist benannt und
+  vermessen: **die Terme müssen sich EINE Distanzschranke teilen**
+  (`U = min_j de_j` statt je Term ein eigenes `de`), also ein Zwei-Pass-
+  Evaluator oder ein Stopp-weiter Opcode. Das ist ein eigenes Paket in der
+  Größenordnung von §8f.
+* **Der konvexe Zweig bekommt kein viertes Gate** (s. o.: `∁Ω` ist dort
+  unbeschränkt). Für Dilations-Stopps bleibt das Phase-C-Restrisiko quer zur
+  Naht unverändert bestehen.
+* **NEUER, hier NICHT behobener Befund: der UNTER-Claim ist bisher nirgends
+  gemessen und nirgends zugesagt.** Alle §8-Pins und `erosion_zero_set_error`
+  zählen ausschließlich Über-Claims (Phantom-Material). Die zweistufige
+  Gegenprobe dieses Pakets (Vorfilter 200 Richtungen, Entscheidung 2400)
+  findet an FIXTUREN MIT ENGER ZUSAGE bereits heute fehlendes Material:
+  Ecken-Schale `t/δ = 3.0` **384 Punkte bis 0.839 mm** bei zugesagten
+  0.01 mm, Stufen-Nabe 41 Punkte bis 0.198 mm. Beide Befunde sind
+  VORBESTEHEND (das Feld an diesen Punkten ist mit und ohne §8j identisch)
+  und haben zwei bekannte Ursachen: die um δ verschobene End-Ebene aus §8f
+  (dort schon als „UNTER-korrigierter Punkt" notiert, nie beziffert) und die
+  §8i-Gate-Kappe `G`, die eine Korrektur oberhalb der Ein-Term-Schranke
+  strukturell verweigert. Solange der Zeugen-Wächter nur eine Richtung
+  sondiert, ist die enge Zusage eine Aussage ÜBER PHANTOM-MATERIAL, nicht
+  über die volle Nullmenge. Das gehört ausgesprochen — und in ein eigenes
+  Paket (ein Unter-Claim-Zeuge braucht eine UNTERE Distanzschranke, die kein
+  Strahl liefern kann).
+* **Spitze Nähte** und **der Wächter als Stichprobe**: unverändert §8i.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -1405,8 +1668,10 @@ was zugesagt wird, muss halten) statt eines eingefrorenen Status.
   S ⊆ U, Stufe-2-Klemme (submergierte-Π-Luftseiten-Klemme).
 - `docs/research/sdf-metricity/F396-RIM-OPCODE-DESIGN.md` — ∂P-Rand-Fillet
   (radiale Distanz + Halbraum-Maske + Nearest-Feature, Over-Fill = 0).
-- `crates/kernel/src/offset_channel.rs` — §8i: `stop_apply` (`base`-Parameter
-  von `channel_apply`/`vertex_apply`); §8g: `clamp_vertex_trust`,
+- `crates/kernel/src/offset_channel.rs` — §8j: `set_face_plane_gates`,
+  `face_plane_gate`, `channel_limit`/`vertex_limit` (in `stop_apply`
+  akkumuliert, von `OP_STOP_LIMIT` angewandt); §8i: `stop_apply`
+  (`base`-Parameter von `channel_apply`/`vertex_apply`); §8g: `clamp_vertex_trust`,
   `junction_anchor`, `snap_channel_ends_to_junctions`, `set_end_plane_gates`,
   `end_region_violation`, `audit_channel_end_caps`; ferner
   `box_contact_faces`, `clip_convex`,

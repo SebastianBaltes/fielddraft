@@ -420,6 +420,11 @@ fn eval_bounded_d3_open(
             // (Spiegel von `OP_STOP_BASE` / `offset_channel::stop_apply`).
             let d0 = d;
             let p_re = [p[0].re as f32, p[1].re as f32, p[2].re as f32];
+            // #384 §8j: Grenzwert-Register als Dual-Zahl (Spiegel von
+            // `OP_STOP_LIMIT`). Die Beiträge sind `δ − min(de, h)` bzw.
+            // `δ − ρ` — Distanzterme mit exakter Enveloppen-Ableitung.
+            let mut lim = D3::from(-(crate::offset_channel::END_PLANE_OFF as f64));
+            let max_d3 = |a: D3, b: D3| if a.re >= b.re { a } else { b };
             for ch in channels {
                 if crate::offset_channel::channel_skip(d.re as f32, p_re, ch) {
                     continue;
@@ -456,9 +461,26 @@ fn eval_bounded_d3_open(
                         - D3::from(g[3] as f64);
                     s3 = min_d3(s3, v);
                 }
+                // #384 §8j: viertes Gate — vier Fremdflächen-Halbräume,
+                // ebenfalls Konstanten mit exakter Ableitung.
+                let mut s4 = D3::from(f64::INFINITY);
+                for g in &ch.face_planes {
+                    let v = p[0] * D3::from(g[0] as f64)
+                        + p[1] * D3::from(g[1] as f64)
+                        + p[2] * D3::from(g[2] as f64)
+                        - D3::from(g[3] as f64);
+                    s4 = min_d3(s4, v);
+                }
+                if de.re < ch.trust as f64 {
+                    lim = max_d3(
+                        lim,
+                        D3::from(ch.delta as f64)
+                            - min_d3(de, s4 + D3::from(ch.delta as f64)),
+                    );
+                }
                 // Rollen-Trennung (C4) — Spiegel von `channel_apply`.
                 let w_geo = min_d3(
-                    min_d3(min_d3(s1, s2), s3),
+                    min_d3(min_d3(min_d3(s1, s2), s3), s4),
                     min_d3(
                         de - D3::from(ch.delta as f64),
                         D3::from(ch.trust as f64) - de,
@@ -488,6 +510,10 @@ fn eval_bounded_d3_open(
                     p[2] - D3::from(vs.v[2] as f64),
                 ];
                 let rho = (dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2]).sqrt();
+                // #384 §8j: Grenzwert-Beitrag (v liegt auf ∂Ω) — vor dem Skip.
+                if rho.re < vs.trust as f64 {
+                    lim = max_d3(lim, D3::from(vs.delta as f64) - rho);
+                }
                 let skip = vs.trust as f64 - rho.re
                     <= if vs.concave { -d.re } else { d.re };
                 if skip {
@@ -525,6 +551,20 @@ fn eval_bounded_d3_open(
                     d
                 } else {
                     w
+                };
+            }
+            // #384 §8j: die gemeinsame Grenzwert-Klemme (Spiegel von
+            // `OP_STOP_LIMIT`) — nach allen Termen, vor den Rim-Fillets.
+            if let Some(concave) = channels
+                .first()
+                .map(|c| c.concave)
+                .or_else(|| verts.first().map(|v| v.concave))
+            {
+                d = if concave {
+                    if d.re >= lim.re { d } else { lim }
+                } else {
+                    let cap = -lim;
+                    if d.re <= cap.re { d } else { cap }
                 };
             }
             // Phase 4 (#398): ∂P-Rand-Fillet — Dual-Spiegel von `apply_rims_f32`

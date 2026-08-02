@@ -2565,3 +2565,253 @@ fn stop_terms_are_order_independent_384() {
          dann beweist die Permutations-Gleichheit nichts"
     );
 }
+
+
+
+// ─── #384 §8j: das vierte Gate — Fremdgeometrie QUER zur Naht ────────────
+//
+// §8i machte die Ein-Term-Schranke `G` global; übrig blieb an der Stufen-Nabe
+// ein Restfehler von 0.841 mm, weil die 1.8 mm dünne Platte NÄHER liegt als
+// der Trust-Radius `K = 3.908` und der Term durch sie hindurchgreift. Das
+// Paket setzt zwei strukturell bewiesene Schärfungen dagegen — beide sind
+// `min`/`max` über GÜLTIGE Schranken und können deshalb nur Über-Claims
+// tilgen, nie welche erzeugen:
+//
+// * **Viertes Gate** (`face_planes`, `OP_ARC_CHANNEL` +16 Floats): je Kanal
+//   bis zu vier LOKAL STÜTZENDE Fremdflächen-Halbräume `⟨x−F,n̂⟩ − δ` im
+//   selben `min` wie das dritte Gate. Stützend heißt `Ω ∩ B(Naht, 2·K) ⊆
+//   {h ≥ 0}`; dann liegt der Lotfußpunkt jedes bindenden Punkts auf oder
+//   jenseits von `∂Ω`, `h` ist also eine gültige OBERE Schranke von
+//   `dist(x,∁Ω)`, und `min(de, h)` ist die schärfere.
+// * **Grenzwert-Klemme** (`OP_STOP_LIMIT`): jeder Naht-/Eckpunkt liegt auf
+//   `∂Ω`, also ist `δ − de` eine gültige UNTERE Schranke des Zielfelds. Die
+//   Terme liefern nur obere Schranken (`min`) — genau deshalb konnte in §8i
+//   die WEITER entfernte Naht den `min` gewinnen. Die Klemme dreht das um.
+//
+// Gemessen (δ = 2, exakte Strahl-Referenzen wie §8h/§8i):
+//
+// | Szene | §8i | §8j |
+// |---|---|---|
+// | Stufen-Nabe | 661 Fehler, 0.841 mm, ≤ 0.868 | **0**, 0.000, ≤ 0.010 |
+// | Ecken-Schale t/δ = 2.0 | 741, 0.806 | 114, 0.764 |
+// | Ecken-Schale t/δ = 2.5 | 1594, 0.808 | 157, 0.808 |
+// | Rippen-Kamm 4×1.5/0.8 | 1904, 0.819 | 644, 0.819 |
+// | Rippen-Kamm 4×2.0/1.0 | 1624, 0.819 | 616, 0.819 |
+//
+// VERWORFEN (gemessen, nicht vermutet): die Trust-Klemme gegen die nächste
+// fremde Naht (`K ← max(D−δ, δ)`, der §8g-Spiegel für Kanäle). Sie schließt
+// zwar mehr Über-Claims (Nabe 0, Schale 2.5 → 0, Kamm 2.0/1.0 → 0), tauscht
+// sie aber gegen GRÖSSERE Unter-Claims: Nabe 0.198 → 1.199 mm, Schale 2.5
+// 1.248 → 1.436 mm, Kamm 2.0/1.0 0 → 0.093 mm — und der Stopp sagt darüber
+// die Bau-Toleranz zu. §8h hatte das vorhergesagt; hier sind die Zahlen.
+
+/// **§8j-Kern-Pin.** Die Stufen-Nabe ist an der exakten Referenz fehlerfrei
+/// UND sagt die Bau-Toleranz zu. Vor §8j: 661 Fehlklassifikationen bis
+/// 0.841 mm bei einer ehrlichen, aber weiten Zusage von ≤ 0.868 mm.
+#[test]
+fn erosion_stepped_hub_cross_gate_is_exact_384() {
+    let delta = 2.0f32;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let (field, report) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+    assert!(
+        crate::offset_channel::count_channels(&field).0 >= 2,
+        "die Sonde taugt nur mit mindestens zwei Kanal-Termen"
+    );
+    let cyls = [
+        (r1 as f64, -(e1 as f64), zh1 as f64),
+        (r2 as f64, -(e2 as f64), 6.0f64),
+    ];
+    let n = 26usize;
+    let (mut miss, mut worst, mut at) = (0usize, 0.0f64, [0.0f64; 3]);
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let p = [
+                    -9.0 + 18.0 * (ix as f64 + 0.2113248654) / n as f64,
+                    -9.0 + 18.0 * (iy as f64 + 0.5773502692) / n as f64,
+                    -(t as f64) - 1.5 + (t as f64 + 2.0) * (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
+                    continue;
+                }
+                let u = dist_hub_complement(t as f64, &cyls, p, 160);
+                let err = delta as f64 - u;
+                if err <= 1e-3 {
+                    continue;
+                }
+                miss += 1;
+                if err > worst {
+                    worst = err;
+                    at = p;
+                }
+            }
+        }
+    }
+    assert_eq!(
+        miss, 0,
+        "Stufen-Nabe: {miss} Nullmengen-Fehler, größter {worst:.4} mm bei {at:?} — \
+         das vierte Gate (Platten-Unterseite als stützende Fremdebene) plus die \
+         Grenzwert-Klemme müssen den §8i-Rest von 0.841 mm schließen. Reasons: {:?}",
+        report.reasons()
+    );
+    assert_eq!(report.status(), CapabilityStatus::ToleranceBounded, "{:?}", report.reasons());
+    assert!(
+        !report.reasons().iter().any(|r| r.contains("NICHT auf die Bau-Toleranz")),
+        "Stufen-Nabe: kein Über-Claim mehr, also darf die Zusage eng sein: {:?}",
+        report.reasons()
+    );
+}
+
+/// **§8j-Struktur-Pin: jede Fremdebene stützt wirklich.** Die Gültigkeit des
+/// vierten Gates hängt an EINER Bedingung — `Ω` darf die Ebene in der
+/// Naht-Umgebung nicht durchschneiden. Ist sie verletzt, unterschätzt `h` die
+/// wahre Distanz und der Term würde legitime Korrektur wegschneiden
+/// (Unter-Claim). Geprüft wird sie hier direkt am Feld: kein Punkt IM Körper
+/// darf innerhalb `2·K` der Naht auf der falschen Seite liegen.
+#[test]
+fn face_plane_gates_are_supporting_halfspaces_384() {
+    let delta = 2.0f32;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+    let mut stops: Vec<(Vec<crate::offset_channel::OffsetChannel>, f32)> = Vec::new();
+    fn collect(
+        n: &BoundedCsg,
+        out: &mut Vec<(Vec<crate::offset_channel::OffsetChannel>, f32)>,
+        p: [f32; 3],
+    ) {
+        match n {
+            BoundedCsg::ArcChannel { inner, channels, .. } => {
+                out.push((channels.clone(), inner.sdf(p, EvalMode::Visual)));
+                collect(inner, out, p);
+            }
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. } => {
+                collect(left, out, p);
+                collect(right, out, p);
+            }
+            BoundedCsg::Offset { inner, .. } | BoundedCsg::Shell { inner, .. } => {
+                collect(inner, out, p)
+            }
+            _ => {}
+        }
+    }
+    // Die Kanäle einmal einsammeln (der Feldwert im Tupel ist hier egal).
+    collect(&field, &mut stops, [0.0; 3]);
+    let channels: Vec<crate::offset_channel::OffsetChannel> =
+        stops.into_iter().flat_map(|(c, _)| c).collect();
+    let mut checked = 0usize;
+    for ch in &channels {
+        for g in &ch.face_planes {
+            if g[3] <= -crate::offset_channel::END_PLANE_OFF * 0.5 {
+                continue; // Sentinel
+            }
+            checked += 1;
+            // Naht-AABB + 2·K — genau das Fenster, in dem die Synthese prüft.
+            let mut lo = [f32::INFINITY; 3];
+            let mut hi = [f32::NEG_INFINITY; 3];
+            for arc in &ch.arcs {
+                for k in 0..=8 {
+                    let q = crate::offset_channel::arc_point_at(arc, k as f32 / 8.0);
+                    for i in 0..3 {
+                        lo[i] = lo[i].min(q[i]);
+                        hi[i] = hi[i].max(q[i]);
+                    }
+                }
+            }
+            let r = 2.0 * ch.trust;
+            let n = 22usize;
+            for ix in 0..n {
+                for iy in 0..n {
+                    for iz in 0..n {
+                        let f = [ix as f32, iy as f32, iz as f32];
+                        let p = [
+                            lo[0] - r + (hi[0] - lo[0] + 2.0 * r) * f[0] / (n - 1) as f32,
+                            lo[1] - r + (hi[1] - lo[1] + 2.0 * r) * f[1] / (n - 1) as f32,
+                            lo[2] - r + (hi[2] - lo[2] + 2.0 * r) * f[2] / (n - 1) as f32,
+                        ];
+                        // Punkt im Körper? (naiver Stopp-Wert = min der Member
+                        // plus δ; `< δ` heißt „im Material").
+                        if field.sdf(p, EvalMode::Visual) >= delta {
+                            continue;
+                        }
+                        // h(x) = ⟨x,n̂⟩ − (c − δ)
+                        let h = p[0] * g[0] + p[1] * g[1] + p[2] * g[2] - (g[3] - ch.delta);
+                        assert!(
+                            h >= -1e-2,
+                            "Fremdebene {g:?} schneidet den Körper bei {p:?} (h = {h:.4}) — \
+                             dann ist sie keine stützende Ebene und ihr Gate wäre ein \
+                             UNTER-Claim"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 0, "die Sonde fand keine einzige belegte Fremdebene");
+}
+
+/// **§8j-Doktrin-Pin: die Klemme tilgt nur, sie erfindet nicht.** Für einen
+/// konkaven Stopp ist das naive Feld konservativ (`d₀ ≥ f_wahr`), und jeder
+/// Grenzwert-Beitrag `δ − de` liegt wegen `de ≥ dist(x,∁Ω)` unter `f_wahr`.
+/// Der korrigierte Wert darf den naiven deshalb NIE übersteigen — sonst
+/// behauptet die Klemme mehr Luft, als das konservative Ausgangsfeld kennt.
+/// (Der naive Wert MUSS dabei der echte Teilbaum-Wert sein: mit einem frei
+/// erfundenen `d₀` ist die Aussage gegenstandslos, weil `lim` aus der
+/// Geometrie kommt und `d₀` dann nicht dazu passt.)
+#[test]
+fn stop_limit_never_exceeds_the_naive_field_384() {
+    let delta = 2.0f32;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    fn walk(n: &BoundedCsg, p: [f32; 3], worst: &mut f32, at: &mut [f32; 3]) {
+        match n {
+            BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
+                if channels.first().map(|c| c.concave).unwrap_or(false) {
+                    let d0 = inner.sdf(p, EvalMode::Visual);
+                    let d = crate::offset_channel::stop_apply(d0, p, channels, verts);
+                    if d - d0 > *worst {
+                        *worst = d - d0;
+                        *at = p;
+                    }
+                }
+                walk(inner, p, worst, at);
+            }
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. } => {
+                walk(left, p, worst, at);
+                walk(right, p, worst, at);
+            }
+            BoundedCsg::Offset { inner, .. } | BoundedCsg::Shell { inner, .. } => {
+                walk(inner, p, worst, at)
+            }
+            _ => {}
+        }
+    }
+    let mut worst = 0.0f32;
+    let mut at = [0.0f32; 3];
+    for node in [
+        stepped_hub_node(t, r1, r2, zh1, e1, e2, delta),
+        thin_corner_node(3.0 * delta, 40.0, delta),
+    ] {
+        let (field, _) = compile_for(node);
+        let n = 24usize;
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let p = [
+                        -12.0 + 24.0 * (ix as f32 + 0.2113248654) / n as f32,
+                        -12.0 + 24.0 * (iy as f32 + 0.5773502692) / n as f32,
+                        -12.0 + 24.0 * (iz as f32 + 0.7886751346) / n as f32,
+                    ];
+                    walk(&field, p, &mut worst, &mut at);
+                }
+            }
+        }
+    }
+    assert!(
+        worst <= 1e-3,
+        "die Grenzwert-Klemme hebt den konkaven Stopp um {worst:.6} mm ÜBER den naiven \
+         Wert bei {at:?} — sie darf nur Über-Claims zurücknehmen"
+    );
+}

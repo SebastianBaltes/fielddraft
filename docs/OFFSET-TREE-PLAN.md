@@ -660,6 +660,50 @@ für Shell.
 * **Nichtkonvexe Normalkegel-Überlappung** bei großem δ: Restrisiko per
   Witness + Ball-Extremum prüfen (Phase C), keine Exaktheitsgarantie im
   Überlappungsgebiet.
+* **Fremdgeometrie QUER zur Naht — GESCHLOSSEN für freie Flächen
+  (#384 §8j, 2026-08-02).** Das Phase-C-Restrisiko der ersten Stunde: liegt
+  eine fremde Fläche im Normalkegel näher als `K`, greift `de − δ` durch sie
+  hindurch. Zwei strukturell bewiesene Schärfungen, beide `min`/`max` über
+  GÜLTIGE Schranken — sie können nur Über-Claims tilgen, nie welche erzeugen:
+  * **Das vierte Gate** (`OffsetChannel.face_planes`, `OP_ARC_CHANNEL`
+    25+27N → **41+27N**): je Kanal bis zu vier Fremdflächen-Halbräume
+    `⟨x−F,n̂⟩ − δ` im selben `min` wie das dritte Gate. Belegt wird eine Ebene
+    nur, wenn sie eine **lokal stützende Ebene** ist
+    (`Ω ∩ B(Naht, 2·K) ⊆ {h ≥ 0}`, geprüft mit den Member-AABBs gegen die
+    geweitete Naht-AABB). Dann liegt der Lotfußpunkt jedes bindenden Punkts
+    auf oder jenseits von `∂Ω`, `h` ist also eine gültige OBERE Schranke von
+    `dist(x,∁Ω)` und `min(de, h)` die schärfere. Kandidaten sind die planaren
+    Carrier der Member — dieselbe analytische Quelle wie die SSI-Seeds, kein
+    Sampling. Der KONVEXE Zweig bekommt keine Kandidaten (`∁Ω` ist dort eine
+    Vereinigung unbeschränkter Komplemente) — dokumentierte Grenze.
+  * **Die Grenzwert-Klemme** (`OP_STOP_LIMIT`, 0x46, +1 Float `concave`):
+    jeder Naht-/Eckpunkt liegt auf `∂Ω`, also ist `δ − de` eine gültige
+    UNTERE Schranke des Zielfelds — bedingungslos. Die Terme liefern nur
+    obere Schranken und komponieren mit `min`; genau deshalb konnte die
+    weiter entfernte Naht gewinnen. Ein Register, von `OP_STOP_BASE`
+    zurückgesetzt, von jedem Term mit `δ − min(de, h)` bzw. `δ − ρ`
+    hochgezogen, am Stopp-Ende angewandt (`max` konkav / `min` konvex).
+  Messbilanz (δ = 2, exakte Strahl-Referenzen): **Stufen-Nabe 0.841 → 0.000 mm,
+  Zusage von ≤ 0.868 auf die Bau-Toleranz ≤ 0.010 — und wahr.** Ecken-Schale
+  t/δ = 2.0 0.806 → 0.764 (114 statt 741 Punkte), t/δ = 2.5 1594 → 157
+  Punkte, Rippen-Kamm 1904 → 644 bzw. 1624 → 616 Punkte (worst je 0.819,
+  weiter ehrlich `conservative`). Sieben Spiegel + `tape_spec.h` +
+  `sdfRenderer.ts`; `check_interp` 35 Szenen / 17920 Checks / 0 Failures.
+  Golden: 32/35 byte-identisch, drei Kanal-Szenen bewegen zusammen 23 von
+  1545 Feldwerten um höchstens 0.00066 mm — ausnahmslos die Klemme, und
+  ausnahmslos in Richtung Wahrheit (Ecken-Zentrum 1.49999 → 1.500000).
+  *VERWORFEN, gemessen:* die Trust-Klemme gegen die nächste fremde Naht
+  (§8g-Spiegel für Kanäle). Sie schließt mehr Über-Claims, tauscht sie aber
+  gegen GRÖSSERE Unter-Claims (Nabe 0.198 → 1.199 mm) und lässt den Stopp
+  darüber die Bau-Toleranz zusagen — §8h hatte das vorhergesagt.
+  *Was NICHT dazugehört:* Naht gegen Naht (Rippen-Kamm, Ecken-Schale unter
+  `3·δ`) braucht EINE geteilte Distanzschranke `U = min_j de_j` über alle
+  Terme, also einen Zwei-Pass-Evaluator — eigenes Paket. Und der
+  UNTER-Claim ist bis heute nirgends gemessen und nirgends zugesagt: die
+  Gegenprobe dieses Pakets findet an Fixturen mit ENGER Zusage vorbestehend
+  fehlendes Material (Ecken-Schale t/δ = 3.0: 384 Punkte bis 0.839 mm),
+  Ursachen sind die um δ verschobene End-Ebene (§8f) und die `G`-Kappe
+  (§8i). Details und Zahlen: §8j.
 * **Kaskade sequenzieller Korrekturterme — ERLEDIGT (#384 §8i,
   2026-08-02).** §8h hatte den Bruch vermessen und den Fix spezifiziert; §8i
   hat ihn gebaut. Jedes Gate rechnet ab jetzt gegen den **naiven** Stoppwert

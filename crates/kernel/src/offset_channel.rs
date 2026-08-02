@@ -186,6 +186,25 @@ pub struct OffsetChannel {
     /// grenzen zwei Nachbar-Nähte an, und jede bekommt ihre eigene
     /// Voronoi-Bisektor-Ebene.
     pub end_planes: [[f32; 4]; 4],
+    /// #384 §8j — **das vierte Gate**: je Kanal bis zu vier
+    /// Fremdflächen-Halbräume `s₄ = ⟨x, n̂⟩ − c` QUER zur Naht, gespeichert
+    /// im selben Format wie [`Self::end_planes`] (`[nx,ny,nz,c]`, `c` trägt
+    /// den δ-Versatz bereits) und im selben `min` von `w_geo`.
+    ///
+    /// Das dritte Gate begrenzt den Term ENTLANG der Naht, die zwei
+    /// Kegel-Gates schneiden QUER dazu — aber nur winkelig; keines sagt,
+    /// dass eine FREMDE Fläche quer zur Naht näher liegen kann als die Naht
+    /// selbst. Genau das ist das Phase-C-Restrisiko (Modulkopf).
+    ///
+    /// Aufgenommen wird eine Ebene nur, wenn sie eine **lokal stützende
+    /// Ebene des Körpers** ist (`Ω ∩ B(Naht, 2·K) ⊆ {s₄ ≥ −δ}`,
+    /// [`set_face_plane_gates`]). Dann liegt der Lotfußpunkt jedes bindenden
+    /// `x` nachweislich auf oder jenseits von `∂Ω`, `⟨x−F,n̂⟩` ist also eine
+    /// gültige OBERE Schranke von `dist(x,∁Ω)` — der Term wird strikt
+    /// schärfer und kann nie unter die Wahrheit rutschen.
+    ///
+    /// Unbelegte Slots tragen denselben Sentinel `[0,0,0,−1e30]`.
+    pub face_planes: [[f32; 4]; 4],
     /// Provenance-BranchId des Kanal-Terms (0x700+-Band, Plan §9).
     pub branch: u64,
     /// Plan §9, Stufe 2 des zweistufigen Pickings: die BranchIds der BEIDEN
@@ -348,10 +367,15 @@ pub fn channel_nearest(p: [f32; 3], ch: &OffsetChannel) -> Option<(f32, [f32; 3]
 /// w ≤ K − de ≤ K − dbs. Ist K − dbs ≤ d (konvex) bzw. dbs − K ≥ d
 /// (konkav), kann der Kanal das Ergebnis nicht ändern (reine
 /// Kostenoptimierung, feldwert-identisch — Parität aller Spiegel).
+///
+/// #384 §8j: der Skip muss jetzt AUCH den Grenzwert-Beitrag
+/// ([`channel_limit`]) neutral halten. `dbs ≥ K` beweist `de ≥ K` und damit
+/// genau das — die zweite Bedingung ist im Fernfeld ohnehin erfüllt und
+/// kostet nur im schmalen Band `dbs < K` eine Auswertung.
 #[inline]
 pub fn channel_skip(d: f32, p: [f32; 3], ch: &OffsetChannel) -> bool {
     let dbs = norm(sub(p, ch.bound_c)) - ch.bound_r;
-    ch.trust - dbs <= if ch.concave { -d } else { d }
+    (ch.trust - dbs <= if ch.concave { -d } else { d }) && dbs >= ch.trust
 }
 
 /// Sentinel eines nicht belegten End-Halbraums (#384 §8f): `n̂ = 0`,
@@ -369,6 +393,21 @@ pub const END_PLANE_NONE: [f32; 4] = [0.0, 0.0, 0.0, -END_PLANE_OFF];
 pub fn end_plane_gate(p: [f32; 3], ch: &OffsetChannel) -> f32 {
     let mut s = f32::INFINITY;
     for g in &ch.end_planes {
+        s = s.min(p[0] * g[0] + p[1] * g[1] + p[2] * g[2] - g[3]);
+    }
+    s
+}
+
+/// #384 §8j — **das vierte Gate**: `s₄ = min_k(⟨x, n̂_k⟩ − c_k)` über die
+/// vier Fremdflächen-Halbräume des Kanals. Identische Rechenform wie
+/// [`end_plane_gate`] (im Opcode sind es acht aufeinanderfolgende Slots),
+/// aber eine andere Quelle: das dritte Gate begrenzt ENTLANG der Naht, das
+/// vierte QUER dazu. Neutral (`+1e30`), wo die Synthese keine stützende
+/// Fremdebene belegen konnte.
+#[inline]
+pub fn face_plane_gate(p: [f32; 3], ch: &OffsetChannel) -> f32 {
+    let mut s = f32::INFINITY;
+    for g in &ch.face_planes {
         s = s.min(p[0] * g[0] + p[1] * g[1] + p[2] * g[2] - g[3]);
     }
     s
@@ -428,6 +467,7 @@ pub fn channel_apply(base: f32, d: f32, p: [f32; 3], ch: &OffsetChannel) -> f32 
     let w_geo = s1
         .min(s2)
         .min(end_plane_gate(p, ch))
+        .min(face_plane_gate(p, ch))
         .min(de - ch.delta)
         .min(ch.trust - de);
     let w = w_geo.min(gate);
@@ -444,14 +484,64 @@ pub fn channel_apply(base: f32, d: f32, p: [f32; 3], ch: &OffsetChannel) -> f32 
     }
 }
 
+/// #384 §8j — **der Grenzwert-Beitrag EINES Kanals.**
+///
+/// Jeder Naht-Punkt liegt auf `∂Ω`, also gilt `dist(x, ∁Ω) ≤ de`
+/// BEDINGUNGSLOS — ohne Kegel-Gate, ohne Trust-Radius, für JEDEN Punkt.
+/// Das Zielfeld des konkaven Stopps ist `δ − dist(x,∁Ω)`, folglich
+///
+/// ```text
+/// f_wahr(x) ≥ δ − de   (und ≥ δ − h für jede stützende Fremdebene h)
+/// ```
+///
+/// — eine gültige UNTERE Schranke. Die Terme selbst liefern nur obere
+/// Schranken (`min`); genau deshalb konnte in §8i die WEITER entfernte Naht
+/// den `min` gewinnen und über eine NÄHERE hinweg Material behaupten. Die
+/// Untergrenze dreht das um: sie kann den Wert nur ANHEBEN und nie über die
+/// Wahrheit hinaus — ein reiner Über-Claim-Tilger.
+///
+/// Zurückgegeben wird `δ − min(de, h)` in **konkaver Orientierung**; der
+/// konvexe Zweig nutzt denselben Akkumulator mit gedrehtem Vorzeichen
+/// (`Obergrenze = −max_j(δ − de_j)`, Komplement-Dualität). Ausserhalb des
+/// Trust-Radius (`de ≥ K`) ist der Beitrag neutral (`−1e30`): dort ist der
+/// Kanal ohnehin nicht zuständig, und die Untergrenze bliebe ohne Nutzen
+/// hinter dem naiven Feld zurück.
+#[inline]
+pub fn channel_limit(p: [f32; 3], ch: &OffsetChannel) -> f32 {
+    let dbs = norm(sub(p, ch.bound_c)) - ch.bound_r;
+    if dbs >= ch.trust {
+        return -END_PLANE_OFF;
+    }
+    let Some((de, _, _, _)) = channel_nearest(p, ch) else {
+        return -END_PLANE_OFF;
+    };
+    if de >= ch.trust {
+        return -END_PLANE_OFF;
+    }
+    ch.delta - de.min(face_plane_gate(p, ch) + ch.delta)
+}
+
+/// Spiegel von [`channel_limit`] für die Vertex-Kugel: `v` liegt auf `∂Ω`,
+/// also ist `ρ = |x−v|` eine obere Schranke von `dist(x,∁Ω)`.
+#[inline]
+pub fn vertex_limit(p: [f32; 3], vs: &VertexSphere) -> f32 {
+    let rho = norm(sub(p, vs.v));
+    if rho >= vs.trust {
+        return -END_PLANE_OFF;
+    }
+    vs.delta - rho
+}
+
 /// Alle Terme EINES Stopps anwenden: erst die Kanäle, dann die
 /// Vertex-Kugeln — alle gegen denselben naiven Stoppwert `d0` gegatet
-/// (#384 §8i). Reihenfolge-Unabhängig (s. [`channel_apply`]); die Reihenfolge
-/// bleibt trotzdem fix, damit jeder Spiegel bit-identisch rechnet.
+/// (#384 §8i), zuletzt die gemeinsame Grenzwert-Klemme (#384 §8j).
+/// Reihenfolge-Unabhängig (s. [`channel_apply`]); die Reihenfolge bleibt
+/// trotzdem fix, damit jeder Spiegel bit-identisch rechnet.
 ///
 /// Der Opcode-Strom bildet das mit `OP_STOP_BASE` (`base ← top of stack`,
-/// direkt nach dem naiven Stopp emittiert) plus je einem `OP_ARC_CHANNEL` /
-/// `OP_VERTEX_SPHERE` je Term ab.
+/// `lim ← −1e30`, direkt nach dem naiven Stopp emittiert), je einem
+/// `OP_ARC_CHANNEL` / `OP_VERTEX_SPHERE` je Term (die `lim` mit-akkumulieren)
+/// und `OP_STOP_LIMIT` am Ende ab.
 pub fn stop_apply(
     d0: f32,
     p: [f32; 3],
@@ -459,13 +549,24 @@ pub fn stop_apply(
     verts: &[VertexSphere],
 ) -> f32 {
     let mut d = d0;
+    let mut lim = -END_PLANE_OFF;
     for ch in channels {
+        lim = lim.max(channel_limit(p, ch));
         d = channel_apply(d0, d, p, ch);
     }
     for vs in verts {
+        lim = lim.max(vertex_limit(p, vs));
         d = vertex_apply(d0, d, p, vs);
     }
-    d
+    let concave = channels
+        .first()
+        .map(|c| c.concave)
+        .or_else(|| verts.first().map(|v| v.concave));
+    match concave {
+        Some(true) => d.max(lim),
+        Some(false) => d.min(-lim),
+        None => d,
+    }
 }
 
 /// Wendet EINE Vertex-Kugel auf den Stopp-Wert `d` an (Phase C4) — die
@@ -1521,6 +1622,174 @@ fn set_end_plane_gates(channels: &mut [OffsetChannel], steps: &[f32]) {
     }
 }
 
+/// #384 §8j — **das vierte Gate: der Halbraum gegen die nächste fremde
+/// Fläche QUER zur Naht.**
+///
+/// Die zwei Kegel-Gates schneiden den Normalkegel quer zur Naht, das dritte
+/// begrenzt den Term entlang der Naht. Keines von beiden weiß, ob eine
+/// FREMDE Fläche quer zur Naht näher an `x` liegt als die eigene Naht — dann
+/// behauptet `de − δ` mehr Distanz, als es gibt (§8i, Stufen-Nabe: die 1.8 mm
+/// dünne Platte unter der Kreisnaht liegt näher als `K = 3.908`, Restfehler
+/// 0.841 mm bei einer Ein-Term-Schranke von 0.868 mm).
+///
+/// **Der Satz.** `de` und jeder Halbraum-Term sind OBERE Schranken von
+/// `dist(x, ∁Ω)`: `q*` liegt auf `∂Ω`, und der Lotfußpunkt einer Ebene liegt
+/// auf `∂Ω`, sofern die Ebene den Körper dort nicht durchschneidet. Das
+/// Minimum zweier oberer Schranken ist die schärfere obere Schranke — der
+/// Term kann also durch dieses Gate nur WENIGER über-behaupten und niemals
+/// unter die Wahrheit rutschen. Ein Unter-Claim ist strukturell
+/// ausgeschlossen, solange die Ebene gültig ist.
+///
+/// **Gültigkeit, rein strukturell.** Eine Ebene ist gültig, wenn sie eine
+/// **lokal stützende Ebene** ist:
+///
+/// ```text
+/// Ω ∩ B(Naht, 2·K) ⊆ { h ≥ 0 },   h(x) = ⟨x − F, n̂⟩
+/// ```
+///
+/// Denn dann ist jeder Punkt mit `h = 0` in dieser Umgebung höchstens
+/// Randpunkt, nie innerer Punkt; und wo das Gate überhaupt bindet
+/// (`h(x) < de ≤ K`), liegt der Lotfußpunkt wegen
+/// `|f − q*| ≤ h(x) + de ≤ 2·K` genau in dieser Umgebung. Geprüft wird das
+/// mit den Member-AABBs (Obermengen von `Ω`) gegen die um `2·K` geweitete
+/// Naht-AABB — konservativ: eine gültige Ebene kann verworfen, eine ungültige
+/// nie angenommen werden.
+///
+/// **Nur der konkave Zweig.** Am Dilations-Stopp (`Ω = ⋂ Member`) ist das
+/// Ziel `Ω` selbst, die duale Bedingung also `∁Ω ∩ B ⊆ {h ≥ 0}` — und `∁Ω`
+/// ist dort eine VEREINIGUNG unbeschränkter Komplemente, für die keine
+/// Member-AABB eine Obermenge liefert. Der konvexe Zweig bekommt deshalb
+/// keine Kandidaten; sein Verhalten (und sein Tape-Feld) bleibt unverändert.
+///
+/// Kandidaten sind ausschließlich die **planaren Carrier** der Member
+/// (`branch_halfspace_map` — dieselbe analytische Quelle, aus der die
+/// SSI-Seeds kommen). Keine Feld-Stichprobe, keine Heuristik.
+fn set_face_plane_gates(
+    channels: &mut [OffsetChannel],
+    members: &[Member],
+    branch_maps: &[crate::brep::BranchSurfaceMap],
+    branch_lists: &[Vec<crate::brep::branch_pairs::Branch>],
+    union_form: bool,
+    gate_eps: f32,
+) {
+    for ch in channels.iter_mut() {
+        ch.face_planes = [END_PLANE_NONE; 4];
+    }
+    if !union_form {
+        return; // konvexer Zweig: keine strukturell belegbaren Kandidaten
+    }
+    // Ω ⊆ ∪ Member-AABBs (Union-Form: alle Vorzeichen +1).
+    let boxes: Vec<Aabb> = members.iter().map(|m| m.node.aabb()).collect();
+    // Welt-Ebenen aller planaren Carrier: `g(x) = ⟨x, ν⟩ − c₀` (Welt-Abstand,
+    // positiv AUSSERHALB des Members). Der Gradient ist konstant, zentrale
+    // Differenzen sind für eine affine Funktion exakt.
+    let mut planes: Vec<([f32; 3], f32)> = Vec::new();
+    for (mi, list) in branch_lists.iter().enumerate() {
+        for b in list {
+            let Some((hs, xf)) = branch_maps[mi].get(&b.id.as_u64()) else {
+                continue;
+            };
+            if !matches!(hs, fielddraft_protocol::HalfSpace::Plane { .. }) {
+                continue;
+            }
+            let g = |q: [f32; 3]| {
+                crate::csg::sdf_halfspace(hs, crate::transform::world_to_local(xf, q))
+            };
+            let g0 = g([0.0; 3]);
+            let grad = [
+                g([1.0, 0.0, 0.0]) - g0,
+                g([0.0, 1.0, 0.0]) - g0,
+                g([0.0, 0.0, 1.0]) - g0,
+            ];
+            let l = norm(grad);
+            if !l.is_finite() || l < 1e-6 {
+                continue;
+            }
+            let nu = [grad[0] / l, grad[1] / l, grad[2] / l];
+            let c0 = -g0 / l;
+            if !(nu.iter().all(|v| v.is_finite()) && c0.is_finite()) {
+                continue;
+            }
+            if planes
+                .iter()
+                .any(|(n, c)| norm(sub(*n, nu)) < 1e-4 && (c - c0).abs() < 1e-4)
+            {
+                continue; // Duplikat (dieselbe Fläche aus mehreren Membern)
+            }
+            planes.push((nu, c0));
+        }
+    }
+    if planes.is_empty() {
+        return;
+    }
+    for ch in channels.iter_mut() {
+        if !ch.concave || ch.arcs.is_empty() {
+            continue;
+        }
+        // Naht-Stützpunkte + AABB (die Ebene ist je Kanal konstant, die
+        // Relevanz misst sich am NÄCHSTEN Naht-Punkt).
+        let mut samples: Vec<[f32; 3]> = Vec::with_capacity(ch.arcs.len() * 5);
+        for arc in &ch.arcs {
+            for t in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+                samples.push(arc_point_at(arc, t));
+            }
+        }
+        let mut sb = Aabb::EMPTY;
+        for s in &samples {
+            sb = Aabb::union(sb, Aabb { min: *s, max: *s });
+        }
+        let reach = 2.0 * ch.trust;
+        let region = sb.expanded(reach);
+        let mut cands: Vec<(f32, [f32; 4])> = Vec::new();
+        for (nu, c0) in &planes {
+            for s in [-1.0f32, 1.0] {
+                let n = [s * nu[0], s * nu[1], s * nu[2]];
+                let c = s * c0;
+                // Relevanz: die Naht muss STRIKT auf der Material-Seite
+                // liegen (sonst ist es die eigene Trägerfläche), und der
+                // Abstand muss überhaupt binden können (`h ≥ 2·K` ⇒ nie).
+                let mut h_seam = f32::INFINITY;
+                for q in &samples {
+                    h_seam = h_seam.min(dot(*q, n) - c);
+                }
+                if !(h_seam > 8.0 * gate_eps && h_seam <= reach) {
+                    continue;
+                }
+                // Stützebene? Für jede Member-AABB, auf die Naht-Umgebung
+                // beschnitten, muss `min h ≥ 0` gelten.
+                let mut supporting = true;
+                for bx in &boxes {
+                    let clip = Aabb::intersect(*bx, region);
+                    if clip.is_empty() {
+                        continue;
+                    }
+                    let mut h_min = -c;
+                    for k in 0..3 {
+                        h_min += if n[k] >= 0.0 {
+                            n[k] * clip.min[k]
+                        } else {
+                            n[k] * clip.max[k]
+                        };
+                    }
+                    if h_min < -8.0 * gate_eps {
+                        supporting = false;
+                        break;
+                    }
+                }
+                if !supporting {
+                    continue;
+                }
+                cands.push((h_seam, [n[0], n[1], n[2], c + ch.delta]));
+            }
+        }
+        // Die nächsten zuerst — sie binden, die fernen sind feldneutral.
+        cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        for (slot, (_, pl)) in cands.iter().take(4).enumerate() {
+            ch.face_planes[slot] = *pl;
+        }
+    }
+}
+
 /// #384 §8g — **der Anker des Voronoi-Bisektors: die ECHTE Ecke, nicht die
 /// Mitte der Trace-Enden.**
 ///
@@ -2148,6 +2417,9 @@ fn build_channel(
         // #384 §8f: die End-Halbräume setzt `set_end_plane_gates` NACH dem
         // Vertex-Snapping (das die Kurve noch verlängert) — hier neutral.
         end_planes: [END_PLANE_NONE; 4],
+        // #384 §8j: die Fremdflächen-Halbräume setzt `set_face_plane_gates`
+        // ebenfalls erst nach dem Snapping — hier neutral.
+        face_planes: [END_PLANE_NONE; 4],
         branch,
         parents,
     })
@@ -4528,6 +4800,10 @@ fn synthesize_stop(
                                     gate_eps, gscale, &min_feat, &mut channel_idx,
                                 );
                                 set_end_plane_gates(&mut channels, &chan_step);
+                                set_face_plane_gates(
+                                    &mut channels, &members, &branch_maps, &branch_lists,
+                                    union_form, gate_eps,
+                                );
                                 let capped = audit_channel_end_caps(
                                     &channels, &verts, inner, &prisms, delta, tol, report,
                                 );
@@ -4730,6 +5006,10 @@ fn synthesize_stop(
                                     );
                                     snap_channel_ends_to_junctions(&mut channels, &chan_step);
                                     set_end_plane_gates(&mut channels, &chan_step);
+                                    set_face_plane_gates(
+                                        &mut channels, &members, &branch_maps, &branch_lists,
+                                        union_form, gate_eps,
+                                    );
                                     let capped = audit_channel_end_caps(
                                         &channels, &verts, inner, &prisms, delta, tol, report,
                                     );
@@ -4755,6 +5035,7 @@ fn synthesize_stop(
     snap_channel_ends_to_vertices(&mut channels, &chan_ends, &verts);
     snap_channel_ends_to_junctions(&mut channels, &chan_step);
     set_end_plane_gates(&mut channels, &chan_step);
+    set_face_plane_gates(&mut channels, &members, &branch_maps, &branch_lists, union_form, gate_eps);
     let capped = audit_channel_end_caps(&channels, &verts, inner, &prisms, delta, tol, report);
     (channels, verts, prisms, rims, capped)
 }
