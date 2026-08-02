@@ -110,9 +110,9 @@ export const OP_STOP_LIMIT     = 0x46;
 // (Wort 0 = kind: 0 = Dreieck a[3] b[3] c[3], 1 = rotiertes (r,z)-Segment
 // o[3] ax[3] r0 z0 r1 z1). Stack-neutral; setzt das Register `stopLb` auf
 // `min_k dist(x, Stück_k) − slack`, neutral (−1e30) ausserhalb von Ω
-// (Indikator `d₀ ≤ δ`) oder der Term-Kugel. Die konkaven Gates rechnen
-// danach gegen `max(G − d₀, L − δ)` statt nur gegen `G − d₀`
-// (CPU-Referenz: `kernel offset_lb::lb_value`).
+// (Indikator `d₀ ≤ δ`) oder der Term-Kugel. Seit §8p gatet die Schranke
+// ALLEIN, wo sie da ist (`L − δ`); nur ohne sie bleibt die Kappe `G − d₀`
+// (CPU-Referenz: `kernel offset_channel::concave_gate` + `offset_lb::lb_value`).
 export const OP_STOP_LB        = 0x47;
 
 export const OP_END            = 0xFF;

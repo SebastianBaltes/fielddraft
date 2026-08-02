@@ -180,9 +180,12 @@ pub const OP_STOP_LIMIT: u32     = 0x46; // +1
 //
 // Warum: das konkave Gate war `G − d₀` mit `G = (c−1)·δ + Marge` — eine
 // Ein-Term-Kappe, die an der Stufen-Nabe 0.868 statt der gebrauchten 1.200
-// hergibt. §8n hat bewiesen, dass `gate = max(G − d₀, L − δ)` mit JEDER
-// gültigen unteren Distanzschranke `L ≤ dist(x,∁Ω)` strukturell kein
-// Phantom-Material erzeugen kann (wo `L − δ` bindet, ist `f ≥ δ − L ≥ e`).
+// hergibt. §8n hat bewiesen, dass ein Gate gegen JEDE gültige untere
+// Distanzschranke `L ≤ dist(x,∁Ω)` strukturell kein Phantom-Material
+// erzeugen kann (wo `L − δ` bindet, ist `f ≥ δ − L ≥ e`). §8o baute das
+// als `max(G − d₀, L − δ)`; seit §8p gatet `L` ALLEIN, wo es da ist —
+// das `max` verlor am Rippen-Kamm die wahre Schranke gegen die Schätzung
+// (`offset_channel::concave_gate`).
 // Dieses Opcode trägt `L` als zugeschnittene Vereinigungs-B-Rep: `Σ_k n_k`
 // Randstücke statt `∏_k n_k` Keile.
 //

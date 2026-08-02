@@ -301,10 +301,11 @@ pub enum BoundedCsg {
         /// Kontakt-Prisma stehen lässt ([`crate::offset_rim`]).
         rims: Vec<crate::offset_rim::RimBlock>,
         /// #384 §8o: die **untere Distanzschranke** dieses Stopps als
-        /// zugeschnittene Vereinigungs-B-Rep (`L(x) ≤ dist(x,∁Ω)`). Die
-        /// konkaven Terme gaten gegen `max(G − d₀, L − δ)` statt nur gegen
-        /// `G − d₀`. `None` = die Synthese konnte `∂Ω` nicht vollständig
-        /// abdecken ⇒ `L = −1e30` ⇒ bit-identisch zum Zustand vor §8o
+        /// zugeschnittene Vereinigungs-B-Rep (`L(x) ≤ dist(x,∁Ω)`). Seit
+        /// §8p gatet sie ALLEIN, wo sie da ist (`L − δ`); nur ohne sie
+        /// bleibt die Kappe `G − d₀` ([`crate::offset_channel::concave_gate`]).
+        /// `None` = die Synthese konnte `∂Ω` nicht vollständig abdecken
+        /// ⇒ `L = −1e30` ⇒ bit-identisch zum Zustand vor §8o
         /// ([`crate::offset_lb`]).
         lb: Option<crate::offset_lb::LbBlock>,
         aabb: Aabb,
