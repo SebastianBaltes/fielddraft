@@ -138,6 +138,21 @@ pub const OP_RIM_FILLET: u32     = 0x43; // +2+17N
 //   r=Radius, Wandnormale RADIAL = wall_sign·(q−c)/r (n_b ungenutzt).
 pub const OP_RIM_FILLET_ARC: u32 = 0x44; // +2+20N
 
+// offset_tree §8i (#384): **Basis-Register eines Offset-Stopps.** Payload-los;
+// pops den naiven Stopp-Wert d₀, merkt ihn im Skalar-Register `base` und pusht
+// ihn unverändert zurück (stack-neutral — `base ← top of stack`). Alle
+// folgenden OP_ARC_CHANNEL/OP_VERTEX_SPHERE desselben Stopps gaten gegen
+// `base` statt gegen den laufenden Stack-Wert; damit ist die Ein-Term-Schranke
+// `G` global und die Term-Reihenfolge feldwert-neutral (CPU-Referenz:
+// `offset_channel::stop_apply`).
+//
+// EIN Register genügt für beliebige Verschachtelung: der Opcode steht
+// unmittelbar vor dem Term-Lauf seines Stopps, und ein innerer Stopp im
+// naiven Teilbaum ist vollständig abgearbeitet, bevor der äußere sein
+// `base` setzt. Emittiert wird er nur, wenn der Stopp überhaupt Kanäle
+// oder Vertex-Kugeln trägt.
+pub const OP_STOP_BASE: u32      = 0x45; // +0
+
 pub const OP_END: u32            = 0xFF;
 
 // ── Compiled output ────────────────────────────────────────────────
@@ -639,10 +654,16 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             // offset_tree Phase B: naiver Stopp zuerst, dann je Kanal EIN
             // OP_ARC_CHANNEL (pops d, pusht korrigiert) — sequenziell wie
             // `offset_channel::channels_apply`. Phase C4: danach je
-            // Vertex-Kugel EIN OP_VERTEX_SPHERE (`verts_apply`). Phase 4 (#398):
+            // Vertex-Kugel EIN OP_VERTEX_SPHERE. Phase 4 (#398):
             // zuletzt je Rim-Block EIN OP_RIM_FILLET (`apply_rims_f32`).
+            // §8i: davor EIN payload-loses OP_STOP_BASE — es friert den naiven
+            // Stopp-Wert d₀ im Basis-Register ein, gegen das alle Gates dieses
+            // Stopps rechnen (CPU-Referenz `offset_channel::stop_apply`).
             emit_node(inner, ctx, open);
             let out = &mut ctx.opcodes;
+            if !channels.is_empty() || !verts.is_empty() {
+                out.push(op(OP_STOP_BASE));
+            }
             for ch in channels {
                 out.push(op(OP_ARC_CHANNEL));
                 out.push(ch.arcs.len() as f32);
@@ -1515,6 +1536,10 @@ pub fn eval_opcodes_with_volumes(
     let mut psp: usize = 0;
     let mut pt = world_point;
     let mut pc: usize = 0;
+    // #384 §8i: Basis-Register eines Offset-Stopps — der naive Stopp-Wert d₀,
+    // gesetzt von `OP_STOP_BASE`, gelesen von OP_ARC_CHANNEL/OP_VERTEX_SPHERE.
+    // Ein wohlgeformtes Tape schreibt es immer, bevor ein Term es liest.
+    let mut base: f32 = 0.0;
 
     macro_rules! push_v {
         ($v:expr) => {{
@@ -1991,6 +2016,15 @@ pub fn eval_opcodes_with_volumes(
                 push_v!(crate::csg::masked_blend_combine(mask_d, blended, hard, blend_r));
             }
 
+            // ── Basis-Register eines Offset-Stopps (#384 §8i) ────
+            // `base ← top of stack`, stack-neutral (pop + push desselben
+            // Werts). Spiegel: `offset_channel::stop_apply` friert d₀ ein.
+            OP_STOP_BASE => {
+                let d = pop_v!();
+                base = d;
+                push_v!(d);
+            }
+
             // ── Kanal-Korrekturkörper (offset_tree Phase B) ────
             // 1:1-Spiegel von `offset_channel::channel_apply` auf dem
             // Opcode-Strom (inkl. des exakten Bounding-Sphere-Skips —
@@ -2120,7 +2154,8 @@ pub fn eval_opcodes_with_volumes(
                 let dq = [pt[0] - best_q[0], pt[1] - best_q[1], pt[2] - best_q[2]];
                 let s1 = dq[0] * best_m1[0] + dq[1] * best_m1[1] + dq[2] * best_m1[2];
                 let s2 = dq[0] * best_m2[0] + dq[1] * best_m2[1] + dq[2] * best_m2[2];
-                let gate = if concave { gate_w - d } else { gate_w + d };
+                // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d₀).
+                let gate = if concave { gate_w - base } else { gate_w + base };
                 // Rollen-Trennung (C4): Geometrie-Klemme vs. Add-Gate —
                 // 1:1-Spiegel von `channel_apply`.
                 let w_geo = s1.min(s2).min(s3).min(best - delta).min(trust - best);
@@ -2159,7 +2194,8 @@ pub fn eval_opcodes_with_volumes(
                 let s1 = dq[0] * g1[0] + dq[1] * g1[1] + dq[2] * g1[2];
                 let s2 = dq[0] * g2[0] + dq[1] * g2[1] + dq[2] * g2[2];
                 let s3 = dq[0] * g3[0] + dq[1] * g3[1] + dq[2] * g3[2];
-                let gate = if concave { gate_w - d } else { gate_w + d };
+                // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d₀).
+                let gate = if concave { gate_w - base } else { gate_w + base };
                 // Rollen-Trennung (C4) — 1:1-Spiegel von `vertex_apply`.
                 let w_geo = s1.min(s2).min(s3).min(rho - delta).min(trust - rho);
                 let w = w_geo.min(gate);

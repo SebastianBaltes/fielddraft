@@ -124,6 +124,8 @@ inline int payload_len(const float* buf, int n, uint32_t tag, int pc) {
       int np = (int)buf[pc];
       return 2 + 20 * np;
     }
+    // #384 §8i: payload-loses Basis-Register (base <- top of stack).
+    case OP_STOP_BASE: return 0;
     case OP_END: return 0;
     default: return -1;
   }
@@ -143,6 +145,12 @@ inline int value_pops(uint32_t tag) {
     case OP_LOFT_MORPH: // #385 P2: pops section field d_j + accumulator
     case OP_MASKED_BLEND: return 2;
     case OP_SHELL:
+    // #384 §8i: OP_STOP_BASE popt d0 und pusht es zurueck — netto
+    // stack-neutral, aber als 1-pop/1-push modelliert, damit der
+    // Tape-Spezialisierer den Stopp-Teilbaum wie bei jedem anderen
+    // Nicht-Boolean-Konsumenten zu EINEM opaken Blatt verschmilzt (der
+    // Opcode darf nie von seinen Kanal-Termen getrennt werden).
+    case OP_STOP_BASE:
     case OP_ARC_CHANNEL:
     case OP_VERTEX_SPHERE:
     case OP_RIM_FILLET:

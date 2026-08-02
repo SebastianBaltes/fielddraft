@@ -22,6 +22,7 @@
 //! s₃(x)     = min_k( ⟨x, n̂_k⟩ − c_k )   (End-Halbräume, §8f — je offenem
 //!             Spine-Ende einer; geschlossene Spine: Sentinel ⇒ +∞)
 //! w_geo     = min(⟨x−q*, m̂_A⟩, ⟨x−q*, m̂_B⟩, s₃, |x−q*| − δ, K − |x−q*|)
+//! gate      = G − d₀ (konkav) bzw. G + d₀ (konvex)   — d₀ = NAIVER Stoppwert
 //! w         = min(w_geo, gate)
 //! konvex:   f = max(d, w)
 //! konkav:   f = min(d, −w)      falls w > 0        (Sliver addieren)
@@ -41,7 +42,7 @@
 //!   ist stetig (er nutzt `de` selbst, nicht die Bounding-Sphere); die
 //!   Bounding-Sphere liefert nur den **exakten** Skip
 //!   (`K − de_lower ≤ d` ⇒ Ergebnis == d, reine Kostenoptimierung).
-//! * `gate = d + G` (konvex) bzw. `G − d` (konkav) mit `G = (c−1)·δ + 4·tol`,
+//! * `gate = d₀ + G` (konvex) bzw. `G − d₀` (konkav) mit `G = (c−1)·δ + 4·tol`,
 //!   `c = 1/cos(γ_max/2)` bzw. `1/sin(α_min/2)`: kappt die Wirkung strikt
 //!   auf das legitime Band um die naive Oberfläche — der Maximalbedarf
 //!   `max(de − δ ∓ d)` über das Keil-/Sliver-Band ist exakt `(c−1)·δ`
@@ -49,6 +50,8 @@
 //!   weit): an trunkierten Kurven-Enden (Triple-Junctions) leckte die
 //!   Endpunkt-Ball-Kappe dadurch bis ~δ Material über das Ende hinaus;
 //!   seit C4 ist das Band scharf und die Ecke gehört der Vertex-Kugel.
+//!   Seit #384 §8i rechnet das Gate gegen den **naiven** Stoppwert `d₀`
+//!   statt gegen den laufenden `d` — siehe [`channel_apply`].
 //!
 //! * `s₃` (**das dritte Gate**, #384 §8f): je offenem Spine-Ende ein
 //!   affiner Halbraum. Die zwei Kegel-Gates schneiden nur QUER zur Naht;
@@ -71,19 +74,22 @@
 //! der Kurve im Kegelgebiet — dort gibt es keine Exaktheitsgarantie. Seit
 //! §8f ist der Anteil, der ÜBER DIE NAHTENDEN kam, per `s₃` geschlossen;
 //! unberührt bleibt Fremdgeometrie, die QUER zur Naht innerhalb des
-//! Normalkegels näher liegt, und die **Kaskade** — seit #384 §8h gemessen
-//! statt vermutet: die Terme werden SEQUENZIELL angewandt, und jedes Gate
-//! rechnet gegen den LAUFENDEN Wert `d`. Verstärker ist die march-sichere
-//! Luftseiten-Klemme `min(d, −w_geo)`; sie kippt kein Vorzeichen, senkt `d`
-//! aber beliebig weit (direkt außerhalb des Trust-Radius ist
-//! `−w_geo = de − K → 0⁺`) und öffnet damit dem NÄCHSTEN Term das volle `G`.
-//! Gemessen an Platte + zweistufiger Nabe: 2.0 mm Nullmengen-Fehler bei
-//! zugesagten 0.01 mm. Die Ein-Term-Schranke `G` ist also KEINE globale
-//! Schranke; der Randpunkt-Zeugen-Wächter ([`end_region_violation`], seit
-//! §8h auch auf dem Naht-INNEREN und damit auf geschlossenen Spines) meldet
-//! das als ehrliches Downgrade. Der saubere Fix — `gate` gegen den NAIVEN
-//! Stopp-Wert statt gegen den laufenden — ist eine Opcode-Semantik-Änderung
-//! und ein eigenes Paket (docs/OFFSET-TREE-PLAN.md §9).
+//! Normalkegels näher liegt.
+//!
+//! **Die Kaskade ist seit #384 §8i geschlossen.** §8h hatte sie gemessen:
+//! die Terme werden SEQUENZIELL angewandt, und jedes Gate rechnete gegen den
+//! LAUFENDEN Wert `d`. Verstärker war die march-sichere Luftseiten-Klemme
+//! `min(d, −w_geo)`; sie kippt kein Vorzeichen, senkt `d` aber beliebig weit
+//! (direkt außerhalb des Trust-Radius ist `−w_geo = de − K → 0⁺`) und öffnete
+//! damit dem NÄCHSTEN Term das volle `G` — an Platte + zweistufiger Nabe
+//! 2.0 mm Nullmengen-Fehler bei zugesagten 0.01 mm. §8i rechnet das Gate
+//! gegen den **naiven** Stoppwert `d₀`: damit gilt `|f − d₀| ≤ G` je Term und
+//! folglich global (die Ein-Term-Schranke IST die globale Schranke), und die
+//! Term-Reihenfolge ist feldwert-neutral — alle konkaven Terme sind `min`
+//! gegen eine von `d` unabhängige Konstante, alle konvexen `max`. Der
+//! Randpunkt-Zeugen-Wächter ([`end_region_violation`], seit §8h auch auf dem
+//! Naht-INNEREN und damit auf geschlossenen Spines) bleibt als empirischer
+//! Nachhalter stehen (docs/OFFSET-TREE-PLAN.md §9).
 //!
 //! ## Synthese
 //!
@@ -368,9 +374,30 @@ pub fn end_plane_gate(p: [f32; 3], ch: &OffsetChannel) -> f32 {
     s
 }
 
-/// Wendet EINEN Kanal auf den naiven Stopp-Wert `d` an (Modul-Doku).
-/// Die CPU-Referenz aller Spiegel (Opcode-Interpreter, WGSL, C++, fidget).
-pub fn channel_apply(d: f32, p: [f32; 3], ch: &OffsetChannel) -> f32 {
+/// Wendet EINEN Kanal-Term an (Modul-Doku). Die CPU-Referenz aller Spiegel
+/// (Opcode-Interpreter, WGSL/TSL, C++, fidget, Dual).
+///
+/// `base` ist der **naive Stopp-Wert `d₀`** — der Wert, den der Stopp-Knoten
+/// VOR allen Kanal-/Vertex-Termen liefert. `d` ist der laufende Wert (bereits
+/// von vorangegangenen Termen desselben Stopps bearbeitet).
+///
+/// #384 §8i — **das Gate rechnet gegen `d₀`, nicht gegen `d`.** Die Terme
+/// laufen sequenziell; ein Gate gegen den laufenden Wert kaskadiert: die
+/// Luftseiten-Klemme `min(d, −w_geo)` senkt `d` beliebig weit, ohne ein
+/// Vorzeichen zu kippen, und öffnet dem nächsten Term das volle `G`
+/// (§8h: 2.0 mm Phantom-Material bei zugesagten 0.01 mm). Mit `d₀` ist die
+/// Ein-Term-Schranke ein Satz — weil das naive Feld konservativ ist
+/// (`d₀ ≥ e`), gilt `|f − d₀| ≤ G` für JEDEN Term und damit für ihre
+/// Komposition. Der Preis ist null: der Maximalbedarf eines Terms ist
+/// `de − δ ∓ d₀ ≤ (c−1)·δ` genau am naiven Scheitel.
+///
+/// Nebenwirkung, die der Modulkopf für die Vertex-Kugeln schon behauptete:
+/// **Reihenfolge-Unabhängigkeit.** Jeder konkave Term ist damit
+/// `f = min(d, C(x))` mit einem von `d` unabhängigen `C`, jeder konvexe
+/// `f = max(d, C(x))` — eine Permutation der Terme ändert das Feld nicht.
+/// (Der Bounding-Sphere-Skip bleibt am LAUFENDEN `d`: er greift genau dann,
+/// wenn `C ≥ d` bzw. `C ≤ d` gilt, also das Ergebnis ohnehin `d` ist.)
+pub fn channel_apply(base: f32, d: f32, p: [f32; 3], ch: &OffsetChannel) -> f32 {
     if channel_skip(d, p, ch) {
         return d;
     }
@@ -380,7 +407,11 @@ pub fn channel_apply(d: f32, p: [f32; 3], ch: &OffsetChannel) -> f32 {
     let dq = sub(p, q);
     let s1 = dot(dq, m1);
     let s2 = dot(dq, m2);
-    let gate = if ch.concave { ch.gate - d } else { ch.gate + d };
+    let gate = if ch.concave {
+        ch.gate - base
+    } else {
+        ch.gate + base
+    };
     // Zwei getrennte Rollen (C4-Korrektur der Phase-B-Formel):
     // * `w_geo` (reine Geometrie-Terme) trägt BEIDE Seiten: > 0 ⇒ Punkt
     //   liegt im Sliver (Material addieren); ≤ 0 ⇒ −w_geo ist eine
@@ -393,6 +424,7 @@ pub fn channel_apply(d: f32, p: [f32; 3], ch: &OffsetChannel) -> f32 {
     //   `gate − d` gegen dieses geklemmte statt das naive d und öffnete
     //   fälschlich — an Triple-Junctions addierte der zweite Kanal
     //   Material in wahre Luft (Vorzeichen-Kipp am Ecken-Fixture).
+    //   §8i zieht die Konsequenz für ALLE Terme: `gate` rechnet gegen `d₀`.
     let w_geo = s1
         .min(s2)
         .min(end_plane_gate(p, ch))
@@ -412,10 +444,26 @@ pub fn channel_apply(d: f32, p: [f32; 3], ch: &OffsetChannel) -> f32 {
     }
 }
 
-/// Alle Kanäle eines Stopps nacheinander anwenden (Reihenfolge = Daten).
-pub fn channels_apply(mut d: f32, p: [f32; 3], channels: &[OffsetChannel]) -> f32 {
+/// Alle Terme EINES Stopps anwenden: erst die Kanäle, dann die
+/// Vertex-Kugeln — alle gegen denselben naiven Stoppwert `d0` gegatet
+/// (#384 §8i). Reihenfolge-Unabhängig (s. [`channel_apply`]); die Reihenfolge
+/// bleibt trotzdem fix, damit jeder Spiegel bit-identisch rechnet.
+///
+/// Der Opcode-Strom bildet das mit `OP_STOP_BASE` (`base ← top of stack`,
+/// direkt nach dem naiven Stopp emittiert) plus je einem `OP_ARC_CHANNEL` /
+/// `OP_VERTEX_SPHERE` je Term ab.
+pub fn stop_apply(
+    d0: f32,
+    p: [f32; 3],
+    channels: &[OffsetChannel],
+    verts: &[VertexSphere],
+) -> f32 {
+    let mut d = d0;
     for ch in channels {
-        d = channel_apply(d, p, ch);
+        d = channel_apply(d0, d, p, ch);
+    }
+    for vs in verts {
+        d = vertex_apply(d0, d, p, vs);
     }
     d
 }
@@ -423,8 +471,9 @@ pub fn channels_apply(mut d: f32, p: [f32; 3], channels: &[OffsetChannel]) -> f3
 /// Wendet EINE Vertex-Kugel auf den Stopp-Wert `d` an (Phase C4) — die
 /// CPU-Referenz aller Spiegel (Opcode-Interpreter, WGSL, TSL, C++,
 /// fidget, Dual). Struktur identisch zu [`channel_apply`], nur mit
-/// Punkt-Spine (`q* = v`, drei Gates statt zwei interpolierten).
-pub fn vertex_apply(d: f32, p: [f32; 3], vs: &VertexSphere) -> f32 {
+/// Punkt-Spine (`q* = v`, drei Gates statt zwei interpolierten) — inklusive
+/// des `d₀`-Gates aus #384 §8i (`base` = naiver Stopp-Wert).
+pub fn vertex_apply(base: f32, d: f32, p: [f32; 3], vs: &VertexSphere) -> f32 {
     let dq = sub(p, vs.v);
     let rho = norm(dq);
     // Exakter Fernfeld-Skip (Spiegel von `channel_skip`, Sphäre = Punkt).
@@ -434,7 +483,11 @@ pub fn vertex_apply(d: f32, p: [f32; 3], vs: &VertexSphere) -> f32 {
     let s1 = dot(dq, vs.gates[0]);
     let s2 = dot(dq, vs.gates[1]);
     let s3 = dot(dq, vs.gates[2]);
-    let gate = if vs.concave { vs.gate - d } else { vs.gate + d };
+    let gate = if vs.concave {
+        vs.gate - base
+    } else {
+        vs.gate + base
+    };
     // Rollen-Trennung wie in [`channel_apply`]: Geometrie-Klemme
     // (march-sichere Luftseite) vs. Gate (kappt nur die Addition).
     let w_geo = s1
@@ -454,14 +507,6 @@ pub fn vertex_apply(d: f32, p: [f32; 3], vs: &VertexSphere) -> f32 {
     } else {
         d.max(w)
     }
-}
-
-/// Alle Vertex-Kugeln eines Stopps anwenden (nach den Kanälen).
-pub fn verts_apply(mut d: f32, p: [f32; 3], verts: &[VertexSphere]) -> f32 {
-    for vs in verts {
-        d = vertex_apply(d, p, vs);
-    }
-    d
 }
 
 /// Konservative AABB der Vertex-Kugeln (nur konkav ADDIERT Material).
@@ -1251,7 +1296,7 @@ fn end_region_violation(
                     if !d.is_finite() {
                         continue;
                     }
-                    let corr = verts_apply(channels_apply(d, x, channels), x, verts);
+                    let corr = stop_apply(d, x, channels, verts);
                     // Geprüft wird die NULLMENGE (die Zusage des Stopps), und
                     // nur, was der Term VERURSACHT: das naive Feld muss den
                     // Punkt richtig klassifizieren, das korrigierte falsch.
@@ -1319,7 +1364,7 @@ fn end_region_violation(
                 if !d.is_finite() {
                     continue;
                 }
-                let corr = verts_apply(channels_apply(d, x, channels), x, verts);
+                let corr = stop_apply(d, x, channels, verts);
                 let flipped = if delta_signed > 0.0 {
                     d <= 0.0 && corr > 0.0
                 } else {

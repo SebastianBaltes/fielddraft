@@ -51,7 +51,8 @@ import {
   OP_WARP_PUSH, OP_WARP_POP, OP_WARP_TWIST, OP_WARP_BEND,
   OP_WARP_TRANSFORM, OP_WARP_REVOLVE,
   OP_WARP_HELIX, OP_HELIX_SCALE, OP_WARP_SWEEP, OP_LOFT_MORPH,
-  OP_MASKED_BLEND, OP_ARC_CHANNEL, OP_VERTEX_SPHERE, OP_RIM_FILLET, OP_RIM_FILLET_ARC, OP_END,
+  OP_MASKED_BLEND, OP_ARC_CHANNEL, OP_VERTEX_SPHERE, OP_RIM_FILLET, OP_RIM_FILLET_ARC,
+  OP_STOP_BASE, OP_END,
   worldToLocalFn, halfspaceLocalFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
   sdfTorusFn, sdfConeFn, sdfCapsuleFn, sdfHexPrismFn,
   sdfEllipsoidFn, sdfGyroidFn, sdfThreadFn,
@@ -100,6 +101,9 @@ export function buildVmSdfEvalFn(
     const vs4 = float(0).toVar(), vs5 = float(0).toVar();
     const vs6 = float(0).toVar(), vs7 = float(0).toVar();
     const vsp = int(0).toVar();
+    // #384 §8i: Basis-Register eines Offset-Stopps — der naive Stopp-Wert d₀,
+    // gesetzt von OP_STOP_BASE, gelesen von OP_ARC_CHANNEL/OP_VERTEX_SPHERE.
+    const stopBase = float(0).toVar();
 
     const ps0x = float(0).toVar(), ps0y = float(0).toVar(), ps0z = float(0).toVar();
     const ps1x = float(0).toVar(), ps1y = float(0).toVar(), ps1z = float(0).toVar();
@@ -779,6 +783,14 @@ export function buildVmSdfEvalFn(
         const dResult = dSmooth.mix(dSharp, hardW);
         pushV(uResult.mix(dResult, isDiff));
 
+      }).ElseIf(tag.equal(int(OP_STOP_BASE)), () => {
+        // offset_tree §8i (#384): base ← top of stack (pop + push desselben
+        // Werts, netto stack-neutral). Spiegel von `eval_opcodes`
+        // OP_STOP_BASE / `offset_channel::stop_apply`.
+        const d = popV().toVar();
+        stopBase.assign(d);
+        pushV(d);
+
       }).ElseIf(tag.equal(int(OP_ARC_CHANNEL)), () => {
         // offset_tree Phase B (#384): Kanal-Korrekturkörper an einem dualen
         // Offset-Stopp — 1:1-Spiegel der CPU-Referenz
@@ -903,7 +915,10 @@ export function buildVmSdfEvalFn(
             const dq = p.sub(bestQ);
             const s1 = dq.dot(bestM1);
             const s2 = dq.dot(bestM2);
-            const gate = concave.greaterThan(0.5).select(gateW.sub(d), gateW.add(d));
+            // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d₀).
+            const gate = concave
+              .greaterThan(0.5)
+              .select(gateW.sub(stopBase), gateW.add(stopBase));
             // Rollen-Trennung (C4, CPU-Referenz channel_apply):
             // Geometrie-Klemme (Luft-Distanzschranke) vs. Add-Gate.
             const wGeo = min(min(min(s1, s2), s3), min(best.sub(delta), trust.sub(best)));
@@ -944,7 +959,10 @@ export function buildVmSdfEvalFn(
           const s1 = dq.dot(g1);
           const s2 = dq.dot(g2);
           const s3 = dq.dot(g3);
-          const gate = concave.greaterThan(0.5).select(gateW.sub(d), gateW.add(d));
+          // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d₀).
+          const gate = concave
+            .greaterThan(0.5)
+            .select(gateW.sub(stopBase), gateW.add(stopBase));
           // Rollen-Trennung (C4, CPU-Referenz vertex_apply).
           const wGeo = min(
             min(min(s1, s2), min(s3, rho.sub(delta))),

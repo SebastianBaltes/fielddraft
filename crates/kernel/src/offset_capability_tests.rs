@@ -1868,29 +1868,52 @@ fn erosion_thin_corner_vertex_sphere_is_exact_384() {
     }
 }
 
-/// Der Gegenpol: eine Schale unter `3·δ` erodiert zu (fast) nichts, die
-/// Ecken-Kegel überlappen einander vollständig, und dort sagt der Stopp
-/// EHRLICH nichts mehr zu. Vor §8g meldete er `tolerance_bounded` mit einer
-/// Schranke, die er selbst um 0.24 mm riss — der Randpunkt-Zeuge ging als
-/// Schranke durch, obwohl er nur eine Stichprobe ist und damit eine UNTERE
-/// Schranke des Fehlers.
+/// Der Gegenpol: eine Schale unter `3·δ` erodiert zu (fast) nichts und die
+/// Ecken-Kegel überlappen einander vollständig. Dort darf der Stopp KEINE
+/// Bau-Toleranz zusagen — und was immer er zusagt, muss gegen die exakte
+/// Referenz stimmen.
+///
+/// **Pin-Bewegung §8i.** Bis §8h meldete diese Schale `conservative`: der
+/// Randpunkt-Zeuge wies eine Fehlklassifikation ÜBER der strukturellen
+/// Gate-Schranke `G` nach, also war gar keine Schranke mehr belegbar. Das
+/// war der Kaskaden-Effekt — mehrere Terme addierten sich über `G` hinaus.
+/// Seit das Gate gegen den naiven Stoppwert `d₀` rechnet, ist `G` eine echte
+/// globale Schranke; der Zeuge bleibt darunter, und der Stopp sagt wieder
+/// `≤ G` zu. Gemessen an der exakten Referenz (34³ Punkte, 240 Richtungen):
+/// t/δ = 2.0 → 0.841 mm, t/δ = 2.5 → 0.822 mm, beide unter den zugesagten
+/// 0.868 mm. Der Pin prüft deshalb ab jetzt die DOKTRIN statt des Status.
 #[test]
-fn erosion_collapsing_shell_promises_nothing_384() {
+fn erosion_collapsing_shell_promise_is_true_384() {
     let delta = 2.0f32;
     for tf in [2.0f32, 2.5] {
-        let (_, report) = compile_for(thin_corner_node(tf * delta, 40.0, delta));
-        assert_eq!(
-            report.status(),
-            CapabilityStatus::Conservative,
-            "Schale t/δ={tf}: die Erosion kollabiert dort — eine Bau-Toleranz-Zusage wäre \
-             eine Lüge: {:?}",
-            report.reasons()
-        );
+        let t = tf * delta;
+        let (field, report) = compile_for(thin_corner_node(t, 40.0, delta));
+        let boxes = thin_corner_boxes(t as f64, 40.0);
+        let lo = -(t as f64 + delta as f64 + 1.0);
+        let (miss, worst, at) =
+            erosion_zero_set_error(&field, &boxes, delta, [lo; 3], [1.0; 3], 26, 200);
         assert!(
-            report.reasons().iter().any(|r| r.contains("keine Schranke mehr belegbar")),
-            "Schale t/δ={tf}: der Grund muss benannt sein: {:?}",
-            report.reasons()
+            miss > 0,
+            "Schale t/δ={tf}: die Sonde taugt nur, solange die kollabierende Erosion \
+             überhaupt noch Fehlklassifikationen erzeugt"
         );
+        match promised_bound(&report) {
+            None => {}
+            Some(b) => {
+                assert!(
+                    b > CHANNEL_TOL_RENDER as f64 + 1e-9,
+                    "Schale t/δ={tf}: eine Bau-Toleranz-Zusage wäre hier eine Lüge \
+                     ({miss} Fehlklassifikationen bis {worst:.4} mm): {:?}",
+                    report.reasons()
+                );
+                assert!(
+                    worst <= b + 1e-3,
+                    "Schale t/δ={tf}: {miss} Fehlklassifikationen, größte {worst:.4} mm bei \
+                     {at:?} — zugesagt sind aber nur {b:.3} mm. Reasons: {:?}",
+                    report.reasons()
+                );
+            }
+        }
     }
 }
 
@@ -2296,4 +2319,249 @@ fn erosion_rib_comb_cascade_promise_is_true_384() {
             report.reasons()
         );
     }
+}
+
+// ─── #384 §8i: das Gate rechnet gegen den NAIVEN Stoppwert d₀ ────────────
+//
+// §8h hat den Kaskaden-Bruch vermessen und den Fix benannt: solange jedes
+// Gate gegen den LAUFENDEN Wert `d` rechnet, kann ein Term das nächste Gate
+// aufreißen — die Luftseiten-Klemme `min(d, −w_geo)` senkt `d` beliebig weit,
+// ohne ein Vorzeichen zu kippen. Rechnet das Gate gegen den naiven Wert `d₀`,
+// ist die Ein-Term-Schranke `G = (c−1)·δ + 4·tol` ein SATZ und damit zugleich
+// die globale Schranke; als Nebenwirkung wird die Term-Reihenfolge
+// feldwert-neutral. Im Tape trägt das der payload-lose `OP_STOP_BASE`.
+//
+// Gemessen (δ = 2, G = 0.868, exakte Strahl-Referenzen wie in §8h):
+//
+// | Szene | vorher (§8h) | nachher (§8i) |
+// |---|---|---|
+// | Stufen-Nabe | 957 Fehler, 2.000 mm, `conservative` | 661, 0.841 mm, `≤ 0.868` wahr |
+// | Rippen-Kamm 4×1.5/0.8 | 2408, 1.987 mm | 1904, 0.819 mm |
+// | Rippen-Kamm 4×2.0/1.0 | 1680, 1.052 mm | 1624, 0.819 mm |
+// | Zapfen-Reihe (Spalt 1–3) | 0.787 mm | unverändert 0.787 mm |
+// | Steinmetz-Zentrum (konvex) | 1.198·G Auslenkung | 1.000·G |
+
+/// **§8i-Kern-Pin.** An der Stufen-Nabe kaskadierten zwei geschlossene
+/// Kreisnähte bis 2.000 mm — dem Doppelten der Ein-Term-Schranke. Mit dem
+/// `d₀`-Gate bleibt der Nullmengen-Fehler unter `G`; genau das ist die
+/// Aussage des Pakets. `G` ist analytisch, nicht kalibriert: die Naht ist ein
+/// rechter Winkel, also `c = 1/sin(45°) = √2` und `G = (√2−1)·2 + 4·0.01`.
+#[test]
+fn erosion_stepped_hub_stays_within_one_term_gate_384() {
+    let delta = 2.0f32;
+    let g_one_term = (2.0f64.sqrt() - 1.0) * delta as f64 + 4.0 * CHANNEL_TOL_RENDER as f64;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let (field, report) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+    assert!(
+        crate::offset_channel::count_channels(&field).0 >= 2,
+        "die Sonde taugt nur mit mindestens zwei Kanal-Termen"
+    );
+    let cyls = [
+        (r1 as f64, -(e1 as f64), zh1 as f64),
+        (r2 as f64, -(e2 as f64), 6.0f64),
+    ];
+    let n = 26usize;
+    let (mut miss, mut worst, mut at) = (0usize, 0.0f64, [0.0f64; 3]);
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let p = [
+                    -9.0 + 18.0 * (ix as f64 + 0.2113248654) / n as f64,
+                    -9.0 + 18.0 * (iy as f64 + 0.5773502692) / n as f64,
+                    -(t as f64) - 1.5 + (t as f64 + 2.0) * (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
+                    continue;
+                }
+                let u = dist_hub_complement(t as f64, &cyls, p, 160);
+                let err = delta as f64 - u;
+                if err <= 1e-3 {
+                    continue;
+                }
+                miss += 1;
+                if err > worst {
+                    worst = err;
+                    at = p;
+                }
+            }
+        }
+    }
+    assert!(
+        worst <= g_one_term + 1e-3,
+        "Stufen-Nabe: {miss} Nullmengen-Fehler, größter {worst:.4} mm bei {at:?} — \
+         die Ein-Term-Schranke {g_one_term:.4} mm MUSS seit §8i global gelten \
+         (vor §8i: 2.000 mm). Reasons: {:?}",
+        report.reasons()
+    );
+    // Der Zeuge liegt damit wieder unter der strukturellen Schranke, also
+    // fällt das §8h-Downgrade auf `conservative`: der Stopp sagt wieder
+    // etwas zu — und was er zusagt, ist wahr (das prüft der Doktrin-Pin
+    // `erosion_stepped_hub_cascade_promise_is_true_384`).
+    assert_ne!(
+        report.status(),
+        CapabilityStatus::Conservative,
+        "Stufen-Nabe: ohne Kaskade ist `G` belegbar, der Stopp darf das sagen: {:?}",
+        report.reasons()
+    );
+}
+
+/// **§8i-Wert-Pin am konvexen Zweig** (der Golden-Zeuge). Im Zentrum des
+/// dilatierten Steinmetz-Körpers greifen ZWEI konvexe Kanal-Terme; vor §8i
+/// hob der erste `d` um das volle `G` an und öffnete dem zweiten ein
+/// weiteres Stück Gate — zusammen 0.7918 mm bei einer Ein-Term-Schranke von
+/// 0.6612 mm (1.198·G). Mit dem `d₀`-Gate bleibt die Gesamt-Auslenkung bei
+/// genau `G`.
+#[test]
+fn dilation_steinmetz_center_stays_within_one_term_gate_384() {
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    let s1 = [1.0f32; 3];
+    let cyl = |fid: u32, rot: [f32; 4], r: f32| {
+        CsgNode::Transform(
+            Transform { translate: [0.0; 3], rotation: rot, scale: s1 },
+            Box::new(CsgNode::Leaf {
+                id: id(fid),
+                primitive: Primitive::Cylinder { center: [0.0; 3], radius: r, half_height: 18.0 },
+            }),
+        )
+    };
+    let stein = CsgNode::Offset(
+        Box::new(CsgNode::Intersection(
+            Box::new(cyl(1, [half, 0.0, 0.0, half], 9.0)),
+            Box::new(cyl(2, [0.0, 0.0, -half, half], 6.0)),
+        )),
+        1.5,
+    );
+    let field =
+        crate::offset_channel::synthesize_offset_channels(BoundedCsg::from_csg(&stein), 0.01);
+    // Der naive Stoppwert im Zentrum und die größte Gate-Weite des Stopps.
+    fn probe(n: &BoundedCsg, p: [f32; 3], out: &mut Vec<(f32, f32, usize)>) {
+        match n {
+            BoundedCsg::ArcChannel { inner, channels, .. } => {
+                let g = channels.iter().fold(0.0f32, |a, c| a.max(c.gate));
+                out.push((inner.sdf(p, EvalMode::Visual), g, channels.len()));
+                probe(inner, p, out);
+            }
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. } => {
+                probe(left, p, out);
+                probe(right, p, out);
+            }
+            BoundedCsg::Offset { inner, .. } | BoundedCsg::Shell { inner, .. } => {
+                probe(inner, p, out)
+            }
+            _ => {}
+        }
+    }
+    let p = [0.0f32; 3];
+    let mut stops = Vec::new();
+    probe(&field, p, &mut stops);
+    assert_eq!(stops.len(), 1, "Steinmetz: genau ein Offset-Stopp erwartet");
+    let (d0, gate, n_ch) = stops[0];
+    assert!(n_ch >= 2, "Steinmetz: die Kaskade braucht mindestens zwei Terme");
+    let f = field.sdf(p, EvalMode::Visual);
+    assert!(
+        (f - d0).abs() <= gate + 1e-4,
+        "Steinmetz-Zentrum: naiv {d0:.6}, korrigiert {f:.6} — Auslenkung {:.6} mm über \
+         der Ein-Term-Schranke {gate:.6} mm (vor §8i: 0.791823 mm bei G = 0.661242)",
+        (f - d0).abs()
+    );
+}
+
+/// **§8i-Struktur-Pin: Reihenfolge-Unabhängigkeit.** Ohne Gate sind alle
+/// Terme eines Stopps `min` (konkav) bzw. `max` (konvex) und damit
+/// kommutativ; einzig das Gate gegen den laufenden Wert machte das Ergebnis
+/// von der Term-Reihenfolge abhängig. Mit dem `d₀`-Gate ist jeder Term
+/// `min(d, C(x))` bzw. `max(d, C(x))` mit einem von `d` unabhängigen `C` —
+/// jede Permutation liefert BIT-identisch dasselbe Feld.
+#[test]
+fn stop_terms_are_order_independent_384() {
+    let delta = 2.0f32;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let mut stops: Vec<(
+        Vec<crate::offset_channel::OffsetChannel>,
+        Vec<crate::offset_channel::VertexSphere>,
+    )> = Vec::new();
+    fn collect(
+        n: &BoundedCsg,
+        out: &mut Vec<(
+            Vec<crate::offset_channel::OffsetChannel>,
+            Vec<crate::offset_channel::VertexSphere>,
+        )>,
+    ) {
+        match n {
+            BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
+                out.push((channels.clone(), verts.clone()));
+                collect(inner, out);
+            }
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. } => {
+                collect(left, out);
+                collect(right, out);
+            }
+            BoundedCsg::Offset { inner, .. } | BoundedCsg::Shell { inner, .. } => {
+                collect(inner, out)
+            }
+            _ => {}
+        }
+    }
+    for node in [
+        stepped_hub_node(t, r1, r2, zh1, e1, e2, delta),
+        thin_corner_node(4.0 * delta, 40.0, delta),
+    ] {
+        let (field, _) = compile_for(node);
+        collect(&field, &mut stops);
+    }
+    let mut checked = 0usize;
+    let mut active = 0usize;
+    for (channels, verts) in &stops {
+        if channels.len() + verts.len() < 2 {
+            continue;
+        }
+        // Permutationen: umgekehrt und um eins rotiert.
+        let mut rev_ch = channels.clone();
+        rev_ch.reverse();
+        let mut rot_ch = channels.clone();
+        rot_ch.rotate_left(1);
+        let mut rev_vs = verts.clone();
+        rev_vs.reverse();
+        let n = 12usize;
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let p = [
+                        -10.0 + 20.0 * (ix as f32 + 0.2113248654) / n as f32,
+                        -10.0 + 20.0 * (iy as f32 + 0.5773502692) / n as f32,
+                        -10.0 + 20.0 * (iz as f32 + 0.7886751346) / n as f32,
+                    ];
+                    for d0 in [-6.0f32, -2.0, -0.5, 0.0, 0.5, 2.0, 6.0] {
+                        let base =
+                            crate::offset_channel::stop_apply(d0, p, channels, verts);
+                        if base != d0 {
+                            active += 1;
+                        }
+                        for (c, v) in
+                            [(&rev_ch, verts), (&rot_ch, verts), (channels, &rev_vs)]
+                        {
+                            let got = crate::offset_channel::stop_apply(d0, p, c, v);
+                            assert_eq!(
+                                got.to_bits(),
+                                base.to_bits(),
+                                "Term-Reihenfolge ist NICHT feldwert-neutral bei p={p:?}, \
+                                 d₀={d0}: {base} vs {got}"
+                            );
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 0, "kein Stopp mit mindestens zwei Termen gefunden");
+    assert!(
+        active > 0,
+        "die Sonde traf keinen einzigen Punkt, an dem ein Term überhaupt wirkt — \
+         dann beweist die Permutations-Gleichheit nichts"
+    );
 }

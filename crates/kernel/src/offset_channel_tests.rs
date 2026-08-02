@@ -2168,7 +2168,8 @@ fn channel_term_is_off_beyond_the_seam_end_384() {
             ];
             for d in [-1.0f32, -0.3, 0.0, 0.3, 1.0] {
                 assert_eq!(
-                    channel_apply(d, p, ch),
+                    // §8i: `d` ist hier zugleich der naive Stopp-Wert d₀.
+                    channel_apply(d, d, p, ch),
                     d,
                     "Kanal wirkt jenseits des Nahtendes (r={r}·δ, d={d})"
                 );

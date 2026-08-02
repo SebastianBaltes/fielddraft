@@ -574,9 +574,10 @@ impl BoundedCsg {
             // Modus-unabhängig — der Kanal IST die korrekte harte Geometrie
             // (wie MaskedBlend: die Fläche ist real, kein Render-Effekt).
             BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
-                let d = inner.sdf_open(p, mode, open);
-                let d = crate::offset_channel::channels_apply(d, p, channels);
-                let d = crate::offset_channel::verts_apply(d, p, verts);
+                // #384 §8i: `d0` ist der NAIVE Stopp-Wert; alle Kanal-/
+                // Vertex-Gates rechnen gegen ihn (Kaskaden-Schnitt).
+                let d0 = inner.sdf_open(p, mode, open);
+                let d = crate::offset_channel::stop_apply(d0, p, channels, verts);
                 // Phase 4 (#398): ∂P-Rand-Fillet NACH Kanälen/Vertices
                 // (disjunkte Masken, Reihenfolge feldwert-neutral). Spiegel des
                 // `OP_RIM_FILLET`-Decodes und des Dual-Arms.
@@ -884,7 +885,8 @@ impl BoundedCsg {
                 let (d0, mut c) = inner.evaluate_open(p, eps, mode, open);
                 let mut d = d0;
                 for ch in channels {
-                    let nd = crate::offset_channel::channel_apply(d, p, ch);
+                    // #384 §8i: Gate gegen den naiven Stopp-Wert `d0`.
+                    let nd = crate::offset_channel::channel_apply(d0, d, p, ch);
                     if nd != d {
                         if (nd - d).abs() > eps {
                             c = Contributors::single(crate::csg::BranchId(ch.branch));
@@ -896,7 +898,7 @@ impl BoundedCsg {
                 }
                 // Phase C4: Vertex-Kugeln mit derselben Provenance-Regel.
                 for vs in verts {
-                    let nd = crate::offset_channel::vertex_apply(d, p, vs);
+                    let nd = crate::offset_channel::vertex_apply(d0, d, p, vs);
                     if nd != d {
                         if (nd - d).abs() > eps {
                             c = Contributors::single(crate::csg::BranchId(vs.branch));

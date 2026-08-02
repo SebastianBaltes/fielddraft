@@ -415,6 +415,10 @@ fn eval_bounded_d3_open(
         // korrekt (die Fußpunkt-Drift ist ein O(κ·|x−q*|)-Nebenterm).
         BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
             let mut d = eval_bounded_d3_open(inner, p, mode, open);
+            // #384 §8i: das Basis-Register als Dual-Zahl — der NAIVE Stopp-Wert
+            // samt Ableitungen. Alle Gates dieses Stopps rechnen gegen ihn
+            // (Spiegel von `OP_STOP_BASE` / `offset_channel::stop_apply`).
+            let d0 = d;
             let p_re = [p[0].re as f32, p[1].re as f32, p[2].re as f32];
             for ch in channels {
                 if crate::offset_channel::channel_skip(d.re as f32, p_re, ch) {
@@ -437,9 +441,9 @@ fn eval_bounded_d3_open(
                     + dq[1] * D3::from(m2[1] as f64)
                     + dq[2] * D3::from(m2[2] as f64);
                 let gate = if ch.concave {
-                    D3::from(ch.gate as f64) - d
+                    D3::from(ch.gate as f64) - d0
                 } else {
-                    D3::from(ch.gate as f64) + d
+                    D3::from(ch.gate as f64) + d0
                 };
                 let min_d3 = |a: D3, b: D3| if a.re <= b.re { a } else { b };
                 // #384 §8f: drittes Gate — vier affine End-Halbräume. Anders
@@ -498,9 +502,9 @@ fn eval_bounded_d3_open(
                 let s2 = sdot(vs.gates[1]);
                 let s3 = sdot(vs.gates[2]);
                 let gate = if vs.concave {
-                    D3::from(vs.gate as f64) - d
+                    D3::from(vs.gate as f64) - d0
                 } else {
-                    D3::from(vs.gate as f64) + d
+                    D3::from(vs.gate as f64) + d0
                 };
                 let min_d3 = |a: D3, b: D3| if a.re <= b.re { a } else { b };
                 // Rollen-Trennung (C4) — Spiegel von `vertex_apply`.

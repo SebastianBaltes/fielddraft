@@ -274,11 +274,17 @@ fn node_to_tree(node: &BoundedCsg, p: &[Tree; 3]) -> Result<Tree, String> {
         // ist reine Laufzeit-Optimierung der numerischen Interpreter).
         BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
             let mut d = node_to_tree(inner, p)?;
+            // #384 §8i: fidget ist ein Ausdrucks-DAG, keine Stack-Maschine —
+            // das „Basis-Register" ist hier schlicht der TEILAUSDRUCK VOR den
+            // Kanal-/Vertex-Termen. Kein Opcode nötig, kein State: derselbe
+            // Knoten `d0` wird in jedes Gate hineingehängt (der DAG teilt ihn,
+            // also kostet die Mehrfachnutzung nichts).
+            let d0 = d.clone();
             for ch in channels {
-                d = channel_to_tree(&d, p, ch);
+                d = channel_to_tree(&d0, &d, p, ch);
             }
             for vs in verts {
-                d = vertex_to_tree(&d, p, vs);
+                d = vertex_to_tree(&d0, &d, p, vs);
             }
             // offset_tree Phase 4 (#398): ∂P-Rand-Fillet als Tree — symbolischer
             // Spiegel von `offset_rim::apply_rims_f32`.
@@ -327,7 +333,10 @@ fn t_norm(a: &[Tree; 3]) -> Tree {
 }
 
 /// Spiegel von [`crate::offset_channel::channel_apply`] als Tree.
+/// `base` ist der naive Stopp-Teilausdruck d₀ (#384 §8i) — im DAG die
+/// Entsprechung des `OP_STOP_BASE`-Registers der Stack-Maschinen.
 fn channel_to_tree(
+    base: &Tree,
     d: &Tree,
     p: &[Tree; 3],
     ch: &crate::offset_channel::OffsetChannel,
@@ -441,9 +450,9 @@ fn channel_to_tree(
     let s1 = t_dot(&dq, &best_m1);
     let s2 = t_dot(&dq, &best_m2);
     let gate = if ch.concave {
-        Tree::from(ch.gate as f64) - d.clone()
+        Tree::from(ch.gate as f64) - base.clone()
     } else {
-        Tree::from(ch.gate as f64) + d.clone()
+        Tree::from(ch.gate as f64) + base.clone()
     };
     // #384 §8f: drittes Gate — vier affine End-Halbräume (Konstanten).
     let mut s3: Option<Tree> = None;
@@ -477,8 +486,10 @@ fn channel_to_tree(
 
 /// Spiegel von [`crate::offset_channel::vertex_apply`] als Tree
 /// (offset_tree Phase C4). Deutlich einfacher als der Kanal: Punkt-Spine,
-/// keine argmin-Selektion — ρ = |p − v|, drei konstante Gates.
+/// keine argmin-Selektion — ρ = |p − v|, drei konstante Gates. `base` ist
+/// wie beim Kanal der naive Stopp-Teilausdruck d₀ (#384 §8i).
 fn vertex_to_tree(
+    base: &Tree,
     d: &Tree,
     p: &[Tree; 3],
     vs: &crate::offset_channel::VertexSphere,
@@ -490,9 +501,9 @@ fn vertex_to_tree(
     let s2 = t_dot(&dq, &t_const3(vs.gates[1]));
     let s3 = t_dot(&dq, &t_const3(vs.gates[2]));
     let gate = if vs.concave {
-        Tree::from(vs.gate as f64) - d.clone()
+        Tree::from(vs.gate as f64) - base.clone()
     } else {
-        Tree::from(vs.gate as f64) + d.clone()
+        Tree::from(vs.gate as f64) + base.clone()
     };
     // Rollen-Trennung (C4) — Spiegel von `vertex_apply`.
     let w_geo = s1

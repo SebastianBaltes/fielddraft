@@ -660,8 +660,31 @@ für Shell.
 * **Nichtkonvexe Normalkegel-Überlappung** bei großem δ: Restrisiko per
   Witness + Ball-Extremum prüfen (Phase C), keine Exaktheitsgarantie im
   Überlappungsgebiet.
-* **Kaskade sequenzieller Korrekturterme — GEMESSEN und GEBROCHEN
-  (#384 §8h, 2026-08-02).** Die Kanäle/Vertex-Kugeln eines Stopps werden
+* **Kaskade sequenzieller Korrekturterme — ERLEDIGT (#384 §8i,
+  2026-08-02).** §8h hatte den Bruch vermessen und den Fix spezifiziert; §8i
+  hat ihn gebaut. Jedes Gate rechnet ab jetzt gegen den **naiven** Stoppwert
+  `d₀` statt gegen den laufenden `d`: `gate = G ∓ d₀`. Damit gilt
+  `|f − d₀| ≤ G` für jeden EINZELNEN Term — und weil das naive Feld
+  konservativ ist (`d₀ ≥ e`), auch für ihre Komposition. Die Ein-Term-Schranke
+  IST die globale Schranke. Als Nebenwirkung fällt die Reihenfolge-Abhängigkeit
+  weg: jeder konkave Term ist `min(d, C(x))`, jeder konvexe `max(d, C(x))` mit
+  einem von `d` unabhängigen `C`, also kommutativ (Pin
+  `stop_terms_are_order_independent_384`).
+  Im Tape trägt das ein neuer, **payload-loser** Opcode `OP_STOP_BASE` (0x45,
+  `base ← top of stack`, stack-neutral als pop+push modelliert) plus ein
+  Skalar-Register je Evaluator; die Payload-Layouts von `OP_ARC_CHANNEL` /
+  `OP_VERTEX_SPHERE` bleiben unberührt. Sieben Spiegel + `tape_spec.h`.
+  Messbilanz (δ = 2, exakte Strahl-Referenzen): Stufen-Nabe 2.000 → **0.841 mm**
+  (Zusage fällt von `conservative` auf ein wahres `≤ 0.868`), Rippen-Kamm
+  1.987 → **0.819 mm**, Steinmetz-Zentrum 1.198·G → **1.000·G**, Zapfen-Reihe
+  unverändert. Golden: 3 Tapes wachsen um je 1 Float, EIN Feldwert bewegt sich
+  (Steinmetz-Zentrum — der Kaskaden-Zeuge selbst). Herleitung + Tabellen: §8i.
+  *Was NICHT dazugehört:* die Stufen-Nabe behält 0.841 mm Rest-Über-Claim aus
+  dem Phase-C-Risiko QUER zur Naht (die 1.8 mm dünne Platte unter der Kreisnaht
+  liegt näher als `K`). Das ist eine andere Baustelle, jetzt aber sauber
+  isoliert und durch `G` gedeckelt.
+* **Kaskade sequenzieller Korrekturterme — der Befund (#384 §8h,
+  2026-08-02, historisch).** Die Kanäle/Vertex-Kugeln eines Stopps werden
   nacheinander angewandt, und jedes Gate rechnet gegen den LAUFENDEN Wert
   (`gate = G ∓ d`). Verstärker ist die march-sichere Luftseiten-Klemme
   `min(d, −w_geo)`: sie kippt kein Vorzeichen, darf `d` aber beliebig weit
@@ -675,12 +698,7 @@ für Shell.
   (`end_region_violation` sondiert seit §8h auch das Naht-INNERE und damit
   geschlossene Spines) — ehrliches Downgrade auf `conservative`, kein
   Feldwert ändert sich (Golden 35/35 byte-identisch).
-  *Sauberer Endzustand:* das Gate muss gegen den NAIVEN Stopp-Wert `d₀`
-  rechnen. Das ist beweisbar scharf, kostet keine legitime Korrektur und
-  stellt die Reihenfolge-Unabhängigkeit her — aber es ist eine
-  Opcode-Semantik-Änderung (Stack-Maschine: `d₀` ist nach dem ersten Term
-  weg). Minimalform: ein Payload-loser Opcode `base = top of stack` plus ein
-  Skalar-Register je Evaluator, sechs Spiegel + `tape_spec.h`. Eigenes Paket.
+  *Erledigt durch §8i* (Gate gegen `d₀`, Opcode `OP_STOP_BASE`) — s. o.
 * **Sicherheitsnetz der Kontakt-Prismen — gerichtet statt gerastert
   (#384 §8h).** `prism_subset_of_union` / `prism_outside_inner` prüften auf
   einem 7³-Gitter über der Prisma-AABB und waren für dünne

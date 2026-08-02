@@ -73,6 +73,9 @@ enum : uint32_t {
   OP_VERTEX_SPHERE  = 0x42,
   OP_RIM_FILLET     = 0x43,
   OP_RIM_FILLET_ARC = 0x44,
+  // #384 §8i: payload-loses Basis-Register eines Offset-Stopps
+  // (base <- top of stack, stack-neutral).
+  OP_STOP_BASE      = 0x45,
 
   OP_END            = 0xFF,
 };
@@ -619,6 +622,11 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
   int psp = 0;
   float pt[3] = {wx, wy, wz};
   int pc = 0;
+  // #384 §8i: Basis-Register eines Offset-Stopps — der naive Stopp-Wert d0,
+  // gesetzt von OP_STOP_BASE, gelesen von OP_ARC_CHANNEL/OP_VERTEX_SPHERE.
+  // NICHT `base` nennen: mehrere Opcode-Arme haben ein lokales `int base = pc`,
+  // das den Namen sonst still verschattet (und das Gate abschaltet).
+  float stop_base = 0.0f;
 
   auto push_v = [&](float v) { vs[vsp++] = v; };
   auto pop_v = [&]() { return vs[--vsp]; };
@@ -1107,6 +1115,16 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         break;
       }
 
+      case OP_STOP_BASE: {
+        // #384 §8i: base <- top of stack (pop + push desselben Werts).
+        // Spiegel von sdf_compiler.rs OP_STOP_BASE /
+        // offset_channel::stop_apply.
+        float d = pop_v();
+        stop_base = d;
+        push_v(d);
+        break;
+      }
+
       case OP_ARC_CHANNEL: {
         // offset_tree Phase B (#384): Kanal-Korrekturkoerper an einem
         // dualen Offset-Stopp — 1:1-Spiegel des Rust-CPU-Interpreters
@@ -1238,7 +1256,8 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
                    dq[2] * best_m1[2];
         float s2 = dq[0] * best_m2[0] + dq[1] * best_m2[1] +
                    dq[2] * best_m2[2];
-        float gate = concave ? gate_w - d : gate_w + d;
+        // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d0).
+        float gate = concave ? gate_w - stop_base : gate_w + stop_base;
         // Rollen-Trennung (C4, CPU-Referenz channel_apply): Geometrie-
         // Klemme (Luft-Distanzschranke) vs. Add-Gate.
         float w_geo = fminf_(fminf_(fminf_(s1, s2), s3),
@@ -1274,7 +1293,8 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float s1 = dq[0] * g1[0] + dq[1] * g1[1] + dq[2] * g1[2];
         float s2 = dq[0] * g2[0] + dq[1] * g2[1] + dq[2] * g2[2];
         float s3 = dq[0] * g3[0] + dq[1] * g3[1] + dq[2] * g3[2];
-        float gate = concave ? gate_w - d : gate_w + d;
+        // §8i: Gate gegen das Basis-Register (naiver Stopp-Wert d0).
+        float gate = concave ? gate_w - stop_base : gate_w + stop_base;
         // Rollen-Trennung (C4, CPU-Referenz vertex_apply).
         float w_geo = fminf_(fminf_(fminf_(s1, s2), fminf_(s3, rho - delta)),
                              trust - rho);

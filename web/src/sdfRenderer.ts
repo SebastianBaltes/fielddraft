@@ -88,6 +88,13 @@ export const OP_RIM_FILLET     = 0x43;
 // Wandnormale RADIAL wall_sign·(q−c)/r). Spiegel von
 // `kernel/src/offset_rim.rs::apply_rims_arc_f32`.
 export const OP_RIM_FILLET_ARC = 0x44;
+// offset_tree §8i (#384): Basis-Register eines Offset-Stopps. Payload-los —
+// pops den naiven Stopp-Wert d₀, merkt ihn im Skalar-Register `base` und pusht
+// ihn zurück (stack-neutral). Alle folgenden OP_ARC_CHANNEL/OP_VERTEX_SPHERE
+// desselben Stopps gaten gegen `base` statt gegen den laufenden Stack-Wert;
+// das macht die Ein-Term-Schranke global und die Term-Reihenfolge
+// feldwert-neutral. Spiegel von `kernel/src/offset_channel.rs::stop_apply`.
+export const OP_STOP_BASE      = 0x45;
 
 export const OP_END            = 0xFF;
 

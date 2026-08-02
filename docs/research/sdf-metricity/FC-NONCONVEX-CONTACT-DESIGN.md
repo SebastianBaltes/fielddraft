@@ -1223,6 +1223,174 @@ worüber der Stopp die Wahrheit sagt.
   Exaktheitsgarantie — die Stufen-Nabe ist genau dieser Fall (die
   Platten-Unterseite konkurriert mit der Kreisnaht), nur eben jetzt gemeldet.
 
+## 8i. Das Gate rechnet gegen den naiven Wert (#384, 2026-08-02)
+
+§8h hat den Kaskaden-Bruch vermessen, den Wächter darauf gerichtet und den
+sauberen Fix wörtlich spezifiziert. Dieses Paket baut ihn: **jedes Gate
+rechnet gegen den naiven Stoppwert `d₀`, nicht gegen den laufenden `d`.**
+
+### Der Satz
+
+Sei `d₀` der Wert des Stopp-Knotens VOR allen Korrekturtermen und
+`gate = G ∓ d₀`. Dann ist jeder Term
+
+    konkav:   f = min(d, C(x)),   C ∈ { −w, −w_geo, +∞ }
+    konvex:   f = max(d, C(x)),   C = min(w_geo, G + d₀)
+
+mit einem `C`, das vom laufenden `d` NICHT abhängt. Daraus folgt beides auf
+einen Schlag:
+
+* **Die Ein-Term-Schranke ist die globale Schranke.** `|f − d₀| ≤ G` gilt je
+  Term, und weil alle Terme eines Stopps dasselbe Vorzeichen haben (ein Stopp
+  ist entweder `−δ`-an-Union oder `+δ`-an-Intersection), ist die Komposition
+  ein einziges `min` bzw. `max` über Konstanten — die Auslenkung addiert sich
+  nicht mehr. Für die Nullmenge heißt das: ein Über-Claim braucht `f < 0 ≤ e`,
+  also `e ≤ d₀ ≤ f + G < G`. Der Fehler ist strikt kleiner als `G`.
+* **Reihenfolge-Unabhängigkeit.** `min`/`max` über Konstanten kommutieren.
+  Der Modulkopf behauptete das für die Vertex-Kugeln schon („Reihenfolge
+  feldwert-neutral"); bis §8h galt es nur ohne Gate. Der
+  Bounding-Sphere-Skip bleibt am laufenden `d` — er greift genau dann, wenn
+  `C ≥ d` (konkav) bzw. `C ≤ d` (konvex) gilt, das Ergebnis also ohnehin `d`
+  ist, und bleibt damit exakt feldwert-neutral.
+
+Der Fix kostet **keine legitime Korrektur**: der Maximalbedarf eines Terms
+ist `de − δ ∓ d₀ ≤ (c−1)·δ` genau am naiven Scheitel, das Gate mit `d₀` ist
+also exakt so weit wie nötig.
+
+### Der Opcode
+
+Die Evaluatoren sind Stack-Maschinen: `OP_ARC_CHANNEL` popt `d` und pusht das
+Ergebnis, nach dem ersten Term ist `d₀` weg. Also die von §8h benannte
+Minimalform — **ein payload-loser Opcode plus ein Skalar-Register**:
+
+    OP_STOP_BASE (0x45), +0 Floats:  base <- top of stack
+
+Modelliert als pop + push desselben Werts (netto stack-neutral). Emittiert
+wird er direkt nach dem naiven Stopp-Teilbaum und nur, wenn der Stopp
+überhaupt Kanäle oder Vertex-Kugeln trägt; die Payload-Layouts von
+`OP_ARC_CHANNEL` (25+27N) und `OP_VERTEX_SPHERE` (16) bleiben unberührt.
+
+**Ein Register genügt für beliebige Verschachtelung.** Der Opcode steht
+unmittelbar vor dem Term-Lauf seines Stopps; ein innerer Stopp im naiven
+Teilbaum ist vollständig abgearbeitet, bevor der äußere sein `base` setzt.
+
+### Die Spiegel (sieben plus zwei Formatstellen)
+
+| # | Spiegel | Register-Abbildung | Datei |
+|---|---|---|---|
+| 1 | CPU-Referenz `channel_apply` / `vertex_apply` / `stop_apply` | expliziter Parameter `base` | `crates/kernel/src/offset_channel.rs` |
+| 2 | Opcode-Interpreter `eval_opcodes` (Autorität) | lokale `f32`-Variable `base` | `crates/kernel/src/sdf_compiler.rs` |
+| 3 | Dual-Zahlen-Eval `eval_bounded_d3_open` | `let d0 = d` VOR den Termen (Dualzahl samt Ableitungen) | `crates/kernel/src/sdf_dual.rs` |
+| 4 | fidget-Baum `channel_to_tree` / `vertex_to_tree` | **kein Register** — im Ausdrucks-DAG ist `d₀` schlicht der Teilausdruck VOR den Termen; derselbe Knoten hängt in jedem Gate, der DAG teilt ihn | `crates/kernel/src/fidget_bridge.rs` |
+| 5 | WebGPU/TSL-VM | `float(0).toVar()` `stopBase` neben dem Wert-Stack | `web/src/sdfVmInterpreter.ts` |
+| 6 | C++-Port des Interpreters | lokale `float stop_base` (NICHT `base` — fünf Opcode-Arme haben ein `int base = pc`, das den Namen still verschattet) | `cgal-mesher/src/sdf_interp.h` |
+| 7 | BVH-Baum-Eval `sdf_open` / `evaluate_open` | `d0` = Wert des `inner`-Teilbaums | `crates/kernel/src/bvh.rs` |
+| + | Opcode-Encoder (`emit_node`, `ArcChannel`-Arm) | — | `crates/kernel/src/sdf_compiler.rs` |
+| + | Tape-Längentabelle `payload_len` (0) + `value_pops` (1) | — | `cgal-mesher/src/tape_spec.h` |
+| + | Opcode-Konstante + Layout-Kommentar | — | `web/src/sdfRenderer.ts` |
+
+`OP_STOP_BASE` steht in `value_pops` bewusst als 1-pop/1-push und nicht als
+Warp: so verschmilzt der Tape-Spezialisierer den Stopp-Teilbaum wie bei jedem
+anderen Nicht-Boolean-Konsumenten zu EINEM opaken Blatt — der Opcode kann nie
+von seinen Kanal-Termen getrennt werden.
+
+**Die Falle, die zuschlug** (als Warnung notiert): im C++-Port hieß das
+Register zuerst `base` und wurde in `OP_ARC_CHANNEL` von dessen lokalem
+`int base = pc` verschattet. Das Gate rechnete dann gegen einen
+Programmzähler — effektiv gar kein Gate. `check_interp` fand es sofort
+(18 Fehlklassifikationen, worst 2.574 mm); ohne diesen Cross-Check wäre nur
+der C++-Mesher stumm abgedriftet.
+
+### Bilanz — gegen dieselben exakten Referenzen wie §8h
+
+δ = 2 mm; Referenz `dist(x, ∁Ω)` als Strahl-Minimum über 160 Fibonacci-
+Richtungen, je Richtung exakt über verschmolzene Slab-/Zylinder-Intervalle
+(eine OBERE Schranke — sie kann einen Fehler nur unterschätzen, nie erfinden).
+
+| Szene | §8h (vorher) | §8i (nachher) | Zusage nachher |
+|---|---|---|---|
+| **Stufen-Nabe** (2 Kreisnähte) | 957 Fehler, **2.000 mm**, `conservative` (Zeuge 2.366 > G) | 661 Fehler, **0.841 mm** | `≤ 0.868` — **wahr** |
+| **Rippen-Kamm** 4×1.5/0.8 | 2408 Fehler, **1.987 mm** | 1904 Fehler, **0.819 mm** | weiter `conservative` (ehrlich) |
+| **Rippen-Kamm** 4×2.0/1.0 | 1680 Fehler, **1.052 mm** | 1624 Fehler, **0.819 mm** | weiter `conservative` (ehrlich) |
+| **Zapfen-Reihe** (Spalt 1/2/3) | 264/233/216, 0.787 mm | **unverändert** 264/233/216, 0.787 mm | `≤ 0.868` |
+| **V-Rippen** 15° | 3068 Fehler, 2.000 mm | 1414 Fehler, **0.833 mm** | `≤ 5.767` (spitze Naht) |
+| **V-Rippen** 25° | 4719 Fehler, 2.000 mm | 2571 Fehler, 2.000 mm | `conservative` (G dort ≫ 2) |
+| **Kollabierende Schale** t/δ = 2.0 | `conservative` | 0.841 mm | `≤ 0.868` — **wahr** |
+| **Kollabierende Schale** t/δ = 2.5 | `conservative` | 0.822 mm | `≤ 0.868` — **wahr** |
+| **Steinmetz-Zentrum** (konvex) | Auslenkung 0.791823 mm = **1.198·G** | **0.661273 mm = 1.000·G** | — |
+| **Reihenfolge-Sonde** (Nabe + Ecken-Schale, 3 Permutationen × 12³ Punkte × 7 `d₀`) | nicht invariant | **bit-identisch** | — |
+
+Zwei Dinge fallen auf und sind beide erwartet:
+
+* **Die Nabe wird nicht exakt, sie wird ehrlich beschränkt.** §8h hatte das
+  vorhergesagt: der Rest ist das Phase-C-Risiko QUER zur Naht — die 1.8 mm
+  dünne Platte unter der Kreisnaht liegt näher als der Trust-Radius
+  `K = 3.908`, der Term greift durch sie hindurch. Der Restfehler 0.841 mm
+  liegt unter `G = 0.868` (das ist genau der Satz), und der Stopp sagt jetzt
+  wieder etwas zu — was er sagt, ist wahr. Die ENGE Zusage (≤ 0.01) braucht
+  ein Gate gegen Fremdgeometrie quer zur Naht; das ist ein eigenes Paket.
+* **Die V-Rippen bei 25° bleiben bei 2.000 mm** und melden weiter
+  `conservative`. Kein Widerspruch zum Satz: an einer so spitzen Naht ist
+  `c = 1/sin(α/2)` groß und `G` mit ihm (bei 15° schon 5.767 mm), das Gate
+  bindet dort schlicht nicht. Der Wächter meldet es, die Zusage lügt nicht.
+
+### Golden — was sich bewegt und warum
+
+| Szene | Tape | Feldwerte |
+|---|---|---|
+| 32 Szenen ohne Kanäle/Vertex-Kugeln | byte-identisch | byte-identisch |
+| `arc_channel_notch` | +1 Float (`OP_STOP_BASE`) | **byte-identisch** |
+| `vertex_sphere_corner` | +1 Float | **byte-identisch** |
+| `arc_channel_steinmetz` | +1 Float | **1 von 512 Punkten bewegt sich** |
+
+Der eine bewegte Wert ist der Kaskaden-Zeuge selbst. Im Zentrum `(0,0,0)`
+liegt der naive Stoppwert bei `d₀ = −7.500000`, und ZWEI konvexe Kanal-Terme
+greifen (`G = 0.6612`, `K = 2.951`):
+
+| Term | vorher (`gate = G + d`) | nachher (`gate = G + d₀`) |
+|---|---|---|
+| ch0 | −7.500000 → −6.838758 | −7.500000 → −6.838758 |
+| ch1 | −6.838758 → **−6.708177** | −6.838758 → **−6.838727** |
+| Auslenkung gegen `d₀` | 0.791823 = **1.198·G** | 0.661273 = **1.000·G** |
+
+ch0 verbraucht das volle Ein-Term-Budget; vorher hob es damit `d` an und
+öffnete ch1 ein weiteres Stück Gate. Genau das ist der Bruch, den §8h
+beschrieben hat — er saß die ganze Zeit in einer der Referenzszenen, nur eben
+tief im Material statt an der Nullmenge. Festgehalten als Pin
+`dilation_steinmetz_center_stays_within_one_term_gate_384`.
+
+### Cross-Check und Tests
+
+* `check_interp` (Rust `eval_opcodes` ↔ C++ `sdf_interp.h`):
+  **35 Szenen, 17920 Checks, 0 Failures**, worst_err 0.000002
+  (`sweep_open_twist`) — identisch zum Stand vor dem Paket.
+* `cargo test --workspace`: 1540 → **1543** (drei neue Pins), 0 Failures.
+* `offset_fuzz` mit `OFFSET_FUZZ_ITERS=200`: 5/5 grün.
+* Web: `npx tsc -b` sauber, 2082/2082 Vitest grün.
+
+**Eine Pin-Bewegung**, angesagt und begründet:
+`erosion_collapsing_shell_promises_nothing_384` →
+`erosion_collapsing_shell_promise_is_true_384`. Der alte Pin fror den
+Status `conservative` ein — und der kam ausschließlich daher, dass der
+Randpunkt-Zeuge die strukturelle Schranke `G` ÜBERSTIEG, also die Kaskade.
+Ohne Kaskade bleibt der Zeuge darunter, `G` ist wieder belegbar, und der
+Stopp sagt `≤ 0.868` zu. Gemessen an der exakten Referenz (34³ Punkte,
+240 Richtungen): 0.841 mm bzw. 0.822 mm — die Zusage ist wahr. Der Pin prüft
+ab jetzt dieselbe Doktrin wie die §8h-Pins (keine Bau-Toleranz-Zusage, und
+was zugesagt wird, muss halten) statt eines eingefrorenen Status.
+
+### Was OFFEN bleibt
+
+* **Quer zur Naht** — unverändert das Phase-C-Restrisiko und ab jetzt der
+  einzige Grund, warum die Stufen-Nabe keine enge Zusage bekommt: liegt
+  Fremdgeometrie innerhalb des Normalkegels näher als `K`, gibt es keine
+  Exaktheitsgarantie. Ein viertes Gate (Halbraum gegen die nächste fremde
+  Fläche, analog zum dritten aus §8f) wäre der nächste Schritt.
+* **Spitze Nähte** (`c = 1/sin(α/2)` groß) haben ein `G`, das nichts mehr
+  einschränkt. Dort trägt allein der Zeugen-Wächter, und der ist eine
+  Stichprobe.
+* **Der Wächter bleibt eine Stichprobe** (§8h unverändert).
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -1237,7 +1405,8 @@ worüber der Stopp die Wahrheit sagt.
   S ⊆ U, Stufe-2-Klemme (submergierte-Π-Luftseiten-Klemme).
 - `docs/research/sdf-metricity/F396-RIM-OPCODE-DESIGN.md` — ∂P-Rand-Fillet
   (radiale Distanz + Halbraum-Maske + Nearest-Feature, Over-Fill = 0).
-- `crates/kernel/src/offset_channel.rs` — §8g: `clamp_vertex_trust`,
+- `crates/kernel/src/offset_channel.rs` — §8i: `stop_apply` (`base`-Parameter
+  von `channel_apply`/`vertex_apply`); §8g: `clamp_vertex_trust`,
   `junction_anchor`, `snap_channel_ends_to_junctions`, `set_end_plane_gates`,
   `end_region_violation`, `audit_channel_end_caps`; ferner
   `box_contact_faces`, `clip_convex`,
