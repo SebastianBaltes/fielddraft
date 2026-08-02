@@ -3342,10 +3342,11 @@ fn exact_complement_reference_is_below_the_ray_bound_384() {
 #[test]
 fn erosion_thin_corner_is_exact_on_both_sides_384() {
     let delta = 2.0f32;
-    // `t/δ = 2` fehlt bewusst: die KOLLABIERENDE Schale behält einen
-    // Unter-Claim (1.32 mm), den die δ-verschobene End-Ebene verursacht —
-    // gemessen, benannt, und im Report ausgenommen (§8k). Sie wird von
-    // `erosion_promise_names_the_side_it_covers_384` geprüft.
+    // `t/δ = 2` fehlt hier nur historisch: bis §8k behielt die KOLLABIERENDE
+    // Schale einen Unter-Claim von 1.319 mm. Seit §8l ist auch sie beidseitig
+    // exakt; geprüft wird sie von
+    // `erosion_collapsing_shell_is_exact_on_both_sides_384` (dort zusammen mit
+    // `t/δ = 2.25`, das den Composite-Rand-Wächter des Vertex-Snaps hält).
     for tf in [2.5f32, 3.0, 3.5, 4.0, 4.4, 5.0, 6.0] {
         let t = tf * delta;
         let (field, report) = compile_for(thin_corner_node(t, 40.0, delta));
@@ -3492,3 +3493,161 @@ fn erosion_promise_names_the_side_it_covers_384() {
         }
     }
 }
+
+/// **§8l-Kern-Pin: die KOLLABIERENDE Ecken-Schale ist beidseitig exakt.**
+///
+/// Bei `t/δ = 2` erodiert jede Platte für sich zu nichts — das naive
+/// `∪ Erosion(P_k)` ist im ganzen Eckwürfel `≥ 0`, das gesamte Material der
+/// wahren Erosion muss also aus Kanälen und Vertex-Kugeln kommen. §8k mass
+/// dort 2119 Punkte mit bis zu 1.319 mm FEHLENDEM Material bei zugesagten
+/// 0.01 mm und benannte zwei Verdächtige. Die Term-Aufschlüsselung am
+/// Worst-Punkt `[−1.832, −2.063, −1.986]` widerlegte beide: die Vertex-Kugel
+/// am Würfeleck `(0,−4,0)` hatte den exakten Wert (`ρ − δ = 1.3247`, alle drei
+/// Kegel-Gates positiv, `gate = 1.507` weit genug) und wurde ALLEIN von der
+/// §8g-Nachbar-Kegel-Klemme abgeschaltet (`K = max(D−δ, δ) = δ`, weil die
+/// Nachbarecken nur `D = 2δ` entfernt stehen).
+///
+/// Zwei der drei §8l-Eingriffe schließen das: die Klemme zählt nur noch
+/// VERWEIGERTE Trieder (Ecken mit Term tragen seit §8j ihre eigene
+/// Grenzwert-Klemme), und die freie End-Ebene verliert ihren δ-Versatz dort,
+/// wo eine Vertex-Kugel oder eine stützende Fremdebene die Distanz-Rolle
+/// nachweislich trägt.
+#[test]
+fn erosion_collapsing_shell_is_exact_on_both_sides_384() {
+    let delta = 2.0f32;
+    for tf in [2.0f32, 2.25] {
+        let t = tf * delta;
+        let (field, report) = compile_for(thin_corner_node(t, 40.0, delta));
+        let boxes = thin_corner_boxes(t as f64, 40.0);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+        let lo = -(t as f64 + delta as f64 + 1.0);
+        let r = two_sided_scan(
+            &field,
+            delta,
+            [lo; 3],
+            [1.0; 3],
+            24,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_boxes_complement(&boxes, p, 200),
+        );
+        assert!(r.pts > 1000 && r.xmax <= 1e-6, "die Sonde selbst ist kaputt: {:?}", r.xmax);
+        assert_eq!(
+            r.under.0, 0,
+            "kollabierende Schale t/δ={tf}: {} Punkte mit FEHLENDEM Material, größtes {:.4} mm \
+             bei {:?} — die Vertex-Kugel am Würfeleck MUSS dort greifen (vor §8l: 2119 / 1.319). \
+             Reasons: {:?}",
+            r.under.0,
+            r.under.1,
+            r.under.2,
+            report.reasons()
+        );
+        assert_eq!(
+            r.over.0, 0,
+            "kollabierende Schale t/δ={tf}: {} Punkte Phantom-Material, größtes {:.4} mm bei \
+             {:?} — die gelockerte Klemme darf KEINEN Über-Claim eintauschen",
+            r.over.0, r.over.1, r.over.2
+        );
+    }
+}
+
+/// **§8l-Pin: das Nahtende am notch ist beidseitig exakt.**
+///
+/// Die δ-verschobene freie End-Ebene sitzt am TRACE-Ende, und das bleibt
+/// typisch einen Schritt vor der echten Fläche stehen. Am notch waren das
+/// 0.9 mm: `s₃ = −0.238` schaltete den Term ab, während die stützende
+/// Deckfläche `s₄ = +0.661` — den exakten Wert `dist − δ` — längst
+/// bereitstellte. Seit §8l fällt der δ-Versatz genau dort, wo eine solche
+/// Ebene belegt ist; die Reichweiten-Rolle bleibt als reine Ebene erhalten.
+#[test]
+fn erosion_notch_seam_end_is_exact_on_both_sides_384() {
+    let delta = 2.0f32;
+    for alpha in [90.0f64, 60.0] {
+        let (field, report) = compile_for(notch_union_node(alpha, delta as f64));
+        let gamma = std::f64::consts::PI - alpha.to_radians();
+        let obbs = vec![
+            obb_rot_z([0.0, -50.0, 0.0], [100.0, 50.0, 50.0], 0.0),
+            obb_rot_z([50.0 * gamma.sin(), -50.0 * gamma.cos(), 0.0], [100.0, 50.0, 50.0], gamma),
+        ];
+        let r = two_sided_scan(
+            &field,
+            delta,
+            [-10.0, -10.0, 42.0],
+            [10.0, 10.0, 54.0],
+            24,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_notch_complement(alpha, p),
+        );
+        assert!(r.xmax <= 1e-6, "notch α={alpha}: die Referenz driftet um {:.6}", r.xmax);
+        assert_eq!(
+            r.under.0, 0,
+            "notch α={alpha}: {} Punkte mit FEHLENDEM Material, größtes {:.4} mm bei {:?} — \
+             die Endfläche trägt die Distanz-Rolle, der Trace-Rückstand darf sie nicht \
+             verkürzen (vor §8l: 9 bzw. 14 Punkte bis 0.559). Reasons: {:?}",
+            r.under.0,
+            r.under.1,
+            r.under.2,
+            report.reasons()
+        );
+        assert_eq!(
+            r.over.0, 0,
+            "notch α={alpha}: {} Punkte Phantom-Material, größtes {:.4} mm bei {:?}",
+            r.over.0, r.over.1, r.over.2
+        );
+    }
+}
+
+/// **§8l-Struktur-Pin: die Endfläche einer Naht IST ein Fremdflächen-Kandidat.**
+///
+/// Der Trägerflächen-Filter in `set_face_plane_gates` verlangte, die Naht
+/// müsse STRIKT auf der Materialseite der Kandidaten-Ebene liegen
+/// (`h_seam > 0`). Damit fiel jede Ebene durch, auf der die Naht ENDET — und
+/// an der Ecken-Schale traf das genau die vier Kanäle, deren Trace um ein
+/// Trieder-Eck herum zwei Deckflächen erreicht: sie bekamen GAR KEINE
+/// Fremdebene. Das war der Grund, warum §8k den Wegfall des δ-Versatzes
+/// verwerfen musste (0.868 mm Über-Claim an der Deckfläche z = 40).
+///
+/// Der richtige Test ist die Naht-ENTHALTUNG (`h ≡ 0` auf der ganzen Naht),
+/// nicht die Berührung. Dieser Pin friert das Ergebnis ein: JEDER konkave
+/// Kanal der Ecken-Schale trägt mindestens eine stützende Fremdebene
+/// (vorher: 4 von 24 ohne).
+#[test]
+fn face_plane_gates_cover_seam_end_faces_384() {
+    let delta = 2.0f32;
+    fn walk(n: &BoundedCsg, out: &mut Vec<usize>) {
+        match n {
+            BoundedCsg::ArcChannel { inner, channels, .. } => {
+                for ch in channels.iter().filter(|c| c.concave) {
+                    out.push(
+                        ch.face_planes
+                            .iter()
+                            .filter(|g| g[0].abs() + g[1].abs() + g[2].abs() > 0.5)
+                            .count(),
+                    );
+                }
+                walk(inner, out);
+            }
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. } => {
+                walk(left, out);
+                walk(right, out);
+            }
+            BoundedCsg::Offset { inner, .. } | BoundedCsg::Shell { inner, .. } => walk(inner, out),
+            _ => {}
+        }
+    }
+    for tf in [2.0f32, 3.0] {
+        let (field, _) = compile_for(thin_corner_node(tf * delta, 40.0, delta));
+        let mut counts = Vec::new();
+        walk(&field, &mut counts);
+        assert_eq!(counts.len(), 24, "Schale t/δ={tf}: 24 konkave Nahtstrahlen erwartet");
+        let blind = counts.iter().filter(|c| **c == 0).count();
+        assert_eq!(
+            blind, 0,
+            "Schale t/δ={tf}: {blind} von {} Kanälen ohne stützende Fremdebene — die Endfläche \
+             der Naht darf nicht am Trägerflächen-Filter scheitern (vor §8l: 4)",
+            counts.len()
+        );
+    }
+}
+

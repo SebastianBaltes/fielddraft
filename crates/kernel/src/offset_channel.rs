@@ -1542,7 +1542,7 @@ fn end_region_violation(
 /// Geschlossene Spines (Steinmetz) haben kein Ende: alle vier Halbräume
 /// bleiben der neutrale Sentinel, das Feld ist wertidentisch zu einem
 /// Kanal ohne drittes Gate.
-fn set_end_plane_gates(channels: &mut [OffsetChannel], steps: &[f32]) {
+fn set_end_plane_gates(channels: &mut [OffsetChannel], steps: &[f32], verts: &[VertexSphere]) {
     // Alle offenen Spine-Enden des Stopps mit ihrer Innen-Tangente sammeln.
     let mut ends: Vec<(usize, [f32; 3], [f32; 3])> = Vec::new();
     for (ci, ch) in channels.iter().enumerate() {
@@ -1609,31 +1609,59 @@ fn set_end_plane_gates(channels: &mut [OffsetChannel], steps: &[f32]) {
             planes.clear(); // mehr als eine Triple-Junction — konservativ
         }
         if planes.is_empty() {
-            // Kein Nachbar-Kanal: die Naht endet an fremder Geometrie.
+            // Kein Nachbar-Kanal: die Naht endet an fremder Geometrie. Diese
+            // Ebene hat ZWEI Rollen, und #384 §8l trennt sie:
             //
-            // #384 §8k — **hier NICHT anzurühren, gemessen.** Diese Ebene hat
-            // zwei Rollen: sie begrenzt den Term ENTLANG der Naht, und ihr
-            // δ-Versatz nimmt die Endfläche als Distanz-Kandidaten ins
-            // `w_geo`-Minimum auf (§8f: „am notch zwingend"). Der δ-Versatz
-            // ist zugleich die Quelle eines UNTER-Claims: im δ-Band vor dem
-            // Nahtende schaltet er den Term ab, obwohl er dort exakt wäre
-            // (§8k misst 0.523 mm am notch 90°, 1.319 mm an der Ecken-Schale
-            // t/δ = 2). Beide Auswege wurden gemessen und VERWORFEN, weil sie
-            // die Seite nur tauschen:
+            // * **Reichweite** — der Term darf nicht über sein eigenes Naht-Ende
+            //   hinausgreifen. Das leistet die reine Ebene `⟨x−E,t̂⟩ ≥ 0`.
+            // * **Distanz** — der δ-Versatz nimmt die Endfläche als weiteren
+            //   Kandidaten ins `w_geo`-Minimum auf (`min(de, h) − δ`, §8f: „am
+            //   notch zwingend").
             //
-            // * Ebene ganz weg (das vierte Gate aus §8j trägt die Distanz-
-            //   Rolle): alle Unter-Claims auf 0 — aber der Randpunkt-Zeuge
-            //   weist am Ecken-Schalen-Nahtende (`[-1.87, -2.33, 38.81]`,
-            //   also an der äußeren Deckfläche z = 40, wo `set_face_plane_gates`
-            //   keine Ebene belegt) 0.868 mm ÜBER-Claim nach.
-            // * Ebene ohne δ-Versatz (Reichweiten-Rolle bleibt): Unter-Claims
-            //   fallen bis auf die kollabierende Schale — derselbe Zeuge
-            //   meldet dieselben 0.868 mm.
+            // Der δ-Versatz ist zugleich die Quelle eines UNTER-Claims: er
+            // schaltet den Term im ganzen δ-Band vor dem Ende ab, obwohl er
+            // dort exakt wäre — und er sitzt am TRACE-Ende, das typisch einen
+            // Schritt vor der echten Fläche stehenbleibt (am notch 0.9 mm:
+            // `s₃ = −0.238`, während die echte Deckfläche `s₄ = +0.661` = der
+            // exakte Wert liefert).
             //
-            // Der saubere Ausweg ist nicht diese Ebene, sondern eine
-            // VOLLSTÄNDIGE Fremdflächen-Abdeckung (§8j-Gate ohne 4-Slot-Grenze
-            // und ohne Carrier-Lücken) — eigenes Paket.
-            planes.push([t[0], t[1], t[2], dot(*e, *t) + ch_delta]);
+            // Deshalb fällt der Versatz GENAU DANN, wenn die Distanz-Rolle
+            // nachweislich eine andere Instanz trägt — und nur dann:
+            //
+            // 1. Das Ende sitzt auf dem Anker einer **Vertex-Kugel**
+            //    ([`snap_channel_ends_to_vertices`] hat es dorthin gesnappt).
+            //    Jenseits der Ebene `⟨x−v,t̂⟩ = 0` ist `q* = v`, dort übernimmt
+            //    die Kugel mit ihrem ENGEREN Trieder-Kegel; der Kanal (zwei
+            //    Gates statt drei) würde über sie hinaus behaupten. Die reine
+            //    Ebene ist genau die Übergabestelle — beide Terme haben dort
+            //    denselben Wert.
+            // 2. Eine **stützende Fremdebene quer am Ende** ist belegt
+            //    ([`set_face_plane_gates`], Normale ≈ Innen-Tangente, Ebene
+            //    innerhalb der Junction-Toleranz am Ende). Dann ist
+            //    `s₄ = h − δ` derselbe Ausdruck, nur am ECHTEN Rand verankert
+            //    statt am Trace-Ende — strikt schärfer und nie unter der
+            //    Wahrheit (§8j-Satz).
+            //
+            // Trägt die Distanz-Rolle niemand, bleibt der δ-Versatz stehen:
+            // ein Über-Claim wäre schlimmer als der Sliver. Genau das war der
+            // §8k-Befund, der die pauschalen Varianten (b)/(c) verwarf — der
+            // Randpunkt-Zeuge fand 0.868 mm Über-Claim an der äusseren
+            // Deckfläche der Ecken-Schale, weil `set_face_plane_gates` dort
+            // keine Ebene belegt hatte. Seit §8l belegt es sie (Endflächen
+            // fallen nicht mehr durch den Trägerflächen-Filter), und der
+            // Zeuge schweigt.
+            let snap_r = (3.0 * steps.get(*ci).copied().unwrap_or(0.0)).max(1e-3);
+            let at_vertex = verts.iter().any(|vs| norm(sub(vs.v, *e)) <= snap_r);
+            let eps = 1e-3 * ch_delta;
+            let at_face = channels[*ci].face_planes.iter().any(|g| {
+                let n = [g[0], g[1], g[2]];
+                // `g[3] = c₀ + δ`; `h(E) = ⟨E,n̂⟩ − c₀` ist der Abstand des
+                // Nahtendes von der Fremdebene.
+                let h_e = dot(*e, n) - (g[3] - ch_delta);
+                norm(n) > 0.5 && dot(n, *t) > 0.99 && h_e >= -eps && h_e <= join_of[*ci]
+            });
+            let off = if at_vertex || at_face { 0.0 } else { ch_delta };
+            planes.push([t[0], t[1], t[2], dot(*e, *t) + off]);
         }
         for pl in planes {
             let s = &mut slot[*ci];
@@ -1772,10 +1800,28 @@ fn set_face_plane_gates(
                 // liegen (sonst ist es die eigene Trägerfläche), und der
                 // Abstand muss überhaupt binden können (`h ≥ 2·K` ⇒ nie).
                 let mut h_seam = f32::INFINITY;
+                let mut h_max = f32::NEG_INFINITY;
                 for q in &samples {
                     h_seam = h_seam.min(dot(*q, n) - c);
+                    h_max = h_max.max(dot(*q, n) - c);
                 }
-                if !(h_seam > 8.0 * gate_eps && h_seam <= reach) {
+                // #384 §8l — **der Trägerflächen-Filter misst das Falsche.**
+                // Bis §8k verlangte er `h_seam > 0`: die Naht müsse STRIKT auf
+                // der Materialseite liegen, sonst sei die Ebene ihre eigene
+                // Trägerfläche. Das schließt aber auch jede ENDFLÄCHE aus — die
+                // Naht endet auf ihr, `h_seam` ist dort 0. Getroffen hat es
+                // genau die Kanäle, die eine Deckfläche erreichen: an der
+                // Ecken-Schale bekam ein um das Trieder-Eck gebogener Kanal
+                // deshalb GAR KEINE Fremdebene, und der §8k-Ausweg „δ-Versatz
+                // fallen lassen" riss dort 0.868 mm Über-Claim auf.
+                //
+                // Die eigene Trägerfläche erkennt man daran, dass die GANZE
+                // Naht in ihr liegt (`h ≡ 0`), nicht daran, dass ein Punkt es
+                // tut. Der Test ist deshalb `h_max > 0` (die Naht liegt nicht
+                // IN der Ebene) bei `h_seam ≥ 0` (sie liegt nirgends auf der
+                // falschen Seite). Die Gültigkeit selbst hängt unverändert am
+                // Stützebenen-Test unten — dieser Filter wählt nur Kandidaten.
+                if !(h_seam >= -8.0 * gate_eps && h_max > 8.0 * gate_eps && h_seam <= reach) {
                     continue;
                 }
                 // Stützebene? Für jede Member-AABB, auf die Naht-Umgebung
@@ -2299,10 +2345,25 @@ fn synthesize_vertices(
 /// `D − ρ < δ`, also `ρ > D − δ`. **`K ≤ D − δ` schließt sie strukturell
 /// aus** — ohne Opcode-Änderung, denn `trust` ist ein Datenfeld.
 ///
-/// Als Kandidaten für `D` zählen ALLE gelösten Trieder-Punkte des Stopps,
-/// auch die VERWEIGERTEN: ein verweigerter Kegel bekommt zwar keinen Term,
-/// sein Komplement-Oktant konkurriert aber trotzdem. Cluster-Duplikate
-/// (derselbe Punkt aus mehreren Paar-Traces) fallen über `cluster_r` heraus.
+/// Kandidat für `D` ist jeder gelöste Trieder-Punkt des Stopps, der KEINEN
+/// eigenen Term bekommen hat. Cluster-Duplikate (derselbe Punkt aus mehreren
+/// Paar-Traces) fallen über `cluster_r` heraus.
+///
+/// #384 §8l — **gegen Ecken MIT Term klemmt die Grenzwert-Klemme schärfer.**
+/// §8g zählte auch die Ecken mit eigenem Term als Konkurrenz. Seit §8j hat
+/// jede Vertex-Kugel ihren [`vertex_limit`]-Beitrag `δ − ρ`, und der schließt
+/// genau diese Fehlklassifikation STRUKTURELL aus: ein Über-Claim braucht
+/// `dist < δ`; ist der nächste Komplement-Punkt der Anker `v'` einer Kugel des
+/// Stopps, so ist `ρ' = dist < δ ≤ K'`, also `vertex_limit = δ − ρ' > 0`, also
+/// hebt `OP_STOP_LIMIT` das Feld wieder über null — die falsche, weiter
+/// entfernte Ecke kann den `min` gar nicht mehr gewinnen. Für einen
+/// VERWEIGERTEN Kegel gibt es diesen Beitrag nicht; dort bleibt die Klemme.
+///
+/// Gemessen (§8l, Ecken-Schale t/δ = 2, δ = 2): die alte Klemme drückte `K` an
+/// den acht Würfelecken auf `max(D−δ, δ) = δ` und schaltete damit JEDE
+/// Vertex-Kugel ab — 2119 Punkte mit bis zu 1.319 mm fehlendem Material, obwohl
+/// die Kugel den exakten Wert (`ρ − δ = 1.3247`) längst berechnet hatte. Über
+/// alle Dicken `t/δ ∈ [2, 6]` bleibt der Über-Claim bei genau 0.
 ///
 /// Untergrenze `δ`: dort ist das materialaddierende Band `(δ, K)` leer, die
 /// march-sichere Luftseiten-Klemme für `ρ < δ` bleibt aber wortgleich. Die
@@ -2314,10 +2375,14 @@ fn clamp_vertex_trust(
     cluster_r: f32,
     delta: f32,
 ) {
+    let with_term: Vec<[f32; 3]> = verts.iter().map(|v| v.v).collect();
     for vs in verts.iter_mut() {
         let mut d_near = f32::INFINITY;
         for (sv, _, _) in solved {
             let d = norm(sub(*sv, vs.v));
+            if with_term.iter().any(|c| norm(sub(*c, *sv)) < cluster_r) {
+                continue; // eigener Term ⇒ eigene Grenzwert-Klemme (§8l)
+            }
             if d > cluster_r {
                 d_near = d_near.min(d);
             }
@@ -4733,7 +4798,7 @@ fn synthesize_stop(
 
     // Blockierte Enden je Kanal (Index in `channels`, Trace-Schrittweite,
     // Enden) — für das Spine-Snapping an die Vertex-Kugeln (C4).
-    let mut chan_ends: Vec<(usize, f32, Vec<BlockedEnd>)> = Vec::new();
+    let mut chan_ends: Vec<(usize, f32, (usize, usize), Vec<BlockedEnd>)> = Vec::new();
     // #384 §8g: Trace-Schrittweite JE Kanal (Index-parallel zu `channels`) —
     // sie bemisst, wie weit der Trace vor einer Junction stehen bleibt, und
     // damit die Junction-Toleranz in `set_end_plane_gates`. Bereits vorhandene
@@ -4822,11 +4887,11 @@ fn synthesize_stop(
                                     &members, &triple_cands, &ctx, union_form,
                                     gate_eps, gscale, &min_feat, &mut channel_idx,
                                 );
-                                set_end_plane_gates(&mut channels, &chan_step);
                                 set_face_plane_gates(
                                     &mut channels, &members, &branch_maps, &branch_lists,
                                     union_form, gate_eps,
                                 );
+                                set_end_plane_gates(&mut channels, &chan_step, &verts);
                                 let capped = audit_channel_end_caps(
                                     &channels, &verts, inner, &prisms, delta, tol, report,
                                 );
@@ -5022,14 +5087,15 @@ fn synthesize_stop(
                                         gate_eps, gscale, &min_feat, &mut channel_idx,
                                     );
                                     snap_channel_ends_to_vertices(
-                                        &mut channels, &chan_ends, &verts,
+                                        &mut channels, &chan_ends, &verts, &members, union_form,
+                                        gate_eps,
                                     );
                                     snap_channel_ends_to_junctions(&mut channels, &chan_step);
-                                    set_end_plane_gates(&mut channels, &chan_step);
                                     set_face_plane_gates(
                                         &mut channels, &members, &branch_maps, &branch_lists,
                                         union_form, gate_eps,
                                     );
+                                    set_end_plane_gates(&mut channels, &chan_step, &verts);
                                     let capped = audit_channel_end_caps(
                                         &channels, &verts, inner, &prisms, delta, tol, report,
                                     );
@@ -5064,7 +5130,7 @@ fn synthesize_stop(
                                 }
                                 channel_idx += 1;
                                 if !blocked.is_empty() {
-                                    chan_ends.push((channels.len(), step, blocked.clone()));
+                                    chan_ends.push((channels.len(), step, (i, j), blocked.clone()));
                                 }
                                 chan_step.push(step);
                                 channels.push(ch);
@@ -5079,10 +5145,12 @@ fn synthesize_stop(
         &members, &triple_cands, &ctx, union_form, gate_eps, gscale, &min_feat,
         &mut channel_idx,
     );
-    snap_channel_ends_to_vertices(&mut channels, &chan_ends, &verts);
+    snap_channel_ends_to_vertices(
+        &mut channels, &chan_ends, &verts, &members, union_form, gate_eps,
+    );
     snap_channel_ends_to_junctions(&mut channels, &chan_step);
-    set_end_plane_gates(&mut channels, &chan_step);
     set_face_plane_gates(&mut channels, &members, &branch_maps, &branch_lists, union_form, gate_eps);
+    set_end_plane_gates(&mut channels, &chan_step, &verts);
     let capped = audit_channel_end_caps(&channels, &verts, inner, &prisms, delta, tol, report);
     (channels, verts, prisms, rims, capped)
 }
@@ -5183,13 +5251,16 @@ fn audit_channel_end_caps(
 /// (Verlängerung ≤ ~2.5 Schritte, Fehler in der Fit-Toleranz-Klasse).
 fn snap_channel_ends_to_vertices(
     channels: &mut [OffsetChannel],
-    chan_ends: &[(usize, f32, Vec<BlockedEnd>)],
+    chan_ends: &[(usize, f32, (usize, usize), Vec<BlockedEnd>)],
     verts: &[VertexSphere],
+    members: &[Member],
+    union_form: bool,
+    gate_eps: f32,
 ) {
     if verts.is_empty() {
         return;
     }
-    for (ci, step, ends) in chan_ends {
+    for (ci, step, pair, ends) in chan_ends {
         let ch = &mut channels[*ci];
         if ch.arcs.is_empty() {
             continue;
@@ -5216,6 +5287,37 @@ fn snap_channel_ends_to_vertices(
                 (false, end)
             };
             if norm(sub(v, q)) < 1e-4 || norm(sub(v, q)) > snap_r {
+                continue;
+            }
+            // #384 §8l — **die Verlängerung muss auf dem Composite-Rand
+            // bleiben.** Der Snap sucht die NÄCHSTE Vertex-Kugel im Radius
+            // `3·step`. Ist die eigentlich zuständige Ecke verweigert worden
+            // (degenerierter Kegel, > 3 Flächen, Toleranz-Pruning), greift er
+            // zur übernächsten — und zieht die Spine dann quer durch die
+            // Strecke, auf der ein DRITTER Member die Kante begräbt. Solche
+            // Spine-Punkte liegen NICHT auf `∂Ω`, und genau das setzt die
+            // Grenzwert-Klemme aus §8j voraus (`dist ≤ de`): sie hebt das Feld
+            // dann über die Wahrheit, und es fehlt Material.
+            //
+            // Gemessen an der Ecken-Schale (δ = 2): bei `t/δ = 2.25` schleppte
+            // der Snap die Naht `(y=−4.5, z=0)` von `x = −4.58` bis `x = 0`
+            // durch die x-Platte; `de = 1.9966 < δ` liess `OP_STOP_LIMIT` das
+            // Feld auf `+0.003` heben, wahr waren `−0.907`. 628 Punkte, bis
+            // 0.907 mm fehlendes Material — nur bei den Dicken, bei denen eine
+            // Ecke verweigert wurde (2.1 / 2.25 / 2.4), sonst nie.
+            let mut buried = false;
+            for f in [0.25f32, 0.5, 0.75] {
+                let m = [
+                    q[0] + (v[0] - q[0]) * f,
+                    q[1] + (v[1] - q[1]) * f,
+                    q[2] + (v[2] - q[2]) * f,
+                ];
+                if blocking_member(members, &[pair.0, pair.1], m, union_form, gate_eps).is_some() {
+                    buried = true;
+                    break;
+                }
+            }
+            if buried {
                 continue;
             }
             let seg = if at_start {

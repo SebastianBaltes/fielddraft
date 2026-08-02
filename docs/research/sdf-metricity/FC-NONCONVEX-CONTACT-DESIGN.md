@@ -1957,13 +1957,300 @@ Seiten.
 * **Naht gegen Naht**, **der konvexe Zweig ohne viertes Gate**, **spitze
   Nähte** und **der Wächter als Stichprobe**: unverändert §8j.
 
+## 8l. Die drei Rest-Ursachen der UNTER-Seite (#384, 2026-08-02)
+
+§8k mass die Unter-Seite zum ersten Mal exakt, schloss die Ecken-Schale ab
+`t/δ = 2.5` und liess drei Posten stehen: die kollabierende Schale
+(2119 Punkte bis 1.319 mm), den notch (9 bzw. 14 Punkte bis 0.559 mm) und die
+Stufen-Nabe (81 Punkte bis 0.306 mm). Zu jedem nannte es einen VERDACHT.
+
+Dieses Paket sondiert erst und entscheidet dann. Ergebnis: **zwei der drei
+Verdachte waren falsch, der dritte bestätigt sich und bleibt.** Die
+Ecken-Schale und der notch sind jetzt beidseitig exakt; die Nabe ist ehrlich
+vertagt, mit dem Grund im Klartext.
+
+### Ursache 1 — die Ecken-Schale: es ist die §8g-Klemme, nicht die Synthese
+
+§8k verdächtigte „zwei weitere Synthese-Defekte neben `claimed`". Die
+Term-Aufschlüsselung am Worst-Punkt `[−1.8322, −2.0628, −1.9859]` (δ = 2,
+t = 2δ) widerlegt das. Die exakte Referenz sagt `dist = 3.324738`; die
+Handrechnung bestätigt sie: der nächste Komplement-Punkt IST das Würfeleck
+`(0,−4,0)`, also `√(1.8322² + 1.9372² + 1.9859²)`. Wahr ist `f = −1.324738`.
+Das Feld liefert `+0.014064` — auf sieben Stellen den naiven Stoppwert `d₀`.
+
+| Term | Zahlen | woran es scheitert |
+|---|---|---|
+| **vs5** (Ecke `(0,−4,0)`) | `ρ = 3.3247`, Kegel-Gates `+1.986 / +1.937 / +1.832`, **`ρ − δ = 1.3247` = exakt der wahre Fehler**, `gate = 1.507` weit genug | **`K = 2.000 = δ`** — die §8g-Nachbar-Kegel-Klemme. Die Nachbarecken stehen nur `D = 2δ` entfernt, also `K ← max(D−δ, δ) = δ`, und das materialaddierende Band `(δ, K)` ist LEER |
+| ch5 (Nahtstrahl ab `(0,−4,0)` in `+z`) | `de = 3.3247` (`q*` = dasselbe Würfeleck), im Kegel, `de − δ = 1.3247` | `s₃ = −3.9859` — der Punkt liegt gar nicht entlang dieser Naht; die Ebene hat hier recht |
+| Grenzwert-Klemme | `lim = −1.3247` (derselbe exakte Wert) | gültige UNTERE Schranke; sie hebt nur, sie senkt nie |
+
+**Die Vertex-Kugel hatte die Antwort und war abgeschaltet.** Die Klemme, die
+§8g gegen einen Über-Claim von 0.523 mm einführte, kostet an der
+kollabierenden Schale die gesamte Ecken-Korrektur.
+
+**Sie ist seit §8j entbehrlich — strukturell, nicht empirisch.** Ein
+Über-Claim braucht `dist < δ`. Ist der nächste Komplement-Punkt der Anker `v'`
+einer Vertex-Kugel DESSELBEN Stopps, so gilt `ρ' = dist < δ ≤ K'`, also
+`vertex_limit = δ − ρ' > 0`, also hebt `OP_STOP_LIMIT` das Feld wieder über
+null: die falsche, weiter entfernte Ecke kann den `min` gar nicht mehr
+gewinnen. Genau diese Konfiguration ist der §8g-Fall — die Konkurrenz war dort
+ein GELÖSTER Trieder-Punkt des Stopps, also der eigene Kandidatensatz der
+Klemme. Für einen VERWEIGERTEN Kegel gibt es den Beitrag nicht; dort bleibt
+die Klemme stehen. Gemessen ist die verschärfte Form (a′) an allen Fixturen
+gleichwertig mit dem vollständigen Streichen (a) — und strikt konservativer.
+
+Der zweite Worst-Punkt danach, `[−2.0119, −1.8993, −5.8343]` im Kanten-Rohr
+ausserhalb des Eckwürfels, zeigt den Rest: `de − δ = 0.752` ist exakt, aber
+`s₃ = −0.166`. Das ist die δ-verschobene FREIE End-Ebene an einem Trieder-Eck,
+an dem drei Nahtstrahlen zusammenlaufen — nur endet dort keiner der Nachbarn
+(der Trace biegt um die Ecke), also findet `set_end_plane_gates` keinen
+Bisektor und greift zur stumpfen Ersatz-Ebene. Damit hängt Ursache 1 an
+derselben Stelle wie Ursache 2.
+
+### Ursache 2 — der notch: die End-Ebene sitzt am Trace-Ende, nicht an der Fläche
+
+Worst-Punkt `[2.9194, −1.2933, 47.3393]` (α = 60°). Exakt `dist = 2.660723`,
+wahr `f = −0.660723`; das Feld liefert `+0.118393 = d₀`.
+
+| Term | Zahlen |
+|---|---|
+| ch1 (Naht bei `(0,0,z)`) | `de = 3.1930`, im Kegel (`s₁ = 2.580`, `s₂ = 2.919`), `K − de = 1.887`, `gate = +1.922` |
+| **`s₄`** (stützende Deckfläche `z = 50`) | **`+0.6607` = `dist − δ` auf vier Stellen — der exakte Wert** |
+| **`s₃`** (freie End-Ebene) | **`−0.2380`** ⇒ `w_geo < 0`, Term aus |
+
+Die beiden Ebenen beschreiben DIESELBE Fläche. Der Unterschied ist der Anker:
+`s₄` sitzt auf `z = 50`, `s₃` auf dem TRACE-Ende bei `z ≈ 49.10`. Der
+Prädiktor-Korrektor bleibt am `on_composite_boundary`-Gate typisch einen
+Schritt vor der Fläche stehen — hier 0.9 mm, und exakt um diesen Rückstand ist
+`s₃` zu streng. §8g hat genau diesen Fehler für den JUNCTION-Anker behoben
+(`junction_anchor`: die echte Ecke statt der Mitte der Trace-Enden); am freien
+Ende blieb er stehen.
+
+**Die Ebene hat zwei Rollen, und nur eine davon ist hier falsch.** Die reine
+Ebene `⟨x−E,t̂⟩ ≥ 0` begrenzt die REICHWEITE des Terms entlang seiner Naht —
+die bleibt. Der δ-Versatz nimmt die Endfläche als DISTANZ-Kandidaten ins
+`w_geo`-Minimum auf — die trägt `s₄` schärfer, sobald eine stützende Ebene
+belegt ist. Also fällt der Versatz genau dann, wenn nachweislich eine andere
+Instanz die Distanz-Rolle trägt:
+
+1. eine **Vertex-Kugel** am Anker (das Ende wurde dorthin gesnappt): jenseits
+   der Ebene ist `q* = v`, dort übernimmt die Kugel mit ihrem ENGEREN
+   Trieder-Kegel; die Ebene ist die Übergabestelle, beide Terme haben dort
+   denselben Wert;
+2. eine **stützende Fremdebene quer am Ende** (Normale ≈ Innen-Tangente,
+   Ebene innerhalb der Junction-Toleranz am Ende): dann ist `s₄ = h − δ`
+   derselbe Ausdruck am echten Rand.
+
+Trägt sie niemand, bleibt der δ-Versatz. Ein Über-Claim wäre schlimmer als der
+Sliver — das ist der §8k-Befund, und er gilt weiter.
+
+### Warum §8k die Ebene nicht anfassen konnte: der Trägerflächen-Filter
+
+§8k mass „freie End-Ebene ohne δ-Versatz" und „ganz aus", sah im Gitter
+makellose Zahlen und musste beide verwerfen, weil der Randpunkt-Zeuge
+0.868 mm Über-Claim an der äusseren Deckfläche der Ecken-Schale (`z = 40`)
+nachwies — „wo `set_face_plane_gates` keine stützende Ebene belegt hat".
+
+**Warum es dort keine belegt:** der Kandidaten-Filter verlangte, die Naht
+müsse STRIKT auf der Materialseite liegen (`h_seam > 8·gate_eps`), sonst sei
+die Ebene ihre eigene Trägerfläche. Damit fällt aber auch jede ENDFLÄCHE
+durch — die Naht endet auf ihr, `h` ist dort 0. Getroffen hat es die Kanäle,
+deren Trace um ein Trieder-Eck herum ZWEI Deckflächen erreicht: an der
+Ecken-Schale **4 von 24 Kanälen ohne jede Fremdebene** (gemessen, bei
+`t/δ = 2` wie bei `t/δ = 3`).
+
+Die eigene Trägerfläche erkennt man daran, dass die GANZE Naht in ihr liegt
+(`h ≡ 0`), nicht daran, dass ein Punkt es tut. Der Test lautet deshalb ab
+jetzt `h_max > 0` bei `h_seam ≥ 0`. Die GÜLTIGKEIT hängt unverändert am
+Stützebenen-Test (§8j) — dieser Filter wählt nur Kandidaten. Danach: **0 von
+24 Kanälen ohne Fremdebene**, und der Zeuge schweigt.
+
+Für sich allein ändert die Lockerung KEINEN Feldwert an irgendeiner Fixture
+(gemessen). Sie ist der Enabler, nicht der Fix.
+
+### Ursache 3 — die Stufen-Nabe: die G-Kappe, bestätigt und vertagt
+
+Worst-Punkt `[−1.4635, −1.1640, −0.6844]`. Exakt `dist = 2.315608`, wahr
+`f = −0.315608`; das Feld liefert `+0.278006`, naiv war `d₀ = +0.884392`.
+
+| Term | Zahlen |
+|---|---|
+| ch1 (Kreisnaht `r = 4`) | `de = 2.4372`, im Kegel (`s₁ = 1.184`, `s₂ = 2.088`), `K − de = 1.471` |
+| | **`s₄ = +0.3156` = `dist − δ` — `w_geo = +0.3156` ist der exakte Wert** |
+| | **`gate = G − d₀ = 0.868 − 0.884 = −0.0160`** ⇒ Term aus |
+| Grenzwert-Klemme | `lim = −0.3156` — derselbe exakte Wert, aber `d ← max(d, lim)` hebt nur |
+| ch0 (Kreisnaht `r = 6`) | Luftseiten-Klemme zieht `d` von 0.884 auf 0.278, kein Vorzeichenkipp |
+
+Der Term hat den Wert, die Klemme hat den Wert — und beide Wege sind zu. Der
+Grund ist der §8i-Satz von der anderen Seite: die Kappe `G = (c−1)·δ` stammt
+aus dem EIN-NAHT-Modell (`de − δ ∓ d₀ ≤ (c−1)·δ am naiven Scheitel`). An
+MEMBER-ÜBERLAPPUNGEN stimmt dieses Modell nicht: hier ist die grösste
+Einzel-Member-Tiefe 1.116, die wahre Distanz aber 2.316 — der Bedarf ist
+`d₀ − f_wahr = 1.200 > G = 0.868`. §8k hat dieses Verhältnis schon beziffert
+(2.086 an der Nabe) und als unbeschränkt benannt.
+
+Zwei Auswege sind gemessen und **verworfen**:
+
+* **G-Kappe aus.** Nabe 81 → **1 Punkt / 0.113 mm** — der einzige Weg dorthin.
+  Preis: Rippen-Kamm 4×1.5/0.8 von 336 / 0.820 auf **448 / 1.9866**, und die
+  Zusage beider Kämme fällt von einem wahren `≤ 0.868` auf `conservative`.
+  Identisch zur §8k-Messung — die Kappe IST die Schranke.
+* **Grenzwert als WERT statt als Klemme** (`d ← lim` statt `d ← max(d, lim)`).
+  Neu gemessen, weil `lim = δ − min_j min(de_j, h_j)` die SCHÄRFSTE verfügbare
+  obere Distanzschranke ist und damit wie der naheliegende Kandidat aussieht.
+  Katastrophal: Über-Claims bis zum vollen `δ = 2.000 mm` an JEDER Fixture —
+  Ecken-Schale 179–1491 Punkte, Nabe 1495, Kamm 1708, notch 416/546, und die
+  Dilations-Tasche 8771. Der Grund ist elementar und hätte vorher auffallen
+  können: `δ − min_j U_j` ist eine gültige UNTERE Schranke des Zielfelds,
+  nicht sein Wert; als Wert gesetzt über-claimt sie um `min_j U_j − dist`, und
+  das ist unbeschränkt, wo der nächste Rand weder Naht noch stützende Ebene
+  ist.
+
+**Der saubere Weg ist benannt, nicht gebaut:** die Kappe müsste gegen eine
+BEWIESENE untere Distanzschranke rechnen statt gegen die Konstante `G`. Für
+Polytop-Member gibt es eine — `dist(x, ∁(P_a ∪ P_b))` in geschlossener Form,
+maximiert über Paare (§8k nennt sie als Unter-Claim-Zeugen). An der Nabe
+liefert das Paar (Platte, Zylinder A) genau die 2.306 mm der Plattenunterseite
+und würde den Term freigeben. Als FELD-Term ist das ein eigenes Paket in der
+Grössenordnung von §8f (neuer Opcode, sieben Spiegel).
+
+### Ein vierter Befund, den erst der neue Pin freilegte
+
+Der neue Pin nahm neben `t/δ = 2` auch `t/δ = 2.25` auf — und fiel sofort:
+628 Punkte, bis 0.9068 mm fehlendes Material. Die Aufschlüsselung zeigt eine
+Ursache, die keine der drei ist:
+
+Die Spine von ch13 läuft von `(0, −4.5, 0)` über `(−4.576, −4.5, 0)` bis
+`(−39.78, −4.5, 0)`. Die Strecke `x ∈ [−4.5, 0]` liegt IM Inneren der
+x-Platte — dort ist die Würfelkante von einem dritten Member begraben und gar
+keine Naht. Zustande kommt sie so: die zuständige Ecke `(−4.5,−4.5,0)` hat an
+dieser Dicke KEINEN Term bekommen, also greift
+`snap_channel_ends_to_vertices` (Radius `3·step`) zur übernächsten Kugel und
+zieht die Spine quer durch die verdeckte Strecke.
+
+Die Folge ist keine Kleinigkeit: `channel_limit` (§8j) setzt voraus, dass
+jeder Spine-Punkt auf `∂Ω` liegt (`dist ≤ de`). Hier ist `de = 1.9966 < δ`,
+also hebt `OP_STOP_LIMIT` das Feld auf `+0.0034`, wo `−0.9068` wahr wäre.
+**Eine ungültige Spine macht die Grenzwert-Klemme zu einer Lüge in
+Unter-Richtung.**
+
+Der Fix ist ein Wächter in derselben Funktion: die Verlängerung wird an drei
+Stützpunkten gegen `blocking_member` geprüft; begräbt ein dritter Member sie,
+unterbleibt der Snap. `t/δ = 2.25`: 628 → **0**.
+
+### Die Kandidaten-Messtabelle
+
+δ = 2, Gitter 26³ (Schale/Nabe/notch) bzw. 28³ (Kamm). **über** = Phantom-
+Material gegen die exakte Referenz, **unter** = fehlendes Material.
+
+| Kandidat | Schale 2.0 unter | Schale 2.5–6.0 | Nabe unter | Kamm 1.5/0.8 über | notch 90/60 unter | Tasche |
+|---|---|---|---|---|---|---|
+| §8k (Ausgangsstand) | 2119 / **1.3185** | 0 / 0, Zusage 0.01 | 81 / 0.3055 | 336 / 0.820 | 9 / 0.523, 14 / 0.559 | 0 |
+| (a) Klemme ganz aus | 1046 / 0.7495 | 0 / 0, Zusage 0.01 | 81 / 0.3055 | 336 / 0.820 | unverändert | 0 |
+| (a′) Klemme nur gegen VERWEIGERTE Trieder | 1046 / 0.7495 | 0 / 0, Zusage 0.01 | 81 / 0.3055 | 336 / 0.820 | unverändert | 0 |
+| (b) freie End-Ebene ohne δ-Versatz | 1044 / 1.3185 | 0 / 0, **Zusage fällt auf 0.868** | 81 | 336 | **0 / 0** | 0 |
+| (c) freie End-Ebene ganz aus | **0 / 0** | 0 / 0, **Zusage fällt auf 0.868** | 81 | 336 | **0 / 0** | 0 |
+| (d) Endflächen-Filter gelockert, allein | unverändert | unverändert | unverändert | unverändert | unverändert | unverändert |
+| (e) Vertex-Trust auf `δ(2c_v−1)` geweitet | unverändert | unverändert | unverändert | unverändert | unverändert | unverändert |
+| **(a′)+(b)+(d) = §8l** | **0 / 0** | **0 / 0, Zusage 0.01** | 81 / 0.3055 | 336 / 0.820 | **0 / 0** | 0 |
+| (f) G-Kappe aus | 0 / 0 | 0 / 0 | **1 / 0.1132** | **448 / 1.9866**, `conservative` | 0 / 0 | 0 |
+| (g) Grenzwert als WERT | 0 / 0 | über 179–994 / **2.0000** | 1 / 0.1132 | **1708 / 2.0000** | über 416 / 2.0, 546 / 2.0 | **8771 / 2.0000** |
+
+Drei Lehren aus der Tabelle:
+
+* **(e) ist ein sauberer Negativ-Befund.** Der Trust-Radius `K = c_v·δ + 0.5δ`
+  klemmt rechnerisch enger als das Gate (die Taper `K − ρ` bindet für
+  `ρ > (K+δ)/2`), aber an keiner Fixture messbar. Nicht anfassen.
+* **(d) allein bewegt keinen Feldwert** und ist trotzdem der Grund, warum
+  (b) überhaupt gebaut werden kann — eine Änderung, die für sich genommen
+  nichts tut und eine andere erst erlaubt.
+* **(a) und (a′) sind gleichwertig.** Also die konservativere nehmen.
+
+### Bilanz
+
+| Fixture | §8k über / unter | §8l über / unter | Zusage |
+|---|---|---|---|
+| **Ecken-Schale** t/δ = 2.0 | 0 / 2119 · **1.3185** | **0 / 0** | ≤ 0.010, beidseitig wahr |
+| **Ecken-Schale** t/δ = 2.25 | (ungemessen) 628 · 0.9068 | **0 / 0** | ≤ 0.010, beidseitig wahr |
+| **Ecken-Schale** t/δ = 2.5 … 6.0 | 0 / 0 | **0 / 0** | ≤ 0.010, beidseitig wahr |
+| **Ecken-Schale** t/δ = 2.1 | (ungemessen) | 0 / 624 · 0.877 | `≤ 0.868` (Zeuge), über-seitig wahr |
+| **Ecken-Schale** t/δ = 2.4 | (ungemessen) | 0 / 65 · 0.933 | ≤ 0.010 Phantom, Unter-Seite ausgenommen |
+| **notch_union** 90° / 60° | 0 / 9 · 0.523, 14 · 0.559 | **0 / 0** | ≤ 0.010, beidseitig wahr |
+| **Stufen-Nabe** | 0 / 81 · 0.3055 | **unverändert** 0 / 81 · 0.3055 | ≤ 0.010 Phantom, Unter-Seite ausgenommen |
+| **Rippen-Kamm** 4×1.5/0.8, 4×2.0/1.0 | 336 / 0, 280 / 0 · 0.820 | **unverändert** | ≤ 0.868, wahr |
+| Tasche (Dilation) s ∈ {4, 6} | 0 / 0 | **unverändert** | ≤ 0.010 |
+| `cargo test --workspace` | 1549 | **1552** (drei neue Pins) | — |
+| `offset_fuzz` (`OFFSET_FUZZ_ITERS=200`) | 5/5 | **5/5** | — |
+| Web | — | `tsc -b` sauber, **2082/2082** | — |
+
+Neue Pins: `erosion_collapsing_shell_is_exact_on_both_sides_384` (t/δ = 2.0
+und 2.25 beidseitig fehlerfrei — der Ursache-1-Pin und zugleich der Wächter
+für den Composite-Rand des Vertex-Snaps),
+`erosion_notch_seam_end_is_exact_on_both_sides_384` (Ursache 2),
+`face_plane_gates_cover_seam_end_faces_384` (die Struktur dahinter: KEIN
+konkaver Kanal der Ecken-Schale ohne stützende Fremdebene; vor §8l waren es 4
+von 24). Keine bestehende Erwartung bewegt sich; im Kopf von
+`erosion_thin_corner_is_exact_on_both_sides_384` ist nur der Kommentar
+nachgezogen, der `t/δ = 2` noch als offenen Unter-Claim führte.
+
+### Golden — was sich bewegt und warum
+
+| Szene | Tape | Feldwerte |
+|---|---|---|
+| 33 von 35 Szenen | byte-identisch | byte-identisch |
+| `arc_channel_notch` | gleiche Länge, 2 Payload-Werte | 8 von 512, grösstes Δ = 0.3376 |
+| `vertex_sphere_corner` | gleiche Länge, 40 Payload-Werte | 2 von 512, grösstes Δ = 0.2130 |
+
+Kein Opcode, kein Format, kein Spiegel — die Payload-Änderungen sind der
+fehlende δ-Versatz in `end_planes` und die neu belegten `face_planes`-Slots.
+
+**Alle zehn Feldbewegungen SINKEN, keine steigt.** Das ist die beweisbare
+Richtung: die Korrektur reicht weiter, der erodierte Körper wächst, also ist
+er von aussen näher — ein sinkender Aussenwert bleibt march-sicher.
+
+**Ein Vorzeichenwechsel, nachgerechnet.** `vertex_sphere_corner` bei
+`(−1.1, −18, −1.1)`: `+0.157385 → −0.055663`. Die Fixture sind drei Platten
+der Dicke 10 mit δ = 1.5; der Punkt liegt in der x- und der z-Platte,
+ausserhalb der y-Platte. Die nächste Luft ist die konkave Kante `(x=0, z=0)`,
+also `dist = √(1.1² + 1.1²) = 1.555635` und `f = 1.5 − 1.555635 = −0.055635`.
+**Der neue Wert ist auf 3·10⁻⁵ exakt, der alte hatte das falsche
+Vorzeichen** — ein Unter-Claim, der die ganze Zeit in der Referenzszene
+selbst sass.
+
+`check_interp` (Rust `eval_opcodes` ↔ C++ `sdf_interp.h`): **35 Szenen,
+17920 Checks, 0 Failures, worst_err 0.000002** (`sweep_open_twist`) —
+identisch zum Stand vor dem Paket.
+
+### Was OFFEN bleibt
+
+* **Nicht jedes Trieder bekommt eine Vertex-Kugel.** An `t/δ = 2.1` (624
+  Punkte / 0.877 mm) und `t/δ = 2.4` (65 / 0.933) fehlt im Eckwürfel der Term,
+  weil kein Triple-Kandidat entstand: `trace_seam` biegt am Trieder-Eck auf
+  die Nachbar-Naht statt zu stoppen und liefert kein blockiertes Ende. Das ist
+  §8k's zweiter benannter Synthese-Defekt, hier zum ersten Mal beziffert — und
+  die Dickenabhängigkeit (2.0 gut, 2.1 schlecht, 2.2/2.25/2.3 gut, 2.4
+  schlecht, ab 2.5 gut) zeigt, dass es an der Phasenlage von Schrittweite zu
+  Wandstärke hängt, nicht an der Geometrie. Der Report bleibt dabei ehrlich:
+  bei 2.1 fällt die Zusage per Randpunkt-Zeuge auf ≤ 0.868 (über-seitig mit
+  0 Punkten wahr), bei 2.4 greift die Unter-Seiten-Ausnahme.
+* **Die G-Kappe an der Nabe** — Ursache 3, oben mit Zahlen vertagt. Der Weg
+  ist die pairweise untere Distanzschranke als Gate-Basis; eigenes Paket.
+* **Der Unter-Claim-Zeuge fehlt weiter** (§8k unverändert): `∁(P_a ∪ P_b)` als
+  ≤ 6×6 konvexe Keile, `max_{a,b} dist(x, ∁(P_a∪P_b))` als gültige untere
+  Schranke. Er ist jetzt DOPPELT motiviert — als Wächter UND als Gate-Basis
+  für Ursache 3.
+* **Naht gegen Naht**, **der konvexe Zweig ohne viertes Gate**, **spitze
+  Nähte**, **der Wächter als Stichprobe**: unverändert §8j/§8k.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
 - `crates/kernel/src/offset_capability_tests.rs` — §8k: die exakten
   Komplement-Referenzen (`dist_obb_union_complement_exact`,
   `dist_hub_complement_exact`), die zweiseitige Sonde (`two_sided_scan`) und
-  die drei neuen Pins.
+  die drei neuen Pins. §8l: `erosion_collapsing_shell_is_exact_on_both_sides_384`,
+  `erosion_notch_seam_end_is_exact_on_both_sides_384`,
+  `face_plane_gates_cover_seam_end_faces_384`.
 - `crates/metricity-lab/tests/f_c_nonconvex_contact_spike.rs` — Machbarkeits-
   Prototyp (cavalier-Verschnitt L∩Rechteck, Zwei-Komponenten-Zerlegung,
   Loch-Kontakt), 3/3 grün.
@@ -1975,7 +2262,12 @@ Seiten.
   S ⊆ U, Stufe-2-Klemme (submergierte-Π-Luftseiten-Klemme).
 - `docs/research/sdf-metricity/F396-RIM-OPCODE-DESIGN.md` — ∂P-Rand-Fillet
   (radiale Distanz + Halbraum-Maske + Nearest-Feature, Over-Fill = 0).
-- `crates/kernel/src/offset_channel.rs` — §8j: `set_face_plane_gates`,
+- `crates/kernel/src/offset_channel.rs` — §8l: `set_end_plane_gates`
+  (Drei-Wege-Regel am freien Ende), `set_face_plane_gates`
+  (Trägerflächen-Filter über die Naht-ENTHALTUNG statt der Berührung),
+  `clamp_vertex_trust` (nur noch gegen VERWEIGERTE Trieder),
+  `snap_channel_ends_to_vertices` (Composite-Rand-Wächter der Verlängerung);
+  §8j: `set_face_plane_gates`,
   `face_plane_gate`, `channel_limit`/`vertex_limit` (in `stop_apply`
   akkumuliert, von `OP_STOP_LIMIT` angewandt); §8i: `stop_apply`
   (`base`-Parameter von `channel_apply`/`vertex_apply`); §8g: `clamp_vertex_trust`,

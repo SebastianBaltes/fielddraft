@@ -805,6 +805,48 @@ für Shell.
   liefert jetzt nur noch Saaten, von denen eine Koordinaten-Pattern-Search
   bergauf läuft. Strikt schärfer, nie laxer (jeder alte Fund bleibt ein
   Fund); belegt durch eine künstlich eingebaute Regression im Test.
+* **Die UNTER-Seite: drei benannte Rest-Ursachen, zwei geschlossen
+  (#384 §8l, v0.56.11, 2026-08-02).** §8k mass fehlendes Material erstmals
+  exakt und liess drei Posten mit je einem VERDACHT stehen. Die
+  Term-Aufschlüsselung widerlegte zwei davon:
+  * **Ecken-Schale** (2119 Punkte bis 1.319 mm): nicht die vermuteten
+    Synthese-Defekte, sondern die §8g-Nachbar-Kegel-Klemme. Die Vertex-Kugel
+    am Würfeleck hatte den exakten Wert (`ρ − δ = 1.3247`) und war durch
+    `K = max(D−δ, δ) = δ` abgeschaltet. Seit §8j ist die Klemme gegen Ecken
+    MIT eigenem Term entbehrlich — ein Über-Claim braucht `dist < δ`, dann ist
+    aber `ρ' < δ ≤ K'` und `vertex_limit > 0` hebt das Feld strukturell zurück.
+    Sie zählt jetzt nur noch VERWEIGERTE Trieder.
+  * **notch** (9 bzw. 14 Punkte bis 0.559 mm): die freie End-Ebene sitzt am
+    TRACE-Ende, nicht an der echten Abschlussfläche — 0.9 mm Rückstand,
+    exakt der Betrag, um den `s₃ = −0.238` zu streng war, während `s₄` mit
+    `+0.661` den exakten Wert längst bereitstellte. Der δ-Versatz fällt jetzt
+    genau dort, wo die Distanz-Rolle nachweislich eine andere Instanz trägt
+    (Vertex-Kugel am Anker oder stützende Fremdebene quer am Ende); die
+    Reichweiten-Rolle bleibt als reine Ebene. Möglich wurde das erst durch
+    einen dritten Eingriff: der Trägerflächen-Filter in
+    `set_face_plane_gates` verwarf jede Ebene, die die Naht BERÜHRT — also
+    jede Endfläche. An der Ecken-Schale hatten dadurch 4 von 24 Kanälen gar
+    keine Fremdebene, und genau daran scheiterte der §8k-Versuch.
+  * **Stufen-Nabe** (81 Punkte bis 0.306 mm): die G-Kappe, bestätigt und
+    ehrlich VERTAGT. `w_geo = +0.3056` ist exakt, `gate = G − d₀ = −0.016`
+    schaltet ab. Ursache ist die Member-Überlappung (grösste Einzel-Tiefe
+    1.116 gegen wahre Distanz 2.316), für die das Ein-Naht-Modell hinter
+    `G = (c−1)·δ` nicht gilt. Kappe aus: Nabe 81 → 1, aber Rippen-Kamm
+    0.820 → **1.987 mm** und `conservative`. Grenzwert als WERT statt als
+    Klemme: Über-Claims bis zum vollen δ an jeder Fixture. Beide verworfen.
+  Ein VIERTER Befund fiel dem neuen Pin bei `t/δ = 2.25` zu: der Vertex-Snap
+  zog die Naht durch verdecktes Member-Inneres, und `channel_limit` setzt
+  voraus, dass jeder Spine-Punkt auf `∂Ω` liegt — `de = 1.997 < δ` hob das
+  Feld über null. Die Verlängerung wird jetzt gegen `blocking_member` geprüft.
+  Golden: 33/35 byte-identisch, alle zehn Feldbewegungen SINKEN (Körper
+  wächst, march-sicher), ein Vorzeichenwechsel in `vertex_sphere_corner` ist
+  handgerechnet die KORREKTUR eines Unter-Claims (`−0.055663` gegen exakt
+  `−0.055635`). Herleitung + Messtabellen:
+  `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8l.
+  *Was NICHT dazugehört:* an `t/δ = 2.1` und `2.4` bekommt nicht jedes Trieder
+  eine Vertex-Kugel (`trace_seam` biegt am Eck auf die Nachbar-Naht und
+  liefert kein blockiertes Ende) — 624 bzw. 65 Punkte bis 0.93 mm, vom
+  Report ehrlich gedeckt, aber nicht geschlossen.
 
 ## 10. Verweise
 

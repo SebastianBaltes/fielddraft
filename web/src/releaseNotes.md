@@ -1,3 +1,8 @@
+## 0.56.11
+- fix(kernel) #384: Am Ende einer Offset-Naht bleibt kein Materialstreifen mehr stehen: die Korrektur reicht jetzt bis an die echte Abschlussfläche statt bis zum Ende der intern verfolgten Kurve.
+- fix(kernel) #384: In einer konkaven Raumecke, deren Wände nur doppelt so dick sind wie der Offset, entsteht der Eckklotz jetzt vollständig — vorher fehlte dort bis zu ein Drittel der Wandstärke an Material.
+- fix(kernel) #384: Eine Naht wird nicht mehr durch verdecktes Bauteil-Inneres verlängert; das liess an dünnen Ecken stellenweise Material verschwinden.
+
 ## 0.56.10
 - fix(kernel) #384: An dünnen Ecken-Schalen entstehen jetzt ALLE konkaven Nähte des Offsets — bisher fehlte dort Material, das stehen bleiben musste.
 - fix(kernel) #384: Die Genauigkeits-Angabe eines Offsets sagt jetzt dazu, welche Richtung sie deckt: die genannte Toleranz gilt für überschüssiges Material; fehlendes Material ist ausdrücklich ausgenommen.
