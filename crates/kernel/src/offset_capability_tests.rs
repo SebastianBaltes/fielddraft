@@ -7541,3 +7541,729 @@ fn every_seam_point_lies_on_the_boundary_384() {
     }
     assert!(checked > 4_000, "nur {checked} Naht-Punkte geprüft — der Pin misst zu wenig");
 }
+
+// ══════════════ #384 §8t — erst messen: wo geht die Zeit im `L`-Block hin? ══════════════
+//
+// §8o/§8p haben das räumliche Pruning der Stück-Liste als „offensichtliche
+// Optimierung" benannt und nicht gebaut. Bevor irgendein Format umgebaut wird,
+// misst diese Sonde vier Dinge, die die Entscheidung tragen:
+//
+// 1. **Verteilung** — wie viele Stücke welcher Art je Fixture/Block.
+// 2. **Kosten je Stück-Art** — `tri_dist` gegen `rev_dist`, isoliert.
+// 3. **Realer Anteil** — Feldkosten mit und ohne `L`-Block über das ECHTE
+//    Scan-Gitter der Doktrin-Pins (nicht nur am Worst-Case-Punkt): wie oft ist
+//    der Block überhaupt lebendig?
+// 4. **Ordnungs-Statistik + Simulation** — welcher Index gewinnt das `min`, wie
+//    viele Stücke sind überhaupt konkurrenzfähig, und wie viele Stücke würde
+//    ein Gruppen-Prune mit laufendem `best` tatsächlich noch anfassen.
+
+/// Konservative Hüllkugel EINES Stücks (Welt-Raum, beide Arten).
+///
+/// * `Tri` — Umkreis-Ersatz: Schwerpunkt + grösster Ecken-Abstand. Jeder Punkt
+///   des Dreiecks ist Konvexkombination der Ecken, liegt also in der Kugel.
+/// * `Rev` — die Fläche ist `{ o + z·ax + r·û : (r,z) ∈ Segment, û ⊥ ax }`.
+///   Relativ zu `c = o + z_mid·ax` ist der Offset `(z − z_mid)·ax + r·û` mit
+///   `|z − z_mid| ≤ h` und `r ≤ R = max(r0,r1)`, und weil `ax ⊥ û` gilt
+///   `|Offset|² = (z − z_mid)² + r² ≤ h² + R²`.
+fn piece_sphere(p: &crate::offset_lb::LbPiece) -> ([f32; 3], f32) {
+    match *p {
+        crate::offset_lb::LbPiece::Tri { a, b, c, .. } => {
+            let ctr = [
+                (a[0] + b[0] + c[0]) / 3.0,
+                (a[1] + b[1] + c[1]) / 3.0,
+                (a[2] + b[2] + c[2]) / 3.0,
+            ];
+            let d = |q: [f32; 3]| {
+                ((q[0] - ctr[0]).powi(2) + (q[1] - ctr[1]).powi(2) + (q[2] - ctr[2]).powi(2)).sqrt()
+            };
+            (ctr, d(a).max(d(b)).max(d(c)))
+        }
+        crate::offset_lb::LbPiece::Rev { o, ax, r0, z0, r1, z1 } => {
+            let zm = 0.5 * (z0 + z1);
+            let ctr = [o[0] + ax[0] * zm, o[1] + ax[1] * zm, o[2] + ax[2] * zm];
+            let h = 0.5 * (z1 - z0).abs();
+            let rr = r0.max(r1);
+            (ctr, (h * h + rr * rr).sqrt())
+        }
+    }
+}
+
+/// Hüllkugel einer Stück-GRUPPE (konservativ): Mittelpunkt = Schwerpunkt der
+/// Stück-Zentren, Radius = `max_i (|c_i − c| + r_i)`.
+fn group_sphere(ps: &[crate::offset_lb::LbPiece]) -> ([f32; 3], f32) {
+    let sph: Vec<_> = ps.iter().map(piece_sphere).collect();
+    let n = sph.len() as f32;
+    let mut c = [0.0f32; 3];
+    for (s, _) in &sph {
+        for k in 0..3 {
+            c[k] += s[k] / n;
+        }
+    }
+    let mut r = 0.0f32;
+    for (s, rr) in &sph {
+        let d = ((s[0] - c[0]).powi(2) + (s[1] - c[1]).powi(2) + (s[2] - c[2]).powi(2)).sqrt();
+        r = r.max(d + rr);
+    }
+    (c, r)
+}
+
+/// Die 13 Fixturen der §8p-Matrix mit ihren Doktrin-Gittern.
+fn p8t_fixtures(delta: f32) -> Vec<(String, BoundedCsg, [f64; 3], [f64; 3], usize)> {
+    let mut out: Vec<(String, BoundedCsg, [f64; 3], [f64; 3], usize)> = Vec::new();
+    {
+        let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+        let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+        out.push((
+            "Nabe".into(), field,
+            [-9.0, -9.0, -(t as f64) - 1.5], [9.0, 9.0, 0.5], 22,
+        ));
+    }
+    for tf in [2.0f32, 2.1, 2.25, 2.4, 2.5, 3.0, 4.0, 6.0] {
+        let t = tf * delta;
+        let (field, _) = compile_for(thin_corner_node(t, 40.0, delta));
+        let lo = -(t as f64 + delta as f64 + 1.0);
+        out.push((format!("Schale {tf}"), field, [lo; 3], [1.0; 3], 22));
+    }
+    for (w, g) in [(1.5f32, 0.8f32), (2.0f32, 1.0f32)] {
+        let (node, _, span) = rib_comb_node(4, w, g, delta);
+        let (field, _) = compile_for(node);
+        out.push((format!("Kamm {w}/{g}"), field, [-span, -3.0, -6.0], [span, 3.0, 0.5], 24));
+    }
+    for alpha in [90.0f64, 60.0] {
+        let (field, _) = compile_for(notch_union_node(alpha, delta as f64));
+        out.push((format!("notch {alpha}"), field, [-10.0, -10.0, 42.0], [10.0, 10.0, 54.0], 22));
+    }
+    out
+}
+
+/// Alle Stopps eines Baums mit ihrem `L`-Block und dem `inner` für `d₀`.
+fn lb_stops<'a>(
+    n: &'a BoundedCsg,
+    out: &mut Vec<(&'a BoundedCsg, f32, &'a crate::offset_lb::LbBlock)>,
+) {
+    match n {
+        BoundedCsg::ArcChannel { inner, channels, verts, lb, .. } => {
+            if let Some(b) = lb {
+                let d = channels
+                    .first()
+                    .map(|c| c.delta)
+                    .or_else(|| verts.first().map(|v| v.delta))
+                    .unwrap_or(0.0);
+                out.push((inner, d, b));
+            }
+            lb_stops(inner, out);
+        }
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. } => {
+            lb_stops(left, out);
+            lb_stops(right, out);
+        }
+        BoundedCsg::Offset { inner, .. } | BoundedCsg::Shell { inner, .. } => lb_stops(inner, out),
+        _ => {}
+    }
+}
+
+#[test]
+#[ignore]
+fn probe_384_lb_pruning_cost() {
+    let delta = 2.0f32;
+    let fx = p8t_fixtures(delta);
+
+    // ── (1) Verteilung ───────────────────────────────────────────────────────
+    println!("\n── §8t (1) Stück-Verteilung ──");
+    println!("{:<16} {:>7} {:>8} {:>6} {:>6} {:>26}", "Fixture", "Blöcke", "Stücke", "Tri", "Rev", "je Block");
+    for (name, field, ..) in &fx {
+        let mut bs = Vec::new();
+        collect_lb(field, &mut bs);
+        let np: usize = bs.iter().map(|b| b.pieces.len()).sum();
+        let tri: usize = bs
+            .iter()
+            .map(|b| b.pieces.iter().filter(|p| matches!(p, crate::offset_lb::LbPiece::Tri { .. })).count())
+            .sum();
+        let per: Vec<usize> = bs.iter().map(|b| b.pieces.len()).collect();
+        println!(
+            "{name:<16} {:>7} {np:>8} {tri:>6} {:>6} {:>26}",
+            bs.len(), np - tri, format!("{per:?}")
+        );
+    }
+
+    // ── (2) Kosten je Stück-Art ──────────────────────────────────────────────
+    println!("\n── §8t (2) Kosten je Stück-Art (ns/Aufruf) ──");
+    {
+        let tri = crate::offset_lb::LbPiece::tri(
+            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0; 3], 1e4,
+        );
+        let rev = crate::offset_lb::LbPiece::Rev {
+            o: [0.0, 0.0, 0.0], ax: [0.0, 0.0, 1.0], r0: 1.0, z0: 0.0, r1: 1.0, z1: 2.0,
+        };
+        for (tag, pc) in [("Tri", tri), ("Rev", rev)] {
+            let n = 4_000_000u32;
+            let t0 = std::time::Instant::now();
+            let mut acc = 0.0f32;
+            for k in 0..n {
+                let q = [0.3 + (k % 13) as f32 * 1e-4, 0.7, 2.5];
+                acc += crate::offset_lb::piece_dist(q, &pc);
+            }
+            let el = t0.elapsed().as_nanos() as f64 / n as f64;
+            std::hint::black_box(acc);
+            println!("  {tag:<4} {el:>8.3} ns");
+        }
+    }
+
+    // ── (3) Realer Anteil über das Doktrin-Gitter ────────────────────────────
+    println!("\n── §8t (3) Feld-Kosten über das echte Scan-Gitter ──");
+    println!(
+        "{:<16} {:>8} {:>9} {:>9} {:>8} {:>10} {:>10} {:>9}",
+        "Fixture", "Stücke", "Pkt", "live%", "L-Aufr", "mit L ns", "ohne L ns", "L-Anteil"
+    );
+    for (name, field, lo, hi, n) in &fx {
+        let mut bs = Vec::new();
+        collect_lb(field, &mut bs);
+        let np: usize = bs.iter().map(|b| b.pieces.len()).sum();
+        if np == 0 {
+            println!("{name:<16} {np:>8}   (kein Block)");
+            continue;
+        }
+        let bare = strip_lb(field);
+        let mut pts: Vec<[f32; 3]> = Vec::with_capacity(n * n * n);
+        for i in 0..*n {
+            for j in 0..*n {
+                for k in 0..*n {
+                    let f = |a: f64, b: f64, t: usize| (a + (b - a) * t as f64 / (*n - 1) as f64) as f32;
+                    pts.push([f(lo[0], hi[0], i), f(lo[1], hi[1], j), f(lo[2], hi[2], k)]);
+                }
+            }
+        }
+        // live-Anteil + Anzahl echter min-Läufe
+        let mut stops = Vec::new();
+        lb_stops(field, &mut stops);
+        let (mut live, mut calls) = (0usize, 0usize);
+        for p in &pts {
+            let mut any = false;
+            for (inner, d, b) in &stops {
+                let base = inner.sdf(*p, EvalMode::Visual) + *d;
+                let dc = ((p[0] - b.center[0]).powi(2) + (p[1] - b.center[1]).powi(2)
+                    + (p[2] - b.center[2]).powi(2)).sqrt();
+                if base <= b.delta && dc <= b.skip_r {
+                    calls += 1;
+                    any = true;
+                }
+            }
+            if any {
+                live += 1;
+            }
+        }
+        let bench = |f: &BoundedCsg| -> f64 {
+            let mut acc = 0.0f32;
+            let t0 = std::time::Instant::now();
+            for p in &pts {
+                acc += f.sdf(*p, EvalMode::Visual);
+            }
+            let el = t0.elapsed().as_nanos() as f64 / pts.len() as f64;
+            std::hint::black_box(acc);
+            el
+        };
+        // je zwei Läufe, Minimum (Cache-Warmlauf)
+        let with = bench(field).min(bench(field));
+        let without = bench(&bare).min(bench(&bare));
+        println!(
+            "{name:<16} {np:>8} {:>9} {:>8.1}% {calls:>8} {with:>10.0} {without:>10.0} {:>8.1}%",
+            pts.len(),
+            100.0 * live as f64 / pts.len() as f64,
+            100.0 * (with - without) / with
+        );
+    }
+
+    // ── (4) Wie viel KANN ein Prune überhaupt? (Orakel-Schranke) ─────────────
+    //
+    // Die Frage vor jedem Format-Umbau: gäbe es den PERFEKTEN laufenden `best`
+    // (= das wahre Minimum, von Anfang an), wie viele Stücke dürfte eine
+    // konservative Schranke `B(x,k) ≤ dist(x,Stück_k)` dann überspringen? Das
+    // ist die OBERE Grenze jeder Prune-Strategie mit dieser Schranke — schafft
+    // das Orakel es nicht, schafft es kein Tape-Format.
+    //
+    // Drei Schranken, alle gültig:
+    //   `sph`   `max(0, |x−c_k| − r_k)`      (Hüllkugel, beide Stück-Arten)
+    //   `pln`   `|n̂·x − n̂·a|`               (Trägerebene, nur `Tri`)
+    //   `max`   das Maximum beider           (Maximum gültiger Schranken)
+    println!("\n── §8t (4) Orakel-Prune: was eine perfekte Schranke überspringen dürfte ──");
+    println!(
+        "{:<16} {:>7} {:>7} {:>9} {:>9} {:>9} {:>8} {:>8} {:>8} {:>8}",
+        "Fixture", "Stücke", "live", "r_med", "r_max", "best_med",
+        "sph%", "pln%", "max%", "BVH%"
+    );
+    for (name, field, lo, hi, n) in &fx {
+        let mut stops = Vec::new();
+        lb_stops(field, &mut stops);
+        if stops.is_empty() {
+            continue;
+        }
+        let mut pts: Vec<[f32; 3]> = Vec::new();
+        for i in 0..*n {
+            for j in 0..*n {
+                for k in 0..*n {
+                    let f = |a: f64, b: f64, t: usize| (a + (b - a) * t as f64 / (*n - 1) as f64) as f32;
+                    pts.push([f(lo[0], hi[0], i), f(lo[1], hi[1], j), f(lo[2], hi[2], k)]);
+                }
+            }
+        }
+        let np: usize = stops.iter().map(|(_, _, b)| b.pieces.len()).sum();
+        let (mut cnt, mut sph, mut pln, mut mx, mut bvh) = (0usize, 0f64, 0f64, 0f64, 0f64);
+        let mut bests: Vec<f32> = Vec::new();
+        let mut radii: Vec<f32> = Vec::new();
+        let mut tri_inside = (0usize, 0usize);
+        for (_, _, b) in &stops {
+            for q in &b.pieces {
+                radii.push(piece_sphere(q).1);
+            }
+        }
+        radii.sort_by(|a, c| a.partial_cmp(c).unwrap());
+        for p in &pts {
+            for (inner, d, b) in &stops {
+                let base = inner.sdf(*p, EvalMode::Visual) + *d;
+                let dc = ((p[0] - b.center[0]).powi(2) + (p[1] - b.center[1]).powi(2)
+                    + (p[2] - b.center[2]).powi(2)).sqrt();
+                if !(base <= b.delta && dc <= b.skip_r) {
+                    continue;
+                }
+                let m = b.pieces.len();
+                let ds: Vec<f32> = b.pieces.iter().map(|q| crate::offset_lb::piece_dist(*p, q)).collect();
+                let bd = ds.iter().cloned().fold(f32::INFINITY, f32::min);
+                cnt += 1;
+                if bests.len() < 20000 {
+                    bests.push(bd);
+                }
+                let (mut ns, mut npl, mut nm) = (0usize, 0usize, 0usize);
+                for q in &b.pieces {
+                    let (c, r) = piece_sphere(q);
+                    let bs = (((p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2)).sqrt()
+                        - r).max(0.0);
+                    let bp = match *q {
+                        crate::offset_lb::LbPiece::Tri { a, b: bb, c: cc, .. } => {
+                            let e1 = [bb[0] - a[0], bb[1] - a[1], bb[2] - a[2]];
+                            let e2 = [cc[0] - a[0], cc[1] - a[1], cc[2] - a[2]];
+                            let nr = [
+                                e1[1] * e2[2] - e1[2] * e2[1],
+                                e1[2] * e2[0] - e1[0] * e2[2],
+                                e1[0] * e2[1] - e1[1] * e2[0],
+                            ];
+                            let ln = (nr[0] * nr[0] + nr[1] * nr[1] + nr[2] * nr[2]).sqrt();
+                            if ln > 1e-20 {
+                                ((p[0] - a[0]) * nr[0] + (p[1] - a[1]) * nr[1] + (p[2] - a[2]) * nr[2]).abs() / ln
+                            } else {
+                                0.0
+                            }
+                        }
+                        _ => 0.0,
+                    };
+                    if bs >= bd { ns += 1; }
+                    if bp >= bd { npl += 1; }
+                    if bs.max(bp) >= bd { nm += 1; }
+                }
+                sph += ns as f64 / m as f64;
+                pln += npl as f64 / m as f64;
+                mx += nm as f64 / m as f64;
+                // Echte BVH: Median-Split über die Stück-Kugeln, näheres Kind
+                // zuerst, laufendes `best`.
+                let idx: Vec<usize> = (0..m).collect();
+                let mut visited = 0usize;
+                let mut running = f32::INFINITY;
+                bvh_visit(*p, &b.pieces, &idx, &mut running, &mut visited);
+                assert!((running - bd).abs() <= 0.0, "{name}: BVH ändert das min");
+                bvh += visited as f64 / m as f64;
+                // Innen-Anteil von `tri_dist`
+                for q in &b.pieces {
+                    if let crate::offset_lb::LbPiece::Tri { a, b: bb, c: cc, .. } = *q {
+                        tri_inside.1 += 1;
+                        if tri_is_inside(*p, a, bb, cc) {
+                            tri_inside.0 += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if cnt == 0 {
+            println!("{name:<16} {np:>7} {cnt:>7}  (nie live)");
+            continue;
+        }
+        bests.sort_by(|a, c| a.partial_cmp(c).unwrap());
+        let f = cnt as f64;
+        println!(
+            "{name:<16} {np:>7} {cnt:>7} {:>9.3} {:>9.3} {:>9.3} {:>7.1}% {:>7.1}% {:>7.1}% {:>7.1}%   Tri-innen {:.1}%",
+            radii[radii.len() / 2], radii[radii.len() - 1], bests[bests.len() / 2],
+            100.0 * sph / f, 100.0 * pln / f, 100.0 * mx / f, 100.0 * bvh / f,
+            100.0 * tri_inside.0 as f64 / tri_inside.1.max(1) as f64
+        );
+    }
+}
+
+/// **§8t-Perf-Nachweis: flacher Lauf gegen Prune, an der Produktion.**
+///
+/// Drei Tabellen, weil eine einzelne Zahl hier lügt:
+///
+/// * **(A)** exakt die §8o/§8p-Methodik (EIN Sondenpunkt `[1,1,−1]`,
+///   `base = 0.5`), damit die Zeilen mit den veröffentlichten 237 … 4142 ns
+///   vergleichbar bleiben;
+/// * **(B)** über die LEBENDIGEN Gitterpunkte der Doktrin-Gitter — die Menge,
+///   an der `L` real ausgewertet wird;
+/// * **(C)** das ganze Feld über das ganze Gitter, also inklusive aller
+///   Punkte, an denen der Fernfeld-Skip den Block gar nicht erst betritt.
+#[test]
+#[ignore]
+fn probe_384_lb_pruning_perf() {
+    let delta = 2.0f32;
+    let fx = p8t_fixtures(delta);
+    let bench = |f: &dyn Fn([f32; 3]) -> f32, pts: &[[f32; 3]]| -> f64 {
+        let mut acc = 0.0f32;
+        let t0 = std::time::Instant::now();
+        for q in pts {
+            acc += f(*q);
+        }
+        let el = t0.elapsed().as_nanos() as f64 / pts.len() as f64;
+        std::hint::black_box(acc);
+        el
+    };
+
+    println!("\n── §8t (A) §8o-Methodik: EIN Sondenpunkt [1,1,−1], base 0.5 ──");
+    println!("{:<16} {:>7} {:>10} {:>10} {:>8}", "Fixture", "Stücke", "flach ns", "prune ns", "Faktor");
+    for (name, field, ..) in &fx {
+        let mut bs = Vec::new();
+        collect_lb(field, &mut bs);
+        let Some(b) = bs.first() else { continue };
+        let pts: Vec<[f32; 3]> = (0..200_000u32)
+            .map(|k| [1.0 + (k % 7) as f32 * 1e-4, 1.0, -1.0])
+            .collect();
+        let flat = |q: [f32; 3]| crate::offset_lb::lb_value_flat(q, 0.5, b);
+        let prun = |q: [f32; 3]| crate::offset_lb::lb_value(q, 0.5, b);
+        let tf = bench(&flat, &pts).min(bench(&flat, &pts));
+        let tp = bench(&prun, &pts).min(bench(&prun, &pts));
+        let livemark = if crate::offset_lb::lb_value_flat([1.0, 1.0, -1.0], 0.5, b)
+            == crate::offset_lb::LB_NONE
+        {
+            " (Block dort tot)"
+        } else {
+            ""
+        };
+        println!(
+            "{name:<16} {:>7} {tf:>10.0} {tp:>10.0} {:>7.2}×{livemark}",
+            b.pieces.len(),
+            tf / tp.max(1e-9)
+        );
+    }
+
+    println!("\n── §8t (B) `L` allein, über die LEBENDIGEN Gitterpunkte ──");
+    println!(
+        "{:<16} {:>7} {:>8} {:>10} {:>10} {:>8} {:>9}",
+        "Fixture", "Stücke", "Punkte", "flach ns", "prune ns", "Faktor", "besucht%"
+    );
+    for (name, field, lo, hi, n) in &fx {
+        let mut bs = Vec::new();
+        collect_lb(field, &mut bs);
+        let Some(b) = bs.first() else { continue };
+        let mut pts: Vec<[f32; 3]> = Vec::new();
+        for i in 0..*n {
+            for j in 0..*n {
+                for k in 0..*n {
+                    let f = |a: f64, c: f64, t: usize| (a + (c - a) * t as f64 / (*n - 1) as f64) as f32;
+                    let q = [f(lo[0], hi[0], i), f(lo[1], hi[1], j), f(lo[2], hi[2], k)];
+                    if crate::offset_lb::lb_value_flat(q, -1e6, b) != crate::offset_lb::LB_NONE {
+                        pts.push(q);
+                    }
+                }
+            }
+        }
+        if pts.is_empty() {
+            continue;
+        }
+        let (mut seen, mut tot) = (0usize, 0usize);
+        for q in &pts {
+            let mut best = f32::INFINITY;
+            for pc in &b.pieces {
+                tot += 1;
+                if let crate::offset_lb::LbPiece::Tri { a, n, emax, .. } = *pc {
+                    if crate::offset_lb::tri_cannot_beat(*q, a, n, emax, best) {
+                        continue;
+                    }
+                }
+                seen += 1;
+                let v = crate::offset_lb::piece_dist(*q, pc);
+                if v < best {
+                    best = v;
+                }
+            }
+        }
+        let flat = |q: [f32; 3]| crate::offset_lb::lb_value_flat(q, -1e6, b);
+        let prun = |q: [f32; 3]| crate::offset_lb::lb_value(q, -1e6, b);
+        let tf = bench(&flat, &pts).min(bench(&flat, &pts)).min(bench(&flat, &pts));
+        let tp = bench(&prun, &pts).min(bench(&prun, &pts)).min(bench(&prun, &pts));
+        println!(
+            "{name:<16} {:>7} {:>8} {tf:>10.0} {tp:>10.0} {:>7.2}× {:>8.1}%",
+            b.pieces.len(),
+            pts.len(),
+            tf / tp.max(1e-9),
+            100.0 * seen as f64 / tot.max(1) as f64
+        );
+    }
+
+    println!("\n── §8t (C) FELD über das ganze Doktrin-Gitter ──");
+    println!("{:<16} {:>7} {:>9} {:>10} {:>10} {:>8}", "Fixture", "Stücke", "live%", "vorher ns", "nachher ns", "Faktor");
+    for (name, field, lo, hi, n) in &fx {
+        let mut bs = Vec::new();
+        collect_lb(field, &mut bs);
+        let np: usize = bs.iter().map(|b| b.pieces.len()).sum();
+        if np == 0 {
+            continue;
+        }
+        let mut pts: Vec<[f32; 3]> = Vec::new();
+        for i in 0..*n {
+            for j in 0..*n {
+                for k in 0..*n {
+                    let f = |a: f64, c: f64, t: usize| (a + (c - a) * t as f64 / (*n - 1) as f64) as f32;
+                    pts.push([f(lo[0], hi[0], i), f(lo[1], hi[1], j), f(lo[2], hi[2], k)]);
+                }
+            }
+        }
+        let mut stops = Vec::new();
+        lb_stops(field, &mut stops);
+        let mut live = 0usize;
+        for p in &pts {
+            for (inner, d, b) in &stops {
+                let base = inner.sdf(*p, EvalMode::Visual) + *d;
+                let dc = ((p[0] - b.center[0]).powi(2) + (p[1] - b.center[1]).powi(2)
+                    + (p[2] - b.center[2]).powi(2)).sqrt();
+                if base <= b.delta && dc <= b.skip_r {
+                    live += 1;
+                }
+            }
+        }
+        let fieldb = |f: &BoundedCsg| -> f64 {
+            let mut acc = 0.0f32;
+            let t0 = std::time::Instant::now();
+            for p in &pts {
+                acc += f.sdf(*p, EvalMode::Visual);
+            }
+            let el = t0.elapsed().as_nanos() as f64 / pts.len() as f64;
+            std::hint::black_box(acc);
+            el
+        };
+        let now = fieldb(field).min(fieldb(field));
+        // Zusatzzeit des flachen Laufs an genau den lebendigen Punkten —
+        // derselbe Baum, nur die `L`-Strategie getauscht.
+        let mut extra = 0f64;
+        for (inner, d, b) in &stops {
+            let mut sub: Vec<[f32; 3]> = Vec::new();
+            for p in &pts {
+                let base = inner.sdf(*p, EvalMode::Visual) + *d;
+                let dc = ((p[0] - b.center[0]).powi(2) + (p[1] - b.center[1]).powi(2)
+                    + (p[2] - b.center[2]).powi(2)).sqrt();
+                if base <= b.delta && dc <= b.skip_r {
+                    sub.push(*p);
+                }
+            }
+            if sub.is_empty() {
+                continue;
+            }
+            let flat = |q: [f32; 3]| crate::offset_lb::lb_value_flat(q, -1e6, b);
+            let prun = |q: [f32; 3]| crate::offset_lb::lb_value(q, -1e6, b);
+            let tf = bench(&flat, &sub).min(bench(&flat, &sub));
+            let tp = bench(&prun, &sub).min(bench(&prun, &sub));
+            extra += (tf - tp) * sub.len() as f64;
+        }
+        let before = now + extra / pts.len() as f64;
+        println!(
+            "{name:<16} {np:>7} {:>8.1}% {before:>10.0} {now:>10.0} {:>7.2}×",
+            100.0 * live as f64 / pts.len() as f64,
+            before / now
+        );
+    }
+}
+
+/// Der Innen-Test von [`crate::offset_lb::tri_dist`] (für die Anteils-Messung).
+fn tri_is_inside(p: [f32; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> bool {
+    let sub = |u: [f32; 3], v: [f32; 3]| [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+    let cr = |u: [f32; 3], v: [f32; 3]| {
+        [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
+    };
+    let dt = |u: [f32; 3], v: [f32; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+    let (ba, cb, ac) = (sub(b, a), sub(c, b), sub(a, c));
+    let nor = cr(ba, ac);
+    if dt(nor, nor) <= 1e-24 {
+        return false;
+    }
+    let s = |e: [f32; 3], w: [f32; 3]| if dt(cr(e, nor), w) >= 0.0 { 1.0f32 } else { -1.0 };
+    s(ba, sub(p, a)) + s(cb, sub(p, b)) + s(ac, sub(p, c)) >= 2.0
+}
+
+/// Rekursive BVH-Simulation (Median-Split auf der längsten Achse der
+/// Stück-Zentren, näheres Kind zuerst).
+fn bvh_visit(
+    p: [f32; 3],
+    pieces: &[crate::offset_lb::LbPiece],
+    idx: &[usize],
+    best: &mut f32,
+    visited: &mut usize,
+) {
+    if idx.is_empty() {
+        return;
+    }
+    // Knoten-Hülle
+    let sub: Vec<crate::offset_lb::LbPiece> = idx.iter().map(|i| pieces[*i]).collect();
+    let (c, r) = group_sphere(&sub);
+    let d = ((p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2)).sqrt();
+    if (d - r).max(0.0) >= *best {
+        return;
+    }
+    if idx.len() <= 4 {
+        for i in idx {
+            *visited += 1;
+            let v = crate::offset_lb::piece_dist(p, &pieces[*i]);
+            if v < *best {
+                *best = v;
+            }
+        }
+        return;
+    }
+    // Median-Split auf der längsten Ausdehnung der Zentren
+    let ctrs: Vec<[f32; 3]> = idx.iter().map(|i| piece_sphere(&pieces[*i]).0).collect();
+    let mut ax = 0usize;
+    let mut span = -1.0f32;
+    for k in 0..3 {
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for q in &ctrs {
+            lo = lo.min(q[k]);
+            hi = hi.max(q[k]);
+        }
+        if hi - lo > span {
+            span = hi - lo;
+            ax = k;
+        }
+    }
+    let mut order: Vec<usize> = (0..idx.len()).collect();
+    order.sort_by(|a, b| ctrs[*a][ax].partial_cmp(&ctrs[*b][ax]).unwrap());
+    let half = order.len() / 2;
+    let left: Vec<usize> = order[..half].iter().map(|k| idx[*k]).collect();
+    let right: Vec<usize> = order[half..].iter().map(|k| idx[*k]).collect();
+    let near = |v: &[usize]| {
+        let sub: Vec<crate::offset_lb::LbPiece> = v.iter().map(|i| pieces[*i]).collect();
+        let (c, r) = group_sphere(&sub);
+        (((p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2)).sqrt() - r).max(0.0)
+    };
+    if near(&left) <= near(&right) {
+        bvh_visit(p, pieces, &left, best, visited);
+        bvh_visit(p, pieces, &right, best, visited);
+    } else {
+        bvh_visit(p, pieces, &right, best, visited);
+        bvh_visit(p, pieces, &left, best, visited);
+    }
+}
+
+/// **§8t-Exaktheits-Pin: der Prune ändert `L` an keinem Punkt um ein Bit.**
+///
+/// Das ist die eine Zusage des Pakets. `L` ist eine BEWIESENE untere Schranke
+/// von `dist(x,∁Ω)`; ein Stück wegzulassen, das das `min` gesenkt hätte, macht
+/// `L` grösser als die Wahrheit und erlaubt Phantom-Material (§8o, Regel 1).
+/// Der Prune ist deshalb nicht „nah genug", sondern **wertgleich**: geprüft
+/// wird `to_bits()`, nicht eine Toleranz, an jedem Gitterpunkt aller 13
+/// Fixturen, an dem der Block lebendig ist.
+#[test]
+fn lb_pruning_is_bit_exact_384() {
+    let delta = 2.0f32;
+    let (mut checked, mut diff, mut skipped) = (0usize, 0usize, 0usize);
+    for (name, field, lo, hi, n) in p8t_fixtures(delta) {
+        let mut bs = Vec::new();
+        collect_lb(&field, &mut bs);
+        for b in &bs {
+            for i in 0..n {
+                for j in 0..n {
+                    for k in 0..n {
+                        let f = |a: f64, c: f64, t: usize| {
+                            (a + (c - a) * t as f64 / (n - 1) as f64) as f32
+                        };
+                        let p = [f(lo[0], hi[0], i), f(lo[1], hi[1], j), f(lo[2], hi[2], k)];
+                        // `base = −1e6` hält den Innen-Indikator offen: der Pin
+                        // misst die Stück-Schleife, nicht das Gate davor.
+                        let a = crate::offset_lb::lb_value(p, -1e6, b);
+                        let c = crate::offset_lb::lb_value_flat(p, -1e6, b);
+                        if a.to_bits() != c.to_bits() {
+                            diff += 1;
+                        }
+                        if a != crate::offset_lb::LB_NONE {
+                            checked += 1;
+                            // Wie viele Stücke der Prune wirklich spart —
+                            // wäre das 0, prüfte der Pin nichts.
+                            let mut best = f32::INFINITY;
+                            for pc in &b.pieces {
+                                if let crate::offset_lb::LbPiece::Tri { a, n, emax, .. } = *pc {
+                                    if crate::offset_lb::tri_cannot_beat(p, a, n, emax, best) {
+                                        skipped += 1;
+                                        continue;
+                                    }
+                                }
+                                let v = crate::offset_lb::piece_dist(p, pc);
+                                if v < best {
+                                    best = v;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(diff, 0, "{name}: {diff} Bit-Abweichungen zwischen Prune und flachem Lauf");
+    }
+    assert!(checked > 20_000, "nur {checked} lebendige Punkte geprüft — der Pin misst zu wenig");
+    assert!(
+        skipped > 100_000,
+        "der Prune hat nur {skipped} Stücke übersprungen — dann pinnt der Test die \
+         Wertgleichheit einer Maschine, die gar nicht prunet"
+    );
+}
+
+/// **§8t-Gegenprobe: eine künstlich zu kleine `emax` LÄSST den Pin fallen.**
+///
+/// Ohne sie wäre `lb_pruning_is_bit_exact_384` wertlos — er könnte auch dann
+/// grün sein, wenn der Prune nie greift oder die Schranke beliebig wäre. Hier
+/// wird `emax` (der Sicherheitsabzug, der das Rundungs-Residuum der genäherten
+/// Normale deckt) auf `−0.05 mm` gesetzt, also die Schranke um 0.05 mm ZU
+/// SCHARF gemacht. Dann darf der Prune Stücke verwerfen, die das `min` sehr
+/// wohl gesenkt hätten — und genau das muss sichtbar werden.
+#[test]
+fn lb_pruning_counter_probe_too_tight_emax_384() {
+    let delta = 2.0f32;
+    let mut worst = 0usize;
+    for (_, field, lo, hi, n) in p8t_fixtures(delta) {
+        let mut bs = Vec::new();
+        collect_lb(&field, &mut bs);
+        for b in &bs {
+            let mut bad = b.clone();
+            for pc in bad.pieces.iter_mut() {
+                if let crate::offset_lb::LbPiece::Tri { emax, .. } = pc {
+                    *emax = -0.05;
+                }
+            }
+            let mut diff = 0usize;
+            for i in 0..n {
+                for j in 0..n {
+                    for k in 0..n {
+                        let f = |a: f64, c: f64, t: usize| {
+                            (a + (c - a) * t as f64 / (n - 1) as f64) as f32
+                        };
+                        let p = [f(lo[0], hi[0], i), f(lo[1], hi[1], j), f(lo[2], hi[2], k)];
+                        if crate::offset_lb::lb_value(p, -1e6, &bad).to_bits()
+                            != crate::offset_lb::lb_value_flat(p, -1e6, b).to_bits()
+                        {
+                            diff += 1;
+                        }
+                    }
+                }
+            }
+            worst = worst.max(diff);
+        }
+    }
+    assert!(
+        worst > 0,
+        "die Gegenprobe blieb still: mit einer um 0.05 mm ZU SCHARFEN Schranke muss der \
+         Prune messbar falsch werden, sonst prüft der Exaktheits-Pin nichts"
+    );
+}

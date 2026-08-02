@@ -391,7 +391,7 @@ fn lb_to_tree(base: &Tree, p: &[Tree; 3], blk: &crate::offset_lb::LbBlock) -> Tr
     let mut best: Option<Tree> = None;
     for piece in &blk.pieces {
         let d = match *piece {
-            crate::offset_lb::LbPiece::Tri { a, b, c } => tri_dist_tree(p, a, b, c),
+            crate::offset_lb::LbPiece::Tri { a, b, c, .. } => tri_dist_tree(p, a, b, c),
             crate::offset_lb::LbPiece::Rev { o, ax, r0, z0, r1, z1 } => {
                 rev_dist_tree(p, o, ax, r0, z0, r1, z1)
             }

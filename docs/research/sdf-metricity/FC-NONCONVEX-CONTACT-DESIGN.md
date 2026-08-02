@@ -4193,6 +4193,276 @@ hier bestimmt, ist der §8p-Satz, nicht die Monotonie einer Maske.
   Nähte**, **die latente `safe_sqrt`-Entartung**: unverändert
   §8j/§8m/§8n/§8q/§8r.
 
+## 8t. Der `L`-Block war der Flaschenhals — und der naheliegende Ausweg war der falsche (#384, 2026-08-02)
+
+§8o hat es benannt und liegen gelassen, §8p hat es wiederholt: *„Die
+offensichtliche Optimierung ist ein räumliches Pruning der Stück-Liste; sie ist
+nicht gebaut."* Am Rippen-Kamm 4×1.5/0.8 kostet `L` **4142 ns/Punkt** bei 296
+Stücken und dominiert damit die Auswertung. §8t baut das Pruning — aber nicht
+das, das im Auftrag stand.
+
+### Erst messen (Sonde `probe_384_lb_pruning_cost`)
+
+Vier Messungen über alle 13 Fixturen der §8p-Matrix, jeweils auf deren
+Doktrin-Gitter:
+
+**(1) Wer trägt die 296?** Jede Fixture hat genau EINEN `L`-Block. Der
+Rippen-Kamm 4×1.5/0.8 trägt die 296 (alle `Tri`), der Kamm 4×2.0/1.0 140, die
+Ecken-Schalen je 72, notch 28, die Stufen-Nabe 15 — und nur die Nabe hat
+überhaupt `Rev`-Stücke (10 `Tri` / 5 `Rev`). Der teure Fall ist also der
+DREIECKS-Fall, ausschliesslich.
+
+**(2) Kosten je Stück-Art, isoliert:** `tri_dist` **23.2 ns**, `rev_dist`
+**3.7 ns** — Faktor 6.3. `tri_dist` bezahlt drei `seg_dist2` mit je einer
+Division, und zwar unbedingt, obwohl der Innen-Zweig das Kanten-Minimum gar
+nicht liest.
+
+**(3) Anteil von `L` am FELD, über das echte Gitter** (nicht am
+Worst-Case-Punkt): Kamm 1.5/0.8 **92.0 %**, Kamm 2.0/1.0 86.0 %, notch 77 %,
+Ecken-Schale `t/δ = 6` 66.3 %, Nabe 27.4 %. Der Block ist an 0.3 % (Nabe) bis
+87.5 % (Schale 6) der Gitterpunkte lebendig. Das bestätigt den Befund als real
+und nicht als Artefakt eines konstruierten Punktes: **`L` IST die Auswertung.**
+
+**(4) Ordnungs-Statistik und Orakel-Schranke.** Die entscheidende Messung:
+gäbe es den PERFEKTEN laufenden `best` (das wahre Minimum, von Anfang an), wie
+viele Stücke dürfte eine konservative Schranke `B(x,k) ≤ dist(x,Stück_k)` dann
+überspringen? Das ist die OBERE Grenze jeder Strategie mit dieser Schranke.
+
+| Fixture | Stück-Radius (Median / max) | `best` (Median) | Hüllkugel | Trägerebene | `max` beider | **echte BVH** |
+|---|---|---|---|---|---|---|
+| Stufen-Nabe | 26.7 / 29.8 | 2.66 | 0.0 % | 66.7 % | 66.7 % | **100.0 %** |
+| Ecken-Schale `t/δ = 2.1` | 29.8 / 53.4 | 2.27 | 36.5 % | 62.4 % | 82.1 % | **100.0 %** |
+| Ecken-Schale `t/δ = 6` | 29.8 / 53.5 | 5.26 | 42.8 % | 64.9 % | 85.3 % | **99.9 %** |
+| Rippen-Kamm 4×1.5/0.8 | 8.7 / 29.8 | 4.02 | 79.9 % | 70.6 % | 94.8 % | 37.0 % |
+| Rippen-Kamm 4×2.0/1.0 | 8.7 / 29.8 | 4.02 | 68.0 % | 72.5 % | 92.5 % | 51.2 % |
+| notch 90° | 74.5 / 137.4 | 4.29 | 52.8 % | 95.2 % | 96.5 % | **100.0 %** |
+
+(Die BVH-Spalte ist BESUCHTE Stücke, nicht übersprungene — 100 % heisst: die
+Hierarchie prunet NICHTS.)
+
+### Die Hypothese im Auftrag ist gemessen falsch
+
+Der Auftrag nannte „exaktes BVH-artiges Distanz-Pruning: Gruppen mit
+Hüllkugel-Schranke, Gruppe überspringen wenn `b_G(x) ≥ best`". Simuliert wurde
+genau das — Gruppen zu 8/16/32 in Array-Ordnung UND eine echte
+Median-Split-BVH mit Nähere-Kind-zuerst-Traversierung. Ergebnis: **auf 10 von
+13 Fixturen besucht die BVH 100.0 % der Stücke**, prunet also kein einziges.
+
+Der Grund steht in der Tabelle und ist strukturell, nicht behebbar: die
+**Stücke sind riesig gegen die Abfrage-Distanzen**. Median-Hüllradius 8.7 …
+74.5 mm gegen ein `best` von 2.3 … 5.3 mm. Eine Hüllkugel um ein 40-mm-Dreieck
+hat Radius ~28 mm; die Schranke `|x − c| − r` ist an einem Punkt, der 2 mm über
+der Fläche schwebt, tief negativ und damit wertlos. Eine Gruppen-Hülle ist
+NOCH grösser. Das ist der siebte Fall in Folge, in dem der vorab benannte
+Verdächtige falsch war: ein Bounding-Volume ist ein guter Proxy für kompakte
+Objekte und ein schlechter für grosse flache — und `∂Ω` besteht aus grossen
+flachen.
+
+Umgekehrt zeigt dieselbe Tabelle den Gewinner: die **Trägerebene** des Dreiecks
+rejiziert 62 … 95 %, ohne jede Hierarchie. Sie ist exakt in genau der einen
+Dimension, in der die Hüllkugel versagt — sie hat keine Ausdehnung senkrecht
+zur Fläche.
+
+### Die Schranke, hergeleitet
+
+Sei `T = conv(a,b,c)` und `q ∈ T`, also `q = a + β(b−a) + γ(c−a)` mit `β,γ ≥ 0`
+und `β+γ ≤ 1`. Für einen **BELIEBIGEN** Vektor `n ≠ 0` gilt
+
+```text
+n·(p−q) = n·(p−a) − β·n·(b−a) − γ·n·(c−a)
+```
+
+und wegen `|βA + γB| ≤ max(|A|,|B|)` für `β,γ ≥ 0, β+γ ≤ 1`
+
+```text
+|n·(p−q)| ≥ |n·(p−a)| − max(|n·(b−a)|, |n·(c−a)|).
+```
+
+Mit Cauchy–Schwarz (`|p−q| ≥ |n·(p−q)|/|n|`) folgt für `|n| = 1`
+
+```text
+dist(p,T)  ≥  |n̂·(p−a)| − max(|n̂·(b−a)|, |n̂·(c−a)|).
+```
+
+**Der Korrektur-Term ist das Ganze.** Wäre `n̂` die exakte Flächennormale, wären
+beide Terme null und die Schranke wäre die nackte Ebenen-Distanz. Sie sind es
+nicht: `n̂` ist ein gerundetes, normiertes Kreuzprodukt. Für ein gesundes
+Dreieck sind sie Rundungs-Residuen (`≈ 10⁻⁶ mm`) und die Schranke praktisch die
+Ebenen-Distanz. Für ein ENTARTETES (fast kollineares) Dreieck ist `n̂` dagegen
+Rundungsrauschen mit **beliebiger Richtung** — und genau dann werden die
+Korrektur-Terme gross und schalten die Schranke von selbst ab. Die Formel
+braucht deshalb keine Entartungs-Schwelle und keine Magic-Konstante: sie ist
+für jedes `n` wahr, und ihre Schärfe verfällt genau dort, wo sie muss.
+
+Ohne den Term wäre der Prune an einem Sliver falsch — er würde gegen eine
+Zufallsebene messen, ein echtes Randstück verwerfen und damit `L` ÜBERschätzen:
+Phantom-Material, der eine Fehler, den `L` nicht machen darf (§8o, Regel 1).
+
+**Warum das Ergebnis bit-exakt ist, nicht „nah genug".** Die Stück-Schleife
+aktualisiert nur bei `d < best`. Der Prune überspringt ein Stück nur, wenn
+`dist ≥ best` bewiesen ist — dann ist `d < best` falsch, das Stück hätte nichts
+geändert. Es wird also nicht „ein kleiner Fehler in Kauf genommen", sondern eine
+Operation weggelassen, die nachweislich wirkungslos ist. `min` ist zudem
+assoziativ und kommutativ OHNE Rundung (f32-`min` wählt einen Operanden aus, es
+rechnet nicht), die Auswerte-Reihenfolge der verbleibenden Stücke ist also
+ohnehin unerheblich; die einzige Ausnahme wäre NaN, und `piece_dist` liefert
+keine (jede Wurzel steht über einer Quadratsumme).
+
+**`Rev`-Stücke bekommen keinen Prune.** `rev_dist` ist schon der billige Fall
+(3.7 ns), und ihr teurer Anteil — die Projektion auf die Achse — ist genau das,
+was auch jede Vorab-Schranke bräuchte.
+
+### Rundung: was `emax` alles deckt
+
+Die Herleitung ist exakt in ℝ; ausgewertet wird in f32. `emax` ist der
+vorberechnete Abzug und deckt VIER Quellen, alle absolut beschränkt durch die
+**Reichweite** `R = skip_r + |a − center|`, die grösste Distanz `|p − a|`, die
+ein lebendiger Punkt haben kann:
+
+| Quelle | Schranke |
+|---|---|
+| Residuum `max(|n̂·(b−a)|, |n̂·(c−a)|)` | exakt in f64 berechnet, kein Fehler |
+| `\|n̂\| ≈ 1` nach f32-Rundung der Normierung | `≤ 2·2⁻²⁴·R` |
+| f32-Rundung des Laufzeit-Skalarprodukts `n̂·(p−a)` | `≤ 10·2⁻²⁴·R` |
+| Rundung von `tri_dist` selbst (der Vergleichswert!) | `≤ 10·2⁻²⁴·R` |
+| f32-Rundung der Addition `best + emax` | `≤ 2·2⁻²⁴·R` |
+
+Angesetzt ist `64·2⁻²⁴·R`, also rund das Doppelte der Summe. Der Preis an
+Schärfe ist nichts: bei `R = 100 mm` sind das `4·10⁻⁴ mm` gegen ein `best` von
+Millimetern.
+
+**Format-Invariante (tragend!):** `emax` gilt nur für Punkte INNERHALB der
+Fernfeld-Kugel `(center, skip_r)`, denn nur dort ist `|p−a| ≤ R`. Jeder Spiegel
+MUSS die Kugel-Prüfung vor der Stück-Schleife ausführen. Sie ist ohnehin überall
+da — es ist der Fernfeld-Skip aus §8o —, aber sie ist ab §8t nicht mehr bloss
+eine Kostenoptimierung, sondern Voraussetzung der Korrektheit.
+
+### Format: vorher / nachher
+
+Das Pruning steckt NICHT in Gruppen-Headern (die Messung hat die Gruppen-Idee
+widerlegt), sondern in vier Worten je Dreieck. Der Kopf bleibt unverändert.
+
+| | vorher (§8o–§8s) | nachher (§8t) |
+|---|---|---|
+| `LB_HEADER` | 7 (`n`, `delta`, `slack`, `c[3]`, `skip_r`) | **unverändert** |
+| `LB_STRIDE` | 11 | **14** |
+| `Tri`-Record | `kind, a[3], b[3], c[3]` + 1 leer | `kind, a[3], b[3], c[3], n̂[3], emax` |
+| `Rev`-Record | `kind, o[3], ax[3], r0, z0, r1, z1` | unverändert + **3 leere Worte** |
+| Payload | `7 + 11N` | `7 + 14N` |
+
+Kein Gruppen-Header, kein Skip-Offset, kein Baum — die Schleife bleibt flach.
+Das Tape des 296-Stück-Kamms wächst von 3256 auf 4440 `L`-Worte (+36 %).
+
+**Die Strategie darf je Spiegel verschieden sein, der WERT nicht.** CPU
+(`offset_lb::lb_value`, `sdf_compiler` `OP_STOP_LB`) und Mesher
+(`cgal-mesher/src/sdf_interp.h`) prunen. Die **GPU behält bewusst den flachen
+Loop** (`web/src/sdfVmInterpreter.ts`): ein datenabhängiger Zweig in einer
+TSL-`Loop` divergiert über die Lanes, und der übersprungene Zweig kostet auf
+SIMD trotzdem Zeit — dort wäre nichts zu gewinnen. Sie liest die vier Worte und
+überspringt sie. Der `fidget`-Pfad (`lb_to_tree`) baut einen DAG aus
+Konstanten, kennt gar keine Laufzeit-Schleife und bleibt unberührt.
+
+### Nebenbefund, mitgenommen: `tri_dist` rechnete das Kanten-Minimum unbedingt
+
+Die 23.2 ns aus Messung (2) haben einen zweiten Grund: `tri_dist` berechnete
+`edge` (drei `seg_dist2`, drei Divisionen) VOR der Innen-Prüfung, obwohl der
+Innen-Zweig es nie liest. Das ist jetzt lazy. Ein reines Auswerte-Umordnen —
+beide Zweige geben denselben Ausdruck zurück wie zuvor, also bit-identisch; die
+Golden-Feldwerte belegen es.
+
+### Kosten, vorher / nachher (Sonde `probe_384_lb_pruning_cost`)
+
+**(A) §8o/§8p-Methodik** — EIN Sondenpunkt `[1,1,−1]`, `base = 0.5`, damit die
+Zeilen mit den veröffentlichten Zahlen vergleichbar bleiben. `L` ns/Punkt:
+
+| Fixture | Stücke | flach | **mit Prune** | Faktor |
+|---|---|---|---|---|
+| Stufen-Nabe | 15 | 144 | 133 | 1.08× |
+| Ecken-Schale `t/δ = 2` | 72 | 1048 | **682** | 1.54× |
+| notch 90° | 28 | 373 | **158** | 2.35× |
+| notch 60° | 28 | 379 | 209 | 1.81× |
+| **Rippen-Kamm 4×1.5/0.8** | **296** | 4354 | **1906** | **2.28×** |
+| Rippen-Kamm 4×2.0/1.0 | 140 | 2087 | **716** | **2.91×** |
+
+Die benannte Worst-Case-Zahl der Aufgabe — 4142 ns/Punkt bei 296 Stücken — ist
+damit **1906 ns/Punkt**.
+
+**(B) `L` allein über die LEBENDIGEN Gitterpunkte** (die Menge, an der `L` real
+ausgewertet wird — 8608 … 13824 Punkte je Fixture):
+
+| Fixture | Stücke | flach | mit Prune | Faktor | besuchte Stücke |
+|---|---|---|---|---|---|
+| Stufen-Nabe | 15 | 156 | 115 | 1.36× | 69.0 % |
+| Ecken-Schale `t/δ = 2` | 72 | 1034 | 528 | 1.96× | 41.2 % |
+| Ecken-Schale `t/δ = 6` | 72 | 1023 | 586 | 1.75× | 46.2 % |
+| notch 90° / 60° | 28 | 375 / 390 | 155 / 177 | 2.42× / 2.20× | 31.5 % / 35.2 % |
+| **Rippen-Kamm 4×1.5/0.8** | **296** | 4315 | **1525** | **2.83×** | **28.7 %** |
+| Rippen-Kamm 4×2.0/1.0 | 140 | 2058 | 753 | 2.73× | 28.8 % |
+
+**(C) Das ganze FELD über das ganze Doktrin-Gitter** (inklusive aller Punkte,
+an denen der Fernfeld-Skip den Block gar nicht betritt) — das ist der Gewinn,
+den ein Nutzer merkt:
+
+| Fixture | `L` lebendig | vorher | nachher | Faktor |
+|---|---|---|---|---|
+| Stufen-Nabe | 0.3 % | 307 | 307 | 1.00× |
+| Ecken-Schale `t/δ = 2.4` | 24.9 % | 1622 | 1522 | 1.07× |
+| Ecken-Schale `t/δ = 4` | 68.3 % | 1625 | 1334 | 1.22× |
+| Ecken-Schale `t/δ = 6` | 87.5 % | 1476 | 1104 | 1.34× |
+| notch 90° / 60° | 32.5 / 35.4 % | 203 / 234 | 134 / 161 | 1.52× / 1.46× |
+| **Rippen-Kamm 4×1.5/0.8** | 62.5 % | 3378 | **1844** | **1.83×** |
+| Rippen-Kamm 4×2.0/1.0 | 62.5 % | 1752 | 1037 | 1.69× |
+
+**Wo der Prune NICHT gewinnt, und warum das ehrlich dazugehört.** Am
+BLOCK-ZENTRUM — einem Punkt, der von allen Stücken ungefähr gleich weit weg ist
+— steigt die Besuchsrate auf 72 % und der Prune wird an der Ecken-Schale
+**0.74×, also langsamer**. Der Test selbst ist billig (ein Skalarprodukt), aber
+bei einer Rejektionsrate um 30 % ist der Zweig maximal schlecht vorhersagbar,
+und eine Fehlvorhersage kostet mehr als der gesparte Distanz-Aufruf. Solche
+Punkte existieren; über jedes reale Gitter sind sie in der Minderheit, und
+keine der 13 Fixturen verliert in (A), (B) oder (C).
+
+### Prüfungen
+
+* **Golden — die Feldwerte sind byte-identisch:** alle **17920** `PT`-Zeilen
+  über 35 Szenen unverändert. Der Golden-Dump als Ganzes ist es NICHT, und das
+  ist erwartet und geprüft: die einzigen Unterschiede sind zwei `NOPS`-Zeilen
+  (420 → 504 und 3290 → 3506), exakt `+3` Worte je Stück der beiden Szenen mit
+  `L`-Block (28 bzw. 72 Stücke). Ein Format-Umbau, der die Tape-Länge nicht
+  ändert, wäre kein Format-Umbau — der semantische Gate ist das Feld, und es
+  steht.
+* `check_interp` (C++-Mesher gegen das neue Golden): **35 Szenen / 17920
+  Prüfungen / 0 failures**, `worst_err = 0.000002`.
+* Tests: Kernel-Fast-Tier **1471** (Baseline 1469, zwei neue Pins), Web **2082**
+  (unverändert), `cargo test --workspace` **1576** (Baseline 1574),
+  `OFFSET_FUZZ_ITERS=200` Fuzz **5/5**.
+
+### Neue Pins
+
+* `lb_pruning_is_bit_exact_384` — der Prune gegen den flachen Lauf
+  (`lb_value_flat`), `to_bits()`-Vergleich statt Toleranz, an jedem
+  Gitterpunkt aller 13 Fixturen, an dem der Block lebendig ist. Der Pin zählt
+  mit, wie viele Stücke der Prune wirklich spart, und schlägt fehl, wenn es zu
+  wenige sind — sonst pinnte er die Wertgleichheit einer Maschine, die gar nicht
+  prunet.
+* `lb_pruning_counter_probe_too_tight_emax_384` — die Gegenprobe: mit einer um
+  0.05 mm ZU SCHARFEN Schranke (`emax = −0.05`) MUSS der Prune messbar falsch
+  werden. Ohne sie wäre der Exaktheits-Pin wertlos.
+* Sonden (nicht im Fast-Tier): `probe_384_lb_pruning_cost` (die vier Messungen
+  oben, inkl. der BVH-Simulation, die die Auftrags-Hypothese widerlegt) und
+  `probe_384_lb_pruning_perf` (die drei Kosten-Tabellen).
+
+### Was §8t NICHT gebaut hat
+
+* **Kein räumliches Pruning der Stück-LISTE.** Die BVH-Simulation hat es
+  widerlegt (100 % Besuch auf 10 von 13 Fixturen); der Befund steht oben. Wer
+  es erneut vorschlägt, muss zuerst erklären, wie eine Hülle um ein 40-mm-
+  Dreieck an einem 2 mm entfernten Punkt greifen soll.
+* **Kein Prune auf der GPU.** Begründet oben (Divergenz); der Wert ist dort
+  identisch, nur der Weg ist der flache.
+* **Keine Verkleinerung der Stücke.** Kleinere Stücke würden die Hüllkugeln
+  brauchbar machen, kosten aber mehr Stücke — nicht gemessen, nicht gebaut.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.

@@ -428,6 +428,26 @@ für Shell.
   Worst-Case IM Band), Toleranz-Staffelung (Render 0.01 mm / Export
   0.001 mm), Opcode-Budget (`SDF_MAX_OPCODES`) beobachten. Offene Frage:
   f32-GPU-Verhalten der Bogen-Distanz + Gating (Spike war f64).
+
+  **Teil-Entlastung, gemessen und gebaut (#384 §8t, v0.56.18).** Der
+  dominierende Posten war nicht der Kanal, sondern die untere
+  Distanzschranke `L` des Stopps: über das echte Doktrin-Gitter trägt sie
+  **92 %** der Feldzeit am Rippen-Kamm 4×1.5/0.8 (296 Randstücke, 4142
+  ns/Punkt), 86 % am Kamm 4×2.0/1.0, 66 % an der Ecken-Schale. Jedes
+  Dreieck trägt jetzt seine **Trägerebene** (`n̂`, `emax`) im Record
+  (`LB_STRIDE` 11 → 14) und wird EXAKT übersprungen, wenn es das laufende
+  `min` beweisbar nicht mehr senken kann. Ergebnis: `L` 2.3–2.9× schneller
+  (Worst-Fixture **4142 → 1906 ns/Punkt**), das ganze Feld 1.5–1.8× an den
+  Fixturen mit grossem Block; **Feldwert bit-identisch** (Golden: alle
+  17920 Probe-Punkte unverändert).
+
+  Wichtiger Nebenbefund für künftige Anläufe: **räumliches Pruning über
+  Hüllkugeln/BVH funktioniert hier NICHT** — simuliert besucht eine
+  Median-Split-BVH auf 10 von 13 Fixturen 100 % der Stücke. Die Randstücke
+  sind gross und flach (Median-Hüllradius 8.7–74.5 mm) gegen
+  Abfrage-Distanzen von 2–5 mm; ein Bounding-Volume ist dafür der falsche
+  Proxy. Details und Herleitung in
+  `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` §8t.
 * **Provenance/Picking — ENTSCHIEDEN (vor Phase B, 2026-07-18),
   VERDRAHTET (v0.51.0, 2026-08-01).**
   Dreiteilige Regel, konsistent mit der A2-Konvention für Join-Bögen:

@@ -174,9 +174,22 @@ pub const OP_STOP_LIMIT: u32     = 0x46; // +1
 
 // offset_tree §8o (#384): **untere Distanzschranke eines Offset-Stopps.**
 // Payload `n, delta, slack, c[3], skip_r` + `n` Stück-Records à
-// `offset_lb::LB_STRIDE` Worte (erstes Record-Wort = `kind`: 0 = Dreieck,
-// 1 = rotiertes (r,z)-Segment). Stack-neutral wie OP_STOP_BASE; setzt das
-// Register `stop_lb` auf `min_k dist(x, Stück_k) − slack`.
+// `offset_lb::LB_STRIDE` = 14 Worte (erstes Record-Wort = `kind`: 0 =
+// Dreieck `a[3] b[3] c[3] n̂[3] emax`, 1 = rotiertes (r,z)-Segment
+// `o[3] ax[3] r0 z0 r1 z1` + 3 leere Worte). Stack-neutral wie
+// OP_STOP_BASE; setzt das Register `stop_lb` auf
+// `min_k dist(x, Stück_k) − slack`.
+//
+// §8t: `n̂`/`emax` sind die vorberechnete Ebenen-Schranke des Dreiecks und
+// tragen KEINE Geometrie — sie erlauben jedem Spiegel, ein Stück exakt zu
+// überspringen, das das laufende `min` beweisbar nicht mehr senken kann
+// (`offset_lb::tri_cannot_beat`). Der Feldwert ist mit und ohne Prune
+// bit-identisch; ein Spiegel darf den flachen Loop behalten (die GPU tut
+// es, s. `web/src/sdfVmInterpreter.ts`).
+//
+// **Format-Invariante:** `emax` gilt nur für Punkte INNERHALB der
+// Fernfeld-Kugel `(c, skip_r)`. Jeder Spiegel muss die Kugel-Prüfung vor
+// der Stück-Schleife ausführen — sie ist ohnehin da (der Fernfeld-Skip).
 //
 // Warum: das konkave Gate war `G − d₀` mit `G = (c−1)·δ + Marge` — eine
 // Ein-Term-Kappe, die an der Stufen-Nabe 0.868 statt der gebrauchten 1.200
@@ -194,7 +207,7 @@ pub const OP_STOP_LIMIT: u32     = 0x46; // +1
 // Basis-Register schon hält (`d₀ − δ = min_k f_k` ist das naive
 // Vereinigungsfeld). Ohne dieses Opcode bleibt `stop_lb = −1e30`, das `max`
 // im Gate also wirkungslos (CPU-Referenz: `offset_lb::lb_value`).
-pub const OP_STOP_LB: u32        = 0x47; // +7+11N
+pub const OP_STOP_LB: u32        = 0x47; // +7+14N
 
 pub const OP_END: u32            = 0xFF;
 
@@ -2131,6 +2144,10 @@ pub fn eval_opcodes_with_volumes(
                         let w = |i: usize| opcodes[a + i];
                         let w3 = |i: usize| [opcodes[a + i], opcodes[a + i + 1], opcodes[a + i + 2]];
                         let dd = if w(0) < 0.5 {
+                            // §8t: exakter Prune vor der teuren Distanz.
+                            if crate::offset_lb::tri_cannot_beat(pt, w3(1), w3(10), w(13), best) {
+                                continue;
+                            }
                             crate::offset_lb::tri_dist(pt, w3(1), w3(4), w3(7))
                         } else {
                             crate::offset_lb::rev_dist(pt, w3(1), w3(4), w(7), w(8), w(9), w(10))

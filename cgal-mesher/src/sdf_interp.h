@@ -1148,10 +1148,14 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
       case OP_STOP_LB: {
         // #384 §8o: untere Distanzschranke des Stopps — 1:1-Spiegel von
         // kernel offset_lb::lb_value / sdf_compiler.rs OP_STOP_LB.
-        // Kopf 7: n delta slack center(3) skip_r; je Stueck 11 Floats
-        // (Wort 0 = kind: 0 = Dreieck a(3) b(3) c(3), 1 = rotiertes
-        // (r,z)-Segment o(3) ax(3) r0 z0 r1 z1).
-        const int kLb = 11;
+        // Kopf 7: n delta slack center(3) skip_r; je Stueck 14 Floats
+        // (Wort 0 = kind: 0 = Dreieck a(3) b(3) c(3) nhat(3) emax, 1 =
+        // rotiertes (r,z)-Segment o(3) ax(3) r0 z0 r1 z1 + 3 leere Worte).
+        // #384 §8t: nhat/emax sind die vorberechnete Ebenen-Schranke; sie
+        // erlauben den EXAKTEN Prune unten (Wert bit-identisch zum flachen
+        // Lauf) und gelten nur innerhalb der Fernfeld-Kugel — deshalb steht
+        // die Kugel-Pruefung zwingend vor der Schleife.
+        const int kLb = 14;
         int n = (int)rd();
         float lb_delta = rd();
         float lb_slack = rd();
@@ -1170,6 +1174,15 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
             const float* a = opcodes + lb_base + k * kLb;
             float dd;
             if (a[0] < 0.5f) {
+              // #384 §8t: exakter Prune (CPU: offset_lb::tri_cannot_beat) —
+              // |nhat*(p-a)| >= best + emax beweist dist >= best, das Stueck
+              // haette das min also nicht gesenkt.
+              {
+                const float* nh = a + 10;
+                float hh = nh[0] * (pt[0] - a[1]) + nh[1] * (pt[1] - a[2]) +
+                           nh[2] * (pt[2] - a[3]);
+                if (fabsf(hh) >= best + a[13]) continue;
+              }
               // Dreieck (CPU: offset_lb::tri_dist).
               const float* va = a + 1;
               const float* vb = a + 4;

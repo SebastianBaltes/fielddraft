@@ -64,8 +64,16 @@ use crate::bvh::BoundedCsg;
 use crate::transform::quat_rotate;
 use fielddraft_protocol::Primitive;
 
-/// Worte je Stück-Record im Tape (`kind` + 10 Nutzworte).
-pub const LB_STRIDE: usize = 11;
+/// Worte je Stück-Record im Tape (`kind` + 13 Nutzworte).
+///
+/// #384 §8t: war 11. Die vier neuen Worte sind die **vorberechnete
+/// Ebenen-Schranke** eines Dreiecks (`n̂` und `emax`, s. [`tri_cannot_beat`]).
+/// Sie stehen im Record und nicht in einem Seiten-Array, weil jeder Spiegel
+/// die Payload-Länge mit EINER Multiplikation ausrechnen können muss und weil
+/// die Schranke sonst pro Punkt neu hergeleitet werden müsste — genau das hat
+/// §8t gemessen und verworfen (der Laufzeit-Aufbau kostet so viel wie die
+/// Distanz selbst). `Rev`-Stücke lassen die drei letzten Worte leer.
+pub const LB_STRIDE: usize = 14;
 
 /// Kopf-Worte des `OP_STOP_LB`-Payloads: `n`, `delta`, `slack`, `c[3]`,
 /// `skip_r`.
@@ -80,11 +88,17 @@ pub const LB_NONE: f32 = -crate::offset_channel::END_PLANE_OFF;
 /// Ein Randstück der zugeschnittenen Vereinigungs-B-Rep.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub enum LbPiece {
-    /// Welt-Dreieck `(a,b,c)`.
+    /// Welt-Dreieck `(a,b,c)` plus seine vorberechnete Ebenen-Schranke
+    /// (#384 §8t) — `n̂` ist die genäherte Einheitsnormale, `emax` der
+    /// Sicherheitsabzug aus [`LbPiece::tri`]. Nur `a`/`b`/`c` beschreiben
+    /// Geometrie; `n̂`/`emax` sind reine Beschleunigung und haben auf den
+    /// Feldwert **keinen** Einfluss.
     Tri {
         a: [f32; 3],
         b: [f32; 3],
         c: [f32; 3],
+        n: [f32; 3],
+        emax: f32,
     },
     /// Rotationsfläche: das Segment `(r0,z0) → (r1,z1)` im `(r,z)`-Halbebenen-
     /// Profil um die Achse `o + t·ax` (`|ax| = 1`), voll umlaufend.
@@ -99,15 +113,66 @@ pub enum LbPiece {
 }
 
 impl LbPiece {
+    /// **Ein Dreieck-Stück mit seiner vorberechneten Ebenen-Schranke (#384 §8t).**
+    ///
+    /// `center`/`skip_r` sind die Fernfeld-Kugel des Blocks. Sie gehen in
+    /// `emax` ein, denn die Schranke muss nur für Punkte gelten, an denen der
+    /// Block überhaupt ausgewertet wird — [`lb_value`] und jeder Tape-Spiegel
+    /// verlassen den Block vorher mit [`LB_NONE`], wenn
+    /// `|p − center| > skip_r`. **Das ist eine Format-Invariante:** wer die
+    /// Kugel-Prüfung vor der Stück-Schleife weglässt, macht `emax` ungültig.
+    ///
+    /// Gerechnet wird in f64; `emax` deckt drei Rundungsquellen ab:
+    ///
+    /// 1. das **Residuum** `max(|n̂·(b−a)|, |n̂·(c−a)|)` — bei exakter Normale
+    ///    null, bei der gerundeten winzig, bei einem entarteten Dreieck gross
+    ///    (und schaltet die Schranke damit von selbst ab, s.
+    ///    [`tri_cannot_beat`]);
+    /// 2. dass `|n̂|` nach der f32-Rundung nur `≈ 1` ist;
+    /// 3. die f32-Rundung des Laufzeit-Skalarprodukts **und** die Rundung von
+    ///    [`tri_dist`] selbst — beide absolut beschränkt durch die Reichweite
+    ///    `R = skip_r + |a − center|`, also die grösste Distanz `|p − a|`, die
+    ///    ein lebendiger Punkt haben kann.
+    ///
+    /// Der Faktor `64·2⁻²⁴` über `R` ist rund das Doppelte der Summe der drei
+    /// Fehlerterme (`≤ 10·2⁻²⁴·R` für das Skalarprodukt, `≤ 2·2⁻²⁴·R` für die
+    /// Normierung, `≤ 10·2⁻²⁴·R` für `tri_dist`, `≤ 2·2⁻²⁴·R` für die Addition
+    /// `best + emax`). Er kostet an Schärfe nichts: bei `R = 100 mm` sind das
+    /// `4·10⁻⁴ mm` gegen ein typisches `best` von Millimetern.
+    pub fn tri(a: [f32; 3], b: [f32; 3], c: [f32; 3], center: [f32; 3], skip_r: f32) -> LbPiece {
+        let f = |v: [f32; 3]| [v[0] as f64, v[1] as f64, v[2] as f64];
+        let (af, bf, cf) = (f(a), f(b), f(c));
+        let (ba, ca) = (fs(bf, af), fs(cf, af));
+        let nx = [
+            ba[1] * ca[2] - ba[2] * ca[1],
+            ba[2] * ca[0] - ba[0] * ca[2],
+            ba[0] * ca[1] - ba[1] * ca[0],
+        ];
+        let ln = fd(nx, nx).sqrt();
+        // Entartet: keine brauchbare Ebene ⇒ `emax = ∞` schaltet den Prune für
+        // dieses Stück ab (die Schranke bleibt gültig, nur wirkungslos).
+        if !(ln > 0.0) {
+            return LbPiece::Tri { a, b, c, n: [0.0; 3], emax: f32::INFINITY };
+        }
+        let n32 = [(nx[0] / ln) as f32, (nx[1] / ln) as f32, (nx[2] / ln) as f32];
+        let nh = f(n32);
+        let res = fd(nh, ba).abs().max(fd(nh, ca).abs());
+        let reach = skip_r as f64 + fl(fs(af, f(center)));
+        let emax = res + 64.0 * (-24f64).exp2() * reach;
+        LbPiece::Tri { a, b, c, n: n32, emax: emax as f32 }
+    }
+
     /// Der Record im Tape-Layout (`LB_STRIDE` Worte, erstes Wort = `kind`).
     pub fn to_words(self) -> [f32; LB_STRIDE] {
         let mut w = [0.0f32; LB_STRIDE];
         match self {
-            LbPiece::Tri { a, b, c } => {
+            LbPiece::Tri { a, b, c, n, emax } => {
                 w[0] = 0.0;
                 w[1..4].copy_from_slice(&a);
                 w[4..7].copy_from_slice(&b);
                 w[7..10].copy_from_slice(&c);
+                w[10..13].copy_from_slice(&n);
+                w[13] = emax;
             }
             LbPiece::Rev { o, ax, r0, z0, r1, z1 } => {
                 w[0] = 1.0;
@@ -194,24 +259,28 @@ pub fn tri_dist(p: [f32; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f32 {
     // 2.3253 statt 2.3156 — 0.0097 zu viel, also Phantom-Material).
     let nor = cross(ba, ac);
     let nn = dot(nor, nor);
-    let edge = seg_dist2(p, a, b).min(seg_dist2(p, b, c)).min(seg_dist2(p, c, a));
-    if nn <= 1e-24 {
-        return edge.sqrt();
-    }
-    let s = |e: [f32; 3], w: [f32; 3]| -> f32 {
-        if dot(cross(e, nor), w) >= 0.0 {
-            1.0
-        } else {
-            -1.0
+    // #384 §8t: das Kanten-Minimum wird LAZY berechnet. Es kostet drei
+    // Divisionen (`seg_dist2`) und wird im Innen-Zweig gar nicht gelesen — die
+    // Umstellung ist ein reines Auswerte-Umordnen, kein Formel-Wechsel: beide
+    // Zweige geben denselben Ausdruck wie zuvor zurück, also bit-identisch.
+    if nn > 1e-24 {
+        let s = |e: [f32; 3], w: [f32; 3]| -> f32 {
+            if dot(cross(e, nor), w) >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            }
+        };
+        let inside = s(ba, sub(p, a)) + s(cb, sub(p, b)) + s(ac, sub(p, c));
+        if inside >= 2.0 {
+            let h = dot(nor, sub(p, a));
+            return (h * h / nn).sqrt();
         }
-    };
-    let inside = s(ba, sub(p, a)) + s(cb, sub(p, b)) + s(ac, sub(p, c));
-    if inside >= 2.0 {
-        let h = dot(nor, sub(p, a));
-        (h * h / nn).sqrt()
-    } else {
-        edge.sqrt()
     }
+    seg_dist2(p, a, b)
+        .min(seg_dist2(p, b, c))
+        .min(seg_dist2(p, c, a))
+        .sqrt()
 }
 
 /// Exakte Distanz zu einer Rotationsfläche.
@@ -238,11 +307,70 @@ pub fn rev_dist(p: [f32; 3], o: [f32; 3], ax: [f32; 3], r0: f32, z0: f32, r1: f3
     (qx * qx + qy * qy).sqrt()
 }
 
+/// **#384 §8t — der exakte Laufzeit-Prune: kann dieses Dreieck das laufende
+/// `best` noch senken?**
+///
+/// `true` heisst BEWEISBAR nein. Dann darf [`tri_dist`] übersprungen werden,
+/// ohne dass sich das `min` um ein einziges Bit ändert — das `min` aktualisiert
+/// nur bei `d < best`, und wir zeigen `d ≥ best`.
+///
+/// ## Die Schranke — gültig für JEDEN Vektor `n`, auch einen gerundeten
+///
+/// Sei `T = conv(a,b,c)` und `q ∈ T`, also `q = a + β(b−a) + γ(c−a)` mit
+/// `β,γ ≥ 0`, `β+γ ≤ 1`. Für einen BELIEBIGEN Vektor `n ≠ 0` gilt
+///
+/// ```text
+/// n·(p−q) = n·(p−a) − β·n·(b−a) − γ·n·(c−a)
+/// ```
+///
+/// und wegen `|βA + γB| ≤ max(|A|,|B|)` für `β,γ ≥ 0, β+γ ≤ 1`:
+///
+/// ```text
+/// |n·(p−q)| ≥ |n·(p−a)| − max(|n·(b−a)|, |n·(c−a)|)
+/// ```
+///
+/// Mit Cauchy–Schwarz (`|p−q| ≥ |n·(p−q)| / |n|`) folgt für ein `n` mit
+/// `|n| = 1`
+///
+/// ```text
+/// dist(p,T) ≥ |n̂·(p−a)| − max(|n̂·(b−a)|, |n̂·(c−a)|).
+/// ```
+///
+/// Der Abzug ist **vorberechnet** und steckt zusammen mit allen
+/// Rundungs-Reserven in `emax` ([`LbPiece::tri`]); zur Laufzeit bleibt EIN
+/// Skalarprodukt und EIN Vergleich.
+///
+/// **Warum der Korrektur-Term trägt und nicht Kosmetik ist.** Wäre `n̂` die
+/// exakte Flächennormale, wären `n̂·(b−a)` und `n̂·(c−a)` null und die Schranke
+/// wäre die nackte Ebenen-Distanz. Sie sind es nicht: `n̂` entsteht aus einem
+/// gerundeten, normierten Kreuzprodukt. Für ein gesundes Dreieck sind die zwei
+/// Terme Rundungs-Residuen und die Schranke praktisch die Ebenen-Distanz — für
+/// ein ENTARTETES (fast kollineares) Dreieck ist `n̂` dagegen Rundungsrauschen
+/// mit beliebiger Richtung, und genau dann wird das Residuum gross und schaltet
+/// die Schranke von selbst ab. Die Formel braucht deshalb KEINE
+/// Entartungs-Schwelle: sie ist für jedes `n` wahr, und ihre Schärfe verfällt
+/// genau dort, wo sie muss. Ohne den Term wäre der Prune an einem
+/// Sliver-Dreieck falsch — er würde gegen eine Zufallsebene messen, ein echtes
+/// Randstück verwerfen und damit `L` ÜBERschätzen: Phantom-Material, der eine
+/// Fehler, den `L` nicht machen darf (§8o).
+///
+/// Rotationsflächen ([`LbPiece::Rev`]) bekommen keinen Prune: `rev_dist` ist
+/// schon der billige Fall (§8t misst 3.7 ns gegen 23.2 ns für `tri_dist`), und
+/// ihr teurer Anteil — die Projektion auf die Achse — ist genau das, was auch
+/// jede Vorab-Schranke bräuchte.
+#[inline]
+pub fn tri_cannot_beat(p: [f32; 3], a: [f32; 3], n: [f32; 3], emax: f32, best: f32) -> bool {
+    let h = n[0] * (p[0] - a[0]) + n[1] * (p[1] - a[1]) + n[2] * (p[2] - a[2]);
+    // `best = ∞` (erstes Stück) ⇒ `best + emax = ∞` ⇒ nie wahr. `emax = ∞`
+    // (entartetes Dreieck) ebenso.
+    h.abs() >= best + emax
+}
+
 /// Distanz zu EINEM Stück.
 #[inline]
 pub fn piece_dist(p: [f32; 3], piece: &LbPiece) -> f32 {
     match *piece {
-        LbPiece::Tri { a, b, c } => tri_dist(p, a, b, c),
+        LbPiece::Tri { a, b, c, .. } => tri_dist(p, a, b, c),
         LbPiece::Rev { o, ax, r0, z0, r1, z1 } => rev_dist(p, o, ax, r0, z0, r1, z1),
     }
 }
@@ -268,6 +396,36 @@ pub fn piece_dist(p: [f32; 3], piece: &LbPiece) -> f32 {
 ///    `gate = max(G − d₀, ·)` auf denselben Wert `G − δ` führen (`G > 0`).
 #[inline]
 pub fn lb_value(p: [f32; 3], base: f32, blk: &LbBlock) -> f32 {
+    if base > blk.delta || norm(sub(p, blk.center)) > blk.skip_r {
+        return LB_NONE;
+    }
+    let mut best = f32::INFINITY;
+    for piece in &blk.pieces {
+        // #384 §8t: der exakte Prune. `tri_cannot_beat` beweist `dist ≥ best`,
+        // und das `min` aktualisiert nur bei `d < best` — das übersprungene
+        // Stück hätte also nichts geändert. Der Wert ist bit-identisch zum
+        // flachen Lauf ([`lb_value_flat`]), nicht bloss numerisch nahe.
+        if let LbPiece::Tri { a, n, emax, .. } = *piece {
+            if tri_cannot_beat(p, a, n, emax, best) {
+                continue;
+            }
+        }
+        let d = piece_dist(p, piece);
+        if d < best {
+            best = d;
+        }
+    }
+    if !best.is_finite() {
+        return LB_NONE;
+    }
+    best - blk.slack
+}
+
+/// Der FLACHE Lauf ohne §8t-Prune — die Kontroll-Referenz. Jeder Spiegel darf
+/// die Strategie wählen (die GPU behält den flachen Loop, s. §8t), der WERT
+/// muss überall dieser sein; `lb_pruning_is_bit_exact_384` pinnt die Gleichheit
+/// auf einem dichten Gitter aller 13 Fixturen.
+pub fn lb_value_flat(p: [f32; 3], base: f32, blk: &LbBlock) -> f32 {
     if base > blk.delta || norm(sub(p, blk.center)) > blk.skip_r {
         return LB_NONE;
     }
@@ -981,23 +1139,21 @@ fn flatten_union<'a>(node: &'a BoundedCsg, out: &mut Vec<&'a BoundedCsg>) {
 }
 
 /// Fächer-Triangulierung eines konvexen Rings in [`LbPiece::Tri`].
-fn emit_ring(ring: &[[f64; 3]], out: &mut Vec<LbPiece>) {
+/// `center`/`skip_r` reichen die Fernfeld-Kugel an [`LbPiece::tri`] durch
+/// (#384 §8t: `emax` hängt an der Reichweite der lebendigen Punkte).
+fn emit_ring(ring: &[[f64; 3]], center: [f32; 3], skip_r: f32, out: &mut Vec<LbPiece>) {
     if ring.len() < 3 {
         return;
     }
     let v = |q: [f64; 3]| [q[0] as f32, q[1] as f32, q[2] as f32];
     for i in 1..ring.len() - 1 {
-        out.push(LbPiece::Tri {
-            a: v(ring[0]),
-            b: v(ring[i]),
-            c: v(ring[i + 1]),
-        });
+        out.push(LbPiece::tri(v(ring[0]), v(ring[i]), v(ring[i + 1]), center, skip_r));
     }
 }
 
-fn emit_piece(p: &WPiece, out: &mut Vec<LbPiece>) {
+fn emit_piece(p: &WPiece, center: [f32; 3], skip_r: f32, out: &mut Vec<LbPiece>) {
     match p {
-        WPiece::Poly { ring, .. } => emit_ring(ring, out),
+        WPiece::Poly { ring, .. } => emit_ring(ring, center, skip_r, out),
         WPiece::Rev { o, ax, r0, z0, r1, z1 } => out.push(LbPiece::Rev {
             o: [o[0] as f32, o[1] as f32, o[2] as f32],
             ax: [ax[0] as f32, ax[1] as f32, ax[2] as f32],
@@ -1104,7 +1260,7 @@ pub fn synthesize_lb(
                 }
             }
             for p in &pieces {
-                emit_piece(p, &mut out);
+                emit_piece(p, center, skip_r, &mut out);
             }
             if out.len() > MAX_LB_PIECES {
                 return None;
@@ -1232,7 +1388,7 @@ pub fn lb_foot(p: [f32; 3], base: f32, blk: &LbBlock) -> Option<[f32; 3]> {
         if d < best {
             best = d;
             foot = Some(match *piece {
-                LbPiece::Tri { a, b, c } => tri_foot(p, a, b, c),
+                LbPiece::Tri { a, b, c, .. } => tri_foot(p, a, b, c),
                 LbPiece::Rev { o, ax, r0, z0, r1, z1 } => rev_foot(p, o, ax, r0, z0, r1, z1),
             });
         }

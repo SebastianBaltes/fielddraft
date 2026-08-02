@@ -817,22 +817,32 @@ export function buildVmSdfEvalFn(
         // offset_tree §8o (#384): untere Distanzschranke des Stopps —
         // 1:1-Spiegel von `kernel offset_lb::lb_value` / `eval_opcodes`
         // OP_STOP_LB. Header 7: n(1) delta(1) slack(1) center(3) skip_r(1);
-        // je Stück 11 Floats: kind(1) + 10 (Dreieck a[3] b[3] c[3] · pad,
-        // oder Rev o[3] ax[3] r0 z0 r1 z1).
+        // je Stück 14 Floats: kind(1) + 13 (Dreieck a[3] b[3] c[3] n̂[3] emax,
+        // oder Rev o[3] ax[3] r0 z0 r1 z1 + 3 leere Worte).
+        //
+        // #384 §8t: `n̂`/`emax` sind die vorberechnete Ebenen-Schranke, mit der
+        // CPU und Mesher ein Stück EXAKT überspringen, das das laufende `min`
+        // beweisbar nicht mehr senken kann. Die GPU behält bewusst den FLACHEN
+        // Loop: ein datenabhängiger Zweig in einer TSL-`Loop` divergiert über
+        // die Lanes, und der übersprungene Zweig kostet auf SIMD trotzdem
+        // Zeit — der Prune könnte hier nichts gewinnen. Der WERT ist in beiden
+        // Strategien bit-identisch (§8t: die Schranke ändert das `min` nie),
+        // nur der Weg unterscheidet sich. Die drei/vier Zusatzworte werden
+        // hier also gelesen-und-übersprungen.
         const nPc = floatToIntFn({ v: rd() }).toVar();
         const lbDelta = rd().toVar();
         const lbSlack = rd().toVar();
         const lbCx = rd(), lbCy = rd(), lbCz = rd();
         const lbSkipR = rd().toVar();
         const pcBase = pc.toVar();
-        pc.addAssign(nPc.mul(11));
+        pc.addAssign(nPc.mul(14));
         const d = popV().toVar();
         const pp = vec3(ptx, pty, ptz).toVar();
         const rc = pp.sub(vec3(lbCx, lbCy, lbCz)).length().toVar();
         const best = float(1e30).toVar();
         const kb = int(0).toVar();
         Loop(nPc, () => {
-          const b0 = pcBase.add(kb.mul(11)).toVar();
+          const b0 = pcBase.add(kb.mul(14)).toVar();
           const g = (o: number) => opBuf.element(b0.add(int(o)));
           const g3 = (o: number) => vec3(g(o), g(o + 1), g(o + 2));
           const dd = float(1e30).toVar();

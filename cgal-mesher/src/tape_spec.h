@@ -131,11 +131,11 @@ inline int payload_len(const float* buf, int n, uint32_t tag, int pc) {
     case OP_STOP_LIMIT: return 1;
     case OP_STOP_LB: {
       // #384 §8o: Kopf n(1) delta(1) slack(1) center(3) skip_r(1),
-      // je Randstueck 11 Floats (kind + 10). Count an Payload-Offset 0 —
-      // dasselbe Muster wie ArcChannel/RimFillet.
+      // je Randstueck 14 Floats (kind + 13; §8t: +nhat(3)+emax). Count an
+      // Payload-Offset 0 — dasselbe Muster wie ArcChannel/RimFillet.
       if (pc >= n) return -1;
       int np = (int)buf[pc];
-      return 7 + 11 * np;
+      return 7 + 14 * np;
     }
     case OP_END: return 0;
     default: return -1;
