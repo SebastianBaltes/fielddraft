@@ -6809,9 +6809,10 @@ Die f32-Brücke ist also nicht der Preis — der geometrische Zeuge ist es.
 ### Die Pflicht-Falsifikatoren
 
 * **`clamp_f32_constants_are_exact_384`** — `u = 2⁻²⁴` und `2⁻¹⁵⁰` bitgenau,
-  das Rundungsmodell `|fl32(z) − z| ≤ u|z| + 2⁻¹⁵⁰` an 40.000 Proben über 80
-  Zehnerpotenzen (1.000 davon oberhalb 40 % der Schranke, sonst misst der Pin
-  nichts), plus Hauser für die subnormale f32-Subtraktion.
+  das Rundungsmodell `|fl32(z) − z| ≤ u|z| + 2⁻¹⁵⁰` an 40.000 Proben über die
+  Binär-Exponenten `2⁻⁴⁰ … 2⁴⁰` (≈ 24 Zehnerpotenzen), davon ≥1.000 oberhalb
+  40 % der Schranke — sonst misst der Pin nichts. Plus Hauser für die
+  subnormale f32-Subtraktion.
 * **`clamp_point_bridge_is_a_real_seam_point_384`** (Lemma 2) — acht
   adversariale Segmente (Clamp-Ränder `t = 0/1`, `r` von `2·10⁻⁹` bis `10⁶`,
   kurzes Segment unter `10⁵`-Translation, krumme Koeffizienten), 3.376 Proben
