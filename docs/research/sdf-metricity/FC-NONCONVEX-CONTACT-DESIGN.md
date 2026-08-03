@@ -8345,6 +8345,176 @@ NICHT gefahren**: das Repo ist nicht rustfmt-default-formatiert — ein
 * **P5c** — gekrümmte Kanäle; **`Ω`-Blätter jenseits Box/Sphere/Zylinder**;
   **`vertex_limit`**. Unverändert.
 
+## 8ae. Der Extrude-Aussenbeweis, Stufe A — bewiesen und gemessen, noch nicht ausgeliefert (#384, 2026-08-03)
+
+Von den 21 nicht naht-zertifizierten Kanälen der Matrix waren **19** `no_cover`
+am Rippen-Kamm 4×1.5/0.8 — nicht, weil dort ein Zeuge fehlte, sondern weil
+`box_outside_omega` das `Ω` gar nicht lesen konnte: es enthält
+`BoundedCsg::Extrude`-Blätter, und die fielen in den `_ => false`-Arm. Die
+übrigen 2 sind die gekrümmten Nähte der Stufen-Nabe (P5c) und bleiben es.
+
+Stufe A baut den fehlenden Beweis, misst ihn — und liefert ihn **nicht aus**.
+
+### Die Erhebung zuerst: was steckt wirklich in Ω?
+
+`probe_384_omega_shape_census` läuft über die Ω-Bäume der gesamten
+Zertifizierungs-Matrix und zählt Knotenformen. Das Ergebnis ist erfreulich eng:
+
+| Fixture | Ω-Formen |
+|---|---|
+| Stufen-Nabe | `Leaf:Box`×1, `Leaf:Cylinder`×2, `Union`×2 |
+| Ecken-Schale (8×) | `Leaf:Box`×3, `Union`×2 |
+| **Rippen-Kamm 4×1.5/0.8** | **`Extrude`×3**, `Leaf:Box`×5, `Union`×7, **Profil: `Polygon(n=4)`×3** |
+| Rippen-Kamm 4×2/1 | `Leaf:Box`×5, `Union`×4 |
+| notch α=90/60 | `Leaf:Box`×2, `Union`×1 |
+
+Die Extrudes sind die **FC-Kontakt-Prismen** (`build_prism_member`): ein
+`Extrude` mit genau EINEM `Polygon`-Profil aus vier Ecken, Π-orientiert über
+`world_transform`. Kein `Rectangle`, kein `Circle`, kein `Sector`, kein `Path`,
+kein Profil-Boolean, kein Profil-`Offset` kommt in der Matrix vor.
+
+Der Beweis deckt trotzdem die volle Boolean-Struktur und `Rectangle`/`Circle`
+ab (sie sind die direkten Analoga zu `Box`/`Sphere` und kosten je vier Zeilen);
+`Sector` und `Path` bleiben **ehrlich `false`** — sie kommen nicht vor, und ein
+Sektor-Ausschluss ohne Winkelband-Argument wäre genau der weiche Beweis, den
+die Doktrin verbietet.
+
+### Der Beweis: zwei unabhängige Gründe, einer genügt
+
+`Ω` eines Extrude ist im LOKALEN Rahmen `{p : max(d₂(x,y), |z| − hh) ≤ 0}`.
+Die Weltskala multipliziert nur den Feldwert und kann sein Vorzeichen nicht
+drehen — für die MENGE ist sie irrelevant. Also, nach `local_box`:
+
+* **axial** — `min_b |z| − hh > margin`;
+* **profil** — die `(x,y)`-Komponenten der lokalen Intervall-Box (das ist die
+  Projektion, exakt) liegen beweisbar ausserhalb des 2D-Profils.
+
+`sketch_outside_inner` ist strukturgleich zum 3D-Vorbild: `Union` → beide
+Kinder, `Intersection` → ein Kind, `Difference` → das linke, `Offset { d }` →
+nur für `d ≤ 0` durchs Kind (bei `d > 0` ist das Profil GRÖSSER als sein Kind,
+und die Schlussrichtung dreht — dieselbe Falle wie beim 3D-`Offset`),
+`Empty` → true. Alles in derselben gerichteten Intervall-Arithmetik
+(`rsub`/`rmul`/`rnorm2`/`rsqrt`) mit Aussenrundung; kein f32-Schritt, kein
+Toleranz-Fudge über `margin` hinaus.
+
+### Das Polygon — ohne Konvexitäts-Orakel, und trotzdem rigoros
+
+Ein „trennender Kanten-Halbraum" beweist bei einem beliebigen Polygon
+**nichts**: an einer konkaven Kerbe liegt Material auf beiden Seiten der
+Kantengeraden, und beim Sternpolygon sind sogar alle Drehungen gleichsinnig,
+ohne dass es konvex wäre — eine Konvexitätsprüfung über das Vorzeichen der
+Kreuzprodukte allein würde es durchwinken.
+
+Bewiesen wird deshalb je Kante `L_i` eine stärkere, lokal prüfbare
+Vorbedingung:
+
+1. Liegen **alle** Ecken in einem abgeschlossenen Halbraum `H_i` von `L_i`, so
+   liegt der ganze Polygonzug in `H_i` (Halbräume sind konvex, jede Kante ist
+   Konvexkombination zweier Ecken).
+2. Dann liegt auch die AUSGEFÜLLTE Menge in `H_i`: ein Punkt `x ∉ H_i` lässt
+   sich im offenen Komplement von `H_i` — das den Rand nicht trifft — ins
+   Unendliche schieben; seine Kreuzungszahl ist `0`, und die Even-Odd-Regel von
+   `sdf_polygon` stellt ihn nach aussen. ∎
+3. Trennt die Box `L_i` strikt um mehr als `margin` — in ECHTEM Abstand, also
+   durch `|d_i|` geteilt —, ist sie bewiesen aussen.
+
+Für ein konvexes Polygon erfüllt JEDE Kante Schritt 1; der Test ist dort der
+volle Halbraum-Schnitt. Für ein nicht-konvexes fallen genau die Kanten weg, an
+denen der naive Test gelogen hätte. In der konkaven Kerbe bleibt nichts übrig,
+und das Ergebnis ist ehrlich `false` — obwohl die Kerbe geometrisch aussen
+liegt. Das ist der Preis, und er ist als Pin festgeschrieben.
+
+**Eine Falle beim Implementieren, die den ganzen Arm still tot stellte**: die
+beiden Ecken der Kante selbst liegen exakt auf `L_i`. In der Intervall-Form ist
+ihr Kreuzprodukt nicht `0`, sondern das Aussenrundungs-Intervall um die Null —
+also `lo < 0 < hi`, also fällt Schritt 1 für JEDE Kante. Sie werden deshalb
+übersprungen; das ist kein Nachlassen der Strenge, sondern die exakte Aussage
+(beide liegen per Konstruktion in beiden abgeschlossenen Halbräumen).
+
+### Das Gate: gebaut, gemessen, NICHT aktiviert
+
+Die Auflage aus P5b-1A („der verbotene Doppelschritt"): eine neue Feldform
+ausliefern und sie erstmals beweisen darf nie derselbe Schritt sein. Mehr Cover
+heisst mehr bewiesene Naht-Addenden, und der Addend geht über `channel_limit`
+ins Feld — das IST eine Feldänderung, auch wenn kein Zeichen des Beweises im
+Feld auftaucht.
+
+Deshalb hat der Beweis eine **Stufe**, `EXTRUDE_COVER_STAGE`:
+
+* `ShadowOnly` (Stufe A, heute) — `box_outside_omega` und `omega_cover`
+  verhalten sich Bit für Bit wie vorher, der `Extrude`-Arm gibt `false` bzw.
+  `None` zurück. Der Beweis wird ausschliesslich über
+  `box_outside_omega_staged`/`cover_channel_staged`/`certify_for_probe`
+  gemessen — Wege, die kein Produktionspfad nimmt.
+* `Active` (Stufe B, separat) — derselbe Beweis, feldwirksam. Die Umschaltung
+  ist genau EINE Zeile.
+
+Der `Ω`-Schnappschuss (`serialize_omega`) kodiert das Extrude-Blatt dagegen in
+**beiden** Stufen: Weltmatrix, `half_height` und den Profilbaum (nur die
+Parameter der bewiesenen Formen; `Sector`/`Path` fallen in EINEN Topf). Ein
+Schnappschuss, der bei der Umschaltung erst nachgezogen werden müsste, wäre
+genau die Kopplung, die das Transfer-Lemma still ungültig macht.
+
+### Die gemessene Wirkung
+
+`cover_shadow_probe` / `certify_for_probe` fahren die volle Matrix unter beiden
+Stufen:
+
+| Fixture | Kanäle | gedeckt Stufe A | gedeckt Stufe B | Stufe B: Naht / h |
+|---|---|---|---|---|
+| Stufen-Nabe | 2 | 0 | 0 | 0 / 0 (gekrümmt ⇒ P5c) |
+| Ecken-Schale (8×) | je 24 | 24 | 24 | 24 / 24 |
+| **Rippen-Kamm 4×1.5/0.8** | **19** | **0** | **19** | **19 / 19** |
+| Rippen-Kamm 4×2/1 | 22 | 22 | 22 | 22 / 22 |
+| notch α=90 / α=60 | 1 / 2 | 1 / 2 | 1 / 2 | 1 / 2 |
+
+**Alle 19** `no_cover`-Kanäle des Rippen-Kamms werden vom neuen Beweis
+vollständig gedeckt — nicht 17, nicht 18. Der Shadow-Bericht der Matrix ginge
+damit von **217 / 2 / 19** (proved / curved / no_cover) auf **236 / 2 / 0**;
+offen bliebe nur noch, was strukturell nach P5c gehört.
+
+**Nebenbefund, ohne den Stufe B nichts geholt hätte**: `omega_cover` — die
+Box-Überdeckung `Ω ⊆ ⋃ Boxen` des h-Budgets (§8ab) — verweigerte Extrude
+ebenfalls. Ein Kanal mit Naht-Addend, aber ohne h-Budget bekommt
+`LegacyUnproven(NoHBudget)` und bleibt feldseitig, wo er war; die 19 wären also
+bewiesen und trotzdem wirkungslos geblieben. `omega_cover` hat deshalb
+denselben Extrude-Arm bekommen (lokale Profil-Hülle × `±|hh|`, durch dieselbe
+rigorose Vorwärts-Abbildung `local_box_to_world`), hinter demselben Gate — und
+die Hülle wird **selbst** gerechnet, nicht aus `BoundedSketch2d::aabb()`
+genommen: dessen `Offset`-Arm weitet um `distance` auf, und dass die Dilation
+eines PSEUDO-Abstandsfeldes in dieser Aufweitung liegt, ist kein Satz.
+Positive Profil-Offsets werden dort verweigert.
+
+### Was bewusst `false` bleibt
+
+* **`Sector`, `Path`** als Profil — kommen in der Matrix nicht vor; ein
+  Sektor-Ausschluss braucht ein Winkelband-Argument, ein Path-Ausschluss die
+  Bögen. Beides gehört zu P5c, nicht hierher.
+* **Nicht-konvexe Polygon-Kerben** — s. o., der Preis der Ehrlichkeit.
+* **Profil-`Offset` mit `distance > 0`** — die Schlussrichtung dreht.
+* **`Revolve`, `Helix`, `Sweep`, `Loft`** — dieselbe Lücke wie bisher; die
+  Erhebung sagt, dass sie in der Matrix nicht vorkommen. `Revolve` bildet auf
+  `(√(x²+z²), y)` ab und wäre der nächste einfache Kandidat, sobald ein Fixture
+  ihn braucht.
+
+### Belege
+
+* **`cargo nextest run --workspace`**: **1552** (Baseline 1547) — fünf neue
+  Pins: Profilformen, Booleans in beide Richtungen (jeder Assert tötet einen
+  benannten Mutanten), nicht-konvexe Kerbe + Sternpolygon, „beide Gründe sind
+  unentbehrlich", und die Stufen-Neutralität.
+* **Golden byte-identisch**: `915bab98…40eb`, `check_interp` 35 Szenen /
+  17.920 Vergleiche / 0 Fehler.
+* **Web-Vitest 2082**, unverändert.
+* Der §8aa-Shadow-Pin steht unbewegt auf **(217, 2, 19, 0, 0, 0)** — das ist
+  die Feldneutralität, gemessen und nicht behauptet.
+
+### Was OFFEN bleibt
+
+**Stufe B** — die Aktivierung: `EXTRUDE_COVER_STAGE = Active`, mit eigener
+Golden-Bewegung, eigenem Shadow-Pin (236 / 2 / 0) und eigenem Review. Sie ist
+bewusst NICHT Teil dieses Schritts.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.

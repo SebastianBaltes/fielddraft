@@ -17109,3 +17109,420 @@ fn interval_h_chain_bracketing_is_op_exact_384() {
          Escapes sind hier BEFUND, nicht Fehler (s. Kommentar)"
     );
 }
+
+// ══════════ #384 §8ae / Stufe A — die Erhebung: was steckt wirklich in Ω? ══════════
+
+/// **§8ae-Sonde: die Ω-Formen-Erhebung.** Welche `BoundedCsg`-Varianten und —
+/// unter `Extrude` — welche `BoundedSketch2d`-Knoten und
+/// `Sketch2dPrimitive`-Formen kommen in den Ω-Bäumen der Zertifizierungs-Matrix
+/// tatsächlich vor? Der Aussen-Beweis soll GENAU die vorkommenden Fälle
+/// abdecken; alles andere bleibt ehrlich `false`.
+#[test]
+#[ignore]
+fn probe_384_omega_shape_census() {
+    use crate::sketch2d::BoundedSketch2d as S;
+    use std::collections::BTreeMap;
+    fn sk(n: &S, c: &mut BTreeMap<String, usize>) {
+        let k = match n {
+            S::Empty => "sk:Empty".to_string(),
+            S::Prim { primitive, .. } => match primitive {
+                Sketch2dPrimitive::Circle { .. } => "sk:Circle".into(),
+                Sketch2dPrimitive::Rectangle { .. } => "sk:Rectangle".into(),
+                Sketch2dPrimitive::Polygon { vertices } => {
+                    format!("sk:Polygon(n={})", vertices.len())
+                }
+                Sketch2dPrimitive::Sector { .. } => "sk:Sector".into(),
+                Sketch2dPrimitive::Path { segments, closed } => {
+                    let arcs = segments
+                        .iter()
+                        .filter(|s| !matches!(s, SketchSegment::Line { .. }))
+                        .count();
+                    format!("sk:Path(n={},krumm={arcs},closed={closed})", segments.len())
+                }
+            },
+            S::Union { .. } => "sk:Union".into(),
+            S::Difference { .. } => "sk:Difference".into(),
+            S::Intersection { .. } => "sk:Intersection".into(),
+            S::Offset { distance, .. } => format!("sk:Offset(d>0={})", *distance > 0.0),
+        };
+        *c.entry(k).or_default() += 1;
+        match n {
+            S::Union { left, right, .. }
+            | S::Difference { left, right, .. }
+            | S::Intersection { left, right, .. } => {
+                sk(left, c);
+                sk(right, c);
+            }
+            S::Offset { inner, .. } => sk(inner, c),
+            _ => {}
+        }
+    }
+    fn go(n: &BoundedCsg, c: &mut BTreeMap<String, usize>) {
+        let k = match n {
+            BoundedCsg::Empty => "Empty".to_string(),
+            BoundedCsg::Leaf { primitive, .. } => format!("Leaf:{}", prim_kind(primitive)),
+            BoundedCsg::Union { .. } => "Union".into(),
+            BoundedCsg::Intersection { .. } => "Intersection".into(),
+            BoundedCsg::Difference { .. } => "Difference".into(),
+            BoundedCsg::Offset { delta, .. } => format!("Offset(δ>0={})", *delta > 0.0),
+            BoundedCsg::InnerWall { .. } => "InnerWall".into(),
+            BoundedCsg::Extrude { .. } => "Extrude".into(),
+            BoundedCsg::Revolve { .. } => "Revolve".into(),
+            other => node_tag(other).to_string(),
+        };
+        *c.entry(k).or_default() += 1;
+        match n {
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. } => {
+                go(left, c);
+                go(right, c);
+            }
+            BoundedCsg::Offset { inner, .. } | BoundedCsg::InnerWall { inner, .. } => go(inner, c),
+            BoundedCsg::Extrude { sketch, .. } | BoundedCsg::Revolve { sketch, .. } => {
+                sk(sketch, c)
+            }
+            _ => {}
+        }
+    }
+    fn prim_kind(p: &Primitive) -> &'static str {
+        match p {
+            Primitive::Box { .. } => "Box",
+            Primitive::Sphere { .. } => "Sphere",
+            Primitive::Cylinder { .. } => "Cylinder",
+            _ => "andere",
+        }
+    }
+    fn node_tag(n: &BoundedCsg) -> &'static str {
+        match n {
+            BoundedCsg::Helix { .. } => "Helix",
+            BoundedCsg::Sweep { .. } => "Sweep",
+            BoundedCsg::Loft { .. } => "Loft",
+            BoundedCsg::ArcChannel { .. } => "ArcChannel",
+            _ => "sonstige",
+        }
+    }
+    let delta = 2.0f32;
+    for (name, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        let mut c: BTreeMap<String, usize> = BTreeMap::new();
+        let mut chans = 0usize;
+        for (om, ch) in omega_and_channels(&field) {
+            go(om, &mut c);
+            chans += ch.len();
+        }
+        let line: Vec<String> = c.iter().map(|(k, v)| format!("{k}×{v}")).collect();
+        println!("| {name} | {chans} Kanäle | {} |", line.join(", "));
+    }
+}
+
+/// **§8ae-Sonde: der gemessene Gewinn von Stufe B.** Wie viele Kanäle der
+/// Matrix bekommen eine VOLLSTÄNDIGE Zeugen-Abdeckung, wenn der
+/// Extrude-Aussenbeweis aktiv ist — und wie viele heute (Stufe A)?
+#[test]
+#[ignore]
+fn probe_384_extrude_cover_gain() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    for (name, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        let (mut n, mut a, mut b) = (0usize, 0usize, 0usize);
+        for (om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                n += 1;
+                a += wit::cover_shadow_probe(om, ch, cfg, false) as usize;
+                b += wit::cover_shadow_probe(om, ch, cfg, true) as usize;
+            }
+        }
+        let (mut sb_proved, mut sb_h) = (0usize, 0usize);
+        for (om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                let mut c = ch.clone();
+                let ((st, _), hst) = wit::certify_for_probe(om, &mut c, cfg, true);
+                sb_proved += (st == wit::SeamProofStatus::Proved) as usize;
+                sb_h += matches!(hst, Some(wit::HStatus::Proved) | Some(wit::HStatus::Vacuous))
+                    as usize;
+            }
+        }
+        let hcov = omega_and_channels(&field)
+            .iter()
+            .all(|(om, _)| wit::omega_cover(om).is_some());
+        println!(
+            "| {name} | {n} Kanäle | Stufe A gedeckt {a} | Stufe B gedeckt {b} | \
+             Stufe B: Naht {sb_proved} / h {sb_h} | Ω-Box-Überdeckung {hcov} |"
+        );
+    }
+}
+
+// ══════════ #384 §8ae / Stufe A — die Pins des Extrude-Aussenbeweises ══════════
+
+/// Ein `Extrude`-Ω aus einem Profil, mit Einheits-Transform.
+fn ext_omega(sk: Sketch2d, half_height: f32) -> BoundedCsg {
+    BoundedCsg::from_csg(&CsgNode::Extrude {
+        id: id(1),
+        sketch: Box::new(sk),
+        half_height,
+        wall_subs: None,
+    })
+}
+
+fn sk_rect(c: [f32; 2], h: [f32; 2]) -> Sketch2d {
+    Sketch2d::Prim(Sketch2dPrimitive::Rectangle { center: c, half_extents: h })
+}
+fn sk_circle(c: [f32; 2], r: f32) -> Sketch2d {
+    Sketch2d::Prim(Sketch2dPrimitive::Circle { center: c, radius: r })
+}
+fn sk_poly(v: &[[f32; 2]]) -> Sketch2d {
+    Sketch2d::Prim(Sketch2dPrimitive::Polygon { vertices: v.to_vec() })
+}
+
+/// Die Stufe-B-Antwort — Stufe A liefert an derselben Stelle konstruktionsgemäß
+/// `false` (das pinnt [`stage_a_holds_the_extrude_channels_in_the_shadow_384`]).
+fn ext_outside(om: &BoundedCsg, p: [f64; 3]) -> bool {
+    wit::box_outside_omega_staged(om, ivp(p), 1.0e-9, wit::ExtrudeCoverStage::Active)
+}
+fn ext_outside_box(om: &BoundedCsg, lo: [f64; 3], hi: [f64; 3]) -> bool {
+    let b = [
+        iv::Iv { lo: lo[0], hi: hi[0] },
+        iv::Iv { lo: lo[1], hi: hi[1] },
+        iv::Iv { lo: lo[2], hi: hi[2] },
+    ];
+    wit::box_outside_omega_staged(om, b, 1.0e-9, wit::ExtrudeCoverStage::Active)
+}
+
+/// **§8ae-Pin 1: der Extrude-Aussenbeweis trägt — je Profilform.**
+///
+/// Positiv (bewiesen aussen) und negativ (Berührung/Innenlage ⇒ NICHT
+/// bewiesen), für jede Form, die der Beweis führt. Das Rechteck steht für den
+/// `Box`-Analogfall, der Kreis für den `Sphere`-Analogfall, das Quadrat-Polygon
+/// für die Kanten-Halbraum-Regel.
+#[test]
+fn extrude_outside_proof_holds_per_sketch_shape_384() {
+    // Profil: Quadrat [−2,2]², Höhe ±3.
+    for (name, om) in [
+        ("Rechteck", ext_omega(sk_rect([0.0, 0.0], [2.0, 2.0]), 3.0)),
+        ("Polygon", ext_omega(sk_poly(&[[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]), 3.0)),
+    ] {
+        // profil-aussen
+        assert!(ext_outside(&om, [5.0, 0.0, 0.0]), "{name}: profil-aussen nicht bewiesen");
+        assert!(ext_outside(&om, [0.0, -5.0, 2.0]), "{name}: profil-aussen nicht bewiesen");
+        // axial-aussen (die Projektion liegt MITTEN im Profil — nur der axiale
+        // Grund kann das tragen)
+        assert!(ext_outside(&om, [0.0, 0.0, 4.0]), "{name}: axial-aussen nicht bewiesen");
+        assert!(ext_outside(&om, [0.0, 0.0, -4.0]), "{name}: axial-aussen nicht bewiesen");
+        // innen
+        assert!(!ext_outside(&om, [0.0, 0.0, 0.0]), "{name}: ein INNERER Punkt gilt als aussen");
+        assert!(!ext_outside(&om, [1.9, 1.9, 2.9]), "{name}: ein INNERER Punkt gilt als aussen");
+        // exakt auf der Fläche — Berührung ist kein Beweis
+        assert!(!ext_outside(&om, [2.0, 0.0, 0.0]), "{name}: Mantel-Berührung gilt als aussen");
+        assert!(!ext_outside(&om, [0.0, 0.0, 3.0]), "{name}: Deckel-Berührung gilt als aussen");
+        // eine Box, die knapp in die ECKE ragt
+        assert!(
+            !ext_outside_box(&om, [1.9, 1.9, -1.0], [3.0, 3.0, 1.0]),
+            "{name}: eine in die Ecke ragende Box gilt als ganz aussen"
+        );
+        // eine Box, die den Deckel überspannt
+        assert!(
+            !ext_outside_box(&om, [0.0, 0.0, 2.5], [0.5, 0.5, 4.0]),
+            "{name}: eine den Deckel überspannende Box gilt als ganz aussen"
+        );
+    }
+    // Kreis-Profil.
+    let om = ext_omega(sk_circle([0.0, 0.0], 2.0), 3.0);
+    assert!(ext_outside(&om, [3.0, 0.0, 0.0]));
+    assert!(ext_outside(&om, [1.5, 1.5, 0.0]), "die DIAGONALE liegt aussen (1.5√2 > 2)");
+    assert!(ext_outside(&om, [0.0, 0.0, 4.0]), "axial-aussen nicht bewiesen");
+    assert!(!ext_outside(&om, [1.4, 1.4, 0.0]), "1.4√2 < 2 — das ist INNEN");
+    assert!(!ext_outside(&om, [2.0, 0.0, 0.0]), "Berührung ist kein Beweis");
+}
+
+/// **§8ae-Pin 2: die Profil-Booleans, in beide Richtungen.**
+///
+/// Jeder Assert hier tötet einen konkreten Mutanten:
+///
+/// * `Union` mit „ein Kind reicht" ⇒ der Mix-Fall würde fälschlich aussen;
+/// * `Intersection` mit „beide Kinder" ⇒ der Mix-Fall würde nicht bewiesen;
+/// * `Difference` über das RECHTE Kind ⇒ das Loch würde als aussen gelten;
+/// * `Offset` ohne Vorzeichen-Gate ⇒ der positive Offset würde durchgehen.
+#[test]
+fn extrude_outside_proof_booleans_are_directional_384() {
+    let a = sk_rect([-2.0, 0.0], [1.0, 1.0]); // [−3,−1]×[−1,1]
+    let b = sk_rect([2.0, 0.0], [1.0, 1.0]); // [1,3]×[−1,1]
+    // ── Union: BEIDE Kinder müssen aussen sein.
+    let uni = ext_omega(Sketch2d::Union(Box::new(a.clone()), Box::new(b.clone())), 3.0);
+    assert!(ext_outside(&uni, [0.0, 0.0, 0.0]), "die Lücke zwischen beiden ist aussen");
+    assert!(ext_outside(&uni, [0.0, 5.0, 0.0]));
+    assert!(
+        !ext_outside(&uni, [2.0, 0.0, 0.0]),
+        "Mutant „Union = ein Kind reicht“: der Punkt liegt IN der rechten Hälfte"
+    );
+    assert!(!ext_outside(&uni, [-2.0, 0.0, 0.0]));
+    // ── Intersection: EIN Kind genügt.
+    let sec = ext_omega(Sketch2d::Intersection(Box::new(a.clone()), Box::new(b.clone())), 3.0);
+    assert!(
+        ext_outside(&sec, [2.0, 0.0, 0.0]),
+        "Mutant „Intersection = beide Kinder“: links aussen genügt für den Schnitt"
+    );
+    assert!(ext_outside(&sec, [-2.0, 0.0, 0.0]));
+    // ── Difference: nur das LINKE Kind trägt. Loch im Aussenring ⇒ kein Beweis.
+    let ring = ext_omega(
+        Sketch2d::Difference(
+            Box::new(sk_rect([0.0, 0.0], [4.0, 4.0])),
+            Box::new(sk_circle([0.0, 0.0], 2.0)),
+        ),
+        3.0,
+    );
+    assert!(
+        !ext_outside(&ring, [0.0, 0.0, 0.0]),
+        "Mutant „Difference über das rechte Kind“: das LOCH ist nicht bewiesen aussen — \
+         die rechte Seite nimmt nur weg, und die linke deckt den Punkt"
+    );
+    assert!(ext_outside(&ring, [5.0, 0.0, 0.0]), "ausserhalb des Aussenrings ist aussen");
+    // ── Offset: nur `distance ≤ 0` schliesst durch.
+    let ero = ext_omega(
+        Sketch2d::Offset { inner: Box::new(sk_rect([0.0, 0.0], [2.0, 2.0])), distance: -0.5 },
+        3.0,
+    );
+    assert!(ext_outside(&ero, [2.5, 0.0, 0.0]), "die Erosion ist TEILMENGE des Kindes");
+    let dil = ext_omega(
+        Sketch2d::Offset { inner: Box::new(sk_rect([0.0, 0.0], [2.0, 2.0])), distance: 0.5 },
+        3.0,
+    );
+    assert!(
+        !ext_outside(&dil, [2.5, 0.0, 0.0]),
+        "Mutant „Offset ohne Vorzeichen-Gate“: die Dilation ist GRÖSSER als ihr Kind — \
+         der Punkt liegt in ihr"
+    );
+    assert!(!ext_outside(&dil, [2.4, 0.0, 0.0]));
+}
+
+/// **§8ae-Pin 3: das nicht-konvexe Polygon — die Kerbe bleibt unbewiesen.**
+///
+/// Trennende Kanten-Halbräume beweisen bei einem nicht-konvexen Polygon
+/// nichts. Der Beweis verlangt deshalb je Kante, dass ALLE Ecken auf einer
+/// Seite liegen; in der konkaven Kerbe erfüllt das keine Kante, und das
+/// Ergebnis ist ehrlich `false` — obwohl die Kerbe geometrisch AUSSEN liegt.
+/// Genau das ist der Preis der Ehrlichkeit, und er ist hier festgeschrieben.
+#[test]
+fn extrude_outside_proof_refuses_nonconvex_notch_384() {
+    // L-Form: (0,0)(4,0)(4,2)(2,2)(2,4)(0,4); die Kerbe ist [2,4]×[2,4].
+    let l = sk_poly(&[
+        [0.0, 0.0],
+        [4.0, 0.0],
+        [4.0, 2.0],
+        [2.0, 2.0],
+        [2.0, 4.0],
+        [0.0, 4.0],
+    ]);
+    let om = ext_omega(l, 3.0);
+    assert!(
+        !ext_outside(&om, [3.0, 3.0, 0.0]),
+        "der Punkt in der KERBE wird als bewiesen aussen gemeldet — dann hat der Beweis \
+         einen Kanten-Halbraum benutzt, der bei nicht-konvexen Polygonen nichts trägt"
+    );
+    assert!(!ext_outside_box(&om, [2.5, 2.5, -1.0], [3.5, 3.5, 1.0]));
+    // Was der Beweis am L trotzdem kann: die vier Kanten des konvexen Anteils.
+    assert!(ext_outside(&om, [-1.0, 2.0, 0.0]), "links der Kante x=0 ist bewiesen aussen");
+    assert!(ext_outside(&om, [2.0, -1.0, 0.0]), "unter der Kante y=0 ist bewiesen aussen");
+    assert!(ext_outside(&om, [1.0, 1.0, 4.0]), "axial bleibt unabhängig vom Profil");
+    // Und der Falsifikator in die andere Richtung: INNEN bleibt innen.
+    assert!(!ext_outside(&om, [1.0, 1.0, 0.0]));
+    assert!(!ext_outside(&om, [3.0, 1.0, 0.0]));
+    // Das Sternpolygon (alle Drehungen gleichsinnig, trotzdem nicht konvex):
+    // eine naive Konvexitätsprüfung über das Vorzeichen der Kreuzprodukte
+    // würde es durchwinken, und die Zacke wäre fälschlich „aussen“.
+    let mut star = Vec::new();
+    for k in 0..5 {
+        let a = std::f32::consts::FRAC_PI_2 + (k as f32) * 4.0 * std::f32::consts::PI / 5.0;
+        star.push([3.0 * a.cos(), 3.0 * a.sin()]);
+    }
+    let st = ext_omega(sk_poly(&star), 3.0);
+    // Die Spitze bei (0,3) gehört zur Even-Odd-Menge — kein Aussenbeweis.
+    assert!(
+        !ext_outside(&st, [0.0, 2.5, 0.0]),
+        "die Zacke des Sternpolygons gilt als aussen — die naive Konvexitätsprüfung ist zurück"
+    );
+}
+
+/// **§8ae-Pin 4: der axiale Grund ist unentbehrlich, der Profil-Grund auch.**
+///
+/// Zwei Mutanten: „ohne axialen Test" und „ohne Profil-Test". Jeder von ihnen
+/// verliert eine der beiden Familien vollständig.
+#[test]
+fn extrude_outside_proof_needs_both_reasons_384() {
+    let om = ext_omega(sk_rect([0.0, 0.0], [2.0, 2.0]), 1.0);
+    // NUR axial beweisbar (Projektion mitten im Profil).
+    let axial_only = [[0.0f64, 0.0, 1.5], [1.0, 1.0, -2.0], [-1.5, 0.5, 3.0]];
+    // NUR über das Profil beweisbar (z liegt im Band).
+    let prof_only = [[3.0f64, 0.0, 0.0], [0.0, -3.0, 0.5], [-4.0, 4.0, -0.9]];
+    for y in axial_only {
+        assert!(ext_outside(&om, y), "{y:?}: der axiale Grund trägt nicht");
+        // Der Gegenbeweis, dass hier WIRKLICH nur axial trägt: dieselbe (x,y)
+        // im Band ist NICHT aussen.
+        assert!(!ext_outside(&om, [y[0], y[1], 0.0]), "{y:?}: das Profil trüge hier schon");
+    }
+    for y in prof_only {
+        assert!(ext_outside(&om, y), "{y:?}: der Profil-Grund trägt nicht");
+        assert!(
+            y[2].abs() < 1.0,
+            "{y:?}: der Punkt liegt schon axial draussen — der Fall misst den Profil-Grund nicht"
+        );
+    }
+}
+
+/// **§8ae-Pin 5: Stufe A ist feldneutral — der Beweis bleibt im Shadow.**
+///
+/// Die Auflage aus P5b-1A: ausliefern und erstmals beweisen sind NIE derselbe
+/// Schritt. Gepinnt wird beides — dass das Gate steht, und dass der Gewinn
+/// dahinter wirklich wartet.
+#[test]
+fn stage_a_holds_the_extrude_channels_in_the_shadow_384() {
+    assert_eq!(
+        wit::EXTRUDE_COVER_STAGE,
+        wit::ExtrudeCoverStage::ShadowOnly,
+        "das Stufen-Gate steht auf Active — dann ist das hier Stufe B, und der Shadow-Pin \
+         darunter gehört nachgezogen, nicht dieser Assert gelöscht"
+    );
+    // Der Produktions-Einstieg beweist an einem Extrude-Ω NICHTS …
+    let om = ext_omega(sk_rect([0.0, 0.0], [2.0, 2.0]), 3.0);
+    for y in [[5.0f64, 0.0, 0.0], [0.0, 0.0, 4.0]] {
+        assert!(
+            !wit::box_outside_omega(&om, ivp(y), 1.0e-9),
+            "{y:?} wird schon in Stufe A als aussen bewiesen — das Gate trägt nicht"
+        );
+        // … obwohl der Beweis ihn führen KÖNNTE.
+        assert!(ext_outside(&om, y), "{y:?}: Stufe B beweist hier nicht — dann misst Pin 5 nichts");
+    }
+    // Und am echten Fixture: die 19 Kanäle des Rippen-Kamms sind heute
+    // ungedeckt und wären es unter Stufe B nicht mehr.
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    let (_n, field, _e, _l, _h, _c) = cert_matrix(delta)
+        .into_iter()
+        .find(|(n, ..)| n == "Rippen-Kamm 4×1.5/0.8")
+        .expect("das Extrude-Fixture fehlt");
+    let (mut n, mut a_cov, mut b_cov, mut a_proved, mut b_proved, mut b_h) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    for (om, chans) in omega_and_channels(&field) {
+        for ch in chans {
+            n += 1;
+            a_cov += wit::cover_shadow_probe(om, ch, cfg, false) as usize;
+            b_cov += wit::cover_shadow_probe(om, ch, cfg, true) as usize;
+            let mut c1 = ch.clone();
+            a_proved +=
+                (wit::certify_channel(om, &mut c1, cfg).0 == wit::SeamProofStatus::Proved) as usize;
+            let mut c2 = ch.clone();
+            let ((st, _), hst) = wit::certify_for_probe(om, &mut c2, cfg, true);
+            b_proved += (st == wit::SeamProofStatus::Proved) as usize;
+            b_h += matches!(hst, Some(wit::HStatus::Proved)) as usize;
+        }
+    }
+    println!(
+        "§8ae Stufe A: Rippen-Kamm 4×1.5/0.8 — {n} Kanäle, gedeckt {a_cov} (Stufe A) → {b_cov} \
+         (Stufe B), Naht-Addenden {a_proved} → {b_proved}, h-Budgets → {b_h}"
+    );
+    assert_eq!((n, a_cov, a_proved), (19, 0, 0), "Stufe A hat sich bewegt — das Feld auch");
+    assert_eq!(
+        (b_cov, b_proved, b_h),
+        (19, 19, 19),
+        "der gemessene Gewinn von Stufe B hat sich bewegt — §8ae nachziehen, nicht den Pin"
+    );
+}

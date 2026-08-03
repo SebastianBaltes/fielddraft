@@ -48,6 +48,7 @@ use crate::offset_channel::{ChannelArc, OffsetChannel, END_PLANE_OFF};
 #[cfg(test)]
 use crate::offset_channel::{channel_nearest, face_plane_gate, norm as norm32, sub as sub32};
 use crate::offset_interval::{next_down, next_up, Iv};
+use crate::sketch2d::{BoundedSketch2d, Sketch2dPrimitive};
 use fielddraft_protocol::{Primitive, Transform};
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -127,6 +128,51 @@ fn f32p3(v: [f32; 3]) -> [Iv; 3] {
     [pt(v[0] as f64), pt(v[1] as f64), pt(v[2] as f64)]
 }
 
+#[inline]
+fn rnorm2(v: [Iv; 2]) -> Option<Iv> {
+    rsqrt(radd(rmul(v[0], v[0])?, rmul(v[1], v[1])?)?)
+}
+
+/// `−a`, exakt (Vorzeichenwechsel ist in binary64 fehlerfrei).
+#[inline]
+fn rneg(a: Iv) -> Option<Iv> {
+    Iv::new(-a.hi, -a.lo)
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// #384 §8ae / Stufe A — die Stufen-Schaltung des Extrude-Aussenbeweises
+// ════════════════════════════════════════════════════════════════════════════
+
+/// **Ist der Extrude-Aussenbeweis schon feldwirksam?**
+///
+/// Die Auflage aus P5b-1A: eine neue Feldform ausliefern UND sie erstmals
+/// beweisen darf nie derselbe Schritt sein. Ein neuer Aussenbeweis deckt neue
+/// Naht-Stücke, deckt damit neue Kanäle, prägt damit neue Naht-Addenden — und
+/// die gehen in `channel_limit` ein. Das IST eine Feldänderung, auch wenn kein
+/// einziges Zeichen des Beweises im Feld auftaucht.
+///
+/// Deshalb hat der Beweis eine Stufe:
+///
+/// * [`ExtrudeCoverStage::ShadowOnly`] (Stufe A, heute) — der Beweis existiert,
+///   ist gepinnt und wird gemessen, aber [`box_outside_omega`] benutzt ihn
+///   NICHT. Jeder Konsument (Naht-Addend über [`cover_channel`], `Ω`-Box-
+///   Überdeckung über [`omega_cover`]) sieht exakt das Verhalten von vorher.
+/// * [`ExtrudeCoverStage::Active`] (Stufe B, separat) — derselbe Beweis, jetzt
+///   feldwirksam. Die Umschaltung ist genau EINE Zeile: die Konstante
+///   [`EXTRUDE_COVER_STAGE`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtrudeCoverStage {
+    /// Stufe A: bewiesen und gemessen, aber nicht konsumiert.
+    ShadowOnly,
+    /// Stufe B: feldwirksam.
+    Active,
+}
+
+/// **Das Stufen-Gate.** Stufe A hält den Extrude-Beweis im Shadow; siehe
+/// [`ExtrudeCoverStage`]. Stufe B ist die Umstellung auf `Active` — und die
+/// gehört in einen eigenen Schritt mit eigener Golden-Bewegung.
+pub const EXTRUDE_COVER_STAGE: ExtrudeCoverStage = ExtrudeCoverStage::ShadowOnly;
+
 // ════════════════════════════════════════════════════════════════════════════
 // Beweispflicht 1 — Aussenmitgliedschaft, rein geometrisch
 // ════════════════════════════════════════════════════════════════════════════
@@ -147,7 +193,12 @@ fn f32p3(v: [f32; 3]) -> [Iv; 3] {
 /// | `Difference(A,B)` | `A` bewiesen aussen (die rechte Seite kann nur wegnehmen) |
 /// | `Offset(inner, δ)`, `δ ≤ 0` | `inner` bewiesen aussen (der erodierte Körper ist eine TEILMENGE) |
 /// | `InnerWall` | wie das Kind (feld-transparent) |
+/// | `Extrude` (§8ae, nur Stufe B) | axial `min_b |local_z| > hh` ODER das Profil ist in 2D bewiesen aussen |
 /// | alles andere | **nicht bewiesen** ⇒ `false` (fail-closed) |
+///
+/// Der `Extrude`-Arm läuft über das Stufen-Gate [`EXTRUDE_COVER_STAGE`]: in
+/// Stufe A ([`ExtrudeCoverStage::ShadowOnly`]) liefert er wie bisher `false`,
+/// und diese Funktion verhält sich Bit für Bit wie vor §8ae.
 ///
 /// Jede Vergleichsschranke wird nach aussen gerundet, und verlangt wird eine
 /// **strikte** Trennung um mindestens `margin`: eine Berührung ist kein Beweis
@@ -159,13 +210,25 @@ fn f32p3(v: [f32; 3]) -> [Iv; 3] {
 /// kein blosser Mutationstest. Ungültige Margen liefern deshalb `false`:
 /// fail-closed, nicht „der Aufrufer wird schon wissen was er tut".
 pub fn box_outside_omega(node: &BoundedCsg, b: [Iv; 3], margin: f64) -> bool {
+    box_outside_omega_staged(node, b, margin, EXTRUDE_COVER_STAGE)
+}
+
+/// Wie [`box_outside_omega`], aber mit ausdrücklich gewählter Stufe. Die
+/// Produktion ruft **nie** diese Fassung — sie existiert für die §8ae-Pins und
+/// für die Shadow-Messung des Gewinns, den Stufe B holen wird.
+pub(crate) fn box_outside_omega_staged(
+    node: &BoundedCsg,
+    b: [Iv; 3],
+    margin: f64,
+    stage: ExtrudeCoverStage,
+) -> bool {
     if !(margin.is_finite() && margin >= 0.0) {
         return false;
     }
-    box_outside_inner(node, b, margin)
+    box_outside_inner(node, b, margin, stage)
 }
 
-fn box_outside_inner(node: &BoundedCsg, b: [Iv; 3], margin: f64) -> bool {
+fn box_outside_inner(node: &BoundedCsg, b: [Iv; 3], margin: f64, stage: ExtrudeCoverStage) -> bool {
     let sep = |v: Option<Iv>| -> bool { matches!(v, Some(s) if s.lo > margin) };
     match node {
         BoundedCsg::Empty => true,
@@ -194,24 +257,184 @@ fn box_outside_inner(node: &BoundedCsg, b: [Iv; 3], margin: f64) -> bool {
                 _ => false,
             }
         }
+        // #384 §8ae — das Extrusions-Blatt. `Ω = {p : max(d₂(x,y), |z| − hh) ≤ 0}`
+        // im LOKALEN Rahmen (die Weltskala multipliziert den Feldwert und kann
+        // das Vorzeichen nicht drehen, für die MENGE ist sie also irrelevant).
+        // Zwei unabhängige Ausschlussgründe, einer genügt:
+        //
+        // * **axial** — die ganze Box liegt jenseits von `±hh` in lokal-`z`;
+        // * **profil** — die Projektion der Box auf die Skizzenebene liegt
+        //   beweisbar ausserhalb des 2D-Profils.
+        //
+        // Die Projektion ist EXAKT: `local` ist eine achsenparallele
+        // Intervall-Box, ihre `(x,y)`-Komponenten sind die Projektion.
+        BoundedCsg::Extrude { sketch, half_height, world_transform, .. } => {
+            if stage != ExtrudeCoverStage::Active {
+                return false;
+            }
+            let Some(local) = local_box(world_transform, b) else { return false };
+            let axial = rsub(local[2].abs(), pt((*half_height as f64).abs()));
+            sep(axial) || sketch_outside_inner(sketch, [local[0], local[1]], margin)
+        }
         BoundedCsg::Union { left, right, .. } => {
-            box_outside_inner(left, b, margin) && box_outside_inner(right, b, margin)
+            box_outside_inner(left, b, margin, stage) && box_outside_inner(right, b, margin, stage)
         }
         BoundedCsg::Intersection { left, right, .. } => {
-            box_outside_inner(left, b, margin) || box_outside_inner(right, b, margin)
+            box_outside_inner(left, b, margin, stage) || box_outside_inner(right, b, margin, stage)
         }
         // Die rechte Seite kann nur Material WEGNEHMEN; wer links draussen ist,
         // ist auch im Ergebnis draussen.
-        BoundedCsg::Difference { left, .. } => box_outside_inner(left, b, margin),
+        BoundedCsg::Difference { left, .. } => box_outside_inner(left, b, margin, stage),
         // `δ ≤ 0`: der Offset-Körper ist `{sdf ≤ δ} ⊆ {sdf ≤ 0}` = das Kind.
         // Für `δ > 0` ist er GRÖSSER, und die Schlussrichtung dreht sich um —
         // dann ist hier nichts bewiesen.
         BoundedCsg::Offset { inner, delta, .. } => {
-            *delta <= 0.0 && box_outside_inner(inner, b, margin)
+            *delta <= 0.0 && box_outside_inner(inner, b, margin, stage)
         }
-        BoundedCsg::InnerWall { inner, .. } => box_outside_inner(inner, b, margin),
+        BoundedCsg::InnerWall { inner, .. } => box_outside_inner(inner, b, margin, stage),
         _ => false,
     }
+}
+
+/// **Liegt die GANZE 2D-Box `p` beweisbar ausserhalb des Profils `node`?**
+///
+/// Strukturgleich zu [`box_outside_inner`], nur eine Dimension tiefer:
+///
+/// | Knoten | `p ∩ Profil = ∅` ist bewiesen, wenn … |
+/// |---|---|
+/// | `Empty` | immer |
+/// | `Rectangle` | eine Achse TRENNT: `min_p |x_k − c_k| > h_k` (analog `Box`) |
+/// | `Circle` | `min_p |x − c| > r` (analog `Sphere`) |
+/// | `Polygon` | eine Kantengerade trennt — s. u. |
+/// | `Sector`, `Path` | **nie** ⇒ `false` (s. §8ae-Doku) |
+/// | `Union(A,B)` | `A` UND `B` |
+/// | `Intersection(A,B)` | `A` ODER `B` |
+/// | `Difference(A,B)` | `A` |
+/// | `Offset(inner, d)`, `d ≤ 0` | `inner` (das erodierte Profil ist TEILMENGE) |
+///
+/// Für `d > 0` ist das Offset-Profil GRÖSSER als sein Kind, und die
+/// Schlussrichtung dreht sich um — genau wie beim 3D-`Offset`-Arm.
+fn sketch_outside_inner(node: &BoundedSketch2d, p: [Iv; 2], margin: f64) -> bool {
+    let sep = |v: Option<Iv>| -> bool { matches!(v, Some(s) if s.lo > margin) };
+    match node {
+        BoundedSketch2d::Empty => true,
+        BoundedSketch2d::Prim { primitive, .. } => match primitive {
+            Sketch2dPrimitive::Rectangle { center, half_extents } => (0..2).any(|k| {
+                let d = rsub(p[k], pt(center[k] as f64));
+                sep(d.and_then(|d| rsub(d.abs(), pt((half_extents[k] as f64).abs()))))
+            }),
+            Sketch2dPrimitive::Circle { center, radius } => {
+                let Some(dx) = rsub(p[0], pt(center[0] as f64)) else { return false };
+                let Some(dy) = rsub(p[1], pt(center[1] as f64)) else { return false };
+                sep(rnorm2([dx, dy]).and_then(|n| rsub(n, pt((*radius as f64).abs()))))
+            }
+            Sketch2dPrimitive::Polygon { vertices } => polygon_outside(vertices, p, margin),
+            // `Sector` und `Path` sind ehrlich unbewiesen — kein Fall der
+            // Zertifizierungs-Matrix führt darauf (§8ae-Erhebung).
+            _ => false,
+        },
+        BoundedSketch2d::Union { left, right, .. } => {
+            sketch_outside_inner(left, p, margin) && sketch_outside_inner(right, p, margin)
+        }
+        BoundedSketch2d::Intersection { left, right, .. } => {
+            sketch_outside_inner(left, p, margin) || sketch_outside_inner(right, p, margin)
+        }
+        BoundedSketch2d::Difference { left, .. } => sketch_outside_inner(left, p, margin),
+        BoundedSketch2d::Offset { inner, distance, .. } => {
+            *distance <= 0.0 && sketch_outside_inner(inner, p, margin)
+        }
+    }
+}
+
+/// **Der Polygon-Ausschluss — ohne Konvexitäts-Orakel, und trotzdem rigoros.**
+///
+/// Ein „trennender Kanten-Halbraum" beweist bei einem beliebigen Polygon
+/// **nichts**: bei einer konkaven Kerbe (und erst recht bei einem Sternpolygon)
+/// liegt Material auf BEIDEN Seiten der Kantengeraden. Der naive Test wäre
+/// genau der weiche Beweis, den die Doktrin verbietet.
+///
+/// Bewiesen wird deshalb je Kante eine STÄRKERE Vorbedingung, und sie ist
+/// lokal prüfbar:
+///
+/// 1. Liegen **alle** Ecken auf derselben (abgeschlossenen) Seite der
+///    Kantengeraden `L_i`, so liegt der ganze Polygonzug in diesem Halbraum
+///    `H_i` (Halbräume sind konvex, jede Kante ist Konvexkombination zweier
+///    Ecken).
+/// 2. Dann liegt auch die AUSGEFÜLLTE Menge in `H_i`: ein Punkt `x ∉ H_i` lässt
+///    sich innerhalb des offenen Komplements von `H_i` — das den Rand nicht
+///    trifft — ins Unendliche schieben, seine Kreuzungszahl ist also `0`, und
+///    die Even-Odd-Regel (`sdf_polygon`) stellt ihn nach aussen. ∎
+/// 3. Trennt die Box strikt (um mehr als `margin`, in echtem Abstand, also
+///    durch `|d_i|` geteilt), ist sie bewiesen aussen.
+///
+/// Für ein konvexes Polygon erfüllt JEDE Kante Schritt 1 — der Test ist dort
+/// der volle Halbraum-Schnitt. Für ein nicht-konvexes fallen genau die Kanten
+/// weg, an denen der naive Test gelogen hätte; in einer konkaven Kerbe bleibt
+/// nichts übrig, und das Ergebnis ist ehrlich `false`.
+fn polygon_outside(v: &[[f32; 2]], p: [Iv; 2], margin: f64) -> bool {
+    // Weniger als drei Ecken: `sdf_polygon` liefert `+∞`, die Menge ist leer.
+    // Trotzdem fail-closed — ein entartetes Profil ist kein Beweisgegenstand.
+    if v.len() < 3 {
+        return false;
+    }
+    let n = v.len();
+    let vx = |j: usize, k: usize| pt(v[j][k] as f64);
+    // `cross(d, q − a)` als Intervall.
+    let cross = |dx: Iv, dy: Iv, ax: Iv, ay: Iv, qx: Iv, qy: Iv| -> Option<Iv> {
+        rsub(rmul(dx, rsub(qy, ay)?)?, rmul(dy, rsub(qx, ax)?)?)
+    };
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (ax, ay) = (vx(i, 0), vx(i, 1));
+        let Some(dx) = rsub(vx(j, 0), ax) else { continue };
+        let Some(dy) = rsub(vx(j, 1), ay) else { continue };
+        // Eine Kante ohne beweisbar positive Länge trägt keine Gerade.
+        let Some(dn) = rnorm2([dx, dy]) else { continue };
+        if !(dn.lo > 0.0) {
+            continue;
+        }
+        // Schritt 1: auf welcher Seite liegen ALLE Ecken?
+        let (mut all_left, mut all_right) = (true, true);
+        for m in 0..n {
+            // Die beiden Ecken der Kante liegen PER KONSTRUKTION exakt auf
+            // `L_i` — sie sind in beiden abgeschlossenen Halbräumen. Sie hier
+            // mitzurechnen wäre kein Mehr an Strenge, sondern nur das
+            // Aussenrundungs-Intervall um die exakte Null: `c ∋ 0` mit
+            // `c.lo < 0 < c.hi` würde JEDE Kante verwerfen und den ganzen
+            // Polygon-Arm still tot stellen.
+            if m == i || m == j {
+                continue;
+            }
+            match cross(dx, dy, ax, ay, vx(m, 0), vx(m, 1)) {
+                Some(c) => {
+                    all_left &= c.lo >= 0.0;
+                    all_right &= c.hi <= 0.0;
+                }
+                None => {
+                    all_left = false;
+                    all_right = false;
+                }
+            }
+            if !all_left && !all_right {
+                break;
+            }
+        }
+        if !all_left && !all_right {
+            continue;
+        }
+        // Schritt 3: trennt die Box strikt — in ECHTEM Abstand.
+        let Some(c) = cross(dx, dy, ax, ay, p[0], p[1]) else { continue };
+        // `H = {cross ≥ 0}` ⇒ der Abstand nach aussen ist `−cross/|d|`;
+        // `H = {cross ≤ 0}` ⇒ `+cross/|d|`.
+        let cand = if all_left { rneg(c) } else { Some(c) };
+        let ok = cand
+            .and_then(|s| rdiv(s, dn))
+            .is_some_and(|dist| dist.lo > margin);
+        if ok {
+            return true;
+        }
+    }
+    false
 }
 
 #[inline]
@@ -511,6 +734,18 @@ fn directions(arc: &ChannelArc, tm: f64) -> Vec<[f64; 3]> {
 /// Gekrümmte Bögen sind nicht unterstützt (P4); der Kanal wird dann als
 /// vollständig ungedeckt gemeldet, nicht als gedeckt.
 pub fn cover_channel(omega: &BoundedCsg, ch: &OffsetChannel, cfg: WitnessCfg) -> WitnessCover {
+    cover_channel_staged(omega, ch, cfg, EXTRUDE_COVER_STAGE)
+}
+
+/// Wie [`cover_channel`], aber mit ausdrücklich gewählter Stufe (§8ae). Nur für
+/// die Pins und die Shadow-Messung — die Produktion geht über
+/// [`cover_channel`] und damit über [`EXTRUDE_COVER_STAGE`].
+pub(crate) fn cover_channel_staged(
+    omega: &BoundedCsg,
+    ch: &OffsetChannel,
+    cfg: WitnessCfg,
+    stage: ExtrudeCoverStage,
+) -> WitnessCover {
     let mut cover = WitnessCover {
         pieces: 0,
         covered: 0,
@@ -573,7 +808,7 @@ pub fn cover_channel(omega: &BoundedCsg, ch: &OffsetChannel, cfg: WitnessCfg) ->
                             }
                         }
                     }
-                    if ok && box_outside_omega(omega, wb, cfg.margin) {
+                    if ok && box_outside_omega_staged(omega, wb, cfg.margin, stage) {
                         // `|shift|` nach OBEN — und zwar aus demselben Vektor,
                         // nicht aus `t` und einer nominellen Einheitslänge.
                         let Some(nrm) = rnorm([pt(shift[0]), pt(shift[1]), pt(shift[2])]) else {
@@ -604,6 +839,20 @@ pub fn cover_channel(omega: &BoundedCsg, ch: &OffsetChannel, cfg: WitnessCfg) ->
         cover.eta = Some(GeometricEta { offset: worst_offset, cover: 0.0, coord: 0.0 });
     }
     cover
+}
+
+/// #384 §8ae — **nur für die Messung**: hat dieser Kanal unter der gewählten
+/// Stufe eine VOLLSTÄNDIGE Zeugen-Abdeckung? Das ist die Kennzahl, an der
+/// Stufe A gemessen wird; feldwirksam wird davon nichts.
+pub(crate) fn cover_shadow_probe(
+    omega: &BoundedCsg,
+    ch: &OffsetChannel,
+    cfg: WitnessCfg,
+    active: bool,
+) -> bool {
+    let stage =
+        if active { ExtrudeCoverStage::Active } else { ExtrudeCoverStage::ShadowOnly };
+    cover_channel_staged(omega, ch, cfg, stage).eta.is_some()
 }
 
 /// `Ω` eines Stopp-Baums: das Kind des `Offset`-Knotens unter dem Kanal —
@@ -1075,8 +1324,12 @@ pub fn channel_snapshot(ch: &OffsetChannel) -> Vec<u8> {
 /// **Transfer-Lemma.** `box_outside_inner` liest ausschliesslich: den
 /// Varianten-Tag; bei `Leaf` die Weltmatrix und — nur für Box/Sphere/Zylinder —
 /// die Primitiv-Parameter (jedes andere Blatt liefert bedingungslos `false`);
-/// bei `Offset` das `delta`; und rekursiv die Kinder von `Union`,
-/// `Intersection`, `Difference`, `Offset`, `InnerWall`. **Jede andere Variante
+/// bei `Extrude` (§8ae) die Weltmatrix, `half_height` und den Profilbaum —
+/// dort wiederum nur die Parameter von `Rectangle`/`Circle`/`Polygon`, das
+/// `distance` eines Profil-`Offset` und die Struktur der Profil-Booleans
+/// (`Sector`/`Path` liefern bedingungslos `false`); bei `Offset` das `delta`;
+/// und rekursiv die Kinder von `Union`, `Intersection`, `Difference`,
+/// `Offset`, `InnerWall`. **Jede andere Variante
 /// liefert bedingungslos `false`.** Ein Schnappschuss, der genau diese Daten
 /// kanonisch kodiert, bestimmt deshalb den Wert von [`box_outside_omega`] für
 /// JEDE Box und JEDE Marge. Gilt `omega_snapshot(Ω') = omega_snapshot(Ω)`, so
@@ -1087,6 +1340,62 @@ pub fn channel_snapshot(ch: &OffsetChannel) -> Vec<u8> {
 /// sein kann. Alle nicht unterstützten Varianten fallen bewusst in EINEN Topf:
 /// sie sind für den Beweis ununterscheidbar, weil sie alle nichts beweisen.
 fn serialize_omega<S: SnapshotSink>(node: &BoundedCsg, s: &mut S) {
+    /// Der Profilbaum unter einem `Extrude` — dieselbe Regel wie oben: alles,
+    /// was `sketch_outside_inner` liest, kommt kanonisch rein; alles, was dort
+    /// bedingungslos `false` liefert, fällt in EINEN Topf.
+    fn sk<S: SnapshotSink>(n: &BoundedSketch2d, s: &mut S) {
+        if s.done() {
+            return;
+        }
+        match n {
+            BoundedSketch2d::Empty => s.put(&[40]),
+            BoundedSketch2d::Prim { primitive, .. } => match primitive {
+                Sketch2dPrimitive::Rectangle { center, half_extents } => {
+                    s.put(&[41]);
+                    sn_f32(s, center[0]);
+                    sn_f32(s, center[1]);
+                    sn_f32(s, half_extents[0]);
+                    sn_f32(s, half_extents[1]);
+                }
+                Sketch2dPrimitive::Circle { center, radius } => {
+                    s.put(&[42]);
+                    sn_f32(s, center[0]);
+                    sn_f32(s, center[1]);
+                    sn_f32(s, *radius);
+                }
+                Sketch2dPrimitive::Polygon { vertices } => {
+                    s.put(&[43]);
+                    sn_u64(s, vertices.len() as u64);
+                    for v in vertices {
+                        sn_f32(s, v[0]);
+                        sn_f32(s, v[1]);
+                    }
+                }
+                // `Sector`/`Path`: beweisen nichts, also ununterscheidbar.
+                _ => s.put(&[49]),
+            },
+            BoundedSketch2d::Union { left, right, .. } => {
+                s.put(&[44]);
+                sk(left, s);
+                sk(right, s);
+            }
+            BoundedSketch2d::Intersection { left, right, .. } => {
+                s.put(&[45]);
+                sk(left, s);
+                sk(right, s);
+            }
+            BoundedSketch2d::Difference { left, right, .. } => {
+                s.put(&[46]);
+                sk(left, s);
+                sk(right, s);
+            }
+            BoundedSketch2d::Offset { inner, distance, .. } => {
+                s.put(&[47]);
+                sn_f32(s, *distance);
+                sk(inner, s);
+            }
+        }
+    }
     fn go<S: SnapshotSink>(n: &BoundedCsg, s: &mut S) {
         if s.done() {
             return;
@@ -1145,6 +1454,21 @@ fn serialize_omega<S: SnapshotSink>(node: &BoundedCsg, s: &mut S) {
             BoundedCsg::InnerWall { inner, .. } => {
                 s.put(&[7]);
                 go(inner, s);
+            }
+            // #384 §8ae — das Extrusions-Blatt. Kodiert wird es in BEIDEN
+            // Stufen: in Stufe A liest der Beweis diese Daten zwar nicht, aber
+            // ein Schnappschuss, der bei der Umschaltung erst nachgezogen
+            // werden müsste, wäre genau die Sorte Kopplung, die das
+            // Transfer-Lemma still ungültig macht.
+            BoundedCsg::Extrude { sketch, half_height, world_transform, .. } => {
+                s.put(&[9]);
+                sn_f32x3(s, world_transform.translate);
+                for x in world_transform.rotation {
+                    sn_f32(s, x);
+                }
+                sn_f32x3(s, world_transform.scale);
+                sn_f32(s, *half_height);
+                sk(sketch, s);
             }
             // Alle übrigen Varianten: bedingungslos `false`, also ein Topf.
             _ => s.put(&[8]),
@@ -1332,12 +1656,94 @@ pub(crate) fn local_box_to_world(t: &Transform, lo: [f64; 3], hi: [f64; 3]) -> O
 /// | `Difference(A,B)` | die von `A` (rechts nimmt nur weg) |
 /// | `Offset(inner, δ≤0)` | die von `inner` (der erodierte Körper ist TEILMENGE) |
 /// | `InnerWall` | die des Kindes |
+/// | `Extrude` (§8ae, nur Stufe B) | die abgebildete Profil-Hülle × `±|hh|` |
 /// | alles andere | **`None`** — fail-closed |
 ///
 /// `None` heisst: kein h-Budget. Eine Überdeckung, die auch nur ein Blatt
 /// rät, wäre wertlos.
 pub(crate) fn omega_cover(node: &BoundedCsg) -> Option<Vec<WorldBox>> {
-    fn go(n: &BoundedCsg, out: &mut Vec<WorldBox>) -> bool {
+    omega_cover_staged(node, EXTRUDE_COVER_STAGE)
+}
+
+/// **Die lokale 2D-Hüllbox EINES Profils** — dieselben Formen, die
+/// [`sketch_outside_inner`] beweist, nur in die andere Richtung (§8ae).
+///
+/// Bewusst NICHT über `BoundedSketch2d::aabb()`: dessen `Offset`-Arm weitet
+/// die Box um `distance` auf, und dass die Dilation eines PSEUDO-Abstandsfeldes
+/// in dieser Aufweitung liegt, ist kein Satz. Hier wird jede Form selbst
+/// gehüllt, positive Profil-Offsets werden verweigert.
+///
+/// `None` = keine beweisbare Hülle. `Some(None)` = leere Menge (nichts zu
+/// überdecken).
+#[allow(clippy::type_complexity)]
+fn sketch_cover_box(n: &BoundedSketch2d) -> Option<Option<([f64; 2], [f64; 2])>> {
+    let hull = |a: Option<([f64; 2], [f64; 2])>, b: Option<([f64; 2], [f64; 2])>| match (a, b) {
+        (None, x) | (x, None) => x,
+        (Some((alo, ahi)), Some((blo, bhi))) => Some((
+            [alo[0].min(blo[0]), alo[1].min(blo[1])],
+            [ahi[0].max(bhi[0]), ahi[1].max(bhi[1])],
+        )),
+    };
+    match n {
+        BoundedSketch2d::Empty => Some(None),
+        BoundedSketch2d::Prim { primitive, .. } => match primitive {
+            Sketch2dPrimitive::Rectangle { center, half_extents } => {
+                let mut lo = [0.0f64; 2];
+                let mut hi = [0.0f64; 2];
+                for k in 0..2 {
+                    let (c, e) = (center[k] as f64, (half_extents[k] as f64).abs());
+                    lo[k] = next_down(c - e);
+                    hi[k] = next_up(c + e);
+                }
+                Some(Some((lo, hi)))
+            }
+            Sketch2dPrimitive::Circle { center, radius } => {
+                let r = (*radius as f64).abs();
+                let mut lo = [0.0f64; 2];
+                let mut hi = [0.0f64; 2];
+                for k in 0..2 {
+                    lo[k] = next_down(center[k] as f64 - r);
+                    hi[k] = next_up(center[k] as f64 + r);
+                }
+                Some(Some((lo, hi)))
+            }
+            Sketch2dPrimitive::Polygon { vertices } => {
+                if vertices.len() < 3 {
+                    return None;
+                }
+                let mut lo = [f64::INFINITY; 2];
+                let mut hi = [f64::NEG_INFINITY; 2];
+                for v in vertices {
+                    for k in 0..2 {
+                        lo[k] = lo[k].min(v[k] as f64);
+                        hi[k] = hi[k].max(v[k] as f64);
+                    }
+                }
+                Some(Some((lo, hi)))
+            }
+            // `Sector`/`Path`: keine bewiesene Hülle — fail-closed.
+            _ => None,
+        },
+        BoundedSketch2d::Union { left, right, .. } => {
+            Some(hull(sketch_cover_box(left)?, sketch_cover_box(right)?))
+        }
+        // `A ∩ B ⊆ A` und `A \ B ⊆ A`.
+        BoundedSketch2d::Intersection { left, .. } | BoundedSketch2d::Difference { left, .. } => {
+            sketch_cover_box(left)
+        }
+        BoundedSketch2d::Offset { inner, distance, .. } => {
+            (*distance <= 0.0).then(|| sketch_cover_box(inner)).flatten()
+        }
+    }
+}
+
+/// Wie [`omega_cover`], mit ausdrücklich gewählter Stufe (§8ae).
+pub(crate) fn omega_cover_staged(
+    node: &BoundedCsg,
+    stage: ExtrudeCoverStage,
+) -> Option<Vec<WorldBox>> {
+    let extrude_ok = stage == ExtrudeCoverStage::Active;
+    fn go(n: &BoundedCsg, out: &mut Vec<WorldBox>, extrude_ok: bool) -> bool {
         match n {
             BoundedCsg::Empty => true,
             BoundedCsg::Leaf { primitive, world_transform, .. } => {
@@ -1385,17 +1791,42 @@ pub(crate) fn omega_cover(node: &BoundedCsg) -> Option<Vec<WorldBox>> {
                     None => false,
                 }
             }
-            BoundedCsg::Union { left, right, .. } => go(left, out) && go(right, out),
+            // #384 §8ae — das Extrusions-Blatt: die lokale Profil-Hülle mal
+            // `[−|hh|, +|hh|]`, danach durch dieselbe rigorose Vorwärts-
+            // Abbildung wie jedes andere Blatt. Gate: Stufe B.
+            BoundedCsg::Extrude { sketch, half_height, world_transform, .. } => {
+                if !extrude_ok {
+                    return false;
+                }
+                let Some(prof) = sketch_cover_box(sketch) else { return false };
+                // Leeres Profil ⇒ leere Menge ⇒ nichts zu überdecken.
+                let Some((plo, phi)) = prof else { return true };
+                let hh = (*half_height as f64).abs();
+                let lo = [plo[0], plo[1], next_down(-hh)];
+                let hi = [phi[0], phi[1], next_up(hh)];
+                match local_box_to_world(world_transform, lo, hi) {
+                    Some(b) => {
+                        out.push(b);
+                        true
+                    }
+                    None => false,
+                }
+            }
+            BoundedCsg::Union { left, right, .. } => {
+                go(left, out, extrude_ok) && go(right, out, extrude_ok)
+            }
             // `A ∩ B ⊆ A` und `A \ B ⊆ A`: die linke Überdeckung genügt.
-            BoundedCsg::Intersection { left, .. } => go(left, out),
-            BoundedCsg::Difference { left, .. } => go(left, out),
-            BoundedCsg::Offset { inner, delta, .. } => *delta <= 0.0 && go(inner, out),
-            BoundedCsg::InnerWall { inner, .. } => go(inner, out),
+            BoundedCsg::Intersection { left, .. } => go(left, out, extrude_ok),
+            BoundedCsg::Difference { left, .. } => go(left, out, extrude_ok),
+            BoundedCsg::Offset { inner, delta, .. } => {
+                *delta <= 0.0 && go(inner, out, extrude_ok)
+            }
+            BoundedCsg::InnerWall { inner, .. } => go(inner, out, extrude_ok),
             _ => false,
         }
     }
     let mut out = Vec::new();
-    go(node, &mut out).then_some(out)
+    go(node, &mut out, extrude_ok).then_some(out)
 }
 
 /// Ist dieser Slot der unbelegte Sentinel `[0,0,0,−1e30]`?
@@ -2054,6 +2485,10 @@ pub(crate) struct SeamProofKnobs {
     pub h_shave_ulps: u32,
     /// #384 §8ab — den h-Addenden fest vorgeben.
     pub h_force_addend: Option<f32>,
+    /// #384 §8ae — die Extrude-Stufe ÜBERSTIMMEN. `None` = das
+    /// Produktions-Gate [`EXTRUDE_COVER_STAGE`]. Nur die Shadow-Messung setzt
+    /// das; kein Produktionspfad kommt an diese Knöpfe.
+    pub extrude_stage: Option<ExtrudeCoverStage>,
 }
 
 /// **Die Zertifizierung EINES Kanals — die einzige Entstehungsstelle eines
@@ -2113,16 +2548,26 @@ pub(crate) fn certify_channel_with(
     // über `Ω` = dem Körper VOR der Erosion; am Dilations-Stopp ist die
     // Dualität eine andere, und einen konvexen Dualsatz gibt es nicht.
     if !ch.concave {
-        return ((SeamProofStatus::NotConcave, cover_channel(omega, ch, cfg)), None);
+        return ((
+            SeamProofStatus::NotConcave,
+            cover_channel_staged(omega, ch, cfg, knobs.extrude_stage.unwrap_or(EXTRUDE_COVER_STAGE)),
+        ), None);
     }
     if ch.arcs.is_empty() {
-        return ((SeamProofStatus::NoCover, cover_channel(omega, ch, cfg)), None);
+        return ((
+            SeamProofStatus::NoCover,
+            cover_channel_staged(omega, ch, cfg, knobs.extrude_stage.unwrap_or(EXTRUDE_COVER_STAGE)),
+        ), None);
     }
     // Gekrümmt zuerst — ein struktureller Ausschluss, kein Zeugen-Fehlschlag.
     if ch.arcs.iter().any(|a| !(a.sweep < 0.0)) {
-        return ((SeamProofStatus::Curved, cover_channel(omega, ch, cfg)), None);
+        return ((
+            SeamProofStatus::Curved,
+            cover_channel_staged(omega, ch, cfg, knobs.extrude_stage.unwrap_or(EXTRUDE_COVER_STAGE)),
+        ), None);
     }
-    let cover = cover_channel(omega, ch, cfg);
+    let stage = knobs.extrude_stage.unwrap_or(EXTRUDE_COVER_STAGE);
+    let cover = cover_channel_staged(omega, ch, cfg, stage);
     let Some(eta) = cover.eta else {
         return ((SeamProofStatus::NoCover, cover), None);
     };
@@ -2169,7 +2614,7 @@ pub(crate) fn certify_channel_with(
     }
     // #384 §8ab — das h-Budget. Es scheitert unabhängig vom Naht-Addenden;
     // scheitert es, bleibt der `h`-Ast dieses Kanals auf der Modell-Annahme.
-    let h = match omega_cover(omega) {
+    let h = match omega_cover_staged(omega, stage) {
         None => {
             hs_out = Some(HStatus::NoCover);
             None
@@ -2201,6 +2646,25 @@ pub(crate) fn certify_channel_with(
     };
     ch.seal_seam_proof(SeamProofToken::mint(), Some(proof));
     ((SeamProofStatus::Proved, cover), hs_out)
+}
+
+/// #384 §8ae — **nur für die Shadow-Messung**: dieselbe Zertifizierung, aber
+/// mit ausdrücklich gewählter Extrude-Stufe. Sie schreibt in eine KOPIE des
+/// Kanals; feldwirksam wird nichts.
+pub(crate) fn certify_for_probe(
+    omega: &BoundedCsg,
+    ch: &mut OffsetChannel,
+    cfg: WitnessCfg,
+    active: bool,
+) -> ((SeamProofStatus, WitnessCover), Option<HStatus>) {
+    let stage =
+        if active { ExtrudeCoverStage::Active } else { ExtrudeCoverStage::ShadowOnly };
+    certify_channel_with(
+        omega,
+        ch,
+        cfg,
+        SeamProofKnobs { extrude_stage: Some(stage), ..SeamProofKnobs::default() },
+    )
 }
 
 /// **NUR für die Gegenproben.** Schiebt den Beweis von `src` über den
