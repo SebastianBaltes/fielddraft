@@ -14060,11 +14060,13 @@ fn h_budget_bounds_the_true_distance_384() {
     let cfg = wit::WitnessCfg::default();
     let mut g = Lcg(0x8ab_11feed);
     let (mut probes, mut inband, mut hneg) = (0usize, 0usize, 0usize);
+    let mut outside_checked = 0usize;
     let mut tightest = f64::INFINITY;
     let mut fixtures = 0usize;
     for (name, field, exact, _l, _h, _c) in cert_matrix(delta) {
         let mut here = 0usize;
         for (om, chans) in omega_and_channels(&field) {
+            let cover = wit::omega_cover(om);
             for ch in chans {
                 let mut c = ch.clone();
                 if wit::certify_channel(om, &mut c, cfg).0 != wit::SeamProofStatus::Proved {
@@ -14095,6 +14097,37 @@ fn h_budget_bounds_the_true_distance_384() {
                     }
                     if h < 0.0 {
                         hneg += 1;
+                        // **Signiertes Aussen-Orakel** (Sollte-Punkt des
+                        // fünfzehnten Reviews). Für x ∉ Ω ist
+                        // `−SDF_Ω(x) = −dist(x,Ω)`, und das exakte
+                        // Komplement-Orakel liefert dort nur „0". Geprüft wird
+                        // deshalb gegen `dist(x, ⋃Boxen) ≤ dist(x,Ω)`: gilt
+                        // schon `dist(x,⋃Boxen) ≥ −h_safe`, ist die Zusage
+                        // erst recht erfüllt. Die Überdeckung selbst hängt an
+                        // `h_cover_contains_omega_384`.
+                        let h_safe = (h + ah) as f64;
+                        if h_safe < 0.0 {
+                            if let Some(cov) = &cover {
+                                let mut best = f64::INFINITY;
+                                for (bl, bh) in cov {
+                                    let mut q = 0.0f64;
+                                    for k in 0..3 {
+                                        let v = (bl[k] - p[k] as f64)
+                                            .max(p[k] as f64 - bh[k])
+                                            .max(0.0);
+                                        q += v * v;
+                                    }
+                                    best = best.min(q.sqrt());
+                                }
+                                assert!(
+                                    best >= -h_safe - 1.0e-9,
+                                    "{name}: h < 0, aber dist(x,Ω) ≥ {best:e} < −h_safe = \
+                                     {:e} — die Aussen-Seite des Halbraum-Lemmas hält nicht",
+                                    -h_safe
+                                );
+                                outside_checked += 1;
+                            }
+                        }
                     }
                     if h > de && h <= de + a {
                         inband += 1;
@@ -14217,7 +14250,8 @@ fn h_budget_bounds_the_true_distance_384() {
     println!(
         "§8ab Pin 2: {probes} Proben in Ω über {fixtures} Fixturen; engste Reserve \
          {tightest:.3e} mm; Umhäng-Band gleichverteilt an {inband}, gezielt {hits} Treffer \
-         aus {rays} Strahlen (engste Reserve dort {band_tight:.3e} mm); h < 0 an {hneg}"
+         aus {rays} Strahlen (engste Reserve dort {band_tight:.3e} mm); h < 0 an {hneg}, \
+         davon {outside_checked} gegen das signierte Aussen-Orakel geprüft"
     );
 }
 
@@ -14508,4 +14542,454 @@ fn h_budget_is_fail_closed_384() {
     let empty = wit::omega_cover(&BoundedCsg::Empty).unwrap();
     let ke = wit::h_budget(&base, &empty, Default::default()).unwrap();
     assert_eq!(ke.tau_mm(), 0.0);
+}
+
+/// Die Welt-AABB einer lokalen Box, aus einer **unabhängigen** Inversen:
+/// die 3×3-Matrix wird aus `world_to_local` abgetastet und per
+/// Gauss-Elimination invertiert — nicht per Adjunkte wie im Beweiscode.
+/// Nur ein Probengebiet für die Pins, kein Beweis.
+fn independent_world_aabb(t: &fielddraft_protocol::Transform, he: [f32; 3]) -> Option<([f64; 3], [f64; 3])> {
+    let o = crate::transform::world_to_local(t, [0.0; 3]);
+    let mut a = [[0.0f64; 3]; 3];
+    for c in 0..3 {
+        let mut e = [0.0f32; 3];
+        e[c] = 1.0;
+        let v = crate::transform::world_to_local(t, e);
+        for r in 0..3 {
+            a[r][c] = v[r] as f64 - o[r] as f64;
+        }
+    }
+    // Gauss-Jordan auf [A | I].
+    let mut m = [[0.0f64; 6]; 3];
+    for r in 0..3 {
+        for c in 0..3 {
+            m[r][c] = a[r][c];
+        }
+        m[r][3 + r] = 1.0;
+    }
+    for col in 0..3 {
+        let piv = (col..3).max_by(|&x, &y| {
+            m[x][col].abs().partial_cmp(&m[y][col].abs()).unwrap_or(std::cmp::Ordering::Equal)
+        })?;
+        if m[piv][col].abs() < 1.0e-12 {
+            return None;
+        }
+        m.swap(col, piv);
+        let d = m[col][col];
+        for c in 0..6 {
+            m[col][c] /= d;
+        }
+        for r in 0..3 {
+            if r == col {
+                continue;
+            }
+            let f = m[r][col];
+            for c in 0..6 {
+                m[r][c] -= f * m[col][c];
+            }
+        }
+    }
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for cx in 0..8 {
+        let l = [
+            if cx & 1 == 0 { -he[0] as f64 } else { he[0] as f64 },
+            if cx & 2 == 0 { -he[1] as f64 } else { he[1] as f64 },
+            if cx & 4 == 0 { -he[2] as f64 } else { he[2] as f64 },
+        ];
+        for r in 0..3 {
+            let mut v = t.translate[r] as f64;
+            for c in 0..3 {
+                v += m[r][3 + c] * l[c];
+            }
+            lo[r] = lo[r].min(v);
+            hi[r] = hi[r].max(v);
+        }
+    }
+    // Grosszügig aufweiten: das Gebiet muss Ω sicher enthalten UND Luft
+    // daneben lassen, damit eine ZU KLEINE Beweisbox auffliegt.
+    for r in 0..3 {
+        let w = (hi[r] - lo[r]).max(1.0e-3);
+        lo[r] -= 0.6 * w;
+        hi[r] += 0.6 * w;
+        if !lo[r].is_finite() || !hi[r].is_finite() {
+            return None;
+        }
+    }
+    Some((lo, hi))
+}
+
+/// **§8ab-Pin 7 (Blocker 1): die Überdeckung hält auch ohne Einheits-Quaternion.**
+///
+/// `local_box_to_world` baute die Vorwärtsrichtung früher aus
+/// `quat_rotate(q,·)` und behandelte sie als Umkehrung von
+/// `quat_rotate(conj q,·)` — nur bei `|q| = 1` sind das inverse Matrizen.
+/// Nichts erzwingt `|q| = 1`: `Transform` hat öffentliche Felder, die
+/// Deserialisierung prüft nichts, und f32-Quaternion-Komposition liefert
+/// ohnehin keine exakt normierte Viererzahl.
+///
+/// Der Pin fährt drei Familien und verlangt jeweils **entweder echte
+/// Überdeckung oder `None`** — nie eine zu kleine Box:
+///
+/// 1. die Familie des Reviews (`q = (0,0,0.5,0)`) und weitere grob
+///    nichtunitäre Quaternionen;
+/// 2. eine realistische f32-Kompositionsfamilie knapp neben `|q| = 1`;
+/// 3. entartete Fälle (`q = 0`, `scale = 0`) ⇒ `None`.
+#[test]
+fn h_cover_survives_non_unit_quaternions_384() {
+    use fielddraft_protocol::{Primitive, Transform};
+    let he = [1.0f32, 1.0, 1.0];
+    let leaf = |t: Transform| {
+        crate::bvh::BoundedCsg::Leaf {
+            id: fielddraft_protocol::FeatureId::from_u32(1),
+            primitive: Primitive::Box { center: [0.0; 3], half_extents: he },
+            world_transform: t,
+            aabb: crate::csg::Aabb { min: [-1.0e6; 3], max: [1.0e6; 3] },
+        }
+    };
+    // Eine realistische f32-Komposition: mehrfach multiplizierte Rotationen.
+    let mut q_comp = [0.0f32, 0.0, 0.0, 1.0];
+    for i in 0..40 {
+        let a = 0.13f32 * (i as f32 + 1.0);
+        let (sn, cs) = (a.sin(), a.cos());
+        let inv = 1.0 / 3.0f32.sqrt();
+        q_comp = crate::transform::quat_multiply(q_comp, [sn * inv, sn * inv, sn * inv, cs]);
+    }
+    let ncomp = (q_comp[0] * q_comp[0] + q_comp[1] * q_comp[1] + q_comp[2] * q_comp[2]
+        + q_comp[3] * q_comp[3])
+        .sqrt();
+
+    let cases: Vec<(&str, [f32; 4], [f32; 3])> = vec![
+        ("Review q=(0,0,0.5,0)", [0.0, 0.0, 0.5, 0.0], [1.0, 1.0, 1.0]),
+        ("q=(0,0,2,0)", [0.0, 0.0, 2.0, 0.0], [1.0, 1.0, 1.0]),
+        ("q=(0.3,0.4,0.5,0.6) unnormiert", [0.3, 0.4, 0.5, 0.6], [1.0, 1.0, 1.0]),
+        ("q halbiert", [0.15, 0.2, 0.25, 0.3], [1.0, 1.0, 1.0]),
+        ("f32-Komposition", q_comp, [1.0, 1.0, 1.0]),
+        ("f32-Komposition + Skalierung", q_comp, [0.25, 3.5, 1.0]),
+        ("Einheit + Translation", [0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0]),
+        // `q = 0`: die Rückwärts-Abbildung entartet zu „untranslate + unscale"
+        // — immer noch invertierbar, die Überdeckung ist also BEWEISBAR und wird
+        // nicht verweigert. Genau das prüft die Schleife mit.
+        ("q = 0 (Identität/Skalierung)", [0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
+        ("entartet scale=0", [0.0, 0.0, 0.0, 1.0], [0.0, 1.0, 1.0]),
+        ("entartet scale=0 unter Rotation", q_comp, [1.0, 0.0, 1.0]),
+    ];
+    let mut g = Lcg(0x8ab_9a47);
+    let (mut checked, mut refused, mut nonunit) = (0usize, 0usize, 0usize);
+    for (name, q, sc) in cases {
+        let t = Transform { translate: [3.0, -2.0, 1.5], rotation: q, scale: sc };
+        let node = leaf(t.clone());
+        let Some(cover) = wit::omega_cover(&node) else {
+            refused += 1;
+            continue;
+        };
+        assert_eq!(cover.len(), 1, "{name}: {} Boxen statt einer", cover.len());
+        let (bl, bh) = cover[0];
+        let qn = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+        if (qn - 1.0).abs() > 1.0e-6 {
+            nonunit += 1;
+        }
+        // Das Probengebiet kommt aus einer UNABHÄNGIGEN Inversen (Gauss statt
+        // Adjunkte): sonst würde der Pin sein Gebiet aus genau dem Code
+        // beziehen, den er prüfen soll.
+        let Some((slo, shi)) = independent_world_aabb(&t, he) else {
+            refused += 1;
+            continue;
+        };
+        let mut inside_seen = 0usize;
+        for _ in 0..60_000 {
+            let p = [
+                (slo[0] + g.next_f64() * (shi[0] - slo[0])) as f32,
+                (slo[1] + g.next_f64() * (shi[1] - slo[1])) as f32,
+                (slo[2] + g.next_f64() * (shi[2] - slo[2])) as f32,
+            ];
+            // Mitgliedschaft nach DERSELBEN Semantik, die `box_outside_omega`
+            // liest: `world_to_local`, dann die lokalen Halbachsen.
+            let l = crate::transform::world_to_local(&t, p);
+            if !(0..3).all(|k| l[k].abs() <= he[k]) {
+                continue;
+            }
+            inside_seen += 1;
+            assert!(
+                (0..3).all(|k| (p[k] as f64) >= bl[k] && (p[k] as f64) <= bh[k]),
+                "{name} (|q| = {qn}): Ω-Punkt {p:?} liegt AUSSERHALB der Überdeckungsbox \
+                 {bl:?}..{bh:?} — die Überdeckung überdeckt nicht"
+            );
+        }
+        assert!(
+            inside_seen > 100,
+            "{name}: nur {inside_seen} Innenpunkte getroffen — der Pin misst dort nichts"
+        );
+        checked += 1;
+    }
+    // **Die Gegenprobe**: die ALTE Formel (`quat_rotate(q,·)` als Umkehrung von
+    // `quat_rotate(conj q,·)`) MUSS an mindestens einer nichtunitären Familie
+    // eine zu kleine Box liefern — sonst hätte der Blocker nie bestanden und
+    // der Pin bewachte nichts.
+    let old_box = |t: &Transform, he: [f32; 3]| -> ([f64; 3], [f64; 3]) {
+        let q = [
+            t.rotation[0] as f64,
+            t.rotation[1] as f64,
+            t.rotation[2] as f64,
+            t.rotation[3] as f64,
+        ];
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for cx in 0..8 {
+            let l = [
+                if cx & 1 == 0 { -he[0] as f64 } else { he[0] as f64 },
+                if cx & 2 == 0 { -he[1] as f64 } else { he[1] as f64 },
+                if cx & 4 == 0 { -he[2] as f64 } else { he[2] as f64 },
+            ];
+            let v = [l[0] * t.scale[0] as f64, l[1] * t.scale[1] as f64, l[2] * t.scale[2] as f64];
+            let tv = [
+                2.0 * (q[1] * v[2] - q[2] * v[1]),
+                2.0 * (q[2] * v[0] - q[0] * v[2]),
+                2.0 * (q[0] * v[1] - q[1] * v[0]),
+            ];
+            let w = [
+                v[0] + q[3] * tv[0] + q[1] * tv[2] - q[2] * tv[1] + t.translate[0] as f64,
+                v[1] + q[3] * tv[1] + q[2] * tv[0] - q[0] * tv[2] + t.translate[1] as f64,
+                v[2] + q[3] * tv[2] + q[0] * tv[1] - q[1] * tv[0] + t.translate[2] as f64,
+            ];
+            for k in 0..3 {
+                lo[k] = lo[k].min(w[k]);
+                hi[k] = hi[k].max(w[k]);
+            }
+        }
+        (lo, hi)
+    };
+    let t_rev = Transform {
+        translate: [3.0, -2.0, 1.5],
+        rotation: [0.0, 0.0, 0.5, 0.0],
+        scale: [1.0, 1.0, 1.0],
+    };
+    let (olo, ohi) = old_box(&t_rev, he);
+    let mut g3 = Lcg(0x0117_0117);
+    let (slo, shi) = independent_world_aabb(&t_rev, he).unwrap();
+    let mut escaped = 0usize;
+    for _ in 0..60_000 {
+        let p = [
+            (slo[0] + g3.next_f64() * (shi[0] - slo[0])) as f32,
+            (slo[1] + g3.next_f64() * (shi[1] - slo[1])) as f32,
+            (slo[2] + g3.next_f64() * (shi[2] - slo[2])) as f32,
+        ];
+        let l = crate::transform::world_to_local(&t_rev, p);
+        if !(0..3).all(|k| l[k].abs() <= he[k]) {
+            continue;
+        }
+        if !(0..3).all(|k| (p[k] as f64) >= olo[k] && (p[k] as f64) <= ohi[k]) {
+            escaped += 1;
+        }
+    }
+    assert!(
+        escaped > 100,
+        "die ALTE Quaternion-Formel überdeckt die Review-Familie q=(0,0,0.5,0) auch — dann \
+         war Blocker 1 keiner und dieser Pin bewacht nichts ({escaped} Ausreisser)"
+    );
+
+    assert!(checked >= 6, "nur {checked} Familien geprüft");
+    assert!(nonunit >= 4, "nur {nonunit} echt nichtunitäre Familien");
+    assert!(
+        refused >= 2,
+        "die entarteten Fälle wurden NICHT verweigert ({refused}) — die Determinanten-Sperre \
+         greift dann nie"
+    );
+    println!(
+        "§8ab Pin 7: {checked} Familien überdeckt ({nonunit} nichtunitär), {refused} verweigert; \
+         |q_komposition| − 1 = {:.3e}; die alte Formel liess {escaped} Ω-Punkte entkommen",
+        ncomp as f64 - 1.0
+    );
+}
+
+/// **§8ab-Pin 8 (Blocker 2): die aktive Domäne folgt aus dem f32-Ausstieg.**
+///
+/// `channel_limit` prüft `fl(norm_f32(fl(p − bound_c)) − bound_r) < trust`.
+/// Daraus die REELLE Ungleichung `|p − bound_c| < bound_r + trust` zu folgern,
+/// war der zweite Blocker: jede Op der Kette kann unterschätzen.
+///
+/// Geprüft an Punkten unmittelbar beiderseits des Ausstiegs (per Bisektion
+/// aufgesucht), bei grosser Translation und bei auseinanderliegenden
+/// Exponenten von `p` und `bound_c`. **Die Mutation ist die naive Schranke**
+/// `bound_r + trust`: sie MUSS an mindestens einem Punkt der aktiven Domäne
+/// reissen, sonst trägt die Brücke nichts.
+#[test]
+fn h_active_span_bridges_the_f32_early_out_384() {
+    let m = [0.0f32, 0.0, 1.0];
+    let mut cases: Vec<(&str, OffsetChannel)> = Vec::new();
+    for (name, a, b, bc, br, tr) in [
+        ("nah am Ursprung", [0.0f32, 0.0, 0.0], [1.0f32, 0.0, 0.0], [0.0f32; 3], 1.0f32, 3.91f32),
+        (
+            "grosse Translation",
+            [1.0e4, -3.0e3, 7.0e3],
+            [1.0e4 + 40.0, -3.0e3, 7.0e3],
+            [1.0e4, -3.0e3, 7.0e3],
+            60.0,
+            120.0,
+        ),
+        (
+            "gemischte Exponenten",
+            [1.0e5, 1.0e-3, -2.0e4],
+            [1.0e5 + 5.0, 1.0e-3, -2.0e4],
+            [1.0e5, 0.0, -2.0e4],
+            250.0,
+            400.0,
+        ),
+    ] {
+        let mut ch = synth_channel(vec![seg_arc(a, b, m, m, m, m)], true);
+        ch.bound_c = bc;
+        ch.bound_r = br;
+        ch.trust = tr;
+        cases.push((name, ch));
+    }
+    let (mut probes, mut naive_broken) = (0usize, 0usize);
+    let mut worst_naive = f64::NEG_INFINITY;
+    let mut worst_use = 0.0f64;
+    let mut g = Lcg(0x8ab_5ba7);
+    for (name, ch) in &cases {
+        let span = wit::active_span(ch).expect("active_span");
+        let naive = ch.bound_r as f64 + ch.trust as f64;
+        assert!(span >= naive, "{name}: die Brücke ist ENGER als die naive Schranke");
+        // Der f32-Ausstieg, nachgebaut wie in `channel_limit`.
+        let active = |p: [f32; 3]| -> bool {
+            let d = [p[0] - ch.bound_c[0], p[1] - ch.bound_c[1], p[2] - ch.bound_c[2]];
+            let nb = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            nb - ch.bound_r < ch.trust
+        };
+        let real = |p: [f32; 3]| -> f64 {
+            let mut s = 0.0f64;
+            for k in 0..3 {
+                let d = p[k] as f64 - ch.bound_c[k] as f64;
+                s = crate::offset_interval::next_up(s + crate::offset_interval::next_up(d * d));
+            }
+            crate::offset_interval::next_up(s.sqrt())
+        };
+        for _ in 0..400 {
+            let d = [g.sym(), g.sym(), g.sym()];
+            let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            if !(n > 1.0e-9) {
+                continue;
+            }
+            let dir = [d[0] / n, d[1] / n, d[2] / n];
+            let at = |t: f64| -> [f32; 3] {
+                [
+                    (ch.bound_c[0] as f64 + dir[0] * t) as f32,
+                    (ch.bound_c[1] as f64 + dir[1] * t) as f32,
+                    (ch.bound_c[2] as f64 + dir[2] * t) as f32,
+                ]
+            };
+            // Bisektion auf den Ausstieg: aktiv ⟶ inaktiv.
+            let (mut lo, mut hi) = (0.0f64, naive * 2.0 + 10.0);
+            if !active(at(lo)) || active(at(hi)) {
+                continue;
+            }
+            for _ in 0..200 {
+                let mid = 0.5 * (lo + hi);
+                if active(at(mid)) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            // Beiderseits der Grenze prüfen — nur die AKTIVE Seite ist Gegenstand.
+            for t in [lo, hi, 0.5 * (lo + hi), lo * (1.0 - 1.0e-9), lo * (1.0 + 1.0e-9)] {
+                let p = at(t);
+                if !active(p) {
+                    continue;
+                }
+                let r = real(p);
+                assert!(
+                    r <= span,
+                    "{name}: |p − bound_c| = {r:.9} > span = {span:.9} bei einem AKTIVEN Punkt"
+                );
+                if r > naive {
+                    naive_broken += 1;
+                    worst_naive = worst_naive.max(r - naive);
+                }
+                worst_use = worst_use.max(r / span);
+                probes += 1;
+            }
+        }
+    }
+    assert!(probes > 1_000, "nur {probes} Proben an der Ausstiegsgrenze");
+    assert!(
+        naive_broken > 0,
+        "die naive Schranke `bound_r + trust` wurde an KEINEM der {probes} aktiven Punkte \
+         verletzt — dann trägt die Rundungsbrücke der aktiven Domäne nichts und der Pin \
+         behauptet nur"
+    );
+    println!(
+        "§8ab Pin 8: {probes} Punkte an der f32-Ausstiegsgrenze; die naive Schranke reisst an \
+         {naive_broken} (max {worst_naive:.3e} mm darüber), die Brücke hält überall \
+         (schärfste Ausnutzung {:.6})",
+        worst_use
+    );
+}
+
+/// **§8ab-Pin 9 (Blocker 3): ein belegter Slot darf den Sentinel nie erreichen.**
+///
+/// Das Argument „ein Sentinel kann den `min` nicht gewinnen" ruhte auf der
+/// ungeprüften Aussage „jeder belegte Slot bleibt unter `1e30`". Bei grossen,
+/// aber völlig gültigen Koordinaten stimmt das nicht — dann gewinnt der
+/// unbelegte Sentinel, und für DEN gibt es keinen Halbraumsatz.
+///
+/// Der Pin fährt genau diesen Fall: gemischter Sentinel neben einem belegten
+/// Slot, bei wachsendem `trust`/`bound_c`. Unterhalb der Schwelle muss ein
+/// Budget entstehen, oberhalb MUSS es verweigert werden.
+#[test]
+fn h_budget_refuses_slots_that_reach_the_sentinel_384() {
+    let m = [0.0f32, 0.0, 1.0];
+    let cover = wit::omega_cover(&BoundedCsg::Empty).unwrap();
+    let mk = |scale: f32| -> OffsetChannel {
+        let mut ch = synth_channel(
+            vec![seg_arc([0.0, 0.0, 0.0], [scale.max(1.0), 0.0, 0.0], m, m, m, m)],
+            true,
+        );
+        ch.bound_c = [scale, scale, scale];
+        ch.bound_r = scale;
+        ch.trust = scale;
+        ch.face_planes = [crate::offset_channel::END_PLANE_NONE; 4];
+        ch.face_planes[0] = [1.0, 0.0, 0.0, -scale];
+        ch
+    };
+    let (mut ok, mut refused) = (0usize, 0usize);
+    let mut boundary: Option<f32> = None;
+    for e in (0..126u32).step_by(3) {
+        let scale = (2.0f32).powi(e as i32);
+        if !scale.is_finite() {
+            break;
+        }
+        let ch = mk(scale);
+        match wit::h_budget(&ch, &cover, Default::default()) {
+            Ok(b) => {
+                assert_eq!(b.slots(), 1, "der Sentinel wurde mitgezählt");
+                // Wo ein Budget entsteht, MUSS der belegte Slot den min auch
+                // wirklich gewinnen können.
+                let p = [scale, scale, scale];
+                let g = oc::face_plane_gate(p, &ch);
+                assert!(
+                    g < 1.0e30,
+                    "scale = {scale:e}: Budget geprägt, aber der Sentinel gewinnt den min ({g})"
+                );
+                ok += 1;
+            }
+            Err(wit::HStatus::NoBudget) | Err(wit::HStatus::Degenerate) => {
+                if boundary.is_none() {
+                    boundary = Some(scale);
+                }
+                refused += 1;
+            }
+            Err(other) => panic!("scale = {scale:e}: unerwarteter Ausgang {other:?}"),
+        }
+    }
+    assert!(ok > 5, "nur {ok} Grössen mit Budget");
+    assert!(
+        refused > 0,
+        "bei KEINER der geprüften Grössen wurde verweigert — dann greift die \
+         Sentinel-Schranke nie und der Pin misst nichts"
+    );
+    println!(
+        "§8ab Pin 9: {ok} Grössen mit Budget, ab scale = {:?} verweigert ({refused} Fälle)",
+        boundary
+    );
 }

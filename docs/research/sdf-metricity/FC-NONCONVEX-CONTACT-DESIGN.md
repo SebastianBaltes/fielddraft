@@ -7215,13 +7215,13 @@ fail-closed**.
 
 | gemessen über die ganze Matrix | Wert |
 |---|---|
-| `τ` (Stützseiten-Verletzung) | **≤ 7.150·10⁻¹⁴ mm** |
+| `τ` (Stützseiten-Verletzung) | **≤ 3.912·10⁻¹³ mm** |
 | Normfehler-Anteil `R·\|1−ν\|/ν` | ≤ 6.049·10⁻¹⁴ mm |
 | Reichweite `R` (bewiesen) | ≤ 1.150·10² mm |
 | Rundungsanteil | ≤ 3.528·10⁻⁵ mm |
 | **`A_h`** | **≤ 3.528·10⁻⁵ mm** |
 
-`τ` und der Normfehler liegen bei `10⁻¹⁴ mm` — das ist die Aussen-Rundung der
+`τ` und der Normfehler liegen bei `10⁻¹³`/`10⁻¹⁴ mm` — das ist die Aussen-Rundung der
 eigenen Intervall-Arithmetik, nicht Geometrie. **Die von der Synthese
 zugelassene `8·gate_eps`-Verletzung wird an dieser Matrix nirgends
 ausgeschöpft**, und `|n|` ist bis auf f32-Rundung Einheitsnorm. Der ganze
@@ -7243,12 +7243,14 @@ eingefrorene Kette bei einem einzigen f32-Add belässt.
 S − Ĥ = (Ĥ(1−ν) + τ)/ν ≤ (R·|1−ν| + τ)/ν  =:  A^geom      (ν = |n|)
 ```
 
-Die Schranke `|Ĥ| ≤ R` ist **bewiesen, nicht angenommen**: `channel_limit`
-steigt aus, sobald `|p − bound_c| − bound_r ≥ trust`. Im aktiven Bereich gilt
-also `|p_j| ≤ |bound_c_j| + bound_r + trust`, und damit
+Die Schranke `|Ĥ| ≤ R` ist **bewiesen, nicht angenommen** — und seit dem
+fünfzehnten Review auch wirklich aus dem **f32**-Ausstieg hergeleitet
+(`active_span`, s. Korrektur-Abschnitt B2; das naive `bound_r + trust` reisst
+an der Ausstiegsgrenze messbar). Mit `SPAN` als bewiesener Schranke von
+`|p − bound_c|` gilt `|p_j| ≤ |bound_c_j| + SPAN`, und damit
 
 ```text
-R = Σ_j (|bound_c_j| + bound_r + trust)·|n_j| + |C| + |δ|.
+R = Σ_j (|bound_c_j| + SPAN)·|n_j| + |C| + |δ|.
 ```
 
 Ohne diese Schranke wäre die additive Form unzulässig und die Division müsste
@@ -7269,9 +7271,12 @@ Der Beweis braucht also gar keinen „richtigen" Gewinner — nur irgendeinen
 gültigen Slot. Das macht die Form robust gegen jede Rundung in der
 Slot-Auswahl.
 
-**Sentinel-Slots** (`[0,0,0,−1e30]`) gehen nicht ein und können den `min` nicht
-gewinnen: ihr Wert ist `fl(0 − (−1e30)) = 1e30`, während ein belegter Slot
-durch `R` beschränkt ist. Sind **alle** Slots Sentinel, ist `h = 1e30`, der
+**Sentinel-Slots** (`[0,0,0,−1e30]`) gehen nicht ein; ihr Wert ist
+`fl(0 − (−1e30)) = 1e30`. Dass sie den `min` nicht gewinnen können, ist seit
+dem fünfzehnten Review **bewiesen statt behauptet**: für jeden belegten Slot
+wird die obere f32-Schranke seiner ganzen Auswertungskette gegen `1e30`
+gehalten; reicht sie heran, gibt es kein Budget (s. Korrektur-Abschnitt, B3).
+Sind **alle** Slots Sentinel, ist `h = 1e30`, der
 `h`-Ast unerreichbar und die Zusage gegenstandslos wahr — eigener Ausgang
 `HStatus::Vacuous`, damit die Zählung nicht schönfärbt. Beides ist gepinnt.
 
@@ -7322,18 +7327,18 @@ ihn aus. Eigener Pin.
 | Fixture | Naht | h_proved | h_vacuous | h_no_cover | h_not_sup | τ mm | Norm mm | R mm | Rundung mm | A_h mm |
 |---|---|---|---|---|---|---|---|---|---|---|
 | Stufen-Nabe | 0 | 0 | 0 | 0 | 0 | — | — | — | — | — |
-| Ecken-Schale `t/δ=2` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.043e-14 | 9.072e1 | 3.082e-5 | 3.082e-5 |
+| Ecken-Schale `t/δ=2` | 24 | **24** | 0 | 0 | 0 | 2.420e-13 | 6.043e-14 | 9.072e1 | 3.082e-5 | 3.082e-5 |
 | Ecken-Schale `t/δ=2.1` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.043e-14 | 9.072e1 | 3.082e-5 | 3.082e-5 |
-| Ecken-Schale `t/δ=2.25` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.047e-14 | 9.078e1 | 3.084e-5 | 3.084e-5 |
+| Ecken-Schale `t/δ=2.25` | 24 | **24** | 0 | 0 | 0 | 2.420e-13 | 6.047e-14 | 9.078e1 | 3.084e-5 | 3.084e-5 |
 | Ecken-Schale `t/δ=2.4` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.043e-14 | 9.072e1 | 3.082e-5 | 3.082e-5 |
 | Ecken-Schale `t/δ=2.5` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.043e-14 | 9.072e1 | 3.082e-5 | 3.082e-5 |
-| Ecken-Schale `t/δ=3` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.049e-14 | 9.080e1 | 3.085e-5 | 3.085e-5 |
+| Ecken-Schale `t/δ=3` | 24 | **24** | 0 | 0 | 0 | 2.420e-13 | 6.049e-14 | 9.080e1 | 3.085e-5 | 3.085e-5 |
 | Ecken-Schale `t/δ=4` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.043e-14 | 9.072e1 | 3.082e-5 | 3.082e-5 |
 | Ecken-Schale `t/δ=6` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.043e-14 | 9.072e1 | 3.082e-5 | 3.082e-5 |
 | Rippen-Kamm 4×1.5/0.8 | 0 | 0 | 0 | 0 | 0 | — | — | — | — | — |
-| Rippen-Kamm 4×2/1 | 22 | **22** | 0 | 0 | 0 | 3.242e-14 | 2.217e-14 | 4.992e1 | 1.702e-5 | 1.702e-5 |
-| notch α = 90° | 1 | **1** | 0 | 0 | 0 | 5.729e-14 | 4.976e-14 | 1.120e2 | 3.423e-5 | 3.423e-5 |
-| notch α = 60° | 2 | **2** | 0 | 0 | 0 | 5.729e-14 | 5.106e-14 | 1.150e2 | 3.528e-5 | 3.528e-5 |
+| Rippen-Kamm 4×2/1 | 22 | **22** | 0 | 0 | 0 | 1.248e-13 | 2.217e-14 | 4.992e1 | 1.702e-5 | 1.702e-5 |
+| notch α = 90° | 1 | **1** | 0 | 0 | 0 | 3.060e-13 | 4.976e-14 | 1.120e2 | 3.423e-5 | 3.423e-5 |
+| notch α = 60° | 2 | **2** | 0 | 0 | 0 | 3.912e-13 | 5.106e-14 | 1.150e2 | 3.528e-5 | 3.528e-5 |
 
 **Alle 217 naht-zertifizierten Kanäle bekommen zusätzlich ein h-Budget** —
 `h_vacuous`, `h_no_cover`, `h_not_supporting`, `h_degenerate` und `h_no_budget`
@@ -7348,8 +7353,9 @@ Stützebene. Die beiden Fixturen ohne Zahlen haben gar keinen Naht-Addenden
 * **`h_cover_contains_omega_384`** — das Fundament: `Ω ⊆ ⋃ Boxen`, geprüft an
   **40.016** Innenpunkten über zwölf Fixturen gegen die analytische
   Komplement-Distanz als **unabhängiges** Orakel. Rückdreh: eine gestrichene
-  Box MUSS einen Innenpunkt unbedeckt lassen — sonst ist die Überdeckung nicht
-  tragend.
+  Box MUSS einen Innenpunkt unbedeckt lassen — ein Lasttrag-Test für die
+  HEUTIGE Überdeckung, **keine** Algorithmus-Spezifikation (eine korrekte
+  Überdeckung dürfte redundante Boxen enthalten).
 * **`h_budget_bounds_the_true_distance_384`** — das Halbraum-Lemma gegen das
   exakte Orakel: **50.875** Punkte in `Ω` über elf Fixturen, engste Reserve
   `1.597·10⁻⁵ mm`. Und ausdrücklich im **Umhäng-Band**: gleichverteiltes Proben
@@ -7361,7 +7367,8 @@ Stützebene. Die beiden Fixturen ohne Zahlen haben gar keinen Naht-Addenden
 * **`h_budget_tau_and_norm_are_derived_384`** — `τ` und der Normfehler sind
   hergeleitet, nicht geraten: eine um `ε ∈ {10⁻⁴, 10⁻³, 10⁻²} mm` in den Körper
   geschobene Ebene hebt `τ` auf `≈ ε` (Toleranz ±10 %) und den Addenden mit;
-  jenseits des Deckels `H_TAU_LIMIT_MM = 0.5` gibt es gar kein Budget mehr;
+  jenseits des Capability-Deckels `H_TAU_LIMIT_MM = 0.5` gibt es gar kein Budget
+  mehr (ein Kosten-, kein Beweis-Bestandteil — s. Korrektur-Abschnitt);
   eine Ebene mit `|n| = 1 + 10⁻³` hebt den Normposten auf `≈ R·10⁻³`. Dazu die
   drei Ablationen `τ := 0`, `Norm := 0`, `Rundung := 0` — **jede für sich** muss
   den Addenden senken.
@@ -7385,6 +7392,111 @@ Stützebene. Die beiden Fixturen ohne Zahlen haben gar keinen Naht-Addenden
 * **`clamp_frozen_form_is_neutral_at_zero_and_monotone_384`** (erweitert) —
   `A = A_h = 0` bitweise das heutige Feld; Monotonie in **beiden** Addenden;
   die volle Kette nie über einem Einzel-Ast.
+
+### §8ab-Korrektur: das fünfzehnte Mathe-Review (v0.64.1)
+
+Bestätigt hat es alle vier Architektur-Abweichungen ausdrücklich: die
+`τ`-Herleitung statt einer `gate_eps`-Übernahme; das globale Halbraum-Lemma
+inklusive `h < 0`; **ein** Addend nach dem Slot-`min` (jeder mögliche
+f32-Gewinner liefert einzeln einen gültigen Halbraum); und die additive
+Normkorrektur — **sobald `R` die aktive Domäne wirklich einschliesst**. Auch
+die `NotConcave`-Sperre und die gemeinsame Snapshot-Bindung: richtig.
+
+**Drei Blocker blieben.** Feldneutral war das Paket, aber `HBudget` versprach
+einen Beweis, dessen Voraussetzungen nicht galten — nach Doktrin blockierend.
+
+#### B1 — `omega_cover` war nicht allgemein eine Überdeckung
+
+`local_box_to_world` baute die Vorwärtsrichtung aus `quat_rotate(q, ·)` und
+behandelte sie als Umkehrung von `quat_inverse_rotate(q, ·)`. Das sind nur bei
+`|q| = 1` inverse Matrizen. Nichts erzwingt das: `Transform` hat öffentliche
+Felder, die Deserialisierung prüft nichts, und f32-Quaternion-Komposition
+liefert ohnehin keine exakt normierte Viererzahl (gemessen an einer
+40-fach komponierten Rotation: `|q| − 1 = −3.576·10⁻⁷`).
+
+Die Familie des Reviews macht es scharf: `q = (0,0,0.5,0)`, `scale = 1`,
+lokale Box `[−1,1]³`. Gemessen entkommen der alten Vorwärtsbox **5.224 von
+rund 60.000** Proben, die nach `world_to_local` INNERHALB `Ω` liegen. `τ`
+wurde damit unterschätzt und ein falsches `HBudget` geprägt.
+
+**Gefixt durch rigorose Inversion der WIRKLICHEN Rückwärts-Abbildung.** Der
+lineare Teil von `world_to_local` ist als `local_linear` herausgezogen; seine
+3×3-Matrix `A` entsteht spaltenweise als `A·e_k`, und sie wird in
+Intervall-Arithmetik über Determinante und Adjunkte **invertiert**. Enthält
+das Determinanten-Intervall die Null, gibt es keine Überdeckung —
+fail-closed (`scale = 0`, entartete Kompositionen). Die acht Eckbilder werden
+gehüllt; für eine feste affine Abbildung ist das exakt die Bild-AABB, über
+einer Intervall-Matrix eine Obermenge.
+
+Eine blosse Toleranzprüfung `||q| − 1| < ε` hätte nicht gereicht — sie gäbe
+keine hergeleitete Box-Aufweitung. Nebenbefund: bei `q = 0` entartet die
+Rückwärts-Abbildung zu „untranslate + unscale" und bleibt **invertierbar**;
+die Überdeckung ist dort also beweisbar und wird korrekterweise nicht
+verweigert.
+
+#### B2 — `R` folgte nicht aus dem f32-Ausstieg
+
+`h_budget` setzte `|p − bound_c| < bound_r + trust` **reell** an. `channel_limit`
+prüft aber `fl(norm_f32(fl(p − bound_c)) − bound_r) < trust`, und daraus folgt
+die reelle Ungleichung nicht: Subtraktion, Quadratsumme, Wurzel und die letzte
+Subtraktion können alle unterschätzen. Das `next_up` auf der f64-Addition
+bezahlte nur den letzten Schritt. `pmax`, `R`, der Normposten und `ρ_aff` waren
+damit formal zu klein — genau die Voraussetzung, unter der das Review die
+additive Normkorrektur überhaupt zulässt.
+
+**Gefixt durch `active_span`**, op-genau in drei Schritten:
+
+```text
+(1) fl(nb − r) < K   ⇒  nb − r < (K + 2⁻¹⁵⁰)/(1−u)
+(2) |d| ≤ (nb + 2⁻¹⁵⁰)·(1−u)^{−7/2} + √(7·2⁻¹⁵⁰)      (Norm-Brücke, §8aa Lemma 3)
+(3) d = fl(p − bound_c) komponentenweise ⇒ |p − bound_c| ≤ |d|/(1−u)   (Hauser)
+```
+
+Schritt (1) gilt für beide Vorzeichen von `nb − r`. Die Brücke liegt relativ
+`≈ 4·10⁻⁷` über der naiven Schranke — und **das ist keine Rundungskosmetik**:
+der Pin sucht mit Bisektion Punkte unmittelbar an der f32-Ausstiegsgrenze und
+findet, dass die naive Schranke dort an **13 von 2.988** aktiven Punkten
+reisst, um bis zu `4.408·10⁻⁸ mm`.
+
+#### B3 — gemischte Sentinel-Slots
+
+Dass ein Sentinel-Slot den `min` nicht gewinnen kann, ruhte auf der
+ungeprüften Aussage „jeder belegte Slot bleibt unter `1e30`". Bei grossen, aber
+völlig gültigen Koordinaten oder `trust` stimmt das nicht — dann gewinnt der
+**unbelegte** Sentinel, und für den gibt es keinen Halbraumsatz.
+
+**Gefixt**: beim Zertifizieren wird die obere f32-Schranke der ganzen
+Slot-Auswertungskette (`s3`, inklusive aller Rundungen) gegen `1e30` gehalten;
+reicht sie heran, gibt es kein Budget (`HStatus::NoBudget`). Der Pin fährt
+gemischte Sentinel bei wachsender Grösse: bis `scale = 2⁹⁶` entsteht ein
+Budget, **ab `scale ≈ 6.34·10²⁹` wird verweigert** — genau an der
+Sentinel-Schwelle. „Alle Slots Sentinel ⇒ `Vacuous`" bleibt unverändert
+korrekt.
+
+#### Was die Reparaturen gekostet haben
+
+**Nichts an Deckung.** Alle **217** naht-zertifizierten Kanäle behalten ihr
+h-Budget; `h_no_cover`, `h_not_supporting`, `h_degenerate` und `h_no_budget`
+bleiben über die ganze Matrix null. Die rigorose Inversion liefert leicht
+weitere Boxen, deshalb steigt `τ` von `7.150·10⁻¹⁴` auf `3.912·10⁻¹³ mm` —
+immer noch die Aussen-Rundung der eigenen Intervallrechnung, nicht Geometrie.
+`A_h` bleibt bei `3.528·10⁻⁵ mm` (auf vier Stellen unverändert): der Addend
+war und ist reines Rundungsbudget.
+
+#### Die drei Sollte-Punkte
+
+* **`H_TAU_LIMIT_MM = 0.5` ist ein Capability-/Kostenlimit, kein
+  Beweis-Bestandteil.** Der Beweis gilt für jedes endliche `τ`; der Deckel sagt
+  nur, ab wann ein Addend so gross wäre, dass die Ebene als Schranke nichts
+  mehr taugt. Er kann eine Zusage nie erweitern, nur verweigern.
+* **Der „gestrichene Box hinterlässt Lücke"-Pin ist ein Lasttrag-Test für die
+  HEUTIGE Überdeckung, keine Algorithmus-Spezifikation.** Eine korrekte
+  Überdeckung darf redundante Boxen enthalten; würde `omega_cover` künftig
+  welche erzeugen, gehört der Pin angepasst — nicht die Überdeckung.
+* **Das signierte Aussen-Orakel ist gebaut.** Für `x ∉ Ω` liefert das exakte
+  Komplement-Orakel nur „0"; geprüft wird deshalb gegen
+  `dist(x, ⋃Boxen) ≤ dist(x, Ω)`. Alle **660** gemessenen `h < 0`-Fälle sind so
+  gegengeprüft — die Seite, die die lokale §8j-Führung gar nicht erfasste.
 
 ### Was OFFEN bleibt — die Auflagen für P5b-1A
 
@@ -7421,9 +7533,10 @@ Stützebene. Die beiden Fixturen ohne Zahlen haben gar keinen Naht-Addenden
 * **Golden**: 35/35 byte-identisch, SHA-256 `a0c9fe7b53a8198177d3ad0ef8cff2c9…`
   unverändert — kein Evaluator, kein Opcode, kein Payload-Wort, kein Spiegel.
   `check_interp` unberührt.
-* **`cargo nextest run --workspace`**: **1530** (Baseline 1524).
-* **`cargo test -p fielddraft-kernel --lib`**: **1524** (Baseline 1518).
-* **`cargo nextest run --workspace --profile offset`**: **236** (Baseline 230).
+* **`cargo nextest run --workspace`**: **1533** (Baseline 1524; v0.64.0 hatte
+  1530, die Korrektur legt drei Blocker-Pins dazu).
+* **`cargo test -p fielddraft-kernel --lib`**: **1527** (Baseline 1518).
+* **`cargo nextest run --workspace --profile offset`**: **239** (Baseline 230).
 * **`cargo test -p fielddraft-kernel --doc`**: **1**, unverändert.
 * **Web-Vitest**: **2082**, unverändert.
 * Die Zertifizierungs-Matrix aus §8w/§8z bewegt sich **nicht** — P5b-1H hat
@@ -7435,6 +7548,8 @@ Stützebene. Die beiden Fixturen ohne Zahlen haben gar keinen Naht-Addenden
 - Produktionscode §8ab (P5b-1H): `crates/kernel/src/offset_witness.rs` — die
   Box-Überdeckung (`omega_cover`, `local_box_to_world`, `WorldBox`), die
   Stützseiten-Herleitung (`plane_tau`, `is_sentinel_plane`, `H_TAU_LIMIT_MM`),
+  der herausgezogene `local_linear` samt rigoroser Matrix-Inversion in
+  `local_box_to_world` und die Domänen-Brücke `active_span`,
   der Beweistyp `HBudget` samt `HStatus`, die Herleitung `h_budget`, der
   zweite Addend in `frozen_channel_limit`/`frozen_limit_tail`, die
   Scope-Sperre `SeamProofStatus::NotConcave`, die h-Ablationen in
@@ -7448,6 +7563,9 @@ Stützebene. Die beiden Fixturen ohne Zahlen haben gar keinen Naht-Addenden
   `h_budget_tau_and_norm_are_derived_384`,
   `h_budget_rounding_absorbs_both_f32_ops_384`,
   `seam_proof_refuses_convex_channels_384`, `h_budget_is_fail_closed_384`,
+  `h_cover_survives_non_unit_quaternions_384` (samt `independent_world_aabb`),
+  `h_active_span_bridges_the_f32_early_out_384`,
+  `h_budget_refuses_slots_that_reach_the_sentinel_384`,
   die Erweiterung von `clamp_frozen_form_is_neutral_at_zero_and_monotone_384`
   auf beide Addenden und die `#[ignore]`-Sonde `probe_384_h_budget`.
 - Produktionscode §8aa (P5b-0): `crates/kernel/src/offset_witness.rs` — die

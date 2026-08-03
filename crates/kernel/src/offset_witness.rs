@@ -222,7 +222,17 @@ fn sub3(a: [Iv; 3], b: [Iv; 3]) -> Option<[Iv; 3]> {
 /// `world_to_local` in REELLER Intervall-Arithmetik. Für die Identität
 /// (`q = (0,0,0,1)`, `scale = 1`) ist das Ergebnis exakt.
 fn local_box(t: &Transform, p: [Iv; 3]) -> Option<[Iv; 3]> {
-    let v = sub3(p, f32p3(t.translate))?;
+    local_linear(t, sub3(p, f32p3(t.translate))?)
+}
+
+/// Der LINEARE Teil von [`local_box`] — `world_to_local` ohne die
+/// Translation: `A·v = S⁻¹ · M(conj q) · v`.
+///
+/// §8ab-Korrektur (fünfzehntes Review, Blocker 1): herausgezogen, damit die
+/// Vorwärts-Abbildung `A⁻¹` aus GENAU DIESER Abbildung entsteht — als
+/// rigorose Matrix-Inverse, nicht als Quaternion-Ratespiel. Die Spalten von
+/// `A` sind `A·e₀`, `A·e₁`, `A·e₂`.
+fn local_linear(t: &Transform, v: [Iv; 3]) -> Option<[Iv; 3]> {
     let (qx, qy, qz, qw) = (
         pt(-(t.rotation[0] as f64)),
         pt(-(t.rotation[1] as f64)),
@@ -1132,21 +1142,73 @@ pub fn omega_snapshot(node: &BoundedCsg) -> Vec<u8> {
 /// Eine achsenparallele Welt-Box (reell, aussen gerundet).
 pub(crate) type WorldBox = ([f64; 3], [f64; 3]);
 
-/// Die Vorwärts-Abbildung `lokal → Welt` einer Box, in reeller
-/// Intervall-Arithmetik: `w = translate + R(q)·(scale ⊙ l)`.
+/// Die Vorwärts-Abbildung `lokal → Welt` einer Box, als **rigorose Inverse der
+/// tatsächlichen Rückwärts-Abbildung**.
 ///
-/// Exakte Gegenrichtung zu [`local_box`]; für eine affine Abbildung ist die
-/// Hülle der acht ABGEBILDETEN Ecken die exakte Bildbox, deshalb werden genau
-/// sie genommen und nicht etwa die Intervall-Form der ganzen Box (die würde
-/// bei schiefer Rotation überschätzen).
-fn local_box_to_world(t: &Transform, lo: [f64; 3], hi: [f64; 3]) -> Option<WorldBox> {
-    let (qx, qy, qz, qw) = (
-        pt(t.rotation[0] as f64),
-        pt(t.rotation[1] as f64),
-        pt(t.rotation[2] as f64),
-        pt(t.rotation[3] as f64),
-    );
-    let two = pt(2.0);
+/// §8ab-Korrektur (fünfzehntes Review, Blocker 1). Die erste Fassung baute die
+/// Vorwärtsrichtung aus `quat_rotate(q, ·)` und behandelte sie als Umkehrung
+/// von `quat_inverse_rotate(q, ·) = quat_rotate(conj q, ·)`. Das sind aber nur
+/// bei `|q| = 1` inverse Matrizen: allgemein ist
+/// `R(q)·R(conj q) = |q|⁴ · I`-artig verzerrt, und weder `Transform` noch die
+/// Deserialisierung erzwingen `|q| = 1` — f32-Quaternion-Komposition liefert
+/// ohnehin keine exakt normierte Viererzahl.
+///
+/// Die Familie des Reviews macht es scharf: `q = (0,0,0.5,0)`, `scale = 1`,
+/// lokale Box `[−1,1]³`. Die Rückwärts-Abbildung skaliert um `0.25`, `Ω`
+/// reicht in Welt-`x`/`y` also bis `±4`; die alte Vorwärtsbox reichte nur bis
+/// `±0.5`. Die „Überdeckung" überdeckte nicht — `τ` wurde unterschätzt und ein
+/// falsches `HBudget` geprägt.
+///
+/// **Eine blosse Toleranzprüfung `||q| − 1| < ε` würde das nicht heilen**: sie
+/// gäbe keine hergeleitete Box-Aufweitung. Deshalb wird hier die
+/// 3×3-Matrix `A` der WIRKLICHEN Rückwärts-Abbildung ([`local_linear`],
+/// Spalten `A·e_k`) rigoros in Intervall-Arithmetik **invertiert**. Ist die
+/// Determinante nicht beweisbar von null weg (das Intervall enthält 0), gibt
+/// es keine Überdeckung — fail-closed.
+///
+/// Die acht abgebildeten Ecken werden gehüllt: für eine feste affine Abbildung
+/// ist die AABB des Bildes genau die AABB der Eckbilder, und über einer
+/// Intervall-Matrix ist die Eckhülle eine Obermenge davon.
+pub(crate) fn local_box_to_world(t: &Transform, lo: [f64; 3], hi: [f64; 3]) -> Option<WorldBox> {
+    // `A`, spaltenweise: `col[k] = A·e_k`.
+    let mut col = [[pt(0.0); 3]; 3];
+    for k in 0..3 {
+        let mut e = [pt(0.0); 3];
+        e[k] = pt(1.0);
+        col[k] = local_linear(t, e)?;
+    }
+    // `a[r][c]` — Zeile r, Spalte c.
+    let a = |r: usize, c: usize| col[c][r];
+    // Determinante und Adjunkte (Kofaktor-Form), alles eingeschlossen.
+    let m2 = |r0: usize, r1: usize, c0: usize, c1: usize| -> Option<Iv> {
+        rsub(rmul(a(r0, c0), a(r1, c1))?, rmul(a(r0, c1), a(r1, c0))?)
+    };
+    let c00 = m2(1, 2, 1, 2)?;
+    let c01 = m2(1, 2, 0, 2)?;
+    let c02 = m2(1, 2, 0, 1)?;
+    let det = rsub(
+        radd(rmul(a(0, 0), c00)?, rmul(a(0, 2), c02)?)?,
+        rmul(a(0, 1), c01)?,
+    )?;
+    // **Fail-closed**: eine Determinante, die die Null enthält, ist keine
+    // beweisbare Inverse. Das fängt `scale = 0`, `q = 0` und jede entartete
+    // Komposition ab.
+    if det.lo <= 0.0 && det.hi >= 0.0 {
+        return None;
+    }
+    // `A⁻¹ = adj(A)/det`; `adj(A)[r][c] = (−1)^{r+c} · M_{cr}`.
+    let mut inv = [[pt(0.0); 3]; 3];
+    for r in 0..3 {
+        for c in 0..3 {
+            let (r0, r1) = ([1, 0, 0][c], [2, 2, 1][c]);
+            let (c0, c1) = ([1, 0, 0][r], [2, 2, 1][r]);
+            let mut m = m2(r0, r1, c0, c1)?;
+            if (r + c) % 2 == 1 {
+                m = Iv::new(-m.hi, -m.lo)?;
+            }
+            inv[r][c] = rdiv(m, det)?;
+        }
+    }
     let mut wlo = [f64::INFINITY; 3];
     let mut whi = [f64::NEG_INFINITY; 3];
     for cx in 0..8 {
@@ -1155,30 +1217,13 @@ fn local_box_to_world(t: &Transform, lo: [f64; 3], hi: [f64; 3]) -> Option<World
             if cx & 2 == 0 { lo[1] } else { hi[1] },
             if cx & 4 == 0 { lo[2] } else { hi[2] },
         ];
-        let v = [
-            rmul(pt(l[0]), pt(t.scale[0] as f64))?,
-            rmul(pt(l[1]), pt(t.scale[1] as f64))?,
-            rmul(pt(l[2]), pt(t.scale[2] as f64))?,
-        ];
-        // `quat_rotate`, Term für Term.
-        let tv = [
-            rmul(two, rsub(rmul(qy, v[2])?, rmul(qz, v[1])?)?)?,
-            rmul(two, rsub(rmul(qz, v[0])?, rmul(qx, v[2])?)?)?,
-            rmul(two, rsub(rmul(qx, v[1])?, rmul(qy, v[0])?)?)?,
-        ];
-        let mk = |k: usize, a: Iv, b: Iv, i: usize, j: usize| -> Option<Iv> {
-            let s = radd(v[k], rmul(qw, tv[k])?)?;
-            let s = radd(s, rmul(a, tv[i])?)?;
-            rsub(s, rmul(b, tv[j])?)
-        };
-        let w = [
-            radd(mk(0, qy, qz, 2, 1)?, pt(t.translate[0] as f64))?,
-            radd(mk(1, qz, qx, 0, 2)?, pt(t.translate[1] as f64))?,
-            radd(mk(2, qx, qy, 1, 0)?, pt(t.translate[2] as f64))?,
-        ];
         for k in 0..3 {
-            wlo[k] = wlo[k].min(w[k].lo);
-            whi[k] = whi[k].max(w[k].hi);
+            let mut acc = pt(t.translate[k] as f64);
+            for j in 0..3 {
+                acc = radd(acc, rmul(inv[k][j], pt(l[j]))?)?;
+            }
+            wlo[k] = wlo[k].min(acc.lo);
+            whi[k] = whi[k].max(acc.hi);
         }
     }
     (wlo.iter().all(|v| v.is_finite()) && whi.iter().all(|v| v.is_finite()))
@@ -1304,6 +1349,61 @@ fn plane_tau(cover: &[WorldBox], n: [f32; 3], c: f32, delta: f32) -> Option<f64>
     Some(next_up((-worst).max(0.0)))
 }
 
+/// **Die aktive Domäne, rückwärts aus dem f32-Ausstieg hergeleitet.**
+///
+/// §8ab-Korrektur (fünfzehntes Review, Blocker 2). Die erste Fassung setzte
+/// `|p − bound_c| < bound_r + trust` **reell** an und begründete das mit dem
+/// Ausstieg von `channel_limit`. Der prüft aber
+/// `fl(norm_f32(fl(p − bound_c)) − bound_r) < trust`, und daraus folgt die
+/// reelle Ungleichung nicht: Subtraktion, Quadratsumme, Wurzel und die letzte
+/// Subtraktion können allesamt UNTERSCHÄTZEN. Ein `next_up` auf der
+/// f64-Addition bezahlte nur den letzten Schritt, nicht die f32-Kette davor —
+/// `pmax`, `R`, der Normposten und `ρ_aff` waren damit formal zu klein.
+///
+/// Hergeleitet wird jetzt op-genau, in drei Schritten:
+///
+/// ```text
+/// (1) fl(nb − r) < K            ⇒ nb − r < (K + 2⁻¹⁵⁰)/(1−u)
+/// (2) |d| ≤ (nb + 2⁻¹⁵⁰)·(1−u)^{−7/2} + √(7·2⁻¹⁵⁰)      (Norm-Brücke, §8aa Lemma 3)
+/// (3) d = fl(p − bound_c) komponentenweise ⇒ |p − bound_c| ≤ |d|/(1−u)
+/// ```
+///
+/// Schritt (1) gilt für beide Vorzeichen von `nb − r`: ist es negativ, ist die
+/// Schranke ohnehin erfüllt. Schritt (3) nutzt Hauser — die Subtraktion zweier
+/// f32-Zahlen hat im Subnormalbereich keinen Unterlauf-Posten, der relative
+/// Fehler bleibt also `u`.
+///
+/// Zurück kommt eine OBERE Schranke von `|p − bound_c|` über der ganzen
+/// aktiven Domäne. Sie ist um `≈ 4·10⁻⁷` relativ grösser als das naive
+/// `bound_r + trust`; genau diese Differenz war der Blocker.
+pub(crate) fn active_span(ch: &OffsetChannel) -> Option<f64> {
+    let (r, k) = (ch.bound_r as f64, ch.trust as f64);
+    if !(r.is_finite() && k.is_finite() && k > 0.0) {
+        return None;
+    }
+    let omu = next_down(1.0 - F32_U);
+    if !(omu > 0.0) {
+        return None;
+    }
+    // (1)
+    let nb = next_up(r + next_up(next_up(k + F32_SUB) / omu));
+    // (2) — dieselbe Herleitung wie `norm_bridge_mm`, hier auf `nb` angewandt.
+    let mut q = 1.0f64;
+    for _ in 0..7 {
+        q = next_down(q * omu);
+    }
+    if !(q > 0.0) {
+        return None;
+    }
+    let inv = next_up(1.0 / next_down(q.sqrt()));
+    let d = next_up(
+        next_up(next_up(next_up(nb + F32_SUB) * inv) + next_up(next_up(7.0 * F32_SUB).sqrt())),
+    );
+    // (3)
+    let span = next_up(d / omu);
+    (span.is_finite() && span >= 0.0).then_some(span)
+}
+
 /// **Das h-Budget eines Kanals.**
 ///
 /// Zugesagt ist: fällt das `min` der eingefrorenen Kette auf die Stützebene,
@@ -1420,10 +1520,15 @@ const H_TAU_LIMIT_MM: f64 = 0.5;
 /// Welcher Slot gewinnt, ist dem Beweis also gleichgültig — er braucht keinen
 /// „richtigen" Gewinner, nur irgendeinen gültigen.
 ///
-/// **Sentinel-Slots** (`[0,0,0,−1e30]`) gehen NICHT ein. Sie können den `min`
-/// nicht gewinnen, solange ein belegter Slot existiert: ihr Wert ist
-/// `fl(0 − (−1e30)) = 1e30`, während ein belegter Slot durch `R_k` beschränkt
-/// ist. Sind ALLE Slots Sentinel, ist `h = 1e30` und der `h`-Ast unerreichbar
+/// **Sentinel-Slots** (`[0,0,0,−1e30]`) gehen NICHT ein. Ihr Wert ist
+/// `fl(0 − (−1e30)) = 1e30`. Dass sie den `min` nicht gewinnen können, ist
+/// seit dem fünfzehnten Review **bewiesen statt behauptet**: für jeden
+/// belegten Slot wird die obere f32-Schranke seiner ganzen Auswertungskette
+/// (`s3`, inklusive aller Rundungen) gegen `1e30` gehalten. Reicht sie heran —
+/// bei grossen, aber gültigen Koordinaten oder `trust` durchaus möglich —,
+/// gibt es kein Budget ([`HStatus::NoBudget`]), denn dann könnte der
+/// unbelegte Sentinel gewinnen, und für DEN gibt es keinen Halbraumsatz.
+/// Sind ALLE Slots Sentinel, ist `h = 1e30` und der `h`-Ast unerreichbar
 /// ([`HStatus::Vacuous`]).
 ///
 /// **Das Rundungsbudget** entlang der eingefrorenen Kette
@@ -1445,10 +1550,9 @@ pub(crate) fn h_budget(
     // Der aktive Bereich: `|p − bound_c| < bound_r + trust` (zwei geprüfte
     // Ausgänge in `channel_limit`).
     let mut pmax = [0.0f64; 3];
-    let span = next_up(ch.bound_r as f64 + ch.trust as f64);
-    if !(span.is_finite() && ch.trust > 0.0) {
+    let Some(span) = active_span(ch) else {
         return Err(HStatus::Degenerate);
-    }
+    };
     for k in 0..3 {
         pmax[k] = next_up((ch.bound_c[k] as f64).abs() + span);
         if !pmax[k].is_finite() {
@@ -1520,6 +1624,16 @@ pub(crate) fn h_budget(
         let s3 = next_up(next_up(s2 + (c as f64).abs()) + e);
         e = next_up(e + next_up(next_up(F32_U * s3) + F32_SUB));
         rho_aff = rho_aff.max(e);
+        // §8ab-Korrektur (Blocker 3): **der Sentinel darf den `min` nicht
+        // gewinnen.** Das Argument „ein belegter Slot ist durch `R` beschränkt,
+        // der Sentinel liefert 1e30" war ungeprüft: bei grossen, aber völlig
+        // gültigen Koordinaten kann `a_k` über 1e30 steigen. Dann gewinnt der
+        // unbelegte Sentinel, und für DIESEN Gewinner gibt es keinen
+        // Halbraumsatz. Also hier beweisen — inklusive Rundung, `s3` ist die
+        // obere Schranke des f32-Werts — oder fail-closed.
+        if !(s3 < END_PLANE_OFF as f64) {
+            return Err(HStatus::NoBudget);
+        }
     }
     if slots == 0 {
         return Ok(HBudget {
