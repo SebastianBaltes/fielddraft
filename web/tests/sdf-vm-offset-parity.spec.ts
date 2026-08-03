@@ -198,8 +198,8 @@ test("eroded union: GPU SDF-VM interpreter matches the CPU mirror (44-word chann
   ];
   const named = await page.evaluate(async (pts) => {
     const kernel = (window as any).__fdKernel;
-    const gpu = await (window as any).__fdSdfVmProbe(pts);
-    const cpu = pts.map((p: number[]) => kernel.inner.sdfAt(p[0], p[1], p[2]));
+    const gpu = await (window as any).__fdSdfVmProbe(pts, 0);
+    const cpu = pts.map((p: number[]) => kernel.bodySdfEval(0, p[0], p[1], p[2]) as number);
     return { gpu, cpu };
   }, NAMED);
   let namedWorst = 0;
