@@ -236,12 +236,7 @@ pub enum LegacyReason {
 pub enum ChannelLimitMode {
     /// Beide Addenden bewiesen (§8aa Naht, §8ab Stützebene) und gegen genau
     /// diesen Kanal und sein `Ω` abgerufen.
-    ///
-    /// `digest` ist der Mutations-Melder (§8ac-Korrektur, Blocker): der Wert
-    /// von [`crate::offset_witness::channel_digest`] IM MOMENT DES AUFLÖSENS.
-    /// Weicht er beim Abruf ab, hat sich der Kanal seither bewegt, und der
-    /// Modus gilt als `LegacyUnproven` — fail-closed.
-    Proved { seam: f32, h: f32, digest: u64 },
+    Proved { seam: f32, h: f32 },
     /// Kein Beweis — das Feld bleibt bitgenau das alte.
     LegacyUnproven(LegacyReason),
 }
@@ -252,7 +247,7 @@ impl ChannelLimitMode {
     #[inline]
     pub fn addends(&self) -> (f32, f32) {
         match self {
-            ChannelLimitMode::Proved { seam, h, .. } => (*seam, *h),
+            ChannelLimitMode::Proved { seam, h } => (*seam, *h),
             ChannelLimitMode::LegacyUnproven(_) => (0.0, 0.0),
         }
     }
@@ -416,6 +411,11 @@ impl OffsetChannel {
         _token: crate::offset_witness::SeamProofToken,
         proof: Option<crate::offset_witness::CertifiedSeamAddend>,
     ) {
+        // §8ac-Korrektur (achtzehntes Review, Empfehlung 2): die Invariante
+        // gehört in den SCHREIBWEG, nicht in Caller-Disziplin. Jede Zuweisung
+        // — auch das Setzen eines neuen Beweises — entzieht zuerst den
+        // Laufzeitmodus; `resolve_limit_mode` setzt ihn danach neu.
+        self.mode = ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated);
         self.seam = proof;
     }
 
@@ -450,29 +450,40 @@ impl OffsetChannel {
     /// #384 §8ac — **der aufgelöste Laufzeitmodus, gegen den AKTUELLEN Kanal
     /// nachgeprüft.**
     ///
-    /// §8ac-Korrektur (siebzehntes Review, Blocker): der gespeicherte Modus
-    /// allein war nicht sicher. Die beweisrelevanten Felder sind öffentlich
-    /// mutierbar, und `limit_mode()` gab den EINMAL aufgelösten Modus
-    /// unverändert zurück — wer `trust` vergrösserte oder eine `face_plane`
-    /// verschob, bekam die alten, jetzt zu kleinen Addenden von allen sechs
-    /// Spiegeln geliefert. Die §8ac-Behauptung „der Schnappschuss fängt jede
-    /// spätere Änderung ab" galt für den Beweis-ABRUF, nicht für den
-    /// KONSUM-Pfad.
+    /// §8ac-Korrektur (siebzehntes Review): der gespeicherte Modus allein war
+    /// nicht sicher. Die beweisrelevanten Felder sind öffentlich mutierbar, und
+    /// `limit_mode()` gab den EINMAL aufgelösten Modus unverändert zurück — wer
+    /// `trust` vergrösserte oder eine `face_plane` verschob, bekam die alten,
+    /// jetzt zu kleinen Addenden von allen sechs Spiegeln geliefert.
     ///
-    /// Jetzt wird bei jedem Abruf der Digest des aktuellen Kanals gegen den
-    /// beim Auflösen gespeicherten gehalten. Passt er nicht, ist der Kanal
-    /// `LegacyUnproven(ProofInvalidated)` — und zwar für Produktion, Tape und
-    /// Bericht gleichermassen, weil alle drei durch DIESE Funktion gehen.
+    /// §8ac-Korrektur (achtzehntes Review): die erste Reparatur verglich einen
+    /// FNV-64-**Digest** — und der ist deterministisch fälschbar (s.
+    /// [`crate::offset_witness::CertifiedSeamAddend::matches_channel`]). Jetzt
+    /// wird der Schnappschuss des aktuellen Kanals **im Strom erzeugt und Byte
+    /// für Byte** gegen den im Beweis gespeicherten gehalten — exakter
+    /// Vergleich, keine Allokation, dieselbe Serialisierung wie
+    /// `channel_snapshot`.
     ///
-    /// Der Digest liegt hinter beiden Early-Outs von [`channel_limit`]; er
+    /// Zwei Ausgänge fallen auf `LegacyUnproven(ProofInvalidated)`:
+    /// * der Kanal hat sich seit dem Auflösen bewegt;
+    /// * der Beweis ist verschwunden (`seam == None`), der Modus aber noch
+    ///   `Proved`. Das deckt jede Beweis-Löschung **strukturell** ab, ohne auf
+    ///   die Reihenfolge im Aufrufer zu bauen.
+    ///
+    /// Die `Ω`-Bindung wird hier NICHT erneut geprüft — `Ω` liegt zur
+    /// Auswertungszeit nicht vor. Sie ist beim Auflösen bitweise geprüft
+    /// worden; diese Funktion bewacht die Zeit DANACH.
+    ///
+    /// Der Vergleich liegt hinter beiden Early-Outs von [`channel_limit`]; er
     /// kostet nur an Punkten, die den Term wirklich erreichen.
     pub fn limit_mode(&self) -> ChannelLimitMode {
         match self.mode {
-            ChannelLimitMode::Proved { digest, .. }
-                if digest != crate::offset_witness::channel_digest(self) =>
-            {
-                ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated)
-            }
+            ChannelLimitMode::Proved { seam, h } => match self.seam.as_ref() {
+                Some(proof) if proof.matches_channel(self) => {
+                    ChannelLimitMode::Proved { seam, h }
+                }
+                _ => ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated),
+            },
             m => m,
         }
     }
@@ -482,15 +493,6 @@ impl OffsetChannel {
     #[cfg(test)]
     pub(crate) fn cached_limit_mode(&self) -> ChannelLimitMode {
         self.mode
-    }
-
-    /// #384 §8ac-Korrektur — den Laufzeitmodus zurücksetzen. Jede Löschung
-    /// oder Ersetzung des Beweises geht hier zuerst durch.
-    pub(crate) fn invalidate_limit_mode(
-        &mut self,
-        _token: crate::offset_witness::SeamProofToken,
-    ) {
-        self.mode = ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated);
     }
 
     /// #384 §8ac — **den Laufzeitmodus auflösen.** Verlangt dasselbe Siegel wie
@@ -514,11 +516,7 @@ impl OffsetChannel {
             ChannelLimitMode::LegacyUnproven(LegacyReason::NotCertified)
         } else {
             match (self.seam_addend(omega), self.h_addend(omega)) {
-                (Some(seam), Some(h)) => ChannelLimitMode::Proved {
-                    seam,
-                    h,
-                    digest: crate::offset_witness::channel_digest(self),
-                },
+                (Some(seam), Some(h)) => ChannelLimitMode::Proved { seam, h },
                 (Some(_), None) => {
                     ChannelLimitMode::LegacyUnproven(LegacyReason::NoHBudget)
                 }

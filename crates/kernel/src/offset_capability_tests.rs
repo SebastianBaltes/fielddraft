@@ -13661,7 +13661,17 @@ fn clamp_frozen_form_is_neutral_at_zero_and_monotone_384() {
     );
 }
 
-/// **§8aa-Pin 8: `channel_limit` konsumiert ausschliesslich `de`.**
+/// **§8aa-Pin 8: die GEOMETRIE-Unterkette von `channel_limit` konsumiert
+/// ausschliesslich `de` — bei FESTEM (Legacy-)Modus.**
+///
+/// §8ac-Korrektur (achtzehntes Review, Punkt 3): der Satz gilt weiter, aber
+/// nur über die Unterkette, über die er je gemeint war. Seit P5b-1A hängt am
+/// `Proved`-Pfad zusätzlich die Schnappschuss-Prüfung, und die liest `m̂`, `e`
+/// und `d_e` sehr wohl — eine `m̂`-Mutation entzieht dem Kanal (richtigerweise)
+/// seinen Laufzeitmodus. Der Pin fährt deshalb beide Seiten auf Legacy und
+/// misst damit genau das, worüber die ε_D-Freiheit des Budgets spricht: die
+/// Distanz-Rechnung selbst. Die Modus-Entziehung ist Gegenstand von
+/// `activation_mutation_invalidates_the_runtime_mode_384`.
 ///
 /// Der Satz, auf dem die ε_D-Freiheit des ganzen Budgets steht: die
 /// Diamant-Zuordnung und die nlerp-Interpolation der Gate-Vektoren
@@ -13671,7 +13681,7 @@ fn clamp_frozen_form_is_neutral_at_zero_and_monotone_384() {
 /// **bitweise** stehen bleiben. Zum Gegenbeweis der Wirksamkeit: dieselbe
 /// Mutation MUSS `channel_nearest`s `m̂`-Ausgaben verändern.
 #[test]
-fn clamp_limit_consumes_only_de_384() {
+fn clamp_geometry_subchain_consumes_only_de_384() {
     let delta = 2.0f32;
     let mut g = Lcg(0x00de_00de);
     let (mut probes, mut m_differs, mut chans_seen) = (0usize, 0usize, 0usize);
@@ -15551,6 +15561,52 @@ fn activation_h_families_hold_on_the_real_field_384() {
     );
 }
 
+/// Ersetzt die Kanalliste des ersten `ArcChannel`-Knotens durch genau einen
+/// Kanal — damit der Tape-Emitter wirklich DIESEN Kanal schreibt.
+fn field_with_single_channel(field: &BoundedCsg, ch: OffsetChannel) -> BoundedCsg {
+    fn go(n: &BoundedCsg, ch: &OffsetChannel, done: &mut bool) -> BoundedCsg {
+        match n {
+            BoundedCsg::ArcChannel { inner, channels, verts, rims, lb, aabb } if !*done => {
+                *done = true;
+                let _ = channels;
+                BoundedCsg::ArcChannel {
+                    inner: inner.clone(),
+                    channels: vec![ch.clone()],
+                    verts: verts.clone(),
+                    rims: rims.clone(),
+                    lb: lb.clone(),
+                    aabb: *aabb,
+                }
+            }
+            BoundedCsg::Union { left, right, aabb } => BoundedCsg::Union {
+                left: Box::new(go(left, ch, done)),
+                right: Box::new(go(right, ch, done)),
+                aabb: *aabb,
+            },
+            BoundedCsg::Difference { left, right, aabb } => BoundedCsg::Difference {
+                left: Box::new(go(left, ch, done)),
+                right: Box::new(go(right, ch, done)),
+                aabb: *aabb,
+            },
+            BoundedCsg::Intersection { left, right, aabb } => BoundedCsg::Intersection {
+                left: Box::new(go(left, ch, done)),
+                right: Box::new(go(right, ch, done)),
+                aabb: *aabb,
+            },
+            BoundedCsg::Offset { inner, delta, aabb } => BoundedCsg::Offset {
+                inner: Box::new(go(inner, ch, done)),
+                delta: *delta,
+                aabb: *aabb,
+            },
+            other => other.clone(),
+        }
+    }
+    let mut done = false;
+    let out = go(field, &ch, &mut done);
+    assert!(done, "das Feld hat keinen ArcChannel-Knoten");
+    out
+}
+
 /// **§8ac-Pin 5 (Blocker des siebzehnten Reviews): ein mutierter Kanal
 /// verliert seinen Modus — in der Produktion UND im Tape.**
 ///
@@ -15620,15 +15676,26 @@ fn activation_mutation_invalidates_the_runtime_mode_384() {
         }
     }
 
+    // §8ac-Korrektur (achtzehntes Review, Punkt 5): der Tape-Teil hat vorher
+    // KEIN Tape gemessen — er kompilierte das UNMUTIERTE Feld, warf das
+    // Ergebnis weg und rekonstruierte Modus/Addenden wieder aus
+    // `ch.limit_mode()`. Jetzt wird der mutierte Kanal wirklich in den
+    // `ArcChannel`-Knoten eingesetzt, kompiliert, und die drei Kopf-Worte
+    // werden aus dem emittierten Tape GELESEN.
     let tape_mode = |ch: &OffsetChannel| -> (f32, f32, f32) {
-        // Ein Ein-Kanal-Feld ums Tape herum: der Emitter liest denselben
-        // Getter wie die Produktion.
-        let t = compile_body(&field);
-        let _ = &t;
-        // Direkt am Kanal — der Emitter schreibt genau diese drei Worte.
-        let m = ch.limit_mode();
-        let (s, hh) = m.addends();
-        (m.tape_word(), s, hh)
+        let f = field_with_single_channel(&field, ch.clone());
+        let t = compile_body(&f);
+        let ops = &t.opcodes;
+        let mut i = 0usize;
+        while i < ops.len() {
+            if ops[i].to_bits() & 0xffff_ffff == OP_ARC_CHANNEL {
+                let n = ops[i + 1] as usize;
+                let b = i + 1 + CHANNEL_HEADER - 3;
+                return (ops[b], ops[b + 1], ops[b + 2]);
+            }
+            i += 1;
+        }
+        panic!("kein OP_ARC_CHANNEL im Tape — der Pin misst kein Tape");
     };
 
     let mut cases = 0usize;
@@ -15839,4 +15906,184 @@ fn activation_is_measurable_on_the_gpu_fixture_384() {
     for (p, d) in hits.iter().take(8) {
         println!("§8ac Pin 6 Punkt: [{}, {}, {}] Δ={:.6e}", p[0], p[1], p[2], d);
     }
+}
+
+/// **§8ac-Pin 7 (Blocker des achtzehnten Reviews): ein GEFÄLSCHTER Digest
+/// rettet den Modus nicht.**
+///
+/// Die erste Reparatur des Freeze-Problems verglich einen FNV-64-Digest über
+/// die beweisrelevanten Kanaldaten. Der ist **deterministisch** umgehbar —
+/// kein Zufallstreffer nötig:
+///
+/// ```text
+/// D = (q ⊕ parents[1]) · P  mod 2⁶⁴,   P = 0x100000001b3 (ungerade)
+/// ```
+///
+/// `P` ist ungerade, also mod 2⁶⁴ invertierbar, und `parents[1]` ist ein
+/// ÖFFENTLICHES `u64`, das als LETZTES Wort gehasht wird. Nach einer beliebigen
+/// beweisrelevanten Mutation kann man
+/// `parents[1]' = q' ⊕ (D_alt · P⁻¹ mod 2⁶⁴)` setzen und bekommt exakt
+/// `D_neu = D_alt` — der Modus bliebe `Proved`, und die alten, jetzt zu kleinen
+/// Addenden flössen wieder in Produktion und Tape.
+///
+/// Dieser Pin BAUT diesen Angriff (inklusive der FNV-Inversen via
+/// Newton-Iteration) und verlangt, dass der Kanal trotzdem auf Legacy fällt —
+/// weil seit v0.65.2 der **exakte** Schnappschuss verglichen wird und nicht
+/// mehr ein Hash. Er steht für immer als Begründung dafür, warum hier kein
+/// Hash reicht.
+#[test]
+fn activation_forged_digest_still_falls_back_384() {
+    use crate::sdf_compiler::{compile_body, CHANNEL_HEADER, OP_ARC_CHANNEL};
+    const P: u64 = 0x0000_0100_0000_01b3;
+    const SEED: u64 = 0xcbf2_9ce4_8422_2325;
+
+    // P⁻¹ mod 2⁶⁴ per Newton: x ← x·(2 − P·x). Startwert P selbst ist auf drei
+    // Bits korrekt, sechs Schritte reichen für 64.
+    let p_inv = {
+        let mut x: u64 = P;
+        for _ in 0..6 {
+            x = x.wrapping_mul(2u64.wrapping_sub(P.wrapping_mul(x)));
+        }
+        x
+    };
+    assert_eq!(P.wrapping_mul(p_inv), 1, "die FNV-Inverse stimmt nicht");
+
+    // Der Digest der ALTEN Fassung, exakt nachgebaut — inklusive der Reihenfolge
+    // und des `arcs.len() as f32`, das die alte Fassung (verlustbehaftet) hashte.
+    fn old_digest(ch: &OffsetChannel, upto_parents1: bool) -> u64 {
+        let mut h: u64 = SEED;
+        let mut w = |v: u64, h: &mut u64| {
+            *h ^= v;
+            *h = h.wrapping_mul(P);
+        };
+        let mut f = |v: f32, h: &mut u64| w(v.to_bits() as u64, h);
+        f(ch.arcs.len() as f32, &mut h);
+        for a in &ch.arcs {
+            for x in a.c.iter().chain(a.u.iter()).chain(a.v.iter()) {
+                f(*x, &mut h);
+            }
+            f(a.r, &mut h);
+            f(a.sweep, &mut h);
+            f(a.e[0], &mut h);
+            f(a.e[1], &mut h);
+            f(a.d_e, &mut h);
+            for x in a.bc.iter() {
+                f(*x, &mut h);
+            }
+            f(a.br, &mut h);
+            for x in a.m1s.iter().chain(a.m2s.iter()).chain(a.m1e.iter()).chain(a.m2e.iter()) {
+                f(*x, &mut h);
+            }
+        }
+        f(ch.delta, &mut h);
+        f(if ch.concave { 1.0 } else { 0.0 }, &mut h);
+        f(ch.trust, &mut h);
+        f(ch.gate, &mut h);
+        for x in ch.bound_c.iter() {
+            f(*x, &mut h);
+        }
+        f(ch.bound_r, &mut h);
+        for g in ch.end_planes.iter().chain(ch.face_planes.iter()) {
+            for x in g {
+                f(*x, &mut h);
+            }
+        }
+        w(ch.branch, &mut h);
+        w(ch.parents[0], &mut h);
+        if !upto_parents1 {
+            w(ch.parents[1], &mut h);
+        }
+        h
+    }
+
+    let delta = 2.0f32;
+    let (_n, field, _e, _l, _h, _c) = cert_matrix(delta)
+        .into_iter()
+        .find(|(n, ..)| n.starts_with("Ecken-Schale t/δ=2.5"))
+        .unwrap();
+    let mut stops = Vec::new();
+    stop_nodes(&field, &mut stops);
+    let mut base: Option<OffsetChannel> = None;
+    for st in &stops {
+        if let BoundedCsg::ArcChannel { channels, .. } = st {
+            for c in channels {
+                if c.limit_mode().is_proved()
+                    && c.face_planes.iter().any(|g| g[3] != -crate::offset_channel::END_PLANE_OFF)
+                {
+                    base = Some(c.clone());
+                    break;
+                }
+            }
+        }
+    }
+    let base = base.expect("kein bewiesener Kanal mit belegter Fremdebene");
+    let slot = base
+        .face_planes
+        .iter()
+        .position(|g| g[3] != -crate::offset_channel::END_PLANE_OFF)
+        .unwrap();
+    let d_alt = old_digest(&base, false);
+
+    let mut forged = 0usize;
+    for (why, which) in [("trust vergrössert", 0usize), ("belegte face_plane verschoben", 1)] {
+        let mut m = base.clone();
+        match which {
+            0 => m.trust = ulp_off(m.trust, 4096),
+            _ => m.face_planes[slot][3] += 1.0e-3,
+        }
+        // Der Angriff: `parents[1]` so wählen, dass der ALTE Digest wieder passt.
+        let q = old_digest(&m, true);
+        m.parents[1] = q ^ d_alt.wrapping_mul(p_inv);
+        assert_eq!(
+            old_digest(&m, false),
+            d_alt,
+            "{why}: die Digest-Fälschung ist misslungen — dann prüft der Pin nichts"
+        );
+        // Der gespeicherte Modus ist noch Proved …
+        assert!(m.cached_limit_mode().is_proved(), "{why}: der Pin misst nichts");
+        // … und der EXAKTE Vergleich fängt es trotzdem.
+        assert_eq!(
+            m.limit_mode(),
+            crate::offset_channel::ChannelLimitMode::LegacyUnproven(
+                crate::offset_channel::LegacyReason::ProofInvalidated
+            ),
+            "{why}: der gefälschte Digest hat den Modus gerettet — ein Hash reicht hier nicht"
+        );
+        assert_eq!(m.limit_mode().addends(), (0.0, 0.0));
+        // Auch im Tape.
+        let f = field_with_single_channel(&field, m.clone());
+        let t = compile_body(&f);
+        let ops = &t.opcodes;
+        let mut i = 0usize;
+        let mut seen = false;
+        while i < ops.len() {
+            if ops[i].to_bits() & 0xffff_ffff == OP_ARC_CHANNEL {
+                let b = i + 1 + CHANNEL_HEADER - 3;
+                assert_eq!(
+                    (ops[b], ops[b + 1], ops[b + 2]),
+                    (0.0, 0.0, 0.0),
+                    "{why}: das Tape trägt den gefälschten Beweis"
+                );
+                seen = true;
+                break;
+            }
+            i += 1;
+        }
+        assert!(seen, "{why}: kein OP_ARC_CHANNEL im Tape");
+        forged += 1;
+    }
+    assert_eq!(forged, 2);
+
+    // Und: `seam = None` bei gespeichertem Proved ⇒ ebenfalls Legacy — die
+    // Beweis-Löschung ist strukturell abgedeckt, nicht per Caller-Disziplin.
+    let mut wiped = base.clone();
+    wit::force_legacy_final_channel(
+        &mut wiped,
+        crate::offset_channel::LegacyReason::NotCertified,
+    );
+    assert!(!wiped.limit_mode().is_proved());
+    println!(
+        "§8ac Pin 7: P⁻¹ = {p_inv:#x}; zwei Digest-Fälschungen rekonstruieren D_alt exakt und \
+         fallen trotzdem auf Legacy"
+    );
 }

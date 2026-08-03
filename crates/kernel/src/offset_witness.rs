@@ -949,47 +949,124 @@ fn prefilter(bytes: &[u8]) -> u64 {
     h
 }
 
-/// **Der kanonische Schnappschuss eines Kanals** — jedes Bit, das
+/// #384 §8ac-Korrektur (achtzehntes Review) — **die EINE Serialisierung des
+/// Kanal-Schnappschusses.**
+///
+/// Sie hat zwei Verbraucher: [`channel_snapshot`] baut daraus einen Puffer,
+/// [`CertifiedSeamAddend::matches_channel`] hält sie Byte für Byte gegen einen
+/// gespeicherten. Eine zweite Handkopie wäre die nächste Lücke — deshalb eine
+/// Quelle, zwei Senken.
+pub(crate) trait SnapshotSink {
+    fn put(&mut self, b: &[u8]);
+    /// Darf die Serialisierung abbrechen? (Der Vergleicher weiss oft früh,
+    /// dass es nicht mehr passt.)
+    fn done(&self) -> bool {
+        false
+    }
+}
+
+struct VecSink(Vec<u8>);
+impl SnapshotSink for VecSink {
+    #[inline]
+    fn put(&mut self, b: &[u8]) {
+        self.0.extend_from_slice(b);
+    }
+}
+
+/// Vergleicht die erzeugten Bytes gegen einen gespeicherten Puffer, ohne zu
+/// allokieren.
+struct CmpSink<'a> {
+    want: &'a [u8],
+    pos: usize,
+    ok: bool,
+}
+impl SnapshotSink for CmpSink<'_> {
+    #[inline]
+    fn put(&mut self, b: &[u8]) {
+        if !self.ok {
+            return;
+        }
+        let end = self.pos + b.len();
+        if end > self.want.len() || &self.want[self.pos..end] != b {
+            self.ok = false;
+            return;
+        }
+        self.pos = end;
+    }
+    #[inline]
+    fn done(&self) -> bool {
+        !self.ok
+    }
+}
+
+#[inline]
+fn sn_u64<S: SnapshotSink>(s: &mut S, v: u64) {
+    s.put(&v.to_le_bytes());
+}
+
+#[inline]
+fn sn_f32<S: SnapshotSink>(s: &mut S, v: f32) {
+    // Bitmuster, NICHT der Wert: `-0.0` und `0.0` sind für die Geometrie
+    // dasselbe, für einen Schnappschuss aber verschiedene Daten.
+    s.put(&v.to_bits().to_le_bytes());
+}
+
+#[inline]
+fn sn_f32x3<S: SnapshotSink>(s: &mut S, v: [f32; 3]) {
+    for x in v {
+        sn_f32(s, x);
+    }
+}
+
+/// **Die kanonische Serialisierung eines Kanals** — jedes Bit, das
 /// [`crate::offset_channel::channel_limit`] oder [`cover_channel`] liest.
+fn serialize_channel<S: SnapshotSink>(ch: &OffsetChannel, s: &mut S) {
+    s.put(b"FD384-CH1");
+    sn_u64(s, ch.arcs.len() as u64);
+    for a in &ch.arcs {
+        if s.done() {
+            return;
+        }
+        sn_f32x3(s, a.c);
+        sn_f32x3(s, a.u);
+        sn_f32x3(s, a.v);
+        sn_f32(s, a.r);
+        sn_f32(s, a.sweep);
+        sn_f32(s, a.e[0]);
+        sn_f32(s, a.e[1]);
+        sn_f32(s, a.d_e);
+        sn_f32x3(s, a.bc);
+        sn_f32(s, a.br);
+        sn_f32x3(s, a.m1s);
+        sn_f32x3(s, a.m2s);
+        sn_f32x3(s, a.m1e);
+        sn_f32x3(s, a.m2e);
+    }
+    sn_f32(s, ch.delta);
+    s.put(&[ch.concave as u8]);
+    sn_f32(s, ch.trust);
+    sn_f32(s, ch.gate);
+    sn_f32x3(s, ch.bound_c);
+    sn_f32(s, ch.bound_r);
+    for g in ch.end_planes.iter().chain(ch.face_planes.iter()) {
+        for x in g {
+            sn_f32(s, *x);
+        }
+    }
+    sn_u64(s, ch.branch);
+    sn_u64(s, ch.parents[0]);
+    sn_u64(s, ch.parents[1]);
+}
+
+/// **Der kanonische Schnappschuss eines Kanals**, als Puffer.
 ///
 /// Er wird bitweise verglichen, nicht gehasht. Zwei Kanäle mit demselben
 /// Schnappschuss sind in allen beweisrelevanten Daten identisch — das ist eine
 /// Aussage über die Bytes, keine Wahrscheinlichkeitsaussage.
 pub fn channel_snapshot(ch: &OffsetChannel) -> Vec<u8> {
-    let mut o = Vec::with_capacity(64 + ch.arcs.len() * 96);
-    o.extend_from_slice(b"FD384-CH1");
-    put_u64(&mut o, ch.arcs.len() as u64);
-    for a in &ch.arcs {
-        put_f32x3(&mut o, a.c);
-        put_f32x3(&mut o, a.u);
-        put_f32x3(&mut o, a.v);
-        put_f32(&mut o, a.r);
-        put_f32(&mut o, a.sweep);
-        put_f32(&mut o, a.e[0]);
-        put_f32(&mut o, a.e[1]);
-        put_f32(&mut o, a.d_e);
-        put_f32x3(&mut o, a.bc);
-        put_f32(&mut o, a.br);
-        put_f32x3(&mut o, a.m1s);
-        put_f32x3(&mut o, a.m2s);
-        put_f32x3(&mut o, a.m1e);
-        put_f32x3(&mut o, a.m2e);
-    }
-    put_f32(&mut o, ch.delta);
-    o.push(ch.concave as u8);
-    put_f32(&mut o, ch.trust);
-    put_f32(&mut o, ch.gate);
-    put_f32x3(&mut o, ch.bound_c);
-    put_f32(&mut o, ch.bound_r);
-    for g in ch.end_planes.iter().chain(ch.face_planes.iter()) {
-        for x in g {
-            put_f32(&mut o, *x);
-        }
-    }
-    put_u64(&mut o, ch.branch);
-    put_u64(&mut o, ch.parents[0]);
-    put_u64(&mut o, ch.parents[1]);
-    o
+    let mut s = VecSink(Vec::with_capacity(64 + ch.arcs.len() * 96));
+    serialize_channel(ch, &mut s);
+    s.0
 }
 
 /// **Der kanonische Schnappschuss von `Ω`** — und zwar genau der Daten, die
@@ -1722,67 +1799,6 @@ impl SeamProofToken {
     }
 }
 
-/// #384 §8ac-Korrektur — **ein allokationsfreier Digest über GENAU die Daten
-/// von [`channel_snapshot`].**
-///
-/// Rolle und Grenzen, damit sie nicht verwechselt werden:
-///
-/// * Die **autoritative Bindung** eines Beweises an Kanal und `Ω` ist und
-///   bleibt der **bitweise** Schnappschuss-Vergleich in
-///   [`CertifiedSeamAddend::addend_for`]. Der läuft einmal, beim Auflösen des
-///   Laufzeitmodus.
-/// * Dieser Digest ist etwas anderes: ein **Mutations-Melder** für die Zeit
-///   DANACH. Er beantwortet nicht „gehört dieser Beweis hierher", sondern
-///   „hat sich der Kanal seit dem Auflösen bewegt". Dafür darf er ein Hash
-///   sein — er kann eine Zusage nur zurückziehen, nie erteilen.
-///
-/// Er allokiert nicht, weil er im Auswertungspfad liegt (hinter beiden
-/// Early-Outs von `channel_limit`, also nur für Punkte, die den Term wirklich
-/// erreichen).
-pub(crate) fn channel_digest(ch: &OffsetChannel) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut w = |v: u64| {
-        h ^= v;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    };
-    let mut f = |v: f32| w(v.to_bits() as u64);
-    f(ch.arcs.len() as f32);
-    for a in &ch.arcs {
-        for x in a.c.iter().chain(a.u.iter()).chain(a.v.iter()) {
-            f(*x);
-        }
-        f(a.r);
-        f(a.sweep);
-        f(a.e[0]);
-        f(a.e[1]);
-        f(a.d_e);
-        for x in a.bc.iter() {
-            f(*x);
-        }
-        f(a.br);
-        for x in a.m1s.iter().chain(a.m2s.iter()).chain(a.m1e.iter()).chain(a.m2e.iter()) {
-            f(*x);
-        }
-    }
-    f(ch.delta);
-    f(if ch.concave { 1.0 } else { 0.0 });
-    f(ch.trust);
-    f(ch.gate);
-    for x in ch.bound_c.iter() {
-        f(*x);
-    }
-    f(ch.bound_r);
-    for g in ch.end_planes.iter().chain(ch.face_planes.iter()) {
-        for x in g {
-            f(*x);
-        }
-    }
-    w(ch.branch);
-    w(ch.parents[0]);
-    w(ch.parents[1]);
-    h
-}
-
 /// #384 §8ac-Korrektur (siebzehntes Review, Sollte 2) — **die atomare
 /// Zertifizierung des FINALEN Kanals.**
 ///
@@ -1871,6 +1887,26 @@ impl CertifiedSeamAddend {
         }
         Some(self.encoded_addend)
     }
+    /// #384 §8ac-Korrektur (achtzehntes Review) — **die Freeze-Prüfung:
+    /// erzeugt den Schnappschuss des AKTUELLEN Kanals im Strom und hält ihn
+    /// Byte für Byte gegen den gespeicherten. Ohne Allokation.**
+    ///
+    /// Warum exakt und nicht gehasht: die Vorgängerfassung verglich einen
+    /// FNV-64-Digest, und der ist **deterministisch** umgehbar — kein
+    /// Zufallstreffer nötig. Das letzte gehashte Wort ist `parents[1]`, ein
+    /// öffentliches `u64`; der letzte Schritt ist
+    /// `D = (q ⊕ parents[1])·P mod 2⁶⁴` mit ungeradem `P`, also mod 2⁶⁴
+    /// invertierbar. Nach einer beliebigen beweisrelevanten Mutation lässt sich
+    /// `parents[1]' = q' ⊕ (D_alt · P⁻¹)` setzen, und der Digest ist wieder
+    /// derselbe. Genau das führt `activation_forged_digest_still_falls_back_384`
+    /// vor. Es widerspricht ausserdem der eigenen §8aa-Doktrin: ein FNV-64 darf
+    /// nie allein entscheiden.
+    pub(crate) fn matches_channel(&self, ch: &OffsetChannel) -> bool {
+        let mut c = CmpSink { want: &self.channel_snapshot, pos: 0, ok: true };
+        serialize_channel(ch, &mut c);
+        c.ok && c.pos == self.channel_snapshot.len()
+    }
+
     /// Die autoritative Kanal-Prüfung: Vorfilter, dann bitweiser Vergleich.
     /// Genau EINE Instanz dieser Logik — [`addend_for`](Self::addend_for) und
     /// der Byte-Positions-Pin laufen durch dieselbe Funktion.
@@ -2032,12 +2068,9 @@ pub(crate) fn certify_channel_with(
     knobs: SeamProofKnobs,
 ) -> ((SeamProofStatus, WitnessCover), Option<HStatus>) {
     let mut hs_out: Option<HStatus> = None;
-    // §8ac-Korrektur (Blocker): **jede Löschung des Beweises setzt ZUERST den
-    // Laufzeitmodus zurück.** Vorher begann jede Neuzertifizierung mit
-    // `seam = None`, liess den aufgelösten Modus aber stehen — ein
-    // Proved-Kanal, dessen Beweis verschwunden war, lieferte weiter seine
-    // alten Addenden an alle sechs Spiegel.
-    ch.invalidate_limit_mode(SeamProofToken::mint());
+    // §8ac-Korrektur: `seal_seam_proof` entzieht den Laufzeitmodus selbst —
+    // die Invariante sitzt im Schreibweg, nicht hier (achtzehntes Review,
+    // Empfehlung 2).
     ch.seal_seam_proof(SeamProofToken::mint(), None);
     if !cfg.valid() {
         return ((SeamProofStatus::BadConfig, cover_channel(omega, ch, cfg)), None);

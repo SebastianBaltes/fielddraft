@@ -7839,17 +7839,119 @@ die Addenden; beide Seiten laufen deshalb auf Legacy, und der Vergleich misst
 wieder genau das, was er soll. Dass die Mutation den Modus entzieht, ist
 Gegenstand von `activation_mutation_invalidates_the_runtime_mode_384`.
 
+### §8ac-Korrektur: das achtzehnte Mathe-Review (v0.65.2)
+
+Die Reset-Hälfte des Blockers war bestätigt geschlossen. Die **Freeze**-Hälfte
+nicht — und der Grund ist kein Wahrscheinlichkeitsargument, sondern eine
+Konstruktion.
+
+#### B1 — FNV-64 ist keine Freeze-Grenze
+
+Der letzte Schritt des Digests lautet
+
+```text
+D = (q ⊕ parents[1]) · P   mod 2⁶⁴,      P = 0x100000001b3
+```
+
+`P` ist **ungerade**, also mod 2⁶⁴ invertierbar, und `parents[1]` ist ein
+**öffentliches `u64`**, das als **letztes** Wort gehasht wird. Nach einer
+beliebigen beweisrelevanten Mutation — `trust` vergrössern, eine belegte
+`face_plane` verschieben — sei `q'` der FNV-Zustand unmittelbar vor dem letzten
+Wort. Setzt man
+
+```text
+parents[1]' = q' ⊕ (D_alt · P⁻¹ mod 2⁶⁴)
+```
+
+so gilt **exakt** `D_neu = D_alt`. Der Modus bliebe `Proved`, und die alten,
+jetzt zu kleinen Addenden flössen wieder in Produktion und Tape. Kein
+Zufallstreffer, keine Kollisionssuche — Arithmetik.
+
+Es widersprach ausserdem der eigenen §8aa-Doktrin, die für die Kanalbindung
+schon festhält: **ein FNV-64 darf nie allein entscheiden.** Die
+Digest-Reparatur hatte genau diesen Satz für den Konsum-Pfad wieder aufgegeben.
+
+**Gefixt durch exakten Vergleich.** `limit_mode()` erzeugt den Schnappschuss
+des aktuellen Kanals **im Strom** und hält ihn **Byte für Byte** gegen den im
+`CertifiedSeamAddend` gespeicherten. Ohne Allokation, in derselben
+Grössenordnung wie das bisherige Hashen — und mit Früh-Abbruch, sobald ein Byte
+abweicht.
+
+**Eine Quelle, zwei Senken.** Damit hier nicht die nächste Lücke wächst, teilen
+sich Erzeugung und Vergleich **einen** Serialisierer: `serialize_channel` gegen
+ein `SnapshotSink`. `channel_snapshot` hängt einen Puffer-Sink daran, die
+Freeze-Prüfung einen Vergleichs-Sink. Eine zweite Handkopie der Serialisierung
+gibt es nicht.
+
+Damit entfallen `channel_digest` und das `digest`-Feld; `Proved` ist wieder
+`{seam, h}`. Der Nebenbefund des Reviews — der Digest hashte
+`arcs.len() as f32` (verlustbehaftet), der Schnappschuss kodiert `u64` — ist
+gegenstandslos geworden.
+
+**Zwei Ausgänge fallen jetzt auf `LegacyUnproven(ProofInvalidated)`:** der Kanal
+hat sich bewegt, **oder** der Beweis ist weg (`seam == None`) während der Modus
+noch `Proved` ist. Der zweite deckt jede Beweis-Löschung **strukturell** ab —
+ohne auf die Reihenfolge im Aufrufer zu bauen.
+
+**Der Angriff ist gepinnt, nicht nur repariert**
+(`activation_forged_digest_still_falls_back_384`): der Pin implementiert `P⁻¹`
+per Newton-Iteration (`x ← x·(2 − P·x)`, sechs Schritte, verifiziert mit
+`P·P⁻¹ = 1`), baut den alten Digest exakt nach, mutiert `trust` bzw. eine
+belegte `face_plane`, kompensiert über `parents[1]` — und **weist nach, dass
+`D_neu = D_alt` wirklich erreicht wird**, bevor er verlangt, dass Laufzeitmodus,
+Addenden **und die drei Tape-Kopf-Worte** trotzdem auf Legacy fallen. Er steht
+für immer als Begründung dafür, warum an dieser Stelle kein Hash reicht.
+Gemessen: `P⁻¹ = 0xce965057aff6957b`.
+
+#### Empfehlung 2 — die Invariante sitzt im Schreibweg
+
+`seal_seam_proof` entzieht den Laufzeitmodus jetzt **selbst**, vor jeder
+Zuweisung. Der explizite `invalidate_limit_mode`-Aufruf in
+`certify_channel_with` ist entfallen: eine Invariante, die der Aufrufer
+einhalten muss, ist keine.
+
+#### Punkt 3 — der Pflichtsatz-Pin heisst jetzt, was er prüft
+
+`clamp_limit_consumes_only_de_384` → **`clamp_geometry_subchain_consumes_only_de_384`**.
+Der Satz gilt weiter, aber über die **Geometrie-Unterkette bei festem
+(Legacy-)Modus**: am `Proved`-Pfad hängt seit P5b-1A zusätzlich die
+Schnappschuss-Prüfung, und die liest `m̂`, `e` und `d_e` sehr wohl — eine
+`m̂`-Mutation entzieht dem Kanal richtigerweise den Modus. Name und Doku sagen
+das jetzt.
+
+#### Punkt 5 — der Tape-Teil misst jetzt Tape
+
+`activation_mutation_invalidates_the_runtime_mode_384` kompilierte vorher das
+**unmutierte** Feld, warf das Ergebnis weg und rekonstruierte Modus und
+Addenden wieder aus `ch.limit_mode()` — es prüfte also den Getter zweimal und
+das Tape nie. Jetzt wird der mutierte Kanal über `field_with_single_channel`
+wirklich in den `ArcChannel`-Knoten gesetzt, kompiliert, und die drei
+Kopf-Worte werden **aus dem emittierten Tape gelesen**.
+
+#### Prüfungen
+
+Golden **unverändert `915bab98…`** — der exakte Vergleich akzeptiert
+unveränderte Kanäle, der Happy Path bleibt feldneutral. C++-Parität erneut 35
+Szenen / 17.920 Vergleiche / 0 Fehler. nextest **1540** (1539), offset-Profil
+**246** (245), Doctests **1**, Vitest **2082**.
+
+**Vom Review bestätigt und unangetastet:** `channel_limit` über den Getter, alle
+sechs Spiegel über `limit_mode()`, das Siegel atomar im Beweismodul, der
+Named-Points-Spec (8 Punkte, Schranke `1e-5`) — der inzwischen **auf echter GPU
+grün gefahren** ist: 4 Kanäle `mode = 1`, `A_seam ≈ 1.056·10⁻⁴`, 435 Punkte
+`worst 1.9·10⁻⁶`, benannte Punkte `worst 1.2·10⁻⁷`.
+
 ### Was OFFEN bleibt
 
 * **P5b-2** — die Intervall-Modellierung der neuen Kette. Bis dahin sind die
   227 Kernzellen und die „ausgeliefert"-Einschliessung der bewiesenen Fixturen
   nicht zertifiziert. Das ist die grösste offene Position dieses Pakets.
-* **Web/TSL-Parität nicht laufzeit-verifiziert.** Der TSL-Leser ist angepasst,
-  typecheckt, und der Spec ist seit v0.65.1 lasttragend (Modus-Nachweis,
-  benannte Punkte, Toleranz `1e-5`) — aber ein GPU-Lauf stand hier nicht zur
-  Verfügung. **fidget ist seit v0.65.1 laufzeit-belegt** (Baum gegen CPU auf der
-  geraden Erosions-Fixture, Parität `1.08·10⁻⁷`). Der Browser-Lauf bleibt eine
-  Vorbedingung des Merges.
+* **Web/TSL- und fidget-Parität sind laufzeit-belegt.** Der Spec ist seit
+  v0.65.1 lasttragend (Modus-Nachweis, benannte Punkte, Toleranz `1e-5`) und
+  inzwischen **auf echter GPU grün** (435 Punkte `worst 1.9·10⁻⁶`, benannte
+  Punkte `1.2·10⁻⁷`); fidget seit v0.65.1 (Baum gegen CPU auf der geraden
+  Erosions-Fixture, Parität `1.08·10⁻⁷`). Damit ist diese Vorbedingung des
+  Merges erfüllt.
 * **P5c** (gekrümmte Kanäle) und **`Ω`-Blätter jenseits Box/Sphere/Zylinder**
   bleiben unverändert offen — sie sind der Grund für die 21 Legacy-Kanäle.
 * **`vertex_limit`** ist weiterhin nicht mitbewiesen und unverändert.
