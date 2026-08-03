@@ -6745,22 +6745,21 @@ Stützebenen-Aussage. Lemma 5 spricht ausdrücklich NICHT über diesen Zweig
 #### Lemma 6 — die Kanalbindung
 
 Ein opaker nackter Millimeterwert liesse sich versehentlich auf einen anderen
-Kanal anwenden. Die Bindung ist deshalb **doppelt**:
+Kanal anwenden. Die Bindung ist deshalb **doppelt** — und beide Hälften sind
+nach dem dreizehnten Review ersetzt worden (s. Korrektur-Abschnitt, B2/B3):
 
-1. **Einbettung.** `EtaClamp` wohnt als `#[serde(skip)]`-Feld IM geprüften
-   `OffsetChannel`; `certify_channel` ist die einzige Stelle, die es setzt, und
-   sie tut es in derselben Phase, in der sie beweist.
-2. **Identitätsprobe beim Lesen.** `OffsetChannel::eta_addend` rechnet einen
-   FNV-Fingerabdruck über alle Bogen-, `δ`-, `trust`- und Halbraum-Daten neu
-   und vergleicht ihn. Eine verpflanzte oder nachträglich veränderte Klemme
-   liefert `None`.
-
-Die zweite Hälfte ist nötig, weil `OffsetChannel` `Clone` ist und das Feld im
-Kern `pub(crate)` sein muss (sonst könnte kein Pin die Verpflanzung überhaupt
-versuchen). **Privatheit ist hier nicht die Durchsetzung — die Probe ist es.**
+1. **Versiegelter Schreibweg.** `CertifiedSeamAddend` wohnt in einem
+   **privaten** `#[serde(skip)]`-Feld des geprüften `OffsetChannel`.
+   Beschrieben wird es nur über `seal_seam_proof`, und das verlangt ein
+   `SeamProofToken`, das ausschliesslich `offset_witness` prägen kann.
+   Ausserhalb dieses Moduls **kompiliert** eine Verpflanzung nicht.
+2. **Bitweiser Schnappschuss beim Lesen — über Kanal UND `Ω`.**
+   `OffsetChannel::seam_addend(Ω)` vergleicht zwei kanonische Byte-Folgen; ein
+   64-Bit-FNV läuft nur als Vorfilter davor. Ein verpflanzter, ein nachträglich
+   veränderter oder ein unter anderem `Ω` verwendeter Beweis liefert `None`.
 
 `dist_bridge = None` ist damit verschwunden: entweder existiert ein vollständig
-konstruierter `EtaClamp`, oder es gibt keinen.
+konstruierter `CertifiedSeamAddend`, oder es gibt keinen.
 
 #### Lemma 7 — fail-closed
 
@@ -6774,7 +6773,7 @@ Die Ausgänge sind getrennt gezählt, und das ist Absicht: ein gekrümmter Bogen
 ist ein STRUKTURELLER Ausschluss (P5c), kein gescheiterter Zeuge. Würden beide
 als „kein Cover" laufen, verschwände die Stufen-Nabe aus dem Bericht.
 
-### Der Shadow-Bericht — 217 von 238 Kanälen
+### Der Shadow-Bericht — 217 von 238 Naht-Addenden
 
 Kein Evaluator konsumiert die Klemme. Das einzige Ergebnis von P5b-0 IST diese
 Zählung, und sie ist gepinnt (`clamp_shadow_report_matches_the_matrix_384`),
@@ -6796,7 +6795,8 @@ nicht bloss gedruckt.
 | notch α = 90° | 1 | **1** | 0 | 0 | 1.000e-4 | 2.056e-5 | 8.154e-7 | 5.851e-7 | 1.220e-4 |
 | notch α = 60° | 2 | **2** | 0 | 0 | 1.865e-4 | 2.166e-5 | 1.060e-6 | 7.248e-7 | 2.088e-4 |
 
-**217 von 238 Kanälen (91 %) tragen eine bewiesene Klemme**, `no_bridge` und
+**217 von 238 Kanälen (91 %) tragen einen bewiesenen NAHT-Addenden** — nicht
+eine bewiesene `channel_limit`-Kette (Sollte-15, s. Korrektur-Abschnitt), `no_bridge` und
 `bad_config` sind über die ganze Matrix **null** — wo das Cover steht, steht
 auch die Brücke. Die 21 offenen Kanäle sind dieselben zwei strukturellen Gründe
 wie in §8x: die Stufen-Nabe hat gekrümmte Nähte (P5c), der Rippen-Kamm
@@ -6833,11 +6833,13 @@ Die f32-Brücke ist also nicht der Preis — der geometrische Zeuge ist es.
   Streuwerte, über drei `δ`, dreimal wiederholt für `Δ ∈ {10⁻⁶, 10⁻⁴,
   2.26·10⁻³}` — **über 200.000 Fälle je Durchgang**, gefahren durch genau die
   drei f32-Ops der eingefrorenen Kette.
-* **`clamp_is_bound_to_its_channel_384`** (Lemma 6) — ≥10 echte Verpflanzungen
-  zwischen verschiedenen Kanälen (alle verweigert), sieben Ein-ulp-Mutationen
-  am eigenen Kanal (alle bemerkt: `c`, `r`, `u`, `δ`, `trust`, `face_plane`,
-  `m̂`), unveränderte Kopie behält den Wert, und die `Ω`-Fingerabdrücke sind
-  paarweise verschieden.
+* **`clamp_proof_cannot_be_transplanted_384`** (Lemma 6) — 31 echte
+  Verpflanzungen über den versiegelten Weg (alle verweigert), **876
+  Byte-Positionen** des Kanal-Schnappschusses einzeln mutiert, elf
+  Ein-ulp-Verdrehungen am echten Kanal (`c`, `r`, `u`, `δ`, `trust`, `gate`,
+  `bound_r`, `face_plane`, `m̂`, `branch`, `parents`), unveränderte Kopie behält
+  den Wert, die Review-Familie „bit-identischer Kanal, anderes `Ω`“ wird gebaut
+  und abgelehnt, und die `Ω`-Schnappschüsse sind paarweise verschieden.
 * **`clamp_is_fail_closed_384`** (Lemma 7) — alle Ausgänge einzeln: gekrümmt,
   leer, sechs ungültige Konfigurationen, entarteter Bogen, nicht unterstütztes
   `Ω`-Blatt (19 Kanäle des Rippen-Kamms), und der Gegen-Extremfall `Ω = Empty`
@@ -6850,6 +6852,9 @@ Die f32-Brücke ist also nicht der Preis — der geometrische Zeuge ist es.
   No-op-Pin).
 * **`clamp_limit_consumes_only_de_384`** — der Pflichtsatz, gemessen statt
   zitiert (s. u.).
+* **`clamp_h_branch_is_reachable_384`** — die R1-Messung: der `h`-Ast wird
+  heute an 4,1 % der Proben genommen, und die gezielte Bisektion trifft das
+  Umhäng-Band an 200 von 200 Strahlen (s. Korrektur-Abschnitt, B1).
 
 ### Der Pflichtsatz, am Code geprüft
 
@@ -6895,6 +6900,10 @@ budgetneutral.
   geschlossenen Ausdrucks steht als Zahl da statt als Gefühl:
   `A/A* = 1.00028` (`Δ = 2.26·10⁻³`), `1.00714` (`Δ = 10⁻⁴`), `1.4268`
   (`Δ = 10⁻⁶`).
+  **Rollenverteilung** (Klarstellung nach dem dreizehnten Review): den
+  ausgelieferten Addenden trägt der **algebraische Beweis**. `A*` ist das
+  Minimum über *dieser konstruierten Familie* und zeigt deren Schärfe — es ist
+  ausdrücklich **keine** globale Minimalitätsaussage.
 * **`certify_channel` ist NICHT in die Synthese verdrahtet.** Der Berater
   bevorzugt die Einbettung „während derselben Synthesephase" — der
   Einbettungs-MECHANISMUS ist genau das (das Feld sitzt im Kanal, und nur
@@ -6905,28 +6914,185 @@ budgetneutral.
   an dieser Stelle verfügbar (`omega_of` am `Offset`-Kind); der Aufruf gehört
   in P5b-1, zusammen mit dem Konsumenten.
 
+### §8aa-Korrektur: das dreizehnte Mathe-Review (v0.63.1)
+
+Bestätigt hat es die Substanz: die Punkt-Brücke ist strukturell richtig (keine
+Nearest-Eigenschaft nötig, `r ≥ 10⁻⁹` macht `r.max(1e-12)` bitgleich), die
+Norm-Brücke trägt (`(1−u)^{7/2}`-Herleitung, √-Posten bei null, `de < trust`
+vor dem arithmetischen Schwanz), das Rundungsbudget ist ein echtes Lemma, und
+`ε_D` gehört zu Recht nicht ins Budget. Die `A*`-Gegenprobe ist akzeptiert —
+mit einer Rollenklarstellung: **den Addenden trägt der algebraische Beweis**;
+der `A*`-Pin zeigt Schärfe auf der konstruierten Familie und ist **keine**
+globale Minimalitätsaussage. Auch die Verdrahtung erst in P5b-1 ist richtig.
+
+**Drei Blocker blieben.** Das ausgelieferte Feld war und ist unberührt — aber
+der neue Beweistyp versprach zwei Garantien, die er nicht hielt.
+
+#### B1 — der Typ zertifizierte die ganze Kette, bewiesen war nur der Naht-Ast
+
+`EtaClamp` behauptete `fl(δ − min(fl(de+A), h))` überschreite die gültige
+Untergrenze nicht. Lemma 5 beweist aber ausschliesslich
+`fl(δ − fl(de+A)) ≤ δ − de − Δ`. Sobald `h < fl(de+A)`, ist das Lemma
+**irrelevant** — und der `h`-Ast hat gar kein Budget: die Stützebenen-Synthese
+akzeptiert `h_min ≥ −8·gate_eps` statt `h_min ≥ 0` (`set_face_plane_gates`),
+und Ebenennormierung, `⟨p,n̂⟩ − c`, `g + δ` sowie `δ − h` laufen ungerichtet in
+f32. Zu bezahlen wären also mindestens: die zugelassene geometrische
+Stützseiten-Verletzung, die Normabweichung der gespeicherten Ebene und drei
+Rundungen.
+
+Die erste §8aa-Fassung hat das als „Restposten R1" **notiert** und im selben
+Atemzug einen Typ ausgeliefert, dessen Vertragstext die Vollkette zusagte, samt
+öffentlicher `frozen_channel_limit`. Ein Konsument hätte daraus genau die
+Garantie gelesen, die es nicht gibt. Das ist die Falle, in die P5b-1 getappt
+wäre.
+
+**Gefixt durch ehrliche Rückstufung** (der kleinste sichere Schnitt):
+
+* Der Typ heisst `CertifiedSeamAddend`. Sein Vertragstext sagt nur noch den
+  **Naht-Ast** zu und benennt R1 als das, was fehlt.
+* `frozen_channel_limit` und `frozen_limit_tail` sind `pub(crate)`. Eine
+  unbelegte Vollkettenfunktion gehört nicht neben einen öffentlichen
+  Beweiswert.
+* Der Tally-Eintrag heisst `proved_seam`, und die Zahl liest sich als
+  „**217 Naht-Addenden bewiesen**", nicht als „217 Kanäle bewiesen".
+
+**Und der Angriffspfad ist nachgemessen, nicht geglaubt**
+(`clamp_h_branch_is_reachable_384`):
+
+| Frage | Messung |
+|---|---|
+| Wird der `h`-Ast heute überhaupt genommen? | **ja: 3.545 von 86.800 Proben (4,1 %)** |
+| Trifft gleichverteiltes Proben das Umhäng-Band `de < h ≤ de+A`? | **0** — das Band ist `A ≈ 10⁻⁴ mm` schmal; das ist eine Aussage über die Auflösung der Probe, KEINE über Erreichbarkeit |
+| Gezielte Bisektion auf den Vorzeichenwechsel von `h − de`? | **200 Treffer aus 200 Strahlen**, engster Fall `h − de = 2.503·10⁻⁶ mm` |
+
+P5b-1 würde also reale Punkte aus dem bewiesenen `de`-Ast in den unbudgetierten
+`h`-Ast umhängen. Der Befund steht dem Review nicht entgegen — er bestätigt ihn
+mit Zahlen.
+
+**Auflage für P5b-1** (zwingend, vor jeder Feldänderung). Eine der drei Formen:
+
+1. bei zertifizierten Kanälen vorerst ausschliesslich `δ − (de + A)` verwenden
+   und `h` aus der Grenzwert-Klemme entfernen; oder
+2. ein eigenes `HClamp` mit vollständigem geometrischem UND numerischem
+   Ebenenbudget herleiten und dann `min(de_safe, h_safe)` verwenden; oder
+3. `h_min ≥ 0` in der Synthese erzwingen und die drei Rundungen gerichtet
+   führen.
+
+Mit dazu gehört der **`h`-Pin** aus Sollte-14, der hier bewusst NICHT gebaut
+ist (das `h`-Budget ist eine eigene Beweisfront und gehört zum P5b-1-Design):
+`h` knapp unter/über `de+A`; `h_min` nahe `−8·gate_eps`; grosse Translation;
+Ebenennorm knapp neben eins; f32-Gleichstand der beiden `min`-Operanden; und
+die Mutation „ohne geometrischen bzw. arithmetischen `h`-Aufschlag" muss
+reissen.
+
+#### B2 — „Identität" war ein 64-Bit-Hash
+
+`addend_for` akzeptierte einen Kanal allein wegen `channel_identity(ch) ==
+gespeicherter u64`. FNV-64 ist notwendigerweise kollisionsfähig; dass sieben
+ausgewählte Ein-ulp-Mutationen keine Kollision erzeugten, sagt nichts über die
+Menge aller Kanäle. Die Sätze „an genau diesen Kanal gebunden" und „die
+Identitätsprobe ist die Durchsetzung" waren damit unbelegt.
+
+**Gefixt**: autoritativ ist jetzt ein **kanonischer Byte-Schnappschuss**, der
+**bitweise** verglichen wird (`channel_snapshot`, 438 Bytes am
+Matrix-Kanal). Der FNV-Wert bleibt als **Vorfilter und Diagnose** — er
+entscheidet nie allein. Der Pin prüft nicht mehr sieben ausgewählte Felder,
+sondern **jede Byte-Position des Schnappschusses** (876 Mutationen: `±1` und
+`XOR 0x80` je Byte) plus elf Ein-ulp-Verdrehungen am echten Kanal.
+
+#### B3 — die Verpflanzungsfamilie „bit-identischer Kanal, anderes Ω"
+
+Der Review liefert die Konstruktion mit: zwei bit-identische Kanäle, einer
+gegen ein leicht deckbares `Ω₁` zertifiziert, der andere unter `Ω₂` verwendet,
+Klemme innerhalb des Crates hinüberkopiert. Die alte Probe akzeptierte das —
+`channel_identity` stimmte, und `omega_fingerprint` wurde beim Lesen
+**überhaupt nicht verglichen**. Dazu war `eta_clamp` `pub(crate)`, während der
+Typ Verpflanzungssicherheit behauptete.
+
+**Gefixt in zwei Stufen, und die erste ist die stärkere:**
+
+* **Der Schreibweg ist versiegelt.** `OffsetChannel::seam` ist **privat**;
+  beschrieben wird es nur über `seal_seam_proof`, und das verlangt einen
+  `SeamProofToken`, dessen Tupel-Feld modul-privat in `offset_witness` liegt.
+  Ausserhalb von `offset_witness` **kompiliert** eine Verpflanzung nicht — das
+  ist eine Eigenschaft des Typsystems, keine Laufzeitprobe. Nachgewiesen mit
+  einem `compile_fail,E0603`-Doctest (der Fehlercode steht mit dabei, sonst
+  würde der Doctest auch bei einem Tippfehler grün) und zusätzlich gemessen:
+  selbst `offset_channel` — das Modul, dem das Feld gehört — kann kein Siegel
+  prägen (`E0603`).
+* **`Ω` gehört zum Leseschlüssel.** `seam_addend` verlangt jetzt Kanal **und**
+  `Ω` und vergleicht **beide** Schnappschüsse bitweise. Die Familie des Reviews
+  ist damit nicht bloss unwahrscheinlich, sondern abgelehnt — und genau so
+  gepinnt (`clamp_proof_cannot_be_transplanted_384`, Abschnitt 3: `ch1` gegen
+  `Ω = Empty` zertifiziert, `ch2` bit-identisch, Beweis über den versiegelten
+  Weg hinübergeschoben, `seam_addend(Ω_echt)` MUSS `None` liefern — und unter
+  `Ω = Empty` liefert er selbstverständlich weiter seinen Wert).
+
+**Transfer-Lemma für den Ω-Schnappschuss.** `box_outside_inner` liest
+ausschliesslich: den Varianten-Tag; bei `Leaf` die Weltmatrix und — nur für
+Box/Sphere/Zylinder — die Primitiv-Parameter (jedes andere Blatt liefert
+bedingungslos `false`); bei `Offset` das `delta`; und rekursiv die Kinder von
+`Union`, `Intersection`, `Difference`, `Offset`, `InnerWall`. Jede andere
+Variante liefert bedingungslos `false`. `omega_snapshot` kodiert genau diese
+Daten kanonisch und bestimmt damit den Wert von `box_outside_omega` für JEDE
+Box und JEDE Marge. Gilt `omega_snapshot(Ω') = omega_snapshot(Ω)`, so überträgt
+sich jeder für `Ω` geführte Zeugen-Beweis unverändert auf `Ω'`. ∎ Das ist
+schärfer, als ein Hash sein kann, und genau die Eigenschaft, auf die es
+ankommt — nicht „die Bäume sind gleich", sondern „der Beweis überträgt sich".
+
+**Was als Rest bleibt, ehrlich benannt:** innerhalb von `offset_witness` selbst
+könnte Code ein Siegel prägen und einen Beweis falsch paaren — das Modul, das
+beweist, vertraut sich selbst. Der Schnappschuss-Vergleich fängt auch das ab,
+solange Kanal oder `Ω` sich in irgendeinem beweisrelevanten Bit unterscheiden;
+gleicht sich beides bitweise, ist es nach dem Transfer-Lemma derselbe Fall.
+Was der Schnappschuss NICHT leisten kann, ist eine Lebenszyklus-Aussage: dass
+`certify_channel` am **finalen** Kanal läuft — nach Vertex-Snapping und nach
+`set_end_plane_gates`/`set_face_plane_gates` — ist in P5b-0 nirgends erzwungen,
+weil der Aufruf noch gar nicht in der Synthese steht. In P5b-0 ist das folgenlos
+(kein Konsument); für P5b-1 ist es eine **Auflage**: zertifizieren nach allen
+Mutationen, danach keine beweisrelevante Mutation mehr, dann erst Tape/Spiegel.
+
+#### Was NICHT geändert wurde — und warum
+
+Das `h`-Budget selbst. Es ist eine eigenständige Beweisfront (geometrische
+Stützseiten-Toleranz, Ebenennorm, drei gerichtete Rundungen) und gehört ins
+P5b-1-Design; es jetzt nebenbei mitzubauen hiesse, eine zweite unfertige Zusage
+neben die erste zu stellen. Die Korrektur dieser Runde besteht deshalb darin,
+den Vertrag auf das zu kürzen, was bewiesen ist — nicht darin, mehr zu
+behaupten.
+
 ### Restposten — was NICHT bewiesen ist
 
-* **R1 — der `h`-Zweig.** Fällt das `min` auf die Stützebene, liefert die Kette
-  `fl(δ − h)`, und ob diese Rundung die Stützebenen-Aussage einhält, ist
-  **unverändert offen** — es ist derselbe Ausdruck wie heute, und §8j hat ihn
-  nie mit Rundungsbudget geführt. P5b-1 verschiebt zusätzlich eine dünne Schale
-  von Punkten (`h ∈ (de, de+A]`) aus dem `de`-Zweig in den `h`-Zweig; dort
-  ruhen sie ab dann auf R1 statt auf Lemma 5. Der ausgelieferte Wert ist in
-  dieser Schale **kleiner** (konservativer) als heute, aber „konservativer" ist
-  kein Beweis.
-* **R2 — die `Ω`-Provenienz ist nicht lesezeit-prüfbar.** Der
-  `omega_fingerprint` wird beim Beweis gespeichert und ist diagnostisch
-  unterscheidbar (gepinnt), aber zur Auswertungszeit gibt es kein `Ω` mehr,
-  gegen das man ihn halten könnte. Zwei bit-identische Kanäle unter
-  verschiedenen `Ω` wären für die Identitätsprobe derselbe Kanal. Die Garantie
-  kommt allein daher, dass `certify_channel` Beweis und Einbettung in EINEM
-  Schritt tut.
+* **R1 — der `h`-Zweig (ZWINGENDE Auflage vor P5b-1).** Fällt das `min` auf
+  die Stützebene, liefert die Kette `fl(δ − h)` — derselbe Ausdruck wie heute,
+  und §8j hat ihn nie mit Budget geführt: die Synthese lässt `h_min ≥
+  −8·gate_eps` zu, und Ebenennorm, `⟨p,n̂⟩ − c`, `g + δ` sowie `δ − h` laufen
+  ungerichtet in f32. **Gemessen** (`clamp_h_branch_is_reachable_384`): der
+  `h`-Ast wird schon heute an **4,1 %** der Proben genommen, und die gezielte
+  Bisektion auf `h − de = 0` trifft das Umhäng-Band `de < h ≤ de+A` an **200
+  von 200** Strahlen (engster Fall `2.503·10⁻⁶ mm`). P5b-1 würde dort reale
+  Punkte aus dem bewiesenen `de`-Ast in den unbudgetierten `h`-Ast umhängen —
+  mit **kleinerem** (konservativerem) Wert als heute, aber „konservativer" ist
+  kein Beweis. Der Typvertrag sagt seit v0.63.1 nur noch den `de`-Ast zu; die
+  drei zulässigen Auflösungen und der Pflicht-`h`-Pin stehen im
+  Korrektur-Abschnitt (B1).
+* **R2 — der Lebenszyklus ist noch nicht erzwungen** (war: „die `Ω`-Provenienz
+  ist nicht prüfbar" — das ist seit v0.63.1 **erledigt**: `seam_addend` verlangt
+  `Ω` und vergleicht seinen Schnappschuss bitweise). Offen bleibt die
+  Zeitpunkt-Aussage: dass `certify_channel` am FINALEN Kanal läuft — nach
+  Vertex-Snapping und nach `set_end_plane_gates`/`set_face_plane_gates` — ist
+  nirgends erzwungen, weil der Aufruf noch gar nicht in der Synthese steht. In
+  P5b-0 ist das folgenlos (kein Konsument); für P5b-1 ist es eine Auflage:
+  zertifizieren nach allen Mutationen, danach keine beweisrelevante Mutation
+  mehr, dann erst Tape/Spiegel. Innerhalb von `offset_witness` selbst könnte
+  Code ein Siegel prägen und falsch paaren — das beweisende Modul vertraut sich
+  selbst; der Schnappschuss-Vergleich fängt auch das ab, solange sich Kanal
+  oder `Ω` in irgendeinem beweisrelevanten Bit unterscheiden.
 * **`vertex_limit` ist NICHT mitbewiesen.** Es hat eine eigene Voraussetzung
   („`v` liegt auf `∂Ω`"), und das Channel-Cover sagt darüber nichts. Der Scope
   von P5b ist ausdrücklich: **`channel_limit` für vollständig gedeckte, gerade
   Kanäle.**
-* **Gekrümmte Kanäle** bekommen keine Klemme. P5c muss `cover_channel` auf
+* **Gekrümmte Kanäle** bekommen keinen Addenden. P5c muss `cover_channel` auf
   A0-Bögen erweitern — eine eigenständige Beweisfront (reelle Einschliessung
   der vollständigen algebraischen Bogen-Bildmenge, lückenlose Kachelung in
   autoritativer Diamant-Domäne, beide Endpunkte, Sektor-/Minor-Invariante, der
@@ -6942,9 +7108,12 @@ budgetneutral.
 * **Golden**: 35/35 byte-identisch, SHA-256 `a0c9fe7b53a8198177d3ad0ef8cff2c9…`
   vor und nach — kein Evaluator, kein Opcode, kein Payload-Wort, kein Spiegel.
   `check_interp` unberührt (keine Tape-Änderung).
-* **`cargo nextest run --workspace`**: **1523** (Baseline 1513).
-* **`cargo test -p fielddraft-kernel --lib`**: **1517** (Baseline 1507).
-* **`cargo nextest run --workspace --profile offset`**: **229** (Baseline 219).
+* **`cargo nextest run --workspace`**: **1524** (Baseline 1513; v0.63.0 hatte
+  1523, die Korrektur legt den R1-Messpin dazu).
+* **`cargo test -p fielddraft-kernel --lib`**: **1518** (Baseline 1507).
+* **`cargo nextest run --workspace --profile offset`**: **230** (Baseline 219).
+* **`cargo test -p fielddraft-kernel --doc`**: **1** — der
+  `compile_fail,E0603`-Doctest des Siegels.
 * **Web-Vitest**: **2082**, unverändert (keine Web-Änderung ausser der
   Release-Note).
 * Die Zertifizierungs-Matrix aus §8w/§8z bewegt sich **nicht** — P5b-0 hat
@@ -6956,12 +7125,15 @@ budgetneutral.
 - Produktionscode §8aa (P5b-0): `crates/kernel/src/offset_witness.rs` — die
   f32-Konstanten `F32_U`/`F32_SUB`, `f32_ceil`, die drei Brücken
   (`point_bridge_mm`, `norm_bridge_mm`, `round_budget`), die eingefrorene
-  Feldform (`frozen_channel_limit`, `frozen_limit_tail`), die Bindung
-  (`channel_identity`, `omega_fingerprint`), der opake `EtaClamp` samt
-  `ClampStatus`/`ClampKnobs`/`ClampTally` und die einzige Entstehungsstelle
-  `certify_channel`/`certify_channel_with`.
-  `crates/kernel/src/offset_channel.rs` — das `#[serde(skip)]`-Feld
-  `OffsetChannel::eta_clamp`, die Leser `eta_addend`/`eta_clamp`, und `sub`/
+  Feldform (`frozen_channel_limit`, `frozen_limit_tail`, beide `pub(crate)`),
+  die Bindung (`channel_snapshot`, `omega_snapshot`, `prefilter`), das Siegel
+  `SeamProofToken`, der opake `CertifiedSeamAddend` samt
+  `SeamProofStatus`/`SeamProofKnobs`/`SeamProofTally`, die einzige
+  Entstehungsstelle `certify_channel`/`certify_channel_with` und der
+  Gegenproben-Weg `transplant_proof`.
+  `crates/kernel/src/offset_channel.rs` — das **private** `#[serde(skip)]`-Feld
+  `OffsetChannel::seam`, der versiegelte Schreibweg `seal_seam_proof`, die
+  Leser `seam_addend(Ω)`/`seam_proof`, der Konstruktor `unproven`, und `sub`/
   `norm` als `pub(crate)` (damit die eingefrorene Kette aus DENSELBEN Helfern
   gebaut wird statt aus einem Nachbau). **Kein Evaluator, kein Opcode, kein
   Payload-Wort, kein Spiegel, keine Diagnose-JSON** — Golden byte-identisch.
@@ -6969,7 +7141,7 @@ budgetneutral.
   `clamp_adversarial_arcs`, `seam_point_f64`/`seam_foot_f64`,
   `dist_f64_up`/`dist_f64_down`, `clamp_arc_probes`, `clamp_scan`,
   `clamp_de_family`, `clamp_round_reserve`, `clamp_family_min_reserve`, die
-  neun `clamp_*_384`-Pins und die `#[ignore]`-Sonde `probe_384_clamp_shadow`.
+  zehn `clamp_*_384`-Pins und die `#[ignore]`-Sonde `probe_384_clamp_shadow`.
 - `crates/kernel/src/offset_capability_tests.rs` — §8k: die exakten
   Komplement-Referenzen (`dist_obb_union_complement_exact`,
   `dist_hub_complement_exact`), die zweiseitige Sonde (`two_sided_scan`) und

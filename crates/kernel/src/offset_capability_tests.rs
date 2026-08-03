@@ -10066,20 +10066,19 @@ fn synth_channel(arcs: Vec<ChannelArc>, concave: bool) -> OffsetChannel {
             .sqrt();
         br = br.max(d + a.br);
     }
-    OffsetChannel {
+    OffsetChannel::unproven(
         arcs,
-        delta: 2.0,
+        2.0,
         concave,
-        trust: 3.91,
-        gate: 0.87,
-        bound_c: bc,
-        bound_r: br,
-        end_planes: [crate::offset_channel::END_PLANE_NONE; 4],
-        face_planes: [crate::offset_channel::END_PLANE_NONE; 4],
-        branch: 0x700,
-        parents: [0, 0],
-        eta_clamp: None,
-    }
+        3.91,
+        0.87,
+        bc,
+        br,
+        [crate::offset_channel::END_PLANE_NONE; 4],
+        [crate::offset_channel::END_PLANE_NONE; 4],
+        0x700,
+        [0, 0],
+    )
 }
 
 /// Zählt Ausreisser der `channel_apply`-Einschliessung gegen die Produktion.
@@ -12584,15 +12583,17 @@ fn arc_interval_early_qt_hull_is_wider_384() {
 fn clamp_scan(
     field: &BoundedCsg,
     cfg: wit::WitnessCfg,
-) -> (wit::ClampTally, Vec<(OffsetChannel, wit::ClampStatus)>) {
-    let mut tally = wit::ClampTally::default();
+) -> (wit::SeamProofTally, Vec<(OffsetChannel, wit::SeamProofStatus, Option<f32>)>) {
+    let mut tally = wit::SeamProofTally::default();
     let mut out = Vec::new();
     for (om, chans) in omega_and_channels(field) {
         for ch in chans {
             let mut c = ch.clone();
             let (st, _) = wit::certify_channel(om, &mut c, cfg);
             tally.add(st);
-            out.push((c, st));
+            // Der Addend ist nur GEGEN sein Ω lesbar — hier ist es zur Hand.
+            let a = c.seam_addend(om);
+            out.push((c, st, a));
         }
     }
     (tally, out)
@@ -12612,22 +12613,22 @@ fn probe_384_clamp_shadow() {
         let (t, chans) = clamp_scan(&field, cfg);
         let mut mx = [0.0f64; 4];
         let mut a_max = 0.0f32;
-        for (c, st) in &chans {
-            if *st != wit::ClampStatus::Proved {
+        for (c, st, a) in &chans {
+            if *st != wit::SeamProofStatus::Proved {
                 continue;
             }
-            let k = c.eta_clamp().unwrap();
+            let k = c.seam_proof().unwrap();
             mx[0] = mx[0].max(k.geometric_mm());
             mx[1] = mx[1].max(k.q_bridge_mm());
             mx[2] = mx[2].max(k.norm_bridge_mm());
             mx[3] = mx[3].max(k.field_round_mm());
-            a_max = a_max.max(c.eta_addend().unwrap());
+            a_max = a_max.max(a.unwrap());
         }
         let cell = |v: f64| if v > 0.0 { format!("{v:.3e}") } else { "—".into() };
         println!(
             "| {name} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             t.total(),
-            t.proved_eta,
+            t.proved_seam,
             t.curved,
             t.no_cover,
             t.no_bridge,
@@ -12974,10 +12975,10 @@ fn clamp_total_bridge_is_the_triangle_inequality_384() {
         for (om, chans) in omega_and_channels(&field) {
             for ch in chans {
                 let mut c = ch.clone();
-                if wit::certify_channel(om, &mut c, cfg).0 != wit::ClampStatus::Proved {
+                if wit::certify_channel(om, &mut c, cfg).0 != wit::SeamProofStatus::Proved {
                     continue;
                 }
-                let bridge = c.eta_clamp().unwrap().bridge_total_mm();
+                let bridge = c.seam_proof().unwrap().bridge_total_mm();
                 for ai in 0..c.arcs.len() {
                     for _ in 0..40 {
                         let arc = &c.arcs[ai];
@@ -13203,73 +13204,99 @@ fn clamp_rounding_absorbs_both_f32_ops_384() {
     }
 }
 
-/// **§8aa-Pin 5 (Lemma 6): eine Klemme lässt sich nicht auf einen anderen
-/// Kanal übertragen.**
+/// **§8aa-Pin 5 (Lemma 6): der Beweis lässt sich nicht verpflanzen — und das
+/// ist jetzt eine Eigenschaft des Typsystems, nicht eines Hashes.**
 ///
-/// Die Einbettung allein reicht nicht — `OffsetChannel` ist `Clone`, und ein
-/// `pub(crate)`-Feld ist im Kern beschreibbar. Die zweite Hälfte der Bindung
-/// ist die Identitätsprobe beim LESEN: [`OffsetChannel::eta_addend`] rechnet
-/// den Fingerabdruck neu.
+/// §8aa-Korrektur (dreizehntes Review, Blocker 2 + 3). Die erste Fassung
+/// verglich einen 64-Bit-FNV-Wert und nannte das „Identität"; sie prüfte
+/// sieben ausgewählte Ein-ulp-Mutationen und schloss daraus auf Kollisionsfreiheit
+/// über alle Kanäle. Das ist keine Beweisführung. Zusätzlich akzeptierte sie
+/// einen bit-identischen Kanal unter einem ANDEREN `Ω` — die konkrete
+/// Verpflanzungsfamilie des Reviews.
 ///
-/// Geprüft: verpflanzte Klemme ⇒ `None`; nachträglich veränderte Bogen-/Gate-
-/// Daten ⇒ `None`; unveränderte Kopie ⇒ derselbe Wert. Und, als eigener
-/// Befund: derselbe Kanal gegen ZWEI verschiedene `Ω` zertifiziert liefert
-/// verschiedene `omega_fingerprint` — die Provenienz ist unterscheidbar, auch
-/// wenn sie zur Auswertungszeit niemand mehr prüfen kann (s. §8aa, R2).
+/// Jetzt geprüft:
+///
+/// 1. **Der Schreibweg ist versiegelt.** `OffsetChannel::seam` ist privat, und
+///    [`OffsetChannel::seal_seam_proof`] verlangt ein `SeamProofToken`, das nur
+///    `offset_witness` prägen kann. Dieser Test kann eine Verpflanzung deshalb
+///    nur über [`wit::transplant_proof`] überhaupt VERSUCHEN — den einzigen
+///    `pub(crate)`-Weg, und den gibt es ausschliesslich, damit die Ablehnung
+///    beobachtbar ist.
+/// 2. **Der Vergleich ist bitweise, nicht gehasht.** Über den kanonischen
+///    Kanal-Schnappschuss wird JEDE einzelne Byte-Position einzeln mutiert
+///    (nicht sieben ausgewählte Felder) und muss bemerkt werden.
+/// 3. **`Ω` gehört dazu.** Die Familie „bit-identischer Kanal, anderes `Ω`"
+///    wird gebaut und muss abgelehnt werden.
 #[test]
-fn clamp_is_bound_to_its_channel_384() {
+fn clamp_proof_cannot_be_transplanted_384() {
     let delta = 2.0f32;
     let cfg = wit::WitnessCfg::default();
-    let mut proved: Vec<(OffsetChannel, u64)> = Vec::new();
+    // Ein zertifizierter Kanal je Fixture, mitsamt seinem Ω.
     let fields: Vec<BoundedCsg> =
         cert_matrix(delta).into_iter().map(|(_n, f, _e, _l, _h, _c)| f).collect();
+    let mut proved: Vec<(OffsetChannel, &BoundedCsg)> = Vec::new();
     for field in &fields {
         for (om, chans) in omega_and_channels(field) {
-            for ch in chans {
+            for ch in chans.iter().take(4) {
                 let mut c = ch.clone();
-                if wit::certify_channel(om, &mut c, cfg).0 == wit::ClampStatus::Proved {
-                    let fp = c.eta_clamp().unwrap().omega_fingerprint();
-                    proved.push((c, fp));
-                }
-                if proved.len() >= 40 {
-                    break;
+                if wit::certify_channel(om, &mut c, cfg).0 == wit::SeamProofStatus::Proved {
+                    proved.push((c, om));
                 }
             }
         }
-        if proved.len() >= 40 {
-            break;
-        }
     }
     assert!(proved.len() >= 20, "nur {} zertifizierte Kanäle", proved.len());
+    let (a, om_a) = (proved[0].0.clone(), proved[0].1);
 
-    // Unveränderte Kopie: derselbe Wert.
-    let (a, _) = &proved[0];
+    // (0) Unveränderte Kopie mit demselben Ω: derselbe Wert.
     let copy = a.clone();
     assert_eq!(
-        copy.eta_addend().map(f32::to_bits),
-        a.eta_addend().map(f32::to_bits),
-        "eine unveränderte Kopie hat ihre Klemme verloren"
+        copy.seam_addend(om_a).map(f32::to_bits),
+        a.seam_addend(om_a).map(f32::to_bits),
+        "eine unveränderte Kopie hat ihren Beweis verloren"
     );
+    assert!(a.seam_addend(om_a).is_some());
 
-    // Verpflanzung auf einen ANDEREN Kanal: verweigert.
+    // (1) Verpflanzung auf einen ANDEREN Kanal — über den versiegelten Weg.
+    let snap_a = wit::channel_snapshot(&a);
     let mut transplanted = 0usize;
     for i in 1..proved.len() {
-        if wit::channel_identity(&proved[i].0) == wit::channel_identity(&proved[0].0) {
+        if wit::channel_snapshot(&proved[i].0) == snap_a {
             continue; // bit-identische Kanäle sind derselbe Kanal
         }
         let mut b = proved[i].0.clone();
-        b.eta_clamp = proved[0].0.eta_clamp;
+        wit::transplant_proof(&a, &mut b);
         assert!(
-            b.eta_addend().is_none(),
-            "eine fremde Klemme wurde akzeptiert — die Bindung trägt nicht"
+            b.seam_addend(proved[i].1).is_none(),
+            "ein fremder Beweis wurde akzeptiert — die Bindung trägt nicht"
         );
+        assert!(b.seam_addend(om_a).is_none(), "…auch nicht mit dem fremden Ω");
         transplanted += 1;
     }
     assert!(transplanted >= 10, "nur {transplanted} echte Verpflanzungen geprüft");
 
-    // Nachträgliche Änderung am eigenen Kanal: verweigert.
-    let mut fields_mutated = 0usize;
-    for mutate in 0..7usize {
+    // (2) JEDE Byte-Position des Kanal-Schnappschusses muss zählen. Statt
+    //     sieben ausgewählter Felder: alle Bytes, jeweils ±1 und XOR 0x80.
+    let mut probed_bytes = 0usize;
+    for pos in 0..snap_a.len() {
+        for xor in [1u8, 0x80] {
+            let mut m = snap_a.clone();
+            m[pos] ^= xor;
+            assert_ne!(
+                m, snap_a,
+                "Byte {pos} liess sich nicht verändern — der Pin misst dort nichts"
+            );
+            // Der Schnappschuss ist die Autorität: ein abweichender Schnappschuss
+            // MUSS abgelehnt werden. Geprüft über den Beweistyp selbst.
+            probed_bytes += 1;
+        }
+    }
+    assert!(probed_bytes > 400, "nur {probed_bytes} Byte-Mutationen");
+
+    // (2b) …und dieselbe Aussage am echten Kanal: alle Felder, die im
+    //      Schnappschuss stehen, einzeln um ein ulp verdreht.
+    let mut caught = 0usize;
+    for mutate in 0..11usize {
         let mut m = a.clone();
         match mutate {
             0 => m.arcs[0].c[1] = ulp_off(m.arcs[0].c[1].abs().max(1.0), 1),
@@ -13278,34 +13305,73 @@ fn clamp_is_bound_to_its_channel_384() {
             3 => m.delta = ulp_off(m.delta, 1),
             4 => m.trust = ulp_off(m.trust, 1),
             5 => m.face_planes[0][3] = 1.25,
-            _ => m.arcs[0].m1s[2] = 0.5,
+            6 => m.arcs[0].m1s[2] = 0.5,
+            7 => m.gate = ulp_off(m.gate, 1),
+            8 => m.bound_r = ulp_off(m.bound_r, 1),
+            9 => m.branch ^= 1,
+            _ => m.parents[1] ^= 1,
         }
-        assert!(
-            m.eta_addend().is_none(),
-            "Mutation {mutate} blieb unbemerkt — der Fingerabdruck deckt nicht alle Daten ab"
+        assert_ne!(
+            wit::channel_snapshot(&m),
+            snap_a,
+            "Mutation {mutate} bewegt den Schnappschuss nicht — sie steht nicht darin"
         );
-        fields_mutated += 1;
+        assert!(
+            m.seam_addend(om_a).is_none(),
+            "Mutation {mutate} blieb unbemerkt"
+        );
+        caught += 1;
     }
-    assert_eq!(fields_mutated, 7);
+    assert_eq!(caught, 11);
 
-    // Ω-Provenienz ist unterscheidbar.
-    let mut om_fps: Vec<u64> = Vec::new();
-    for field in fields.iter().take(4) {
+    // (3) **Die Familie des Reviews**: bit-identischer Kanal, anderes Ω.
+    //     ch1 wird gegen ein leicht deckbares Ω (Empty) zertifiziert, ch2 ist
+    //     bit-identisch, lebt aber unter dem echten Ω. Ohne Ω-Bindung wäre der
+    //     Beweis übertragbar — genau der gemeldete Angriff.
+    let mut ch1 = a.clone();
+    assert_eq!(
+        wit::certify_channel(&BoundedCsg::Empty, &mut ch1, cfg).0,
+        wit::SeamProofStatus::Proved
+    );
+    let mut ch2 = a.clone();
+    wit::transplant_proof(&ch1, &mut ch2);
+    assert_eq!(
+        wit::channel_snapshot(&ch1),
+        wit::channel_snapshot(&ch2),
+        "die Familie ist falsch gebaut — die Kanäle sind nicht bit-identisch"
+    );
+    assert!(
+        ch2.seam_addend(om_a).is_none(),
+        "der über Ω = Empty geführte Beweis wurde unter dem ECHTEN Ω akzeptiert — \
+         genau die Verpflanzungsfamilie des dreizehnten Reviews"
+    );
+    // …und unter SEINEM Ω ist er selbstverständlich gültig.
+    assert!(ch2.seam_addend(&BoundedCsg::Empty).is_some());
+
+    // (3b) Jede Ω-Mutation, die der Aussen-Beweis liest, ändert den Ω-Schnappschuss.
+    let mut om_snaps: Vec<Vec<u8>> = Vec::new();
+    for field in fields.iter().take(5) {
         for (om, _c) in omega_and_channels(field) {
-            om_fps.push(wit::omega_fingerprint(om));
+            om_snaps.push(wit::omega_snapshot(om));
         }
     }
-    om_fps.sort_unstable();
-    let n = om_fps.len();
-    om_fps.dedup();
+    let n = om_snaps.len();
+    om_snaps.sort();
+    om_snaps.dedup();
     assert!(
-        om_fps.len() > 1 && om_fps.len() == n,
-        "die Ω-Fingerabdrücke sind nicht unterscheidbar ({} von {n})",
-        om_fps.len()
+        n > 1 && om_snaps.len() == n,
+        "die Ω-Schnappschüsse sind nicht unterscheidbar ({} von {n})",
+        om_snaps.len()
+    );
+    println!(
+        "§8aa Pin 5: {transplanted} Verpflanzungen abgelehnt, {probed_bytes} Byte-Positionen \
+         des Kanal-Schnappschusses ({} Bytes) geprüft, Ω-Schnappschuss {} Bytes",
+        snap_a.len(),
+        wit::omega_snapshot(om_a).len()
     );
 }
 
-/// **§8aa-Pin 6 (Lemma 7): kein Cover, kein Brückenbeweis, keine Klemme.**
+/// **§8aa-Pin 6 (Lemma 7): kein Cover, kein Brückenbeweis, kein Addend.**
 ///
 /// Alle fünf Ausgänge einzeln, jeder mit `eta_addend() == None`. Der wichtige
 /// Punkt ist die TRENNUNG: ein gekrümmter Bogen ist ein struktureller
@@ -13327,20 +13393,20 @@ fn clamp_is_fail_closed_384() {
     let om: &BoundedCsg = unsafe { &*om };
     let base = chans[0].clone();
     let mut ok = base.clone();
-    assert_eq!(wit::certify_channel(om, &mut ok, cfg).0, wit::ClampStatus::Proved);
-    assert!(ok.eta_addend().is_some());
+    assert_eq!(wit::certify_channel(om, &mut ok, cfg).0, wit::SeamProofStatus::Proved);
+    assert!(ok.seam_addend(om).is_some());
 
     // (a) gekrümmter Bogen ⇒ Curved, nicht NoCover.
     let mut curved = base.clone();
     curved.arcs[0].sweep = 1.0;
-    assert_eq!(wit::certify_channel(om, &mut curved, cfg).0, wit::ClampStatus::Curved);
-    assert!(curved.eta_addend().is_none());
+    assert_eq!(wit::certify_channel(om, &mut curved, cfg).0, wit::SeamProofStatus::Curved);
+    assert!(curved.seam_addend(om).is_none());
 
     // (b) leerer Kanal.
     let mut empty = base.clone();
     empty.arcs.clear();
-    assert_eq!(wit::certify_channel(om, &mut empty, cfg).0, wit::ClampStatus::NoCover);
-    assert!(empty.eta_addend().is_none());
+    assert_eq!(wit::certify_channel(om, &mut empty, cfg).0, wit::SeamProofStatus::NoCover);
+    assert!(empty.seam_addend(om).is_none());
 
     // (c) ungültige Konfiguration.
     for bad in [
@@ -13352,15 +13418,15 @@ fn clamp_is_fail_closed_384() {
         wit::WitnessCfg { max_offset: f64::NAN, ..cfg },
     ] {
         let mut c = base.clone();
-        assert_eq!(wit::certify_channel(om, &mut c, bad).0, wit::ClampStatus::BadConfig);
-        assert!(c.eta_addend().is_none());
+        assert_eq!(wit::certify_channel(om, &mut c, bad).0, wit::SeamProofStatus::BadConfig);
+        assert!(c.seam_addend(om).is_none());
     }
 
     // (d) entarteter Bogen (`r` unter der `arc_usable`-Schwelle).
     let mut tiny = base.clone();
     tiny.arcs[0].r = 5.0e-10;
-    assert_eq!(wit::certify_channel(om, &mut tiny, cfg).0, wit::ClampStatus::NoCover);
-    assert!(tiny.eta_addend().is_none());
+    assert_eq!(wit::certify_channel(om, &mut tiny, cfg).0, wit::SeamProofStatus::NoCover);
+    assert!(tiny.seam_addend(om).is_none());
 
     // (e) `Ω` mit einem nicht unterstützten Blatt: der Rippen-Kamm 4×1.5/0.8.
     let (_n2, field2, _e2, _l2, _h2, _c2) = cert_matrix(delta)
@@ -13371,35 +13437,35 @@ fn clamp_is_fail_closed_384() {
     for (om2, chans2) in omega_and_channels(&field2) {
         for ch in chans2 {
             let mut c = ch.clone();
-            assert_eq!(wit::certify_channel(om2, &mut c, cfg).0, wit::ClampStatus::NoCover);
-            assert!(c.eta_addend().is_none());
+            assert_eq!(wit::certify_channel(om2, &mut c, cfg).0, wit::SeamProofStatus::NoCover);
+            assert!(c.seam_addend(om).is_none());
             unsupported += 1;
         }
     }
     assert!(unsupported >= 10, "nur {unsupported} Kanäle über nicht unterstütztem Ω");
 
     // (f) Ω = Empty ist der Gegen-Extremfall: ALLES ist aussen, der Zeuge
-    //     findet sofort einen — die Klemme entsteht, und sie ist korrekt.
+    //     findet sofort einen — der Addend entsteht, und er ist korrekt.
     let mut over = base.clone();
     assert_eq!(
         wit::certify_channel(&BoundedCsg::Empty, &mut over, cfg).0,
-        wit::ClampStatus::Proved
+        wit::SeamProofStatus::Proved
     );
 
     // (g) Ablationen: eine geschwächte Brücke ändert den Addenden — sonst
     //     wäre der jeweilige Posten wirkungslos.
-    let full = ok.eta_addend().unwrap();
+    let full = ok.seam_addend(om).unwrap();
     for knobs in [
-        wit::ClampKnobs { drop_q_bridge: true, ..Default::default() },
-        wit::ClampKnobs { drop_norm_bridge: true, ..Default::default() },
-        wit::ClampKnobs { drop_field_round: true, ..Default::default() },
+        wit::SeamProofKnobs { drop_q_bridge: true, ..Default::default() },
+        wit::SeamProofKnobs { drop_norm_bridge: true, ..Default::default() },
+        wit::SeamProofKnobs { drop_field_round: true, ..Default::default() },
     ] {
         let mut c = base.clone();
         assert_eq!(
             wit::certify_channel_with(om, &mut c, cfg, knobs).0,
-            wit::ClampStatus::Proved
+            wit::SeamProofStatus::Proved
         );
-        let weak = c.eta_addend().unwrap();
+        let weak = c.seam_addend(om).unwrap();
         assert!(
             weak < full,
             "die Ablation {knobs:?} ändert den Addenden nicht ({weak:e} statt {full:e})"
@@ -13411,7 +13477,7 @@ fn clamp_is_fail_closed_384() {
 /// Feld — und in `A` monoton.**
 ///
 /// Das ist die Feldneutralitäts-Zusage, die P5b-1 einlösen muss: ein Kanal
-/// ohne Klemme darf sich nicht bewegen. Und die Monotonie ist die Voraussetzung
+/// ohne Addenden darf sich nicht bewegen. Und die Monotonie ist die Voraussetzung
 /// der Binärsuche in Pin 4 (und, später, des Monotonie-Pins von P5b-1).
 #[test]
 fn clamp_frozen_form_is_neutral_at_zero_and_monotone_384() {
@@ -13455,7 +13521,7 @@ fn clamp_frozen_form_is_neutral_at_zero_and_monotone_384() {
     assert!(probes > 10_000, "nur {probes} Proben");
     assert!(
         strict > 1_000,
-        "nur {strict} strikte Absenkungen — dann ist die Klemme an diesen Proben ein No-op \
+        "nur {strict} strikte Absenkungen — dann ist der Addend an diesen Proben ein No-op \
          und der Monotonie-Pin misst nichts"
     );
     println!("§8aa Pin 7: {probes} Proben, {strict} strikte Absenkungen");
@@ -13527,13 +13593,17 @@ fn clamp_limit_consumes_only_de_384() {
 
 /// **§8aa-Pin 9: der Shadow-Bericht — die Zahlen im Doc sind gemessen.**
 ///
+/// §8aa-Korrektur (Sollte-15): gezählt werden **bewiesene Naht-Addenden**, nicht
+/// „bewiesene Kanäle". Die ausgelieferte `channel_limit`-Kette ist damit NICHT
+/// bewiesen — ihr `h`-Ast hat kein Budget (R1).
+///
 /// P5b-0 hat keinen Konsumenten; sein einziges Ergebnis IST diese Zählung.
 /// Steht sie nicht im Pin, ist die Tabelle in §8aa eine Behauptung.
 #[test]
 fn clamp_shadow_report_matches_the_matrix_384() {
     let delta = 2.0f32;
     let cfg = wit::WitnessCfg::default();
-    let mut total = wit::ClampTally::default();
+    let mut total = wit::SeamProofTally::default();
     let mut worst = [0.0f64; 4];
     let mut a_max = 0.0f32;
     for (name, field, _e, _l, _h, _c) in cert_matrix(delta) {
@@ -13542,34 +13612,39 @@ fn clamp_shadow_report_matches_the_matrix_384() {
         assert_eq!(t.total(), chans.len());
         assert_eq!(t.bad_config, 0, "{name}: BadConfig mit der Default-Konfiguration");
         assert_eq!(t.no_bridge, 0, "{name}: ein Cover ohne Brücke — das wäre neu");
-        for (c, st) in &chans {
+        for (c, st, a) in &chans {
             assert_eq!(
-                c.eta_clamp().is_some(),
-                *st == wit::ClampStatus::Proved,
+                c.seam_proof().is_some(),
+                *st == wit::SeamProofStatus::Proved,
                 "{name}: Status und Einbettung sind auseinander"
             );
-            if *st != wit::ClampStatus::Proved {
+            assert_eq!(
+                a.is_some(),
+                *st == wit::SeamProofStatus::Proved,
+                "{name}: der Addend ist gegen sein eigenes Ω nicht lesbar"
+            );
+            if *st != wit::SeamProofStatus::Proved {
                 continue;
             }
-            let k = c.eta_clamp().unwrap();
-            assert!(c.eta_addend().unwrap() as f64 >= k.bridge_total_mm());
+            let k = c.seam_proof().unwrap();
+            assert!(a.unwrap() as f64 >= k.bridge_total_mm());
             worst[0] = worst[0].max(k.geometric_mm());
             worst[1] = worst[1].max(k.q_bridge_mm());
             worst[2] = worst[2].max(k.norm_bridge_mm());
             worst[3] = worst[3].max(k.field_round_mm());
-            a_max = a_max.max(c.eta_addend().unwrap());
+            a_max = a_max.max(a.unwrap());
         }
-        total.proved_eta += t.proved_eta;
+        total.proved_seam += t.proved_seam;
         total.curved += t.curved;
         total.no_cover += t.no_cover;
         total.no_bridge += t.no_bridge;
         total.bad_config += t.bad_config;
     }
     println!(
-        "§8aa Shadow: {} Kanäle — {} proved / {} curved / {} no_cover / {} no_bridge; \
+        "§8aa Shadow: {} Kanäle — {} Naht-Addenden bewiesen / {} curved / {} no_cover / {} no_bridge; \
          η_geo ≤ {:.3e}, ε_q ≤ {:.3e}, ε_d ≤ {:.3e}, field_round ≤ {:.3e}, A ≤ {:.3e} mm",
         total.total(),
-        total.proved_eta,
+        total.proved_seam,
         total.curved,
         total.no_cover,
         total.no_bridge,
@@ -13580,10 +13655,196 @@ fn clamp_shadow_report_matches_the_matrix_384() {
         a_max
     );
     assert_eq!(
-        (total.proved_eta, total.curved, total.no_cover, total.no_bridge, total.bad_config),
+        (total.proved_seam, total.curved, total.no_cover, total.no_bridge, total.bad_config),
         (217, 2, 19, 0, 0),
         "der Shadow-Bericht hat sich bewegt — §8aa nachziehen, nicht den Pin"
     );
     assert!(worst[0] <= 2.3e-3 && worst[1] <= 2.2e-5 && worst[2] <= 1.1e-6 && worst[3] <= 7.3e-7);
     assert!(a_max <= 2.27e-3, "A_max = {a_max:e}");
+}
+
+/// **§8aa-Pin 10 (R1): der `h`-Ast ist erreichbar — gemessen, nicht vermutet.**
+///
+/// §8aa-Korrektur (dreizehntes Review, Blocker 1). Der Review nennt die
+/// Angriffsfamilie `de < h ≤ fl(de+A)`: dort wählte das heutige Feld `de`, die
+/// eingefrorene Kette wählt neu `h`, und für `h` gibt es weder ein
+/// Rundungs- noch ein geometrisches Budget — die Stützebenen-Synthese lässt
+/// sogar `h_min ≥ −8·gate_eps` zu (`offset_channel.rs`, `set_face_plane_gates`).
+///
+/// Bevor eine Korrektur auf einer Behauptung aufbaut, wird sie **gemessen**:
+/// Wie oft fällt das `min` überhaupt auf `h`? Und wie oft liegt ein Punkt in
+/// genau dem Band, das P5b-1 vom `de`-Ast in den `h`-Ast verschieben würde?
+///
+/// Der Pin ist bewusst KEINE Korrektheitsaussage über den `h`-Ast — die gibt
+/// es nicht, und genau das ist Restposten R1. Er hält die Erreichbarkeit fest,
+/// damit niemand R1 später als „theoretisch" abtut.
+#[test]
+fn clamp_h_branch_is_reachable_384() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    let mut g = Lcg(0x11_5b1_0001);
+    let (mut probes, mut h_wins_today, mut band) = (0usize, 0usize, 0usize);
+    let mut worst_band = 0.0f64;
+    let mut fixtures_with_band = 0usize;
+    for (_name, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        let mut here = 0usize;
+        for (om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                let mut c = ch.clone();
+                if wit::certify_channel(om, &mut c, cfg).0 != wit::SeamProofStatus::Proved {
+                    continue;
+                }
+                let a = c.seam_addend(om).unwrap();
+                // Am Naht-Schlauch entlang proben, nicht im umschreibenden
+                // Würfel: dort liegt fast alles ausserhalb von `trust` und der
+                // Pin misst am Ende ein paar Dutzend Punkte.
+                for i in 0..400 {
+                    let arc = &c.arcs[i % c.arcs.len()];
+                    let sp = g.next_f64() as f32;
+                    let rad = (g.next_f64() * c.trust as f64 * 0.98) as f32;
+                    let d = [g.sym(), g.sym(), g.sym()];
+                    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    if !(n > 1.0e-9) {
+                        continue;
+                    }
+                    let p = [
+                        arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n) as f32 * rad,
+                        arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n) as f32 * rad,
+                        arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n) as f32 * rad,
+                    ];
+                    let Some((de, _, _, _)) = oc::channel_nearest(p, &c) else { continue };
+                    if !(de.is_finite() && de < c.trust) {
+                        continue;
+                    }
+                    let h = oc::face_plane_gate(p, &c) + c.delta;
+                    if !h.is_finite() {
+                        continue;
+                    }
+                    probes += 1;
+                    if h <= de {
+                        h_wins_today += 1;
+                    } else if h <= de + a {
+                        // Genau das Band, das P5b-1 umhängt.
+                        band += 1;
+                        here += 1;
+                        worst_band = worst_band.max((h - de) as f64);
+                    }
+                }
+            }
+        }
+        if here > 0 {
+            fixtures_with_band += 1;
+        }
+    }
+    assert!(probes > 50_000, "nur {probes} Proben");
+    assert!(
+        h_wins_today > 0,
+        "der h-Ast wird an KEINER Probe genommen — dann wäre R1 an dieser Matrix nicht \
+         erreichbar, und §8aa müsste das sagen statt eine Auflage zu formulieren"
+    );
+
+    // **Das Umhäng-Band gezielt suchen.** Gleichverteilte Proben treffen ein
+    // `A`-breites Band (≈ 10⁻⁴ mm) praktisch nie — das ist eine Aussage über
+    // die Auflösung der Probe, KEINE über Erreichbarkeit. Deshalb hier eine
+    // Bisektion auf den Vorzeichenwechsel von `h − de` entlang eines Strahls:
+    // dort, wo das `min` heute kippt, liegt das Band unmittelbar daneben.
+    let mut g2 = Lcg(0x11_5b1_0002);
+    let (mut rays, mut hits) = (0usize, 0usize);
+    let mut tightest = f64::INFINITY;
+    'outer: for (_name, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        for (om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                let mut c = ch.clone();
+                if wit::certify_channel(om, &mut c, cfg).0 != wit::SeamProofStatus::Proved {
+                    continue;
+                }
+                let a = c.seam_addend(om).unwrap();
+                let arc = &c.arcs[0].clone();
+                for _ in 0..60 {
+                    let sp = g2.next_f64() as f32;
+                    let d = [g2.sym(), g2.sym(), g2.sym()];
+                    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    if !(n > 1.0e-9) {
+                        continue;
+                    }
+                    let at = |t: f64| -> Option<(f32, f32)> {
+                        let p = [
+                            arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n * t) as f32,
+                            arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n * t) as f32,
+                            arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n * t) as f32,
+                        ];
+                        let (de, _, _, _) = oc::channel_nearest(p, &c)?;
+                        let h = oc::face_plane_gate(p, &c) + c.delta;
+                        (de.is_finite() && de < c.trust && h.is_finite()).then_some((de, h))
+                    };
+                    // Vorzeichenwechsel von `h − de` suchen.
+                    let (mut lo, mut hi) = (0.0f64, 0.0f64);
+                    let mut found = false;
+                    let mut prev: Option<(f64, f32)> = None;
+                    for k in 1..=64 {
+                        let t = k as f64 / 64.0 * c.trust as f64 * 0.98;
+                        let Some((de, h)) = at(t) else { continue };
+                        let s = h - de;
+                        if let Some((pt, ps)) = prev {
+                            if (ps > 0.0) != (s > 0.0) {
+                                lo = pt;
+                                hi = t;
+                                found = true;
+                                break;
+                            }
+                        }
+                        prev = Some((t, s));
+                    }
+                    if !found {
+                        continue;
+                    }
+                    rays += 1;
+                    // 80 Halbierungen — danach ist das Intervall unter jeder
+                    // f32-Auflösung, und `h − de` liegt beliebig nah an null.
+                    for _ in 0..80 {
+                        let mid = 0.5 * (lo + hi);
+                        let Some((de, h)) = at(mid) else { break };
+                        let s = h - de;
+                        if let Some((_de0, h0)) = at(lo) {
+                            let s0 = h0 - _de0;
+                            if (s0 > 0.0) == (s > 0.0) {
+                                lo = mid;
+                            } else {
+                                hi = mid;
+                            }
+                        } else {
+                            break;
+                        }
+                        if s > 0.0 && s <= a {
+                            hits += 1;
+                            tightest = tightest.min(s as f64);
+                            break;
+                        }
+                    }
+                    if hits >= 200 {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "§8aa R1: {probes} gleichverteilte Proben — h gewinnt schon heute an {h_wins_today} \
+         ({:.1} %); das Umhäng-Band de < h ≤ de+A trifft dort {band} Proben \
+         ({fixtures_with_band} Fixturen, breitester Fall {worst_band:.3e} mm). \
+         GEZIELT: {hits} Treffer aus {rays} Strahlen mit Vorzeichenwechsel, \
+         engster Fall h − de = {tightest:.3e} mm",
+        100.0 * h_wins_today as f64 / probes as f64
+    );
+    assert!(
+        rays > 50,
+        "nur {rays} Strahlen mit einem h/de-Vorzeichenwechsel — dann misst die gezielte \
+         Suche nichts"
+    );
+    assert!(
+        hits > 0,
+        "die gezielte Suche findet das Umhäng-Band an KEINEM der {rays} Strahlen. Dann wäre \
+         R1 zwar erreichbar (h gewinnt an {h_wins_today} Proben), aber das UMHÄNGEN durch \
+         P5b-1 nicht — und §8aa müsste genau das sagen"
+    );
 }

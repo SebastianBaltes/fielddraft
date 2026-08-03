@@ -234,42 +234,98 @@ pub struct OffsetChannel {
     /// Kanal (`branch`), gemessen/gesnappt wird an den Eltern. Reine
     /// Metadaten — feldneutral, kein Opcode sieht sie.
     pub parents: [u64; 2],
-    /// #384 §8aa / P5b-0 — **die η-Klemme dieses Kanals, falls sie bewiesen
-    /// ist.** Gesetzt wird sie AUSSCHLIESSLICH von
-    /// [`crate::offset_witness::certify_channel`], und zwar erst, wenn
-    /// Channel-Cover, geometrisches `η`, f32-Punkt-/Norm-Brücke und das
-    /// Rundungslemma der eingefrorenen Feldkette GEMEINSAM vorliegen.
+    /// #384 §8aa / P5b-0 — **die versiegelte Beweis-Zelle: der bewiesene
+    /// NAHT-Addend dieses Kanals, falls es einen gibt.**
     ///
-    /// **Das ist die Eigentumsgrenze**: der Beweiswert wohnt in dem Kanal,
-    /// über den er spricht. Ein `f32` in einer Seitentabelle liesse sich
-    /// versehentlich auf einen anderen Kanal anwenden; ein Feld hier nicht —
-    /// und wer es doch umkopiert, fällt über die Identitätsprobe in
-    /// [`Self::eta_addend`].
+    /// Das Feld ist **privat**. Beschrieben werden kann es nur über
+    /// [`Self::seal_seam_proof`], und das verlangt einen
+    /// [`crate::offset_witness::SeamProofToken`], den ausschliesslich
+    /// `offset_witness` prägen kann. Kein anderes Modul des Kerns — auch kein
+    /// Test — kann einen Beweis setzen oder verpflanzen.
+    ///
+    /// §8aa-Korrektur (dreizehntes Review, Blocker 3): vorher war das Feld
+    /// `pub(crate)` und die Verpflanzungssicherheit stand allein auf einem
+    /// 64-Bit-Hash-Vergleich. Beides ist ersetzt: der SCHREIBWEG ist versiegelt,
+    /// und der Vergleich beim Lesen ist ein bitweiser Schnappschuss über Kanal
+    /// UND `Ω`.
     ///
     /// **Feldneutral in P5b-0**: kein Evaluator, kein Opcode, kein Spiegel
     /// liest dieses Feld. `#[serde(skip)]`, damit auch keine Diagnose-JSON
     /// sich bewegt. Der Verbrauch ist P5b-1.
     #[serde(skip)]
-    pub(crate) eta_clamp: Option<crate::offset_witness::EtaClamp>,
+    seam: Option<crate::offset_witness::CertifiedSeamAddend>,
 }
 
 impl OffsetChannel {
-    /// #384 §8aa — **der einzige Weg an die Zahl.**
-    ///
-    /// Liefert den bewiesenen `f32`-Addenden `A` der eingefrorenen Feldkette
-    /// `fl(δ − min(fl(de + A), h))`, aber nur, wenn die eingebettete Klemme
-    /// **zu genau diesem Kanal** gehört: die Identitätsprobe rechnet den
-    /// Fingerabdruck über alle Bogen- und Gate-Daten neu und vergleicht ihn
-    /// mit dem beim Beweis gespeicherten. Ein umkopierter oder nachträglich
-    /// veränderter Kanal liefert `None` — fail-closed.
-    pub fn eta_addend(&self) -> Option<f32> {
-        self.eta_clamp.as_ref()?.addend_for(self)
+    /// #384 §8aa — **ein Kanal OHNE Beweis.** Der einzige Weg, von ausserhalb
+    /// dieses Moduls einen zu bauen: die Beweis-Zelle ist privat, ein
+    /// Struct-Literal ist deshalb nicht möglich.
+    #[allow(clippy::too_many_arguments)]
+    pub fn unproven(
+        arcs: Vec<ChannelArc>,
+        delta: f32,
+        concave: bool,
+        trust: f32,
+        gate: f32,
+        bound_c: [f32; 3],
+        bound_r: f32,
+        end_planes: [[f32; 4]; 4],
+        face_planes: [[f32; 4]; 4],
+        branch: u64,
+        parents: [u64; 2],
+    ) -> Self {
+        OffsetChannel {
+            arcs,
+            delta,
+            concave,
+            trust,
+            gate,
+            bound_c,
+            bound_r,
+            end_planes,
+            face_planes,
+            branch,
+            parents,
+            seam: None,
+        }
     }
 
-    /// Die Klemme selbst (Diagnose/Bericht). Ihre Felder sind privat; die
-    /// Zahl gibt es nur über [`Self::eta_addend`].
-    pub fn eta_clamp(&self) -> Option<&crate::offset_witness::EtaClamp> {
-        self.eta_clamp.as_ref()
+    /// #384 §8aa — **der versiegelte Schreibweg.**
+    ///
+    /// Verlangt das Siegel aus [`crate::offset_witness`]; es zu prägen ist dort
+    /// modul-privat. Damit ist „der Beweis kann nicht verpflanzt werden" keine
+    /// Behauptung über einen Hash mehr, sondern eine Eigenschaft des Typsystems:
+    /// ausserhalb von `offset_witness` **kompiliert** eine Verpflanzung nicht.
+    pub(crate) fn seal_seam_proof(
+        &mut self,
+        _token: crate::offset_witness::SeamProofToken,
+        proof: Option<crate::offset_witness::CertifiedSeamAddend>,
+    ) {
+        self.seam = proof;
+    }
+
+    /// #384 §8aa — **der einzige Weg an die Zahl, und er verlangt beides.**
+    ///
+    /// Liefert den bewiesenen `f32`-Addenden `A` des NAHT-Astes — aber nur,
+    /// wenn Kanal **und** `Ω` bitweise dieselben sind wie beim Beweis. Ein
+    /// umkopierter Beweis, ein nachträglich veränderter Kanal oder ein anderes
+    /// `Ω` liefern `None` — fail-closed.
+    ///
+    /// `Ω` muss der Aufrufer vorlegen, weil der Beweis über `Ω` geführt wurde:
+    /// ein bit-identischer Kanal unter einem ANDEREN `Ω` ist ein anderer Fall,
+    /// und die erste §8aa-Fassung hat genau den akzeptiert (Blocker 3).
+    ///
+    /// **Was NICHT zugesagt ist**: die vollständige Kette
+    /// `fl(δ − min(fl(de+A), h))`. Bewiesen ist der Naht-Ast; s.
+    /// [`crate::offset_witness::CertifiedSeamAddend`] und Restposten R1.
+    pub fn seam_addend(&self, omega: &crate::bvh::BoundedCsg) -> Option<f32> {
+        self.seam.as_ref()?.addend_for(self, omega)
+    }
+
+    /// Der Beweis selbst (Diagnose/Bericht). Seine Felder sind privat; die
+    /// Zahl gibt es nur über [`Self::seam_addend`].
+    pub fn seam_proof(&self) -> Option<&crate::offset_witness::CertifiedSeamAddend> {
+        self.seam.as_ref()
     }
 }
 
@@ -3364,8 +3420,8 @@ fn build_channel(
         branch,
         parents,
         // #384 §8aa: die Synthese beweist nichts — `certify_channel` tut es,
-        // und nur sie darf hier etwas hineinschreiben.
-        eta_clamp: None,
+        // und nur sie kann die versiegelte Zelle beschreiben.
+        seam: None,
     })
 }
 

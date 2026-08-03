@@ -16,10 +16,17 @@
 //! ## Was P5b-0 dazulegt — und was es NICHT tut
 //!
 //! P5a endet bei der modellierten Naht. P5b-0 baut die Brücke von dort zu dem,
-//! was die Produktion wirklich rechnet: [`EtaClamp`] trägt `η_geo` plus die
-//! drei f32-Posten `ε_q` (Punkt-Brücke), `ε_d` (Norm-Brücke) und
-//! `field_round` (Rundungsbudget der EINGEFROREN definierten Feldkette,
-//! s. [`frozen_channel_limit`]) und liefert daraus einen `f32`-Addenden.
+//! was die Produktion wirklich rechnet: [`CertifiedSeamAddend`] trägt `η_geo`
+//! plus die drei f32-Posten `ε_q` (Punkt-Brücke), `ε_d` (Norm-Brücke) und
+//! `field_round` (Rundungsbudget des NAHT-Astes der eingefroren definierten
+//! Feldkette) und liefert daraus einen `f32`-Addenden.
+//!
+//! **Der Naht-Ast, und nur er.** Zugesagt ist
+//! `fl32(δ − fl32(de + A)) ≤ δ − de − Δ`. Über die vollständige Kette
+//! `fl(δ − min(fl(de+A), h))` sagt P5b-0 **nichts**: der `h`-Ast ruht auf der
+//! §8j-Stützebenen-Aussage, die weder ein Rundungs- noch ein geometrisches
+//! Budget hat (Restposten R1, §8aa). Das `h`-Budget ist zwingende Auflage vor
+//! P5b-1.
 //!
 //! **Immer noch keine Feldänderung.** `channel_limit`, `channel_apply` und
 //! jeder Evaluator bleiben unangetastet; das Golden ist byte-identisch. Kein
@@ -787,11 +794,20 @@ pub(crate) fn norm_bridge_mm(trust: f32) -> Option<f64> {
 ///
 /// **`A = 0` ist bitweise das heutige Feld** (`de + 0.0 == de` für jedes
 /// `de ≥ 0`, und `de` ist eine Norm). Das ist die Feldneutralitäts-Zusage von
-/// P5b-1 für jeden Kanal ohne Klemme — gepinnt, nicht behauptet.
+/// P5b-1 für jeden Kanal ohne Addenden — gepinnt, nicht behauptet.
 ///
-/// Diese Funktion hat in P5b-0 **keinen Aufrufer ausserhalb der Pins**. Sie
-/// ist der Gegenstand des Rundungslemmas, nicht ein Evaluator.
-pub fn frozen_channel_limit(p: [f32; 3], ch: &OffsetChannel, eta_add: f32) -> f32 {
+/// **Diese Funktion ist NICHT bewiesen** (§8aa-Korrektur, Blocker 1). Bewiesen
+/// ist ihr NAHT-Ast: fällt das `min` auf `de_eta`, greift Lemma 5. Fällt es auf
+/// `h`, liefert sie `fl(δ − h)` — denselben Ausdruck wie heute, mit demselben
+/// fehlenden Budget (Restposten R1: die Stützebenen-Synthese lässt
+/// `h_min ≥ −8·gate_eps` zu, und Ebenennorm, `dot(p,n)−c`, `g+δ` sowie `δ−h`
+/// laufen ungerichtet in f32). Die erste §8aa-Fassung stellte die Funktion
+/// `pub` neben einen scheinbar passenden öffentlichen Beweiswert — genau die
+/// Kombination, aus der ein Konsument eine Vollketten-Garantie ablesen würde,
+/// die es nicht gibt. Deshalb jetzt `pub(crate)`: sie ist der Gegenstand des
+/// Rundungslemmas und der Feldneutralitäts-Pins, **kein Evaluator und keine
+/// Zusage**.
+pub(crate) fn frozen_channel_limit(p: [f32; 3], ch: &OffsetChannel, eta_add: f32) -> f32 {
     let dbs = norm32(sub32(p, ch.bound_c)) - ch.bound_r;
     if dbs >= ch.trust {
         return -END_PLANE_OFF;
@@ -814,7 +830,7 @@ pub fn frozen_channel_limit(p: [f32; 3], ch: &OffsetChannel, eta_add: f32) -> f3
 /// so frei wählen, wie es der Beweis behauptet — über die Geometrie käme man
 /// an die interessanten Bitmuster gar nicht heran.
 #[inline]
-pub fn frozen_limit_tail(delta: f32, de: f32, h: f32, eta_add: f32) -> f32 {
+pub(crate) fn frozen_limit_tail(delta: f32, de: f32, h: f32, eta_add: f32) -> f32 {
     let de_eta = de + eta_add;
     delta - de_eta.min(h)
 }
@@ -872,186 +888,257 @@ pub(crate) fn round_budget(delta: f32, trust: f32, bridge_total: f64) -> Option<
     }
     Some((next_up(a_min - bridge_total), a))
 }
-
-// ─── Lemma 6 — die Kanalbindung ─────────────────────────────────────────────
+// ─── Lemma 6 — die Kanalbindung, bitweise ───────────────────────────────────
+//
+// §8aa-Korrektur (dreizehntes Review, Blocker 2): die erste Fassung verglich
+// einen **64-Bit-FNV-Wert** und nannte das „Identität". Ein 64-Bit-Hash ist
+// notwendigerweise kollisionsfähig; dass sieben ausgewählte Ein-ulp-Mutationen
+// keine Kollision erzeugten, beweist nichts über die Menge aller Kanäle. Der
+// Hash ist jetzt nur noch **Vorfilter und Diagnose**; autoritativ ist ein
+// exakter kanonischer Byte-Schnappschuss, der BITWEISE verglichen wird.
 
 #[inline]
-fn fnv(h: &mut u64, v: u64) {
-    *h ^= v;
-    *h = h.wrapping_mul(0x0000_0100_0000_01b3);
+fn put_u64(o: &mut Vec<u8>, v: u64) {
+    o.extend_from_slice(&v.to_le_bytes());
 }
 
 #[inline]
-fn fnv_f32(h: &mut u64, v: f32) {
+fn put_f32(o: &mut Vec<u8>, v: f32) {
     // Bitmuster, NICHT der Wert: `-0.0` und `0.0` sind für die Geometrie
-    // dasselbe, für einen Fingerabdruck aber verschiedene Daten — und
+    // dasselbe, für einen Schnappschuss aber verschiedene Daten — und
     // Verschiedenheit darf hier nie unter den Tisch fallen.
-    fnv(h, v.to_bits() as u64);
+    o.extend_from_slice(&v.to_bits().to_le_bytes());
 }
 
 #[inline]
-fn fnv_f32x3(h: &mut u64, v: [f32; 3]) {
+fn put_f32x3(o: &mut Vec<u8>, v: [f32; 3]) {
     for x in v {
-        fnv_f32(h, x);
+        put_f32(o, x);
     }
 }
 
-/// **Der Fingerabdruck eines Kanals** — über ALLE Daten, die `channel_limit`
-/// und die Zeugensuche lesen: jeden Bogen, `δ`, `trust`, die Bounding-Sphere
-/// und beide Halbraum-Sätze. Die Klemme selbst geht NICHT ein (sonst könnte
-/// sie sich nicht mit dem Kanal vergleichen, in dem sie sitzt).
-///
-/// Er ist die zweite Hälfte der Kanalbindung: die erste ist die Einbettung
-/// (der Wert wohnt im Kanal), die zweite diese Probe (er wird beim Lesen
-/// gegen den Kanal gehalten). Ein umkopierter oder nachträglich veränderter
-/// Kanal fällt durch.
-pub fn channel_identity(ch: &OffsetChannel) -> u64 {
+/// FNV-1a über den Schnappschuss — **Vorfilter und Diagnose, keine Identität.**
+fn prefilter(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    fnv(&mut h, ch.arcs.len() as u64);
-    for a in &ch.arcs {
-        fnv_f32x3(&mut h, a.c);
-        fnv_f32x3(&mut h, a.u);
-        fnv_f32x3(&mut h, a.v);
-        fnv_f32(&mut h, a.r);
-        fnv_f32(&mut h, a.sweep);
-        fnv_f32(&mut h, a.e[0]);
-        fnv_f32(&mut h, a.e[1]);
-        fnv_f32(&mut h, a.d_e);
-        fnv_f32x3(&mut h, a.bc);
-        fnv_f32(&mut h, a.br);
-        fnv_f32x3(&mut h, a.m1s);
-        fnv_f32x3(&mut h, a.m2s);
-        fnv_f32x3(&mut h, a.m1e);
-        fnv_f32x3(&mut h, a.m2e);
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    fnv_f32(&mut h, ch.delta);
-    fnv(&mut h, ch.concave as u64);
-    fnv_f32(&mut h, ch.trust);
-    fnv_f32(&mut h, ch.gate);
-    fnv_f32x3(&mut h, ch.bound_c);
-    fnv_f32(&mut h, ch.bound_r);
-    for g in ch.end_planes.iter().chain(ch.face_planes.iter()) {
-        for x in g {
-            fnv_f32(&mut h, *x);
-        }
-    }
-    fnv(&mut h, ch.branch);
-    fnv(&mut h, ch.parents[0]);
-    fnv(&mut h, ch.parents[1]);
     h
 }
 
-/// Provenienz-Fingerabdruck von `Ω`. Rein dokumentarisch: zur Auswertungszeit
-/// gibt es kein `Ω` mehr, gegen das man ihn halten könnte. Die Garantie kommt
-/// daher, dass [`certify_channel`] Beweis und Einbettung in EINEM Schritt tut —
-/// der Fingerabdruck macht nur nachvollziehbar, WORÜBER bewiesen wurde.
-pub fn omega_fingerprint(node: &BoundedCsg) -> u64 {
-    fn go(n: &BoundedCsg, h: &mut u64) {
+/// **Der kanonische Schnappschuss eines Kanals** — jedes Bit, das
+/// [`crate::offset_channel::channel_limit`] oder [`cover_channel`] liest.
+///
+/// Er wird bitweise verglichen, nicht gehasht. Zwei Kanäle mit demselben
+/// Schnappschuss sind in allen beweisrelevanten Daten identisch — das ist eine
+/// Aussage über die Bytes, keine Wahrscheinlichkeitsaussage.
+pub fn channel_snapshot(ch: &OffsetChannel) -> Vec<u8> {
+    let mut o = Vec::with_capacity(64 + ch.arcs.len() * 96);
+    o.extend_from_slice(b"FD384-CH1");
+    put_u64(&mut o, ch.arcs.len() as u64);
+    for a in &ch.arcs {
+        put_f32x3(&mut o, a.c);
+        put_f32x3(&mut o, a.u);
+        put_f32x3(&mut o, a.v);
+        put_f32(&mut o, a.r);
+        put_f32(&mut o, a.sweep);
+        put_f32(&mut o, a.e[0]);
+        put_f32(&mut o, a.e[1]);
+        put_f32(&mut o, a.d_e);
+        put_f32x3(&mut o, a.bc);
+        put_f32(&mut o, a.br);
+        put_f32x3(&mut o, a.m1s);
+        put_f32x3(&mut o, a.m2s);
+        put_f32x3(&mut o, a.m1e);
+        put_f32x3(&mut o, a.m2e);
+    }
+    put_f32(&mut o, ch.delta);
+    o.push(ch.concave as u8);
+    put_f32(&mut o, ch.trust);
+    put_f32(&mut o, ch.gate);
+    put_f32x3(&mut o, ch.bound_c);
+    put_f32(&mut o, ch.bound_r);
+    for g in ch.end_planes.iter().chain(ch.face_planes.iter()) {
+        for x in g {
+            put_f32(&mut o, *x);
+        }
+    }
+    put_u64(&mut o, ch.branch);
+    put_u64(&mut o, ch.parents[0]);
+    put_u64(&mut o, ch.parents[1]);
+    o
+}
+
+/// **Der kanonische Schnappschuss von `Ω`** — und zwar genau der Daten, die
+/// [`box_outside_omega`] liest.
+///
+/// **Transfer-Lemma.** `box_outside_inner` liest ausschliesslich: den
+/// Varianten-Tag; bei `Leaf` die Weltmatrix und — nur für Box/Sphere/Zylinder —
+/// die Primitiv-Parameter (jedes andere Blatt liefert bedingungslos `false`);
+/// bei `Offset` das `delta`; und rekursiv die Kinder von `Union`,
+/// `Intersection`, `Difference`, `Offset`, `InnerWall`. **Jede andere Variante
+/// liefert bedingungslos `false`.** Ein Schnappschuss, der genau diese Daten
+/// kanonisch kodiert, bestimmt deshalb den Wert von [`box_outside_omega`] für
+/// JEDE Box und JEDE Marge. Gilt `omega_snapshot(Ω') = omega_snapshot(Ω)`, so
+/// überträgt sich jeder für `Ω` geführte Zeugen-Beweis unverändert auf `Ω'`. ∎
+///
+/// Das ist die Eigenschaft, auf die es ankommt — sie ist **stärker** als
+/// „die Bäume sind gleich" es sein müsste und **schärfer** als ein Hash es
+/// sein kann. Alle nicht unterstützten Varianten fallen bewusst in EINEN Topf:
+/// sie sind für den Beweis ununterscheidbar, weil sie alle nichts beweisen.
+pub fn omega_snapshot(node: &BoundedCsg) -> Vec<u8> {
+    fn go(n: &BoundedCsg, o: &mut Vec<u8>) {
         match n {
-            BoundedCsg::Empty => fnv(h, 1),
+            BoundedCsg::Empty => o.push(1),
             BoundedCsg::Leaf { primitive, world_transform, .. } => {
-                fnv(h, 2);
-                fnv_f32x3(h, world_transform.translate);
+                o.push(2);
+                put_f32x3(o, world_transform.translate);
                 for x in world_transform.rotation {
-                    fnv_f32(h, x);
+                    put_f32(o, x);
                 }
-                fnv_f32x3(h, world_transform.scale);
+                put_f32x3(o, world_transform.scale);
                 match primitive {
                     Primitive::Box { center, half_extents } => {
-                        fnv(h, 21);
-                        fnv_f32x3(h, *center);
-                        fnv_f32x3(h, *half_extents);
+                        o.push(21);
+                        put_f32x3(o, *center);
+                        put_f32x3(o, *half_extents);
                     }
                     Primitive::Sphere { center, radius } => {
-                        fnv(h, 22);
-                        fnv_f32x3(h, *center);
-                        fnv_f32(h, *radius);
+                        o.push(22);
+                        put_f32x3(o, *center);
+                        put_f32(o, *radius);
                     }
                     Primitive::Cylinder { center, radius, half_height } => {
-                        fnv(h, 23);
-                        fnv_f32x3(h, *center);
-                        fnv_f32(h, *radius);
-                        fnv_f32(h, *half_height);
+                        o.push(23);
+                        put_f32x3(o, *center);
+                        put_f32(o, *radius);
+                        put_f32(o, *half_height);
                     }
-                    // Andere Blätter kann `box_outside_omega` ohnehin nicht
-                    // beweisen; sie tragen nur ihren Diskriminator.
-                    _ => fnv(h, 29),
+                    // Jedes andere Blatt liefert `false` — seine Parameter
+                    // sind für den Beweis ununterscheidbar.
+                    _ => o.push(29),
                 }
             }
             BoundedCsg::Union { left, right, .. } => {
-                fnv(h, 3);
-                go(left, h);
-                go(right, h);
+                o.push(3);
+                go(left, o);
+                go(right, o);
             }
             BoundedCsg::Intersection { left, right, .. } => {
-                fnv(h, 4);
-                go(left, h);
-                go(right, h);
+                o.push(4);
+                go(left, o);
+                go(right, o);
             }
             BoundedCsg::Difference { left, right, .. } => {
-                fnv(h, 5);
-                go(left, h);
-                go(right, h);
+                o.push(5);
+                go(left, o);
+                go(right, o);
             }
             BoundedCsg::Offset { inner, delta, .. } => {
-                fnv(h, 6);
-                fnv_f32(h, *delta);
-                go(inner, h);
+                o.push(6);
+                put_f32(o, *delta);
+                go(inner, o);
             }
             BoundedCsg::InnerWall { inner, .. } => {
-                fnv(h, 7);
-                go(inner, h);
+                o.push(7);
+                go(inner, o);
             }
-            _ => fnv(h, 8),
+            // Alle übrigen Varianten: bedingungslos `false`, also ein Topf.
+            _ => o.push(8),
         }
     }
-    let mut h: u64 = 0x9e37_79b9_7f4a_7c15;
-    go(node, &mut h);
-    h
+    let mut o = Vec::with_capacity(256);
+    o.extend_from_slice(b"FD384-OM1");
+    go(node, &mut o);
+    o
 }
 
-// ─── Der Klemm-Typ ──────────────────────────────────────────────────────────
+// ─── Der Beweistyp ──────────────────────────────────────────────────────────
 
-/// **Die η-Klemme eines Kanals — ein geschützter Beweiswert.**
+/// **Das Siegel des Schreibwegs.**
 ///
-/// Die Zusage, die dahintersteht (Lemma 4, Dreiecksungleichung): für JEDEN
-/// Punkt `x` mit `de = de_f32(x) < trust` gilt
+/// Ein `SeamProofToken` lässt sich **nur in diesem Modul** herstellen (das
+/// Tupel-Feld ist privat). [`crate::offset_channel::OffsetChannel`] verlangt
+/// ihn für den einzigen Weg, auf dem eine Beweis-Zelle beschrieben werden
+/// kann. Kein anderes Modul des Kerns kann also eine Klemme setzen —
+/// unabhängig davon, was es sich zusammenkopiert.
+///
+/// §8aa-Korrektur (Blocker 3): vorher war das Feld `pub(crate)`, und
+/// „verpflanzungssicher" stand allein auf einem Hash-Vergleich. Jetzt ist der
+/// SCHREIBWEG versiegelt und der Vergleich exakt.
+///
+/// ```compile_fail,E0603
+/// // Ausserhalb von `offset_witness` gibt es keinen Weg an das Siegel.
+/// // Der Fehlercode ist mit angegeben, damit der Doctest nicht aus einem
+/// // BELIEBIGEN Grund grün wird — `compile_fail` ohne Code ist genau die
+/// // Falle, in der ein Tippfehler wie ein Beweis aussieht.
+/// let _t = fielddraft_kernel::offset_witness::SeamProofToken(());
+/// ```
+pub struct SeamProofToken(());
+
+impl SeamProofToken {
+    /// Nur `offset_witness` prägt Siegel — und nur dort, wo unmittelbar davor
+    /// bewiesen wurde.
+    fn mint() -> Self {
+        SeamProofToken(())
+    }
+}
+
+/// **Der bewiesene Naht-Addend eines Kanals.**
+///
+/// **Was zugesagt ist — und NUR das.** Für jeden Punkt `x` mit
+/// `de = de_f32(x) < trust` gilt
 ///
 /// ```text
-/// dist(x, ∁Ω) ≤ de + η_geo + ε_q + ε_d,
+/// dist(x, ∁Ω) ≤ de + η_geo + ε_q + ε_d  =:  de + Δ        (Lemma 4)
+/// fl32(δ − fl32(de + A)) ≤ δ − de − Δ                      (Lemma 5)
 /// ```
 ///
-/// und mit dem Rundungsbudget aus Lemma 5 liefert die eingefrorene Feldkette
-/// `fl(δ − min(fl(de + A), h))` einen Wert, der die gültige Feld-Untergrenze
-/// `δ − dist(x,∁Ω)` nicht überschreitet.
+/// — also die Untergrenze **im Naht-Ast**. Über die vollständige
+/// Produktionskette `fl(δ − min(fl(de+A), h))` sagt dieser Typ
+/// **ausdrücklich nichts**: fällt das `min` auf die Stützebene `h`, ist der
+/// gelieferte Wert `fl(δ − h)`, und der ruht auf der §8j-Stützebenen-Aussage,
+/// die **kein** Rundungs- und **kein** geometrisches Budget hat (Restposten
+/// R1). Wer die volle Kette braucht, braucht zuerst ein `h`-Budget.
 ///
-/// **Alle Felder sind privat, und es gibt keinen öffentlichen Konstruktor.**
-/// `GeometricEta` war in §8x aus demselben Grund opak: ein Beweiswert, den der
-/// Aufrufer selbst zusammensetzen kann, ist kein Beweiswert. Die einzige
-/// Entstehungsstelle ist [`certify_channel`], und sie verlangt **fünf**
-/// Nachweise gemeinsam — vollständiges Channel-Cover, geometrisches `η`,
-/// Punkt-Brücke, Norm-Brücke, Rundungsbudget — plus die Bindung an genau den
-/// geprüften Kanal.
+/// §8aa-Korrektur (Blocker 1): der Typ hiess `EtaClamp` und seine Doku
+/// behauptete genau diese Vollketten-Zusage. Er zertifizierte damit mehr, als
+/// bewiesen war — noch ohne Schaden am Feld, weil kein Evaluator ihn liest,
+/// aber ein Beweistyp, der zu viel verspricht, ist genau die Falle, in die
+/// P5b-1 sonst getappt wäre. Der Name sagt jetzt, was er kann: **Seam**.
 ///
-/// Die Zahl selbst gibt es nur über [`OffsetChannel::eta_addend`]; die
-/// Einzelposten sind lesbar, aber ausdrücklich **Diagnose**: aus ihnen lässt
-/// sich kein gültiger Addend zusammenaddieren, weil das Rundungsbudget vom
-/// `δ`/`trust` genau dieses Kanals abhängt.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EtaClamp {
+/// **Die Zahl gibt es nur gegen Kanal UND `Ω`.** Beide werden bitweise gegen
+/// den beim Beweis genommenen Schnappschuss gehalten (s. [`channel_snapshot`],
+/// [`omega_snapshot`]). Ein 64-Bit-Hash ist zusätzlich gespeichert, aber nur
+/// als Vorfilter — er entscheidet nie allein.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CertifiedSeamAddend {
     geometric_mm: f64,
     q_bridge_mm: f64,
     norm_bridge_mm: f64,
     field_round_mm: f64,
     encoded_addend: f32,
-    channel_identity: u64,
-    omega_fingerprint: u64,
+    channel_prefilter: u64,
+    channel_snapshot: Vec<u8>,
+    omega_prefilter: u64,
+    omega_snapshot: Vec<u8>,
 }
 
-impl EtaClamp {
-    /// Der f32-Addend `A` — **nur** gegen den Kanal, für den er bewiesen wurde.
-    pub fn addend_for(&self, ch: &OffsetChannel) -> Option<f32> {
-        (channel_identity(ch) == self.channel_identity).then_some(self.encoded_addend)
+impl CertifiedSeamAddend {
+    /// Der f32-Addend `A` — nur gegen **den** Kanal und **das** `Ω`, für die er
+    /// bewiesen wurde. Beide Vergleiche sind bitweise; der Hash ist bloss der
+    /// billige Vorfilter davor.
+    pub fn addend_for(&self, ch: &OffsetChannel, omega: &BoundedCsg) -> Option<f32> {
+        let cs = channel_snapshot(ch);
+        if prefilter(&cs) != self.channel_prefilter || cs != self.channel_snapshot {
+            return None;
+        }
+        let os = omega_snapshot(omega);
+        if prefilter(&os) != self.omega_prefilter || os != self.omega_snapshot {
+            return None;
+        }
+        Some(self.encoded_addend)
     }
     /// `η_geo` aus [`cover_channel`] (mm).
     pub fn geometric_mm(&self) -> f64 {
@@ -1065,7 +1152,7 @@ impl EtaClamp {
     pub fn norm_bridge_mm(&self) -> f64 {
         self.norm_bridge_mm
     }
-    /// Der reine Rundungsanteil des Addenden (mm).
+    /// Der reine Rundungsanteil des Addenden (mm) — für den NAHT-Ast.
     pub fn field_round_mm(&self) -> f64 {
         self.field_round_mm
     }
@@ -1074,23 +1161,27 @@ impl EtaClamp {
     pub fn bridge_total_mm(&self) -> f64 {
         next_up(next_up(self.geometric_mm + self.q_bridge_mm) + self.norm_bridge_mm)
     }
-    /// Provenienz von `Ω` (Diagnose, s. [`omega_fingerprint`]).
-    pub fn omega_fingerprint(&self) -> u64 {
-        self.omega_fingerprint
+    /// Vorfilter-Hashes (Diagnose). **Nicht** die Identität — s. Typ-Doku.
+    pub fn prefilters(&self) -> (u64, u64) {
+        (self.channel_prefilter, self.omega_prefilter)
+    }
+    /// Länge der beiden Schnappschüsse in Bytes (Diagnose).
+    pub fn snapshot_lens(&self) -> (usize, usize) {
+        (self.channel_snapshot.len(), self.omega_snapshot.len())
     }
 }
 
-/// Warum ein Kanal (k)eine Klemme bekommen hat. Der Shadow-Bericht von P5b-0
-/// zählt genau diese Fälle — und `Proved` ist der einzige, in dem ein Wert
-/// entsteht.
+/// Warum ein Kanal (k)einen Naht-Addenden bekommen hat. Der Shadow-Bericht von
+/// P5b-0 zählt genau diese Fälle — und `Proved` ist der einzige, in dem ein
+/// Wert entsteht.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClampStatus {
-    /// Klemme bewiesen und eingebettet.
+pub enum SeamProofStatus {
+    /// Naht-Addend bewiesen und versiegelt eingebettet.
     Proved,
     /// Mindestens ein Bogen ist gekrümmt ⇒ Bogen-Zeugen sind P5c.
     Curved,
     /// Cover unvollständig: kein Zeuge, nicht unterstütztes `Ω`-Blatt,
-    /// entarteter Bogen.
+    /// entarteter Bogen, leerer Kanal.
     NoCover,
     /// Cover vollständig, aber `ε_q`, `ε_d` oder das Rundungsbudget scheitern.
     NoBridge,
@@ -1098,10 +1189,10 @@ pub enum ClampStatus {
     BadConfig,
 }
 
-/// Ablationen für die Gegenproben. `pub(crate)`: eine geschwächte Klemme darf
+/// Ablationen für die Gegenproben. `pub(crate)`: ein geschwächter Beweis darf
 /// ausserhalb der Pins gar nicht erst entstehen können.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct ClampKnobs {
+pub(crate) struct SeamProofKnobs {
     /// `ε_q := 0`.
     pub drop_q_bridge: bool,
     /// `ε_d := 0`.
@@ -1114,58 +1205,65 @@ pub(crate) struct ClampKnobs {
     pub force_addend: Option<f32>,
 }
 
-/// **Die Zertifizierung EINES Kanals — die einzige Entstehungsstelle einer
-/// [`EtaClamp`].**
+/// **Die Zertifizierung EINES Kanals — die einzige Entstehungsstelle eines
+/// [`CertifiedSeamAddend`].**
 ///
 /// Reihenfolge der Ausgänge ist Absicht: `BadConfig` vor `Curved` vor
 /// `NoCover` vor `NoBridge`. Ein gekrümmter Bogen ist ein STRUKTURELLER
 /// Ausschluss (P5c), kein gescheiterter Zeuge — die Zählung darf beides nicht
 /// vermengen.
 ///
-/// **Die Invariante von P5b-0**: `eta_clamp.is_some()` ⟺ jeder Punkt jedes
+/// **Die Invariante von P5b-0**: ein Addend existiert ⟺ jeder Punkt jedes
 /// Bogenstücks dieses Kanals ist gedeckt UND jeder Bogen ist gerade UND alle
-/// drei Brücken existieren. Bei `None` bleibt das heutige `channel_limit`
+/// drei Brücken existieren. Andernfalls bleibt das heutige `channel_limit`
 /// stehen — ausdrücklich weiter als **unbewiesene Modell-Annahme** (§8j/§8s),
 /// nicht still neutralisiert.
+///
+/// **Lebenszyklus-Auflage für P5b-1** (§8aa-Korrektur, Blocker 3): der Aufruf
+/// gehört an den FINALEN Kanal — nach Vertex-Snapping und nach
+/// `set_end_plane_gates`/`set_face_plane_gates`. Danach darf keines der
+/// beweisrelevanten Kanal- oder `Ω`-Daten mehr unabhängig verändert oder neu
+/// gepaart werden. In P5b-0 erzwingt das der Schnappschuss-Vergleich: jede
+/// spätere Änderung an Kanal ODER `Ω` macht den Addenden unlesbar.
 pub fn certify_channel(
     omega: &BoundedCsg,
     ch: &mut OffsetChannel,
     cfg: WitnessCfg,
-) -> (ClampStatus, WitnessCover) {
-    certify_channel_with(omega, ch, cfg, ClampKnobs::default())
+) -> (SeamProofStatus, WitnessCover) {
+    certify_channel_with(omega, ch, cfg, SeamProofKnobs::default())
 }
 
 pub(crate) fn certify_channel_with(
     omega: &BoundedCsg,
     ch: &mut OffsetChannel,
     cfg: WitnessCfg,
-    knobs: ClampKnobs,
-) -> (ClampStatus, WitnessCover) {
-    ch.eta_clamp = None;
+    knobs: SeamProofKnobs,
+) -> (SeamProofStatus, WitnessCover) {
+    ch.seal_seam_proof(SeamProofToken::mint(), None);
     if !cfg.valid() {
-        return (ClampStatus::BadConfig, cover_channel(omega, ch, cfg));
+        return (SeamProofStatus::BadConfig, cover_channel(omega, ch, cfg));
     }
     if ch.arcs.is_empty() {
-        return (ClampStatus::NoCover, cover_channel(omega, ch, cfg));
+        return (SeamProofStatus::NoCover, cover_channel(omega, ch, cfg));
     }
     // Gekrümmt zuerst — ein struktureller Ausschluss, kein Zeugen-Fehlschlag.
     if ch.arcs.iter().any(|a| !(a.sweep < 0.0)) {
-        return (ClampStatus::Curved, cover_channel(omega, ch, cfg));
+        return (SeamProofStatus::Curved, cover_channel(omega, ch, cfg));
     }
     let cover = cover_channel(omega, ch, cfg);
     let Some(eta) = cover.eta else {
-        return (ClampStatus::NoCover, cover);
+        return (SeamProofStatus::NoCover, cover);
     };
     let geo = eta.mm();
     if !(geo.is_finite() && geo >= 0.0) {
-        return (ClampStatus::NoBridge, cover);
+        return (SeamProofStatus::NoBridge, cover);
     }
-    // `ε_q`: das Maximum über alle Bögen — die Klemme gilt für den Kanal, also
+    // `ε_q`: das Maximum über alle Bögen — die Zusage gilt für den Kanal, also
     // für seinen schlechtesten Bogen.
     let mut eps_q = 0.0f64;
     for a in &ch.arcs {
         let Some(v) = point_bridge_mm(a) else {
-            return (ClampStatus::NoBridge, cover);
+            return (SeamProofStatus::NoBridge, cover);
         };
         eps_q = eps_q.max(v);
     }
@@ -1173,7 +1271,7 @@ pub(crate) fn certify_channel_with(
         eps_q = 0.0;
     }
     let Some(mut eps_d) = norm_bridge_mm(ch.trust) else {
-        return (ClampStatus::NoBridge, cover);
+        return (SeamProofStatus::NoBridge, cover);
     };
     if knobs.drop_norm_bridge {
         eps_d = 0.0;
@@ -1181,12 +1279,12 @@ pub(crate) fn certify_channel_with(
     let bridge_total = next_up(next_up(geo + eps_q) + eps_d);
     let (field_round, addend) = if knobs.drop_field_round {
         let Some(a) = f32_ceil(bridge_total) else {
-            return (ClampStatus::NoBridge, cover);
+            return (SeamProofStatus::NoBridge, cover);
         };
         (0.0, a)
     } else {
         let Some(v) = round_budget(ch.delta, ch.trust, bridge_total) else {
-            return (ClampStatus::NoBridge, cover);
+            return (SeamProofStatus::NoBridge, cover);
         };
         v
     };
@@ -1195,42 +1293,63 @@ pub(crate) fn certify_channel_with(
         addend = f32::from_bits(addend.to_bits().saturating_sub(1));
     }
     if !(addend.is_finite() && addend >= 0.0) {
-        return (ClampStatus::NoBridge, cover);
+        return (SeamProofStatus::NoBridge, cover);
     }
-    ch.eta_clamp = Some(EtaClamp {
+    let cs = channel_snapshot(ch);
+    let os = omega_snapshot(omega);
+    let proof = CertifiedSeamAddend {
         geometric_mm: geo,
         q_bridge_mm: eps_q,
         norm_bridge_mm: eps_d,
         field_round_mm: field_round,
         encoded_addend: addend,
-        channel_identity: channel_identity(ch),
-        omega_fingerprint: omega_fingerprint(omega),
-    });
-    (ClampStatus::Proved, cover)
+        channel_prefilter: prefilter(&cs),
+        channel_snapshot: cs,
+        omega_prefilter: prefilter(&os),
+        omega_snapshot: os,
+    };
+    ch.seal_seam_proof(SeamProofToken::mint(), Some(proof));
+    (SeamProofStatus::Proved, cover)
 }
 
-/// Der Shadow-Bericht: wie viele Kanäle eines Stopps/Feldes eine Klemme
-/// bekommen — und aus welchem Grund die übrigen nicht.
+/// **NUR für die Gegenproben.** Schiebt den Beweis von `src` über den
+/// versiegelten Weg auf `dst`.
+///
+/// Diese Funktion existiert, damit die Ablehnung PRÜFBAR ist. Ohne sie wäre
+/// eine Verpflanzung ausserhalb dieses Moduls zwar unmöglich (das Siegel lässt
+/// sich nicht beschaffen), aber eben auch nicht als Pin zu zeigen — und ein
+/// unbeobachteter Schutz ist in diesem Programm kein Schutz.
+pub(crate) fn transplant_proof(src: &OffsetChannel, dst: &mut OffsetChannel) {
+    let p = src.seam_proof().cloned();
+    dst.seal_seam_proof(SeamProofToken::mint(), p);
+}
+
+/// Der Shadow-Bericht: wie viele Kanäle eines Stopps/Feldes einen bewiesenen
+/// **Naht-Addenden** bekommen — und aus welchem Grund die übrigen nicht.
+///
+/// §8aa-Korrektur (Sollte-15): das Feld hiess `proved_eta` und wurde als
+/// „Kanal bewiesen" gelesen. Bewiesen ist der Naht-Ast, nicht die ausgelieferte
+/// `channel_limit`-Kette.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ClampTally {
-    pub proved_eta: usize,
+pub struct SeamProofTally {
+    pub proved_seam: usize,
     pub curved: usize,
     pub no_cover: usize,
     pub no_bridge: usize,
     pub bad_config: usize,
 }
 
-impl ClampTally {
-    pub fn add(&mut self, s: ClampStatus) {
+impl SeamProofTally {
+    pub fn add(&mut self, s: SeamProofStatus) {
         match s {
-            ClampStatus::Proved => self.proved_eta += 1,
-            ClampStatus::Curved => self.curved += 1,
-            ClampStatus::NoCover => self.no_cover += 1,
-            ClampStatus::NoBridge => self.no_bridge += 1,
-            ClampStatus::BadConfig => self.bad_config += 1,
+            SeamProofStatus::Proved => self.proved_seam += 1,
+            SeamProofStatus::Curved => self.curved += 1,
+            SeamProofStatus::NoCover => self.no_cover += 1,
+            SeamProofStatus::NoBridge => self.no_bridge += 1,
+            SeamProofStatus::BadConfig => self.bad_config += 1,
         }
     }
     pub fn total(&self) -> usize {
-        self.proved_eta + self.curved + self.no_cover + self.no_bridge + self.bad_config
+        self.proved_seam + self.curved + self.no_cover + self.no_bridge + self.bad_config
     }
 }
