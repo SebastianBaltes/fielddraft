@@ -163,7 +163,11 @@ impl Kernel {
                 // wirklich `mode = 1` mit Addenden `> 0` trägt — und ein
                 // Spec, der das nicht nachweist, könnte von einem Spiegel
                 // bestanden werden, der beide Addenden ignoriert.
-                // Kein Feldpfad liest das hier.
+                //
+                // Aufgelöst wird über denselben Weg wie im Feld: exakter
+                // Stromvergleich des Kanal- UND des `Ω`-Schnappschusses gegen
+                // die im Beweis gespeicherten (#384 §8ac). Kein Feldpfad liest
+                // das hier.
                 let modes: Vec<serde_json::Value> =
                     crate::offset_channel::collect_limit_modes(&bounded)
                         .into_iter()

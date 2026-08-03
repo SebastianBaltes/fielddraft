@@ -16325,3 +16325,149 @@ fn activation_omega_transplant_reaches_neither_field_nor_tape_384() {
          Beweis, {dropped} verlieren ihn — und Modus und Abruf stimmen überall überein"
     );
 }
+
+/// **§8ac-Sonde (Review 20, Sollte 6): was kostet die Modus-Auflösung pro
+/// Punkt?**
+///
+/// `resolve_stop_modes` liegt im Per-Punkt-Pfad von `BoundedCsg::sdf` —
+/// gemessen wird, welcher Anteil der Auswertung auf die Schnappschuss-Prüfung
+/// entfällt. Zahlen, bevor irgendetwas optimiert wird.
+#[test]
+#[ignore]
+fn probe_384_resolve_cost() {
+    use std::time::Instant;
+    let delta = 2.0f32;
+    for (name, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        let mut stops = Vec::new();
+        stop_nodes(&field, &mut stops);
+        let mut nch = 0usize;
+        let mut inner_ref: Option<&BoundedCsg> = None;
+        let mut chans: Option<&Vec<OffsetChannel>> = None;
+        for st in &stops {
+            if let BoundedCsg::ArcChannel { inner, channels, .. } = st {
+                nch += channels.len();
+                if chans.is_none() {
+                    inner_ref = Some(inner);
+                    chans = Some(channels);
+                }
+            }
+        }
+        let (Some(inner), Some(channels)) = (inner_ref, chans) else { continue };
+        if nch == 0 {
+            continue;
+        }
+        // Punkte im Einflussbereich der Naht.
+        let mut g = Lcg(0xbe17_c057);
+        let mut pts = Vec::new();
+        let arc = &channels[0].arcs[0];
+        while pts.len() < 2000 {
+            let sp = g.next_f64() as f32;
+            let rad = (g.next_f64() * channels[0].trust as f64 * 0.9) as f32;
+            let d = [g.sym(), g.sym(), g.sym()];
+            let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            if !(n > 1.0e-9) {
+                continue;
+            }
+            pts.push([
+                arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n) as f32 * rad,
+                arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n) as f32 * rad,
+                arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n) as f32 * rad,
+            ]);
+        }
+        let om_bytes = wit::omega_of(inner).map(|o| wit::omega_snapshot(o).len()).unwrap_or(0);
+        let ch_bytes: usize =
+            channels.iter().map(|c| wit::channel_snapshot(c).len()).sum();
+
+        let t0 = Instant::now();
+        let mut acc = 0.0f32;
+        for p in &pts {
+            acc += field.sdf(*p, EvalMode::Visual);
+        }
+        let t_sdf = t0.elapsed();
+
+        let t1 = Instant::now();
+        let mut n_ok = 0usize;
+        for _p in &pts {
+            let m = crate::offset_channel::resolve_stop_modes_at(inner, channels, *_p);
+            n_ok += m.iter().filter(|x| x.is_proved()).count();
+        }
+        let t_res = t1.elapsed();
+
+        println!(
+            "| {name} | {} Kanäle | Ω {om_bytes} B, Kanäle {ch_bytes} B | sdf {:>8.2?} | \
+             resolve {:>8.2?} | Anteil {:.1} % | (acc {acc:.3}, {n_ok}) |",
+            channels.len(),
+            t_sdf / pts.len() as u32,
+            t_res / pts.len() as u32,
+            100.0 * t_res.as_secs_f64() / t_sdf.as_secs_f64().max(1e-12)
+        );
+    }
+}
+
+/// **§8ac-Pin 9 (Review 20, Sollte 6): der Vorfilter ändert keinen Feldwert.**
+///
+/// `resolve_stop_modes_at` löst nur die Kanäle auf, die am jeweiligen Punkt
+/// überhaupt binden können — der Filter ist exakt der erste Early-Out von
+/// `channel_limit` (`dbs ≥ trust` ⇒ neutraler Beitrag). Das ist eine
+/// Behauptung über Feldwerte, und sie wird hier gemessen: gegen die EAGERE
+/// Auflösung, bitweise, an jedem Kanal und jedem Punkt.
+///
+/// Zusätzlich: wo der Filter greift, MUSS der Beitrag wirklich neutral sein —
+/// sonst wäre er kein Filter, sondern eine stille Abschwächung.
+#[test]
+fn activation_lazy_resolution_is_field_neutral_384() {
+    let delta = 2.0f32;
+    let mut g = Lcg(0x8ac_1a2b);
+    let (mut probes, mut skipped, mut resolved_proved) = (0usize, 0usize, 0usize);
+    for (name, field, _e, lo, hi, _c) in cert_matrix(delta) {
+        let mut stops = Vec::new();
+        stop_nodes(&field, &mut stops);
+        for st in &stops {
+            let BoundedCsg::ArcChannel { inner, channels, .. } = st else { continue };
+            if channels.is_empty() {
+                continue;
+            }
+            for _ in 0..3000 {
+                let p = [
+                    (lo[0] + g.next_f64() * (hi[0] - lo[0])) as f32,
+                    (lo[1] + g.next_f64() * (hi[1] - lo[1])) as f32,
+                    (lo[2] + g.next_f64() * (hi[2] - lo[2])) as f32,
+                ];
+                let eager = crate::offset_channel::resolve_stop_modes(inner, channels);
+                let lazy = crate::offset_channel::resolve_stop_modes_at(inner, channels, p);
+                assert_eq!(eager.len(), lazy.len());
+                for (i, ch) in channels.iter().enumerate() {
+                    let ve = oc::channel_limit(p, ch, eager[i]);
+                    let vl = oc::channel_limit(p, ch, lazy[i]);
+                    assert_eq!(
+                        ve.to_bits(),
+                        vl.to_bits(),
+                        "{name}: der Vorfilter hat den Feldwert von Kanal {i} bewegt \
+                         ({ve} gegen {vl}) bei {p:?}"
+                    );
+                    if eager[i].is_proved() && !lazy[i].is_proved() {
+                        // Übersprungen ⇒ der Beitrag MUSS neutral sein.
+                        assert!(
+                            ve <= -crate::offset_channel::END_PLANE_OFF,
+                            "{name}: Kanal {i} wurde übersprungen, trägt aber {ve} bei"
+                        );
+                        skipped += 1;
+                    }
+                    if lazy[i].is_proved() {
+                        resolved_proved += 1;
+                    }
+                    probes += 1;
+                }
+            }
+        }
+    }
+    assert!(probes > 500_000, "nur {probes} Kanal-Proben");
+    assert!(
+        skipped > 10_000 && resolved_proved > 10_000,
+        "{skipped} übersprungen / {resolved_proved} aufgelöst — der Pin braucht beide Sorten"
+    );
+    println!(
+        "§8ac Pin 9: {probes} Kanal-Proben bitgleich; {skipped} durch den Vorfilter \
+         übersprungen (alle neutral), {resolved_proved} voll aufgelöst"
+    );
+}

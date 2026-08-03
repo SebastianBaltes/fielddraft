@@ -587,7 +587,7 @@ impl BoundedCsg {
                 let d0 = inner.sdf_open(p, mode, open);
                 // #384 §8ac (19. Review): die Modi EINMAL an der Konsumgrenze
                 // auflösen — hier liegt `inner` vor, also auch `Ω`.
-                let modes = crate::offset_channel::resolve_stop_modes(inner, channels);
+                let modes = crate::offset_channel::resolve_stop_modes_at(inner, channels, p);
                 let d = crate::offset_channel::stop_apply(
                     d0,
                     p,
@@ -906,7 +906,7 @@ impl BoundedCsg {
                 let mut lim = -crate::offset_channel::END_PLANE_OFF;
                 // #384 §8o: die untere Distanzschranke des Stopps (`OP_STOP_LB`).
                 let lbv = crate::offset_channel::stop_lb_value(d0, p, lb.as_ref());
-                let modes = crate::offset_channel::resolve_stop_modes(inner, channels);
+                let modes = crate::offset_channel::resolve_stop_modes_at(inner, channels, p);
                 for (ci, ch) in channels.iter().enumerate() {
                     lim = lim.max(crate::offset_channel::channel_limit(p, ch, modes[ci]));
                     // #384 §8i: Gate gegen den naiven Stopp-Wert `d0`.

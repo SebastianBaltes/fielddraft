@@ -172,9 +172,12 @@ pub struct ChannelArc {
 /// #384 §8ac — die aufgelösten Laufzeitmodi aller Kanäle eines Baumes, für die
 /// **Diagnose** (`offsetChannelDiagnostics`). `(proved, A_seam, A_h)` je Kanal.
 ///
-/// Läuft über [`OffsetChannel::limit_mode`], also inklusive der
-/// Digest-Nachprüfung — die Diagnose zeigt, was die Produktion wirklich
-/// verbraucht, nicht was einmal aufgelöst wurde.
+/// Läuft über [`resolve_stop_modes`], also über den **exakten
+/// Stromvergleich von Kanal UND `Ω`** — dieselbe Auflösung, die auch die sechs
+/// Spiegel benutzen. Die Diagnose zeigt damit, was die Produktion wirklich
+/// verbraucht, nicht was einmal aufgelöst wurde. (Bis v0.65.2 stand hier eine
+/// Digest-Nachprüfung; die war deterministisch fälschbar, bis v0.65.3 fehlte
+/// zusätzlich die `Ω`-Hälfte.)
 pub fn collect_limit_modes(node: &BoundedCsg) -> Vec<(bool, f32, f32)> {
     fn go(n: &BoundedCsg, out: &mut Vec<(bool, f32, f32)>) {
         match n {
@@ -235,6 +238,18 @@ pub enum LegacyReason {
 pub enum ChannelLimitMode {
     /// Beide Addenden bewiesen (§8aa Naht, §8ab Stützebene) und gegen genau
     /// diesen Kanal und sein `Ω` abgerufen.
+    ///
+    /// **`#[non_exhaustive]`** (§8ac, Review 20, Sollte 5): ausserhalb dieses
+    /// Crates lässt sich die Variante **nicht konstruieren**. Vorher hätte ein
+    /// fremder Rust-Aufrufer `Proved { seam, h }` selbst bauen und in
+    /// `channel_limit` schieben können — kein Produktionspfad, aber die
+    /// strukturelle Zusage „ein bewiesener Modus entsteht nur stopgebunden"
+    /// war damit unwahr. Zusammen mit `pub(crate)` auf den Verbrauchs-Helfern
+    /// stimmt sie wieder: **von aussen** gibt es keinen Weg, einen
+    /// `Proved`-Modus herzustellen oder zu konsumieren. Innerhalb des Crates
+    /// bleibt der versiegelte Auflösungsweg
+    /// ([`OffsetChannel::resolve_limit_mode`]) die einzige Quelle.
+    #[non_exhaustive]
     Proved { seam: f32, h: f32 },
     /// Kein Beweis — das Feld bleibt bitgenau das alte.
     LegacyUnproven(LegacyReason),
@@ -474,6 +489,22 @@ impl OffsetChannel {
         match self.mode {
             ChannelLimitMode::Proved { seam, h } => match self.seam.as_ref() {
                 Some(proof) if proof.matches_channel(self) && proof.matches_omega(omega) => {
+                    ChannelLimitMode::Proved { seam, h }
+                }
+                _ => ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated),
+            },
+            m => m,
+        }
+    }
+
+    /// Wie [`Self::limit_mode_for`], aber gegen eine bereits serialisierte
+    /// `Ω`-Byte-Folge (s. Review 20, Sollte 6). Exakt derselbe Vergleich.
+    fn limit_mode_for_bytes(&self, om_bytes: &[u8]) -> ChannelLimitMode {
+        match self.mode {
+            ChannelLimitMode::Proved { seam, h } => match self.seam.as_ref() {
+                Some(proof)
+                    if proof.matches_channel(self) && proof.matches_omega_bytes(om_bytes) =>
+                {
                     ChannelLimitMode::Proved { seam, h }
                 }
                 _ => ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated),
@@ -994,17 +1025,56 @@ pub fn concave_gate(gate_w: f32, base: f32, extra: f32) -> f32 {
 /// Jeder Verbraucher (CPU-Baum, Tape-Emitter, fidget, Dual, Diagnose) hat
 /// `inner` und `channels` zur Hand und ruft genau das hier — die Ω-Prüfung
 /// läuft damit einmal pro Baum-Walk, nicht pro Punkt.
-pub fn resolve_stop_modes(
+pub(crate) fn resolve_stop_modes(
     stop_inner: &crate::bvh::BoundedCsg,
     channels: &[OffsetChannel],
 ) -> Vec<ChannelLimitMode> {
+    let legacy = ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated);
     match crate::offset_witness::omega_of(stop_inner) {
-        Some(om) => channels.iter().map(|c| c.limit_mode_for(om)).collect(),
-        None => vec![
-            ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated);
-            channels.len()
-        ],
+        // §8ac (Review 20, Sollte 6): `Ω` EINMAL serialisieren, nicht je Kanal.
+        Some(om) => {
+            let om_bytes = crate::offset_witness::omega_snapshot(om);
+            channels.iter().map(|c| c.limit_mode_for_bytes(&om_bytes)).collect()
+        }
+        None => vec![legacy; channels.len()],
     }
+}
+
+/// #384 §8ac (Review 20, Sollte 6) — **dieselbe Auflösung, aber nur für die
+/// Kanäle, die an DIESEM Punkt überhaupt etwas beitragen können.**
+///
+/// Gemessen lag die Schnappschuss-Prüfung bei **76 %** der CPU-Auswertung auf
+/// kanalreichen Fixturen: `bvh` löste pro Punkt ALLE Kanäle auf, obwohl der
+/// weitaus grösste Teil im Fernfeld-Skip liegt und gar keinen Beitrag leistet.
+///
+/// Der Filter ist **exakt der erste Early-Out von [`channel_limit`]**
+/// (`dbs ≥ trust` ⇒ neutraler Beitrag `−1e30`). Fällt er, ist der Feldwert vom
+/// Modus **unabhängig** — der Legacy-Modus liefert dort bitgleich dasselbe.
+/// Die Auflösung wird also nicht übersprungen, sondern nur dort gerechnet, wo
+/// sie den Wert überhaupt berühren kann. Keine Abschwächung der Zusage: wo ein
+/// Kanal bindet, wird er vollständig geprüft.
+pub(crate) fn resolve_stop_modes_at(
+    stop_inner: &crate::bvh::BoundedCsg,
+    channels: &[OffsetChannel],
+    p: [f32; 3],
+) -> Vec<ChannelLimitMode> {
+    let legacy = ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated);
+    let Some(om) = crate::offset_witness::omega_of(stop_inner) else {
+        return vec![legacy; channels.len()];
+    };
+    let mut om_bytes: Option<Vec<u8>> = None;
+    channels
+        .iter()
+        .map(|c| {
+            // Der billige Vorfilter: eine Norm, dieselbe Schranke wie in
+            // `channel_limit`. Neutral ⇒ der Modus ist gleichgültig.
+            if norm(sub(p, c.bound_c)) - c.bound_r >= c.trust {
+                return legacy;
+            }
+            let b = om_bytes.get_or_insert_with(|| crate::offset_witness::omega_snapshot(om));
+            c.limit_mode_for_bytes(b)
+        })
+        .collect()
 }
 
 /// #384 §8j — **der Grenzwert-Beitrag EINES Kanals.**
@@ -1030,7 +1100,7 @@ pub fn resolve_stop_modes(
 /// Kanal ohnehin nicht zuständig, und die Untergrenze bliebe ohne Nutzen
 /// hinter dem naiven Feld zurück.
 #[inline]
-pub fn channel_limit(p: [f32; 3], ch: &OffsetChannel, mode: ChannelLimitMode) -> f32 {
+pub(crate) fn channel_limit(p: [f32; 3], ch: &OffsetChannel, mode: ChannelLimitMode) -> f32 {
     let dbs = norm(sub(p, ch.bound_c)) - ch.bound_r;
     if dbs >= ch.trust {
         return -END_PLANE_OFF;
@@ -1205,7 +1275,7 @@ pub fn stop_lb_value(d0: f32, p: [f32; 3], lb: Option<&crate::offset_lb::LbBlock
 /// `lim ← −1e30`, direkt nach dem naiven Stopp emittiert), je einem
 /// `OP_ARC_CHANNEL` / `OP_VERTEX_SPHERE` je Term (die `lim` mit-akkumulieren)
 /// und `OP_STOP_LIMIT` am Ende ab.
-pub fn stop_apply(
+pub(crate) fn stop_apply(
     d0: f32,
     p: [f32; 3],
     channels: &[OffsetChannel],

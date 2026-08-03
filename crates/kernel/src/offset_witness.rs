@@ -1930,6 +1930,18 @@ impl CertifiedSeamAddend {
         c.ok && c.pos == self.omega_snapshot.len()
     }
 
+    /// Wie [`Self::matches_omega`], aber gegen eine **bereits serialisierte**
+    /// `Ω`-Byte-Folge.
+    ///
+    /// §8ac-Korrektur (Review 20, Sollte 6): `resolve_stop_modes` serialisierte
+    /// `Ω` EINMAL JE KANAL — bei 24 Kanälen also 24-mal denselben Baum. Der
+    /// Vergleich ist derselbe (bitweise, exakt), nur die Erzeugung passiert
+    /// jetzt einmal je Stopp-Besuch und wird per `memcmp` gegen jeden Kanal
+    /// gehalten. Keine Abschwächung: identische Bytes, identische Entscheidung.
+    pub(crate) fn matches_omega_bytes(&self, bytes: &[u8]) -> bool {
+        bytes == &self.omega_snapshot[..]
+    }
+
     /// Die autoritative Kanal-Prüfung: Vorfilter, dann bitweiser Vergleich.
     /// Genau EINE Instanz dieser Logik — [`addend_for`](Self::addend_for) und
     /// der Byte-Positions-Pin laufen durch dieselbe Funktion.

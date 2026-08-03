@@ -8025,8 +8025,99 @@ echte `Ω` auf, der Happy Path bleibt feldneutral. C++-Parität erneut 35 Szenen
 / 17.920 Vergleiche / 0 Fehler. nextest **1541** (1540), offset-Profil **247**
 (246), Doctests **1**, Vitest **2082**. Kein fremder Pin gekippt.
 
+### §8ac-Nachlese: das zwanzigste Review (v0.65.4)
+
+P5b-1A ist **merge-fest** — die Transplant- und FNV-Pins wurden ausdrücklich als
+lasttragend bestätigt. Drei nicht-blockierende Punkte blieben.
+
+#### Sollte 6 — die Modus-Auflösung lag im Per-Punkt-Pfad
+
+`resolve_stop_modes` wurde bei **jeder** Auswertung eines `ArcChannel`-Knotens
+gerufen: pro Punkt und pro Kanal wurde der `Ω`-Baum serialisiert und
+byte-verglichen. Erst messen, dann entscheiden — und die Messung war deutlich.
+
+**Vorher** (Release, 2.000 Punkte im Einflussbereich, `BoundedCsg::sdf`):
+
+| Fixture | Kanäle | sdf/Punkt | davon resolve | Anteil |
+|---|---|---|---|---|
+| Ecken-Schale `t/δ=2` | 24 | 3.25 µs | 2.47 µs | **76.0 %** |
+| Ecken-Schale `t/δ=2.5` | 24 | 3.20 µs | 2.45 µs | 76.6 % |
+| Rippen-Kamm 4×2/1 | 22 | 3.98 µs | 2.95 µs | 74.1 % |
+| notch α = 60° | 2 | 284 ns | 136 ns | 48.0 % |
+
+Drei Viertel der CPU-Auswertung gingen in die Prüfung. Zwei Hebel, beide ohne
+jede Abschwächung der Zusage:
+
+1. **`Ω` einmal je Auflösung statt einmal je Kanal.** Bei 24 Kanälen wurde
+   derselbe Baum 24-mal serialisiert. Jetzt einmal, danach `memcmp` gegen den
+   im Beweis gespeicherten Puffer (`matches_omega_bytes`). Identische Bytes,
+   identische Entscheidung.
+2. **Hinter den Early-Out.** `resolve_stop_modes_at(inner, channels, p)` löst
+   nur die Kanäle auf, die an DIESEM Punkt binden können. Der Filter ist
+   **exakt der erste Early-Out von `channel_limit`** (`dbs ≥ trust` ⇒
+   neutraler Beitrag `−1e30`); fällt er, ist der Feldwert vom Modus
+   **unabhängig**. Die Prüfung wird also nicht übersprungen, sondern nur dort
+   gerechnet, wo sie den Wert überhaupt berühren kann.
+
+**Nachher**, dieselbe Messung:
+
+| Fixture | sdf/Punkt | davon resolve | Anteil |
+|---|---|---|---|
+| Ecken-Schale `t/δ=2` | **1.28 µs** (2.5×) | 432 ns | **33.6 %** |
+| Ecken-Schale `t/δ=2.5` | **1.23 µs** (2.6×) | 407 ns | 33.1 % |
+| Rippen-Kamm 4×2/1 | **1.61 µs** (2.5×) | 516 ns | 32.1 % |
+| notch α = 60° | **212 ns** (1.3×) | 61 ns | 29.2 % |
+
+Die akkumulierten Feldwerte der Sonde sind dabei **bit-identisch** geblieben.
+
+**Ein Cache wurde bewusst NICHT gebaut.** Ein Memo am `ArcChannel`-Knoten wäre
+genau die Lücke, die die Reviews 17–19 in drei Runden geschlossen haben: der
+Knoten ist mutierbar, ein Cache daran überlebt jede Mutation. Ein *sicherer*
+Cache bräuchte den unveränderlichen Laufzeit-Knoten — und der ist ein eigenes
+Paket, nicht eine Nachlese-Runde. Der Rest-Aufwand (≈ ⅓ der Auswertung, die
+Prüfung der **wirklich bindenden** Kanäle) ist der ehrliche Preis von „an jeder
+Konsumgrenze verifizieren" und bleibt bis dahin stehen.
+
+Gepinnt (`activation_lazy_resolution_is_field_neutral_384`): **714.000**
+Kanal-Proben, lazy gegen eager **bitweise** gleich; 216.506 durch den Vorfilter
+übersprungen — und jeder davon trägt nachweislich den neutralen Wert.
+
+#### Sollte 5 — der Modus war von aussen fälschbar
+
+`ChannelLimitMode::Proved { seam, h }` war öffentlich konstruierbar, und
+`channel_limit`/`stop_apply` nahmen Aufrufer-Modi. Kein Produktionspfad war
+betroffen, aber die strukturelle Zusage „ein bewiesener Modus entsteht nur
+stopgebunden" war für fremde Rust-Aufrufer unwahr.
+
+Kleinste wirksame Variante: **`#[non_exhaustive]` auf der `Proved`-Variante**
+(ausserhalb des Crates nicht konstruierbar) plus **`pub(crate)`** auf
+`channel_limit`, `stop_apply`, `resolve_stop_modes` und
+`resolve_stop_modes_at`. Geprüft: kein externer Nutzer — weder WASM-API noch
+Beispiele noch `gen_golden` noch `metricity-lab` rufen sie; die einzige nach
+aussen sichtbare Stelle bleibt `collect_limit_modes` für die Diagnose.
+
+Die Zusage präzise: **von ausserhalb des Kernel-Crates gibt es keinen Weg,
+einen `Proved`-Modus herzustellen oder zu konsumieren.** Innerhalb bleibt der
+versiegelte Auflösungsweg die einzige Quelle.
+
+#### Sollte 7 — der Diagnose-Kommentar
+
+Sprach noch vom Digest-Verfahren aus v0.65.1; jetzt auf den exakten
+Stromvergleich von Kanal **und** `Ω` aktualisiert, mit der Historie in einem
+Halbsatz.
+
+#### Prüfungen
+
+Golden **unverändert `915bab98…`**, `check_interp` 35 Szenen / 17.920
+Vergleiche / 0 Fehler. nextest **1542** (1541), Kernel-Lib **1536** (1535),
+offset-Profil **248** (247), Doctests **1**, Vitest **2082**.
+
 ### Was OFFEN bleibt
 
+* **Der unveränderliche Laufzeit-Knoten.** Ein sicherer Cache der aufgelösten
+  Modi setzt ihn voraus; solange er fehlt, kostet die Verifikation an der
+  Konsumgrenze ≈ ⅓ der CPU-Auswertung auf kanalreichen Fixturen (s.
+  §8ac-Nachlese). Eigenes Paket.
 * **P5b-2** — die Intervall-Modellierung der neuen Kette. Bis dahin sind die
   227 Kernzellen und die „ausgeliefert"-Einschliessung der bewiesenen Fixturen
   nicht zertifiziert. Das ist die grösste offene Position dieses Pakets.
