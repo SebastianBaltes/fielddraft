@@ -17526,3 +17526,113 @@ fn stage_a_holds_the_extrude_channels_in_the_shadow_384() {
         "der gemessene Gewinn von Stufe B hat sich bewegt — §8ae nachziehen, nicht den Pin"
     );
 }
+
+/// Ein Quadrat `[−2,2]²` plus EINE vergiftete fünfte Ecke.
+fn poisoned_square(extra: [f32; 2]) -> Sketch2d {
+    sk_poly(&[[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0], extra])
+}
+
+/// Die drei nicht-endlichen Ecken, unter denen NICHTS bewiesen sein darf.
+const POISON_CORNERS: [([f32; 2], &str); 3] = [
+    ([f32::NAN, f32::NAN], "(NaN,NaN)"),
+    ([f32::INFINITY, 0.0], "(∞,0)"),
+    ([0.0, f32::NEG_INFINITY], "(0,−∞)"),
+];
+
+/// **§8ae-Pin 6 (sechzehntes Review, Blocker 1): eine nicht-endliche Ecke
+/// zerstört die Ω-Überdeckung — sie darf sie nicht still überleben.**
+///
+/// `sketch_cover_box` akkumulierte die Polygon-Ecken mit `f64::min`/`f64::max`.
+/// Beide VERWERFEN einen `NaN`-Operanden zugunsten des endlichen — ein Quadrat
+/// plus `(NaN,NaN)` lieferte deshalb die endliche Quadrat-Hülle, und
+/// `omega_cover(…, Active)` behauptete eine Überdeckung, die keine ist. Der
+/// `NaN`-Fall dieses Pins war vor der Korrektur ROT; die beiden Unendlich-Fälle
+/// waren bereits grün (`local_box_to_world` erzeugt aus ihnen ein `0·∞` und
+/// scheitert), sie stehen hier, damit das so bleibt.
+#[test]
+fn nonfinite_polygon_corner_kills_the_omega_cover_384() {
+    for (extra, tag) in POISON_CORNERS {
+        let om = ext_omega(poisoned_square(extra), 3.0);
+        assert!(
+            wit::omega_cover_staged(&om, wit::ExtrudeCoverStage::Active).is_none(),
+            "{tag}: eine nicht-endliche Polygon-Ecke lieferte trotzdem eine Ω-Überdeckung"
+        );
+    }
+    // Gegenprobe: OHNE die vergiftete Ecke trägt die Überdeckung — sonst misst
+    // dieser Pin bloss, dass Polygone überhaupt nicht überdeckt werden.
+    let clean = ext_omega(sk_poly(&[[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]), 3.0);
+    assert!(
+        wit::omega_cover_staged(&clean, wit::ExtrudeCoverStage::Active).is_some(),
+        "das saubere Quadrat hat gar keine Überdeckung — der Pin misst nichts"
+    );
+}
+
+/// **§8ae-Pin 7: dieselbe Vergiftung im AUSSENBEWEIS.**
+///
+/// Hier war die Lücke nicht offen — `polygon_outside` geht über `rsub`/`rmul`,
+/// und die liefern bei einem `NaN`-Operanden `None`, die Kante fällt aus.
+/// Dieser Pin war also von Anfang an grün und ist ein REGRESSIONS-Pin, kein
+/// Falsifikator: er hält fest, dass der Aussenbeweis diese Lücke nie bekommt.
+#[test]
+fn nonfinite_polygon_corner_blocks_the_outside_proof_384() {
+    // Ein Punkt, den das saubere Quadrat beweisbar ausschliesst (z im Band,
+    // also trägt nur der Profil-Grund).
+    let y = [5.0f64, 0.0, 0.0];
+    let clean = ext_omega(sk_poly(&[[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]), 3.0);
+    assert!(ext_outside(&clean, y), "das saubere Quadrat beweist hier nichts — der Pin misst nichts");
+    for (extra, tag) in POISON_CORNERS {
+        let om = ext_omega(poisoned_square(extra), 3.0);
+        assert!(
+            !ext_outside(&om, y),
+            "{tag}: der Aussenbeweis lief über ein Polygon mit nicht-endlicher Ecke"
+        );
+    }
+}
+
+/// **§8ae-Pin 8: dieselbe Endlichkeits-Auflage für die übrigen Profil- und
+/// Extrusions-Zahlen.**
+///
+/// Rechteck-`center`/`half_extents`, Kreis-`center`/`radius`, die
+/// Profil-`distance` und die `half_height` der Extrusion gehen alle in eine
+/// Hülle oder in den Aussenbeweis ein. Keine von ihnen war vor der Korrektur
+/// ROT (die Intervall-Kette fing sie ab), aber keine war auch ausdrücklich
+/// verlangt — jetzt ist sie es.
+#[test]
+fn nonfinite_profile_numbers_are_refused_384() {
+    let n = f32::NAN;
+    let cases: [(&str, Sketch2d, f32); 6] = [
+        ("Rechteck-center", sk_rect([n, 0.0], [2.0, 2.0]), 3.0),
+        ("Rechteck-half_extents", sk_rect([0.0, 0.0], [2.0, n]), 3.0),
+        ("Kreis-center", sk_circle([0.0, n], 2.0), 3.0),
+        ("Kreis-radius", sk_circle([0.0, 0.0], f32::INFINITY), 3.0),
+        ("half_height NaN", sk_rect([0.0, 0.0], [2.0, 2.0]), n),
+        ("half_height ∞", sk_rect([0.0, 0.0], [2.0, 2.0]), f32::INFINITY),
+    ];
+    for (tag, sk, hh) in cases {
+        let om = ext_omega(sk, hh);
+        assert!(
+            wit::omega_cover_staged(&om, wit::ExtrudeCoverStage::Active).is_none(),
+            "{tag}: nicht-endliche Zahl lieferte trotzdem eine Ω-Überdeckung"
+        );
+        assert!(
+            !ext_outside(&om, [5.0, 0.0, 0.0]),
+            "{tag}: nicht-endliche Zahl lief in den Aussenbeweis"
+        );
+    }
+    // Profil-Offset: `distance` nicht-endlich ⇒ weder Hülle noch Aussenbeweis.
+    for d in [n, f32::INFINITY, f32::NEG_INFINITY] {
+        let sk = Sketch2d::Offset {
+            inner: Box::new(sk_rect([0.0, 0.0], [2.0, 2.0])),
+            distance: d,
+        };
+        let om = ext_omega(sk, 3.0);
+        assert!(
+            wit::omega_cover_staged(&om, wit::ExtrudeCoverStage::Active).is_none(),
+            "distance={d}: nicht-endlicher Profil-Offset lieferte eine Ω-Überdeckung"
+        );
+        assert!(
+            !ext_outside(&om, [5.0, 0.0, 0.0]),
+            "distance={d}: nicht-endlicher Profil-Offset lief in den Aussenbeweis"
+        );
+    }
+}

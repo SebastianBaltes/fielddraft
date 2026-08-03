@@ -140,6 +140,68 @@ fn rneg(a: Iv) -> Option<Iv> {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// Endlichkeit — ausdrückliche Vorbedingung jedes Beweisschritts
+// ════════════════════════════════════════════════════════════════════════════
+//
+// §8ae-Korrektur (sechzehntes Review, Blocker 1). Die Hüll-Konstruktion
+// akkumulierte Polygon-Ecken mit `f64::min`/`f64::max`. Beide sind KEINE
+// Beweis-Operationen: sie verwerfen einen `NaN`-Operanden zugunsten des
+// endlichen. Ein Quadrat plus einer Ecke `(NaN,NaN)` lieferte deshalb die
+// endliche Quadrat-Hülle, und `omega_cover(…, Active)` behauptete eine
+// Überdeckung, die keine ist.
+//
+// Die Lehre ist allgemeiner als der eine Fundort: die Intervall-Helfer
+// (`rseal` über `Iv::new`, `rmul`, `rdiv`) fangen `NaN` zwar zuverlässig ab,
+// aber sie tun es als NEBENWIRKUNG. Ein Beweis, dessen Fail-closed-Verhalten
+// von der Implementierung einer Hilfsfunktion abhängt, ist nicht geführt,
+// sondern geliehen. Endlichkeit wird deshalb ab hier ÜBERALL ausdrücklich
+// verlangt, bevor eine Zahl in eine Hülle oder in den Aussenbeweis eingeht —
+// auch dort, wo die Intervall-Kette sie ohnehin schon abgefangen hätte.
+
+#[inline]
+fn fin2(v: &[f32; 2]) -> bool {
+    v.iter().all(|x| x.is_finite())
+}
+
+#[inline]
+fn fin3(v: &[f32; 3]) -> bool {
+    v.iter().all(|x| x.is_finite())
+}
+
+/// Jede Zahl einer Platzierung — Translation, Quaternion, Skalierung.
+#[inline]
+fn transform_finite(t: &Transform) -> bool {
+    fin3(&t.translate) && t.rotation.iter().all(|x| x.is_finite()) && fin3(&t.scale)
+}
+
+/// Die Zahlen eines 3D-Blattes, das der Beweis überhaupt anfassen darf.
+/// `false` heisst schlicht: nicht beweisbar (weder aussen noch überdeckt).
+#[inline]
+fn primitive_finite(p: &Primitive) -> bool {
+    match p {
+        Primitive::Box { center, half_extents } => fin3(center) && fin3(half_extents),
+        Primitive::Sphere { center, radius } => fin3(center) && radius.is_finite(),
+        Primitive::Cylinder { center, radius, half_height } => {
+            fin3(center) && radius.is_finite() && half_height.is_finite()
+        }
+        _ => false,
+    }
+}
+
+/// Dasselbe für ein 2D-Profil-Blatt.
+#[inline]
+fn sketch_prim_finite(p: &Sketch2dPrimitive) -> bool {
+    match p {
+        Sketch2dPrimitive::Rectangle { center, half_extents } => {
+            fin2(center) && fin2(half_extents)
+        }
+        Sketch2dPrimitive::Circle { center, radius } => fin2(center) && radius.is_finite(),
+        Sketch2dPrimitive::Polygon { vertices } => vertices.iter().all(fin2),
+        _ => false,
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // #384 §8ae / Stufe A — die Stufen-Schaltung des Extrude-Aussenbeweises
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -216,6 +278,14 @@ pub fn box_outside_omega(node: &BoundedCsg, b: [Iv; 3], margin: f64) -> bool {
 /// Wie [`box_outside_omega`], aber mit ausdrücklich gewählter Stufe. Die
 /// Produktion ruft **nie** diese Fassung — sie existiert für die §8ae-Pins und
 /// für die Shadow-Messung des Gewinns, den Stufe B holen wird.
+///
+/// **Warum hier trotzdem KEIN `#[cfg(test)]` steht** (§8ae, sechzehntes
+/// Review, Sollte 3): [`box_outside_omega`] und [`cover_channel_staged`]
+/// gehen im Produktions-Build durch diese Funktion — nur eben mit
+/// [`EXTRUDE_COVER_STAGE`] statt mit einer frei gewählten Stufe. Sie ist
+/// zudem eine reine ABFRAGE und versiegelt nichts; test-only ist genau der
+/// schreibende Weg, [`certify_for_probe`]. Dasselbe gilt für
+/// [`cover_channel_staged`] und [`omega_cover_staged`].
 pub(crate) fn box_outside_omega_staged(
     node: &BoundedCsg,
     b: [Iv; 3],
@@ -233,6 +303,9 @@ fn box_outside_inner(node: &BoundedCsg, b: [Iv; 3], margin: f64, stage: ExtrudeC
     match node {
         BoundedCsg::Empty => true,
         BoundedCsg::Leaf { primitive, world_transform, .. } => {
+            if !primitive_finite(primitive) {
+                return false;
+            }
             let Some(local) = local_box(world_transform, b) else { return false };
             match primitive {
                 Primitive::Box { center, half_extents } => (0..3).any(|k| {
@@ -268,8 +341,28 @@ fn box_outside_inner(node: &BoundedCsg, b: [Iv; 3], margin: f64, stage: ExtrudeC
         //
         // Die Projektion ist EXAKT: `local` ist eine achsenparallele
         // Intervall-Box, ihre `(x,y)`-Komponenten sind die Projektion.
+        //
+        // ## Vorbedingung: der GESCHLOSSENE Auswertungspfad
+        //
+        // (§8ae-Korrektur, sechzehntes Review, Befund 2.) Bewiesen wird hier
+        // die Menge `{max(d₂, |z| − hh) ≤ 0}` — also genau das, was
+        // `bvh.rs::sdf_open` im `else`-Zweig über `sdf_extrude` rechnet
+        // (`crates/kernel/src/bvh.rs:634..651`). Bei
+        // `open.has_feature(id)` läuft die Auswertung stattdessen über
+        // `sketch.sdf_retained` und `crate::csg::extrude_retained_combine`
+        // (`crates/kernel/src/csg.rs:3784..3799`), und das ist eine ANDERE
+        // MENGE: jede nicht angeklammerte Kappe lässt ihren `max`-Term aus,
+        // bei beiden offenen Kappen bleibt schlicht `d = d₂` — profil-intern
+        // ein UNENDLICHES Prisma. Ein Aussenzeuge der geschlossenen Extrusion
+        // (typisch: der axiale Grund, `|z| > hh`) liegt dort im Material.
+        //
+        // Für Stufe A ist das folgenlos — der Arm liefert ohnehin `false`.
+        // Stufe B darf erst aktiv werden, wenn sie bei nichtleerem relevantem
+        // `OpenSet` den Modus auf Legacy zurückzieht ODER separat gegen die
+        // retained Menge bewiesen ist. Solange das nicht dasteht, gilt der
+        // Beweis ausdrücklich NUR für den geschlossenen Pfad.
         BoundedCsg::Extrude { sketch, half_height, world_transform, .. } => {
-            if stage != ExtrudeCoverStage::Active {
+            if stage != ExtrudeCoverStage::Active || !half_height.is_finite() {
                 return false;
             }
             let Some(local) = local_box(world_transform, b) else { return false };
@@ -289,7 +382,7 @@ fn box_outside_inner(node: &BoundedCsg, b: [Iv; 3], margin: f64, stage: ExtrudeC
         // Für `δ > 0` ist er GRÖSSER, und die Schlussrichtung dreht sich um —
         // dann ist hier nichts bewiesen.
         BoundedCsg::Offset { inner, delta, .. } => {
-            *delta <= 0.0 && box_outside_inner(inner, b, margin, stage)
+            delta.is_finite() && *delta <= 0.0 && box_outside_inner(inner, b, margin, stage)
         }
         BoundedCsg::InnerWall { inner, .. } => box_outside_inner(inner, b, margin, stage),
         _ => false,
@@ -318,6 +411,7 @@ fn sketch_outside_inner(node: &BoundedSketch2d, p: [Iv; 2], margin: f64) -> bool
     let sep = |v: Option<Iv>| -> bool { matches!(v, Some(s) if s.lo > margin) };
     match node {
         BoundedSketch2d::Empty => true,
+        BoundedSketch2d::Prim { primitive, .. } if !sketch_prim_finite(primitive) => false,
         BoundedSketch2d::Prim { primitive, .. } => match primitive {
             Sketch2dPrimitive::Rectangle { center, half_extents } => (0..2).any(|k| {
                 let d = rsub(p[k], pt(center[k] as f64));
@@ -341,7 +435,7 @@ fn sketch_outside_inner(node: &BoundedSketch2d, p: [Iv; 2], margin: f64) -> bool
         }
         BoundedSketch2d::Difference { left, .. } => sketch_outside_inner(left, p, margin),
         BoundedSketch2d::Offset { inner, distance, .. } => {
-            *distance <= 0.0 && sketch_outside_inner(inner, p, margin)
+            distance.is_finite() && *distance <= 0.0 && sketch_outside_inner(inner, p, margin)
         }
     }
 }
@@ -375,6 +469,10 @@ fn polygon_outside(v: &[[f32; 2]], p: [Iv; 2], margin: f64) -> bool {
     // Weniger als drei Ecken: `sdf_polygon` liefert `+∞`, die Menge ist leer.
     // Trotzdem fail-closed — ein entartetes Profil ist kein Beweisgegenstand.
     if v.len() < 3 {
+        return false;
+    }
+    // Endlichkeit ausdrücklich, nicht geliehen (§8ae, sechzehntes Review).
+    if !v.iter().all(fin2) {
         return false;
     }
     let n = v.len();
@@ -445,6 +543,9 @@ fn sub3(a: [Iv; 3], b: [Iv; 3]) -> Option<[Iv; 3]> {
 /// `world_to_local` in REELLER Intervall-Arithmetik. Für die Identität
 /// (`q = (0,0,0,1)`, `scale = 1`) ist das Ergebnis exakt.
 fn local_box(t: &Transform, p: [Iv; 3]) -> Option<[Iv; 3]> {
+    if !transform_finite(t) {
+        return None;
+    }
     local_linear(t, sub3(p, f32p3(t.translate))?)
 }
 
@@ -844,6 +945,11 @@ pub(crate) fn cover_channel_staged(
 /// #384 §8ae — **nur für die Messung**: hat dieser Kanal unter der gewählten
 /// Stufe eine VOLLSTÄNDIGE Zeugen-Abdeckung? Das ist die Kennzahl, an der
 /// Stufe A gemessen wird; feldwirksam wird davon nichts.
+///
+/// `#[cfg(test)]` (§8ae, sechzehntes Review, Sollte 3): eine Messfunktion, die
+/// den Stufen-Schalter von aussen setzt, hat in einem Produktions-Build nichts
+/// verloren — dort gibt es nur [`EXTRUDE_COVER_STAGE`].
+#[cfg(test)]
 pub(crate) fn cover_shadow_probe(
     omega: &BoundedCsg,
     ch: &OffsetChannel,
@@ -1581,6 +1687,11 @@ pub(crate) type WorldBox = ([f64; 3], [f64; 3]);
 /// ist die AABB des Bildes genau die AABB der Eckbilder, und über einer
 /// Intervall-Matrix ist die Eckhülle eine Obermenge davon.
 pub(crate) fn local_box_to_world(t: &Transform, lo: [f64; 3], hi: [f64; 3]) -> Option<WorldBox> {
+    // Endlichkeit ausdrücklich (§8ae, sechzehntes Review): weder eine
+    // Platzierung noch eine lokale Box mit `NaN`/`±∞` ist ein Beweisgegenstand.
+    if !transform_finite(t) || !lo.iter().chain(hi.iter()).all(|v| v.is_finite()) {
+        return None;
+    }
     // `A`, spaltenweise: `col[k] = A·e_k`.
     let mut col = [[pt(0.0); 3]; 3];
     for k in 0..3 {
@@ -1686,6 +1797,12 @@ fn sketch_cover_box(n: &BoundedSketch2d) -> Option<Option<([f64; 2], [f64; 2])>>
     };
     match n {
         BoundedSketch2d::Empty => Some(None),
+        // **Endlichkeit zuerst** (§8ae-Korrektur, sechzehntes Review, Blocker
+        // 1). Die Akkumulation unten läuft über `f64::min`/`f64::max`, und die
+        // VERWERFEN einen `NaN`-Operanden. Ohne dieses Gate lieferte ein
+        // Quadrat plus `(NaN,NaN)` die endliche Quadrat-Hülle — eine
+        // „Überdeckung", die nichts überdeckt.
+        BoundedSketch2d::Prim { primitive, .. } if !sketch_prim_finite(primitive) => None,
         BoundedSketch2d::Prim { primitive, .. } => match primitive {
             Sketch2dPrimitive::Rectangle { center, half_extents } => {
                 let mut lo = [0.0f64; 2];
@@ -1732,7 +1849,9 @@ fn sketch_cover_box(n: &BoundedSketch2d) -> Option<Option<([f64; 2], [f64; 2])>>
             sketch_cover_box(left)
         }
         BoundedSketch2d::Offset { inner, distance, .. } => {
-            (*distance <= 0.0).then(|| sketch_cover_box(inner)).flatten()
+            (distance.is_finite() && *distance <= 0.0)
+                .then(|| sketch_cover_box(inner))
+                .flatten()
         }
     }
 }
@@ -1747,6 +1866,9 @@ pub(crate) fn omega_cover_staged(
         match n {
             BoundedCsg::Empty => true,
             BoundedCsg::Leaf { primitive, world_transform, .. } => {
+                if !primitive_finite(primitive) {
+                    return false;
+                }
                 let (lo, hi) = match primitive {
                     Primitive::Box { center, half_extents } => {
                         let mut lo = [0.0f64; 3];
@@ -1795,7 +1917,7 @@ pub(crate) fn omega_cover_staged(
             // `[−|hh|, +|hh|]`, danach durch dieselbe rigorose Vorwärts-
             // Abbildung wie jedes andere Blatt. Gate: Stufe B.
             BoundedCsg::Extrude { sketch, half_height, world_transform, .. } => {
-                if !extrude_ok {
+                if !extrude_ok || !half_height.is_finite() {
                     return false;
                 }
                 let Some(prof) = sketch_cover_box(sketch) else { return false };
@@ -1819,7 +1941,7 @@ pub(crate) fn omega_cover_staged(
             BoundedCsg::Intersection { left, .. } => go(left, out, extrude_ok),
             BoundedCsg::Difference { left, .. } => go(left, out, extrude_ok),
             BoundedCsg::Offset { inner, delta, .. } => {
-                *delta <= 0.0 && go(inner, out, extrude_ok)
+                delta.is_finite() && *delta <= 0.0 && go(inner, out, extrude_ok)
             }
             BoundedCsg::InnerWall { inner, .. } => go(inner, out, extrude_ok),
             _ => false,
@@ -2651,6 +2773,13 @@ pub(crate) fn certify_channel_with(
 /// #384 §8ae — **nur für die Shadow-Messung**: dieselbe Zertifizierung, aber
 /// mit ausdrücklich gewählter Extrude-Stufe. Sie schreibt in eine KOPIE des
 /// Kanals; feldwirksam wird nichts.
+///
+/// **`#[cfg(test)]`** (§8ae, sechzehntes Review, Sollte 3). Dies ist der
+/// EINZIGE Weg, auf dem ein `Active`-Beweis in eine versiegelte Kanal-Zelle
+/// kommt. „Es gibt heute keinen Nicht-Test-Aufrufer" ist eine Beobachtung,
+/// keine Struktur; in Produktions-Builds existiert die Funktion jetzt gar
+/// nicht — genau wie [`transplant_proof`] seit Review 14.
+#[cfg(test)]
 pub(crate) fn certify_for_probe(
     omega: &BoundedCsg,
     ch: &mut OffsetChannel,

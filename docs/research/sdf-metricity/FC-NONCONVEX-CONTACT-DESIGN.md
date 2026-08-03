@@ -8497,12 +8497,75 @@ Positive Profil-Offsets werden dort verweigert.
   `(√(x²+z²), y)` ab und wäre der nächste einfache Kandidat, sobald ein Fixture
   ihn braucht.
 
+### Die Nachträge des sechzehnten Reviews
+
+Drei Befunde, alle drei noch in Stufe A eingearbeitet.
+
+**1. `min`/`max` sind keine Beweis-Operationen (Blocker).** `sketch_cover_box`
+akkumulierte die Polygon-Ecken mit `f64::min`/`f64::max`. Beide VERWERFEN einen
+`NaN`-Operanden zugunsten des endlichen — ein Quadrat plus einer Ecke
+`(NaN,NaN)` lieferte deshalb die endliche Quadrat-Hülle, und
+`omega_cover(…, Active)` behauptete eine Überdeckung, die keine ist. Der
+Falsifikator `nonfinite_polygon_corner_kills_the_omega_cover_384` war vor der
+Korrektur ROT.
+
+Die Lehre ist grösser als der Fundort. Der Aussenbeweis selbst
+(`polygon_outside`, `sketch_outside_inner`, der Extrude-Arm von
+`box_outside_inner`) hatte die `NaN`-Lücke **nicht**: er läuft über `rsub` und
+`rmul`, und die liefern bei `NaN` `None` — die Kante fällt aus, der Beweis
+scheitert. Aber er tut es als NEBENWIRKUNG der Hilfsfunktionen. Ein Beweis,
+dessen Fail-closed-Verhalten von der Implementierung eines Intervall-Helfers
+abhängt, ist nicht geführt, sondern geliehen; und `sketch_cover_box` benutzte
+diese Helfer eben gerade nicht. Endlichkeit ist deshalb jetzt ÜBERALL
+ausdrückliche Vorbedingung, bevor eine Zahl in eine Hülle oder in den
+Aussenbeweis eingeht: Polygon-Ecken, `Rectangle`-`center`/`half_extents`,
+`Circle`-`center`/`radius`, Profil-`distance`, `Offset`-`delta`, `half_height`
+und jede Komponente der `Transform` (`transform_finite`). Dabei fiel ein
+zweiter, kleinerer Fall auf: `sketch_outside_inner` bewies ein Rechteck mit
+`half_extents = [2, NaN]` über die INTAKTE Achse als aussen. Unsound war das
+nicht (die Menge ist dort leer), verlangt war es auch nicht — jetzt ist es
+fail-closed.
+
+**2. Die Vorbedingung des GESCHLOSSENEN Pfades.** Verifiziert an
+`crates/kernel/src/bvh.rs:634..651` und
+`crates/kernel/src/csg.rs:3784..3799`: der `BoundedCsg::Extrude`-Arm von
+`sdf_open` hat ZWEI Pfade. Der `else`-Zweig rechnet `sdf_extrude`, also genau
+die Menge `{max(d₂, |z| − hh) ≤ 0}`, über die §8ae spricht. Bei
+`open.has_feature(id)` läuft er stattdessen über `sketch.sdf_retained` und
+`extrude_retained_combine` — und das ist eine ANDERE MENGE: jede nicht
+angeklammerte Kappe lässt ihren `max`-Term aus (`d.max(z − hh)` bzw.
+`d.max(−z − hh)`), bei BEIDEN offenen Kappen bleibt schlicht `d = d₂`,
+profil-intern also ein UNENDLICHES Prisma. Ein Aussenzeuge der geschlossenen
+Extrusion — typisch der axiale Grund, `|z| > hh` — liegt dort im Material.
+
+Für Stufe A ist das folgenlos: der Arm liefert ohnehin `false`. Für Stufe B ist
+es **merge-blockierend**. Die Aktivierung muss bei nichtleerem relevantem
+`OpenSet` den Modus auf Legacy zurückziehen, solange nicht separat gegen die
+retained Menge bewiesen ist. Die Vorbedingung steht als Doc-Kommentar am
+Extrude-Arm von `box_outside_inner`, damit sie niemand beim Umlegen der einen
+Zeile übersieht.
+
+**3. `margin` ist LOKALER Striktheits-Slack, kein Welt-mm-Budget.** Verlangt
+wird je Beweisschritt `min_b(…) > margin` — im LOKALEN Rahmen des jeweiligen
+Blattes bzw. Profils, nach der Division durch `scale` und (beim Polygon) durch
+`|d_i|`. `margin` ist damit die Antwort auf „eine Berührung ist kein Beweis für
+aussen", und sonst nichts. Es ist ausdrücklich KEIN in Weltmillimetern
+interpretierbarer Sicherheitsabstand: die Weltskala steht davor, und in
+`GeometricEta` taucht `margin` nirgends auf — das η-Budget kommt allein aus
+`|shift|`. Wer `margin` als mm-Puffer läse, würde eine Zahl addieren, die der
+Beweis nie zugesagt hat.
+
 ### Belege
 
-* **`cargo nextest run --workspace`**: **1552** (Baseline 1547) — fünf neue
+* **`cargo nextest run --workspace`**: **1555** (Baseline 1547) — acht neue
   Pins: Profilformen, Booleans in beide Richtungen (jeder Assert tötet einen
   benannten Mutanten), nicht-konvexe Kerbe + Sternpolygon, „beide Gründe sind
-  unentbehrlich", und die Stufen-Neutralität.
+  unentbehrlich", die Stufen-Neutralität, und aus dem sechzehnten Review die
+  drei Endlichkeits-Pins `nonfinite_polygon_corner_kills_the_omega_cover_384`
+  (war ROT), `nonfinite_polygon_corner_blocks_the_outside_proof_384` (war grün
+  — Regressions-Pin, ausdrücklich kein Falsifikator) und
+  `nonfinite_profile_numbers_are_refused_384` (war ROT am
+  `half_extents`-`NaN` im Aussenbeweis).
 * **Golden byte-identisch**: `915bab98…40eb`, `check_interp` 35 Szenen /
   17.920 Vergleiche / 0 Fehler.
 * **Web-Vitest 2082**, unverändert.
@@ -8513,7 +8576,10 @@ Positive Profil-Offsets werden dort verweigert.
 
 **Stufe B** — die Aktivierung: `EXTRUDE_COVER_STAGE = Active`, mit eigener
 Golden-Bewegung, eigenem Shadow-Pin (236 / 2 / 0) und eigenem Review. Sie ist
-bewusst NICHT Teil dieses Schritts.
+bewusst NICHT Teil dieses Schritts. **Auflage aus Befund 2 des sechzehnten
+Reviews**: Stufe B darf nicht mergen, ohne dass der `Open`/retained-Pfad
+behandelt ist — bei nichtleerem relevantem `OpenSet` Rückzug auf Legacy, oder
+ein eigener Beweis gegen die retained Menge.
 
 ## 9. Geschriebene Dateien
 
