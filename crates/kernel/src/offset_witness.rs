@@ -1154,10 +1154,10 @@ pub(crate) type WorldBox = ([f64; 3], [f64; 3]);
 /// ohnehin keine exakt normierte Viererzahl.
 ///
 /// Die Familie des Reviews macht es scharf: `q = (0,0,0.5,0)`, `scale = 1`,
-/// lokale Box `[−1,1]³`. Die Rückwärts-Abbildung skaliert um `0.25`, `Ω`
-/// reicht in Welt-`x`/`y` also bis `±4`; die alte Vorwärtsbox reichte nur bis
-/// `±0.5`. Die „Überdeckung" überdeckte nicht — `τ` wurde unterschätzt und ein
-/// falsches `HBudget` geprägt.
+/// lokale Box `[−1,1]³`. Die Rückwärts-Abbildung skaliert in `x`/`y` um `0.5`,
+/// `Ω` reicht in Welt-`x`/`y` also bis `±2`; die alte Vorwärtsbox reichte nur
+/// bis `±0.5`. Die „Überdeckung" überdeckte nicht — `τ` wurde unterschätzt und
+/// ein falsches `HBudget` geprägt.
 ///
 /// **Eine blosse Toleranzprüfung `||q| − 1| < ε` würde das nicht heilen**: sie
 /// gäbe keine hergeleitete Box-Aufweitung. Deshalb wird hier die
@@ -1506,10 +1506,15 @@ const H_TAU_LIMIT_MM: f64 = 0.5;
 /// A_k^geom = (R_k·|1−ν_k| + τ_k) / ν_k     ⇒   S_k ≤ Ĥ_k + A_k^geom.
 /// ```
 ///
-/// Die Reichweiten-Schranke `R_k` ist **bewiesen, nicht angenommen**:
-/// `channel_limit` steigt aus, sobald `|p − bound_c| − bound_r ≥ trust`. Im
-/// aktiven Bereich gilt also `|p_j| ≤ |bound_c_j| + bound_r + trust`, und
-/// damit `|Ĥ_k| ≤ Σ_j |p_j|·|n_kj| + |C_k| + |δ| =: R_k`. Ohne diese Schranke
+/// Die Reichweiten-Schranke `R_k` ist **bewiesen, nicht angenommen** — und
+/// zwar über [`active_span`], NICHT über die naive reelle Lesart des
+/// Early-Outs: `channel_limit` steigt aus, sobald
+/// `fl(norm_f32(fl(p − bound_c)) − bound_r) ≥ trust`, und erst die
+/// Rückwärts-Brücke von `active_span` macht daraus eine reelle Schranke
+/// `|p − bound_c| ≤ span` (die naive Form `bound_r + trust` wurde in der
+/// Review-16-Runde an 13 Punkten widerlegt). Im aktiven Bereich gilt
+/// `|p_j| ≤ |bound_c_j| + span`, und damit
+/// `|Ĥ_k| ≤ Σ_j |p_j|·|n_kj| + |C_k| + |δ| =: R_k`. Ohne diese Schranke
 /// wäre die additive Form nicht zulässig und man müsste die Division
 /// `(Ĥ+τ)/|n|` ins Feld nehmen.
 ///
@@ -1547,8 +1552,9 @@ pub(crate) fn h_budget(
     cover: &[WorldBox],
     knobs: SeamProofKnobs,
 ) -> Result<HBudget, HStatus> {
-    // Der aktive Bereich: `|p − bound_c| < bound_r + trust` (zwei geprüfte
-    // Ausgänge in `channel_limit`).
+    // Der aktive Bereich: `|p − bound_c| ≤ span` aus `active_span` — die
+    // op-genaue Rückwärts-Brücke über den f32-Early-Out von `channel_limit`
+    // (nicht die naive reelle Lesart `bound_r + trust`).
     let mut pmax = [0.0f64; 3];
     let Some(span) = active_span(ch) else {
         return Err(HStatus::Degenerate);
