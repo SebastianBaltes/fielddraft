@@ -399,10 +399,17 @@ pub struct Knobs {
     /// (`fl(s4 + (δ+A_h))`). Über ℝ identisch, über f32 nicht.
     ///
     /// **Struktur-/Paritätsknopf, KEINE lasttragende Soundness-Ablation**
-    /// (Review 21, Sollte 1): eine anders geklammerte natürliche
-    /// Intervallerweiterung bleibt trotz falscher Produktionsklammerung eine
-    /// gültige Obermenge — [`Ctx::fadd`] verbreitert jeden Zwischenschritt nach
-    /// aussen und nimmt den ein-ulp-Unterschied auf. Einen Escape zu erzwingen
+    /// (Review 21, Sollte 1): auf der HEUTIGEN Zertifizierungs-Matrix bleibt
+    /// die anders geklammerte natürliche Intervallerweiterung trotz falscher
+    /// Produktionsklammerung eine gültige Obermenge — [`Ctx::fadd`] verbreitert
+    /// jeden Zwischenschritt nach aussen und nimmt den ein-ulp-Unterschied auf.
+    ///
+    /// **Allgemein gilt das NICHT** (Review 22, nachgerechnet): für
+    /// `s4 = −8.7653297669e−6`, `δ = 1.1354654816e−6`, `A_h = 6.7056127317e−10`
+    /// ist `fl(fl(s4+δ)+A_h) = −7.6291930782e−6` der obere f32-Nachbar von
+    /// `fl(s4+fl(δ+A_h))` und liegt damit AUSSERHALB der aussen gerundeten
+    /// reassoziierten Hülle. Die Reassoziation ist also keine sichere
+    /// Umformung, sie fällt hier nur nicht auf. Einen Escape zu erzwingen
     /// (etwa per nach innen gerichteter Rundung) würde zwei Fehler koppeln und
     /// nichts beweisen. Gemessen wird stattdessen die PARITÄT der
     /// Zwischenwerte `h0` und `h_safe` (s. [`HChain`]). Die Soundness dieser

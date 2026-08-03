@@ -8275,12 +8275,23 @@ gespeicherte Modus ebenfalls `Proved` (sonst wäre der Knopf ein No-op), jedes
 eine Mindestzahl eingeschlossener Proben.
 
 **Sollte 1 — die fünfte Ablation ehrlich eingeordnet.** `fuse_h_additions` ist
-**kein** Soundness-Knopf und zählt nicht als fünfte lasttragende Ablation: eine
-anders geklammerte natürliche Intervallerweiterung kann trotz falscher
-Produktionsklammerung eine **gültige Obermenge** bleiben — `Ctx::fadd`
-verbreitert jeden Zwischenschritt nach aussen und nimmt den ein-ulp-Unterschied
-auf. Ein Escape wäre nur durch nach innen gerichtete Rundung zu erzwingen; das
-koppelte zwei Fehler und bewiese nichts. Pin 2 zählt deshalb jetzt **vier**
+**kein** Soundness-Knopf und zählt nicht als fünfte lasttragende Ablation: auf
+der **heutigen Matrix** bleibt die anders geklammerte natürliche
+Intervallerweiterung trotz falscher Produktionsklammerung eine gültige
+Obermenge — `Ctx::fadd` verbreitert jeden Zwischenschritt nach aussen und nimmt
+den ein-ulp-Unterschied auf. Ein Escape wäre nur durch nach innen gerichtete
+Rundung zu erzwingen; das koppelte zwei Fehler und bewiese nichts.
+
+**Allgemein gilt die Obermengen-Aussage NICHT** (Review 22, nachgerechnet): für
+`s4 = −8.7653297669e−6`, `δ = 1.1354654816e−6`, `A_h = 6.7056127317e−10` ist
+`fl(fl(s4+δ)+A_h) = −7.6291930782e−6` der obere f32-Nachbar von
+`fl(s4+fl(δ+A_h)) = −7.6291935329e−6` und liegt damit **ausserhalb** der aussen
+gerundeten reassoziierten Hülle `[−7.6291939877e−6, −7.6291935329e−6]`. Die
+Reassoziation ist also keine sichere Umformung — sie fällt auf dieser Matrix nur
+nicht auf. Deshalb ist der Endergebnis-Befund **protokolliert statt als
+Invariante erzwungen**: wird die Stufe später enger, verlöre die falsche
+Klammerung Produktionswerte, und das wäre eine STÄRKERE Gegenprobe, kein Fehler
+der echten Kette. Ein Pin auf `escapes == 0` bestrafte genau diese Verschärfung. Pin 2 zählt deshalb jetzt **vier**
 Ablationen (`assert_eq!(broken, 4)`), und die Stelle hat einen eigenen
 **Struktur-/Paritätspin** `interval_h_chain_bracketing_is_op_exact_384`:
 
@@ -8293,9 +8304,9 @@ Ablationen (`assert_eq!(broken, 4)`), und die Stelle hat einen eigenen
   ausfaktorisiert; die Zwischenwerte waren vorher gar nicht beobachtbar;
 * die zusammengefasste Kette liefert an **338 von 400** Punkten ein **anderes**
   Intervall (sie ist gültig, aber nicht dieselbe Kette);
-* am Endergebnis **0 Escapes von 3.200** Werten (108 Hüllen bewegt) — als
-  Erwartung festgehalten: ein Escape lässt den Pin reissen und wäre ein NEUER
-  Befund.
+* am Endergebnis **0 Escapes von 3.200** Werten (108 Hüllen bewegt) —
+  **protokolliert, nicht erzwungen** (s. o.): ein späterer Escape wäre ein
+  Befund über die Breite der Stufe, kein Fehler der echten Kette.
 
 **Sollte 2 — Sichtbarkeit.** `enclose_channel_limit` ist jetzt `pub(crate)`.
 Mit einem fremden Modus aufgerufen ist ihre Zusage nur bedingt-mathematisch

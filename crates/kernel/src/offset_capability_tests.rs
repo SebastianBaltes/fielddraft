@@ -16545,8 +16545,9 @@ fn interval_encloses_the_new_limit_chain_384() {
 /// Ablationen, jede mit echten Escapes.
 ///
 /// **Nicht hier** (Review 21, Sollte 1): `fuse_h_additions` ist kein
-/// Soundness-Knopf — eine anders geklammerte natürliche Intervallerweiterung
-/// bleibt eine gültige Obermenge. Diese Stelle misst der Paritätspin
+/// Soundness-Knopf — auf der heutigen Matrix bleibt die anders geklammerte
+/// natürliche Intervallerweiterung eine gültige Obermenge (allgemein ist sie
+/// das nicht, s. `Knobs::fuse_h_additions`). Diese Stelle misst der Paritätspin
 /// [`interval_h_chain_bracketing_is_op_exact_384`]. Und `stored_mode_dispatch`
 /// sitzt an der Konsumgrenze, misst also nur durch `enclose_node` etwas —
 /// [`interval_stored_mode_dispatch_escapes_through_enclose_node_384`].
@@ -17066,7 +17067,13 @@ fn interval_h_chain_bracketing_is_op_exact_384() {
          dann ist der Knopf ein No-op und die Klammerung ungeprüft"
     );
 
-    // (4) Am Endergebnis bleibt der Knopf escape-frei — der ehrliche Befund.
+    // (4) Am Endergebnis: der Befund wird PROTOKOLLIERT, nicht als Invariante
+    // erzwungen (Review 22). Heute escape-frei; wird die Stufe später enger,
+    // kann die falsche Klammerung Produktionswerte verlieren — das wäre eine
+    // STÄRKERE Gegenprobe und kein Fehler der echten Kette. Ein Pin, der daran
+    // reisst, bestrafte eine Verschärfung. Die Soundness dieser Stelle tragen
+    // ohnehin `drop_h_addend` und `min_before_addends`, die Klammerung selbst
+    // die Zwischenwert-Parität oben.
     let knobs = iv::Knobs { fuse_h_additions: true, ..Default::default() };
     let (mut inside, mut escapes, mut hull_moved) = (0usize, 0usize, 0usize);
     for (ch, mode, p) in &fam {
@@ -17094,16 +17101,11 @@ fn interval_h_chain_bracketing_is_op_exact_384() {
         }
     }
     assert!(inside > 50, "nur {inside} Werte in der echten Hülle");
-    assert_eq!(
-        escapes, 0,
-        "{escapes} Escapes am Endergebnis — das wäre ein NEUER Befund (die Reassoziation ist \
-         dort bisher eine gültige, nur anders hergeleitete Obermenge); bitte ansehen, bevor \
-         irgendetwas gelockert wird"
-    );
     println!(
         "§8ad Pin 5 (Parität, NICHT lasttragend): {scalar_diff} von {scalar_total} Skalar-Proben \
          zeigen fl(fl(s4+δ)+A_h) != fl(s4+fl(δ+A_h)); die echte Unterkette enthält h0 und h_safe \
          an allen {checked} Punkten, die zusammengefasste weicht an {fused_moved} ab; am \
-         Endergebnis {escapes} Escapes von {inside} Werten ({hull_moved} Hüllen bewegt)"
+         Endergebnis {escapes} Escapes von {inside} Werten ({hull_moved} Hüllen bewegt) — \
+         Escapes sind hier BEFUND, nicht Fehler (s. Kommentar)"
     );
 }
