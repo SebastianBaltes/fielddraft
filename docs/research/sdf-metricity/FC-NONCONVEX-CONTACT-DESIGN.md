@@ -7075,7 +7075,9 @@ behaupten.
   mit **kleinerem** (konservativerem) Wert als heute, aber „konservativer" ist
   kein Beweis. Der Typvertrag sagt seit v0.63.1 nur noch den `de`-Ast zu; die
   drei zulässigen Auflösungen und der Pflicht-`h`-Pin stehen im
-  Korrektur-Abschnitt (B1).
+  Korrektur-Abschnitt (B1). **Geschlossen in §8ab / P5b-1H (v0.64.0)**: das
+  `h`-Budget ist hergeleitet, an allen 217 naht-zertifizierten Kanälen
+  bewiesen und gepinnt. Offen bleibt nur noch die Aktivierung (P5b-1A).
 * **R2 — der Lebenszyklus ist noch nicht erzwungen** (war: „die `Ω`-Provenienz
   ist nicht prüfbar" — das ist seit v0.63.1 **erledigt**: `seam_addend` verlangt
   `Ω` und vergleicht seinen Schnappschuss bitweise). Offen bleibt die
@@ -7119,9 +7121,335 @@ behaupten.
 * Die Zertifizierungs-Matrix aus §8w/§8z bewegt sich **nicht** — P5b-0 hat
   keinen Konsumenten.
 
+## 8ab. P5b-1H — das h-Budget: die Stützebene, bewiesen statt angenommen (#384, 2026-08-03)
+
+§8aa hat den NAHT-Ast bewiesen und den `h`-Ast als **Restposten R1** offen
+gelassen: fällt das `min` auf die Stützebene, liefert die Produktion
+`fl(δ − h)` — ohne geometrisches und ohne Rundungsbudget. Gemessen war R1
+alles andere als theoretisch: der `h`-Ast gewinnt an **4,1 %** der Proben, und
+die gezielte Bisektion trifft das Umhäng-Band an 200 von 200 Strahlen.
+
+P5b-1H schliesst die Lücke. **Feldneutral**: kein Evaluator, kein Opcode, kein
+Spiegel, kein Tape-Wort; Golden 35/35 byte-identisch, SHA-256 `a0c9fe7b…`
+unverändert. Die Produktions-Aktivierung ist **P5b-1A** und ausdrücklich nicht
+Teil dieses Pakets.
+
+### Der Paket-Schnitt (Konsultation 14)
+
+P5b-1 zerfällt in zwei beweisgetrennte Hälften, und die Trennung ist keine
+Bequemlichkeit:
+
+* **P5b-1H (hier)** — das `h`-Budget als eigener Beweiswert, ohne Konsument.
+  Alles bleibt feldneutral, der Beweis kann in Ruhe scheitern.
+* **P5b-1A (danach)** — `min(de_safe, h_safe)` **atomar** in allen sechs
+  Spiegeln, Richtungs-Pins `lim_neu ≤ lim_alt` und `f_neu ≤ f_alt`, ein
+  Alt/Neu-Attributions-Harness und der Golden-Neuaufbau auf einem
+  Review-Branch. Einbaupunkt der Zertifizierung: am **finalen** Stopp in
+  `synthesize_offset_channels_reported`, **nach** `attach_prisms`, mit
+  `omega_of(&stop)` als autoritativem `Ω`. Der Intervallpfad verweigert dort
+  neue Stopps mit `Unknown`, bis P5b-2 die neue Kette op-genau einschliesst.
+
+Ein Paket, das beides zugleich täte, müsste eine neue Feldform ausliefern und
+gleichzeitig behaupten, sie sei eingeschlossen — genau die Kombination, die die
+Programm-Doktrin verbietet.
+
+### Die Kernidee: global stützen statt lokal
+
+§8j führt die Gültigkeit der Ebene **lokal**:
+`Ω ∩ B(Naht, 2K) ⊆ {h ≥ 0}`. Das braucht ein Lokalitäts-Argument über den
+Lotfusspunkt (das an den Rändern des Trust-Radius nicht ganz aufgeht) und
+erfasst den Fall `h < 0` — Auswertungspunkt **ausserhalb** `Ω` — überhaupt
+nicht. Gemessen tritt genau dieser Fall an 660 Proben auf.
+
+P5b-1H beweist statt dessen die **globale** Aussage
+
+```text
+Ω ⊆ { Ĥ ≥ −τ },     Ĥ(x) = ⟨x, n⟩ − C + δ
+```
+
+mit `n`, `C` den **gespeicherten** Slot-Zahlen. Daraus folgt alles in einer
+Zeile:
+
+> **Halbraum-Lemma.** Ist `Ω ⊆ Ω'`, so gilt `SDF_Ω ≥ SDF_{Ω'}` punktweise,
+> also `−SDF_Ω ≤ −SDF_{Ω'}`. Für den Halbraum `Ω' = {Ĥ ≥ −τ}` ist
+> `−SDF_{Ω'}(x) = (Ĥ(x) + τ)/|n|` **exakt** — die signierte euklidische
+> Distanz zur Ebene. Also `−SDF_Ω(x) ≤ (Ĥ(x) + τ)/|n|` für **jedes** `x`. ∎
+
+`−SDF_Ω` ist genau die Grösse, die §8j als obere Schranke braucht: innerhalb
+`Ω` ist sie `dist(x,∁Ω)`, ausserhalb `−dist(x,Ω) < 0`. Beide Fälle sind
+erledigt, ohne Fallunterscheidung, ohne Lokalität, ohne Randbedingung am
+Trust-Radius.
+
+Der Preis ist eine **stärkere** Forderung. Sie kann an Kanälen scheitern, deren
+Körper weit hinter die Ebene reicht — dann gibt es kein h-Budget, und der Kanal
+wird ehrlich gezählt. Das ist der erwünschte Ausgang: lieber eine benannte
+Lücke als ein Lokalitäts-Argument mit unbewiesenen Rändern.
+
+### Warum `τ` gemessen und nicht bezahlt wird
+
+Die Synthese lässt eine Stützseiten-Verletzung von `8·gate_eps` ausdrücklich zu
+(`set_face_plane_gates`: `if h_min < -8.0 * gate_eps { supporting = false }`).
+Das Review verlangt dafür einen Aufschlag. Nur: **`gate_eps` steht dem Beweis
+gar nicht zur Verfügung** — es ist ein Synthese-Parameter und im Kanal nicht
+gespeichert. Einen unsichtbaren Wert zu „bezahlen" wäre der verbotene
+Fudge-Faktor.
+
+Stattdessen wird `τ` **selbst hergeleitet**:
+
+```text
+τ = max(0, − min_{y ∈ ⋃Boxen} Ĥ(y)),    Ω ⊆ ⋃ Boxen
+```
+
+aus einer **strukturellen Box-Überdeckung** von `Ω` in reeller
+Intervall-Arithmetik (`next_down`/`next_up`, kein f32-Schritt). Damit hängt
+nichts mehr an der f32-Rechnung der Synthese, und weil direkt über die
+**gespeicherten** `n`, `C` gerechnet wird, taucht das synthese-interne `c₀`
+nirgends auf.
+
+Die Überdeckung spiegelt [`box_outside_omega`] in die andere Richtung —
+`Union` sammelt beide Seiten, `Intersection`/`Difference` nehmen die linke,
+`Offset(δ≤0)` das Kind, jedes nicht unterstützte Blatt ⇒ **`None`,
+fail-closed**.
+
+**Das Ergebnis ist der interessanteste Befund des Pakets:**
+
+| gemessen über die ganze Matrix | Wert |
+|---|---|
+| `τ` (Stützseiten-Verletzung) | **≤ 7.150·10⁻¹⁴ mm** |
+| Normfehler-Anteil `R·\|1−ν\|/ν` | ≤ 6.049·10⁻¹⁴ mm |
+| Reichweite `R` (bewiesen) | ≤ 1.150·10² mm |
+| Rundungsanteil | ≤ 3.528·10⁻⁵ mm |
+| **`A_h`** | **≤ 3.528·10⁻⁵ mm** |
+
+`τ` und der Normfehler liegen bei `10⁻¹⁴ mm` — das ist die Aussen-Rundung der
+eigenen Intervall-Arithmetik, nicht Geometrie. **Die von der Synthese
+zugelassene `8·gate_eps`-Verletzung wird an dieser Matrix nirgends
+ausgeschöpft**, und `|n|` ist bis auf f32-Rundung Einheitsnorm. Der ganze
+h-Addend ist also **reines Rundungsbudget** — und mit `3.5·10⁻⁵ mm` kleiner als
+der Naht-Addend (`1.1·10⁻⁴ … 2.3·10⁻³ mm`).
+
+Bezahlt wird trotzdem beides: dass ein Posten heute null misst, macht ihn nicht
+entbehrlich. Pin 3 schiebt eine Ebene gezielt in den Körper und weist nach,
+dass `τ` und der Addend mitgehen.
+
+### Die additive Form — und die Reichweiten-Schranke, die sie trägt
+
+Das Review lässt zwei Formen zu: die Division `(Ĥ+τ)/|n|` im Feld, oder einen
+rein **additiven** Aufschlag — der aber eine **bewiesene** Reichweiten-Schranke
+im aktiven Bereich braucht. Gewählt ist die additive Form, weil sie die
+eingefrorene Kette bei einem einzigen f32-Add belässt.
+
+```text
+S − Ĥ = (Ĥ(1−ν) + τ)/ν ≤ (R·|1−ν| + τ)/ν  =:  A^geom      (ν = |n|)
+```
+
+Die Schranke `|Ĥ| ≤ R` ist **bewiesen, nicht angenommen**: `channel_limit`
+steigt aus, sobald `|p − bound_c| − bound_r ≥ trust`. Im aktiven Bereich gilt
+also `|p_j| ≤ |bound_c_j| + bound_r + trust`, und damit
+
+```text
+R = Σ_j (|bound_c_j| + bound_r + trust)·|n_j| + |C| + |δ|.
+```
+
+Ohne diese Schranke wäre die additive Form unzulässig und die Division müsste
+ins Feld. Gemessen: `R ≤ 115 mm`, `|1−ν| ≈ 10⁻¹⁶` ⇒ der Normposten `≈ 10⁻¹⁴ mm`.
+
+### Mehrere Slots — ein Addend, nach dem `min`
+
+Gewählt ist **ein kanalweiter Addend** `A^geom = max_k A_k^geom`, angewandt
+**nach** dem `min` über die vier Slots. Der Soundness-Grund ist eine Zeile: die
+Zusage gilt für **jeden** Slot einzeln. Ist `k'` der f32-Gewinner des `min`, so
+ist `h ≈ Ĥ_{k'}` und
+
+```text
+−SDF_Ω ≤ S_{k'} ≤ Ĥ_{k'} + A_{k'}^geom ≤ Ĥ_{k'} + A^geom.
+```
+
+Der Beweis braucht also gar keinen „richtigen" Gewinner — nur irgendeinen
+gültigen Slot. Das macht die Form robust gegen jede Rundung in der
+Slot-Auswahl.
+
+**Sentinel-Slots** (`[0,0,0,−1e30]`) gehen nicht ein und können den `min` nicht
+gewinnen: ihr Wert ist `fl(0 − (−1e30)) = 1e30`, während ein belegter Slot
+durch `R` beschränkt ist. Sind **alle** Slots Sentinel, ist `h = 1e30`, der
+`h`-Ast unerreichbar und die Zusage gegenstandslos wahr — eigener Ausgang
+`HStatus::Vacuous`, damit die Zählung nicht schönfärbt. Beides ist gepinnt.
+
+### Das Rundungsbudget
+
+Entlang der eingefrorenen Kette, op für op:
+
+```text
+a_k    = fl(fl(fl(p₀n₀ + p₁n₁) + p₂n₂) − C_k)     // vier Slots
+g      = min_k a_k                                  // Auswahl, keine Rundung
+h      = fl(g + δ)
+de_eta = fl(de + A)                                 // §8aa
+h_safe = fl(h + A_h)                                // §8ab — NEU
+lim    = fl(δ − min(de_eta, h_safe))
+```
+
+```text
+A_h ≥ [ A^geom + ρ_aff + ρ_h + u·(2R + |δ|) + 3·2⁻¹⁵⁰ ] / (1 − 3u)
+```
+
+`ρ_aff` ist die aufsummierte Rundung der affinen Slot-Auswertung, `ρ_h` die von
+`fl(g+δ)`; der `u·(2R+|δ|)`-Term deckt `fl(h+A_h)` **und** die
+Schluss-Subtraktion `fl(δ − ·)`. Dieselbe Bauart wie Lemma 5 des Naht-Astes:
+die Addition kann nach unten, die Subtraktion nach oben runden, und beide sind
+drin.
+
+**`A = A_h = 0` ist bitweise das heutige Feld** — an 47.600 Proben gepinnt,
+zusammen mit der Monotonie in **beiden** Addenden (6.029 bzw. 4.759 strikte
+Absenkungen) und der Aussage, dass die volle Kette nie über einem ihrer
+Einzel-Äste liegt.
+
+### Scope-Sperre: nur der konkave Zweig
+
+`CertifiedSeamAddend` beweist die **konkave** Erosions-Aussage über `Ω` = dem
+Körper vor der Erosion. Am Dilations-Stopp ist die Dualität eine andere (`∁Ω`
+ist dort eine Vereinigung unbeschränkter Komplemente — deshalb bekommt der
+konvexe Zweig schon in `set_face_plane_gates` gar keine Kandidaten), und einen
+konvexen Dualsatz gibt es nicht.
+
+`certify_channel_with` hat `!ch.concave` bis v0.63.1 **nicht** abgelehnt. Kein
+Schaden — kein Konsument —, aber ein Beweiswert, der auf einem konvexen Kanal
+entstehen kann, ist eine Falle für P5b-1A. Seit P5b-1H: eigener Ausgang
+`SeamProofStatus::NotConcave`, fail-closed **beim Prägen**, und der Tally weist
+ihn aus. Eigener Pin.
+
+### Der Shadow-Bericht
+
+| Fixture | Naht | h_proved | h_vacuous | h_no_cover | h_not_sup | τ mm | Norm mm | R mm | Rundung mm | A_h mm |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Stufen-Nabe | 0 | 0 | 0 | 0 | 0 | — | — | — | — | — |
+| Ecken-Schale `t/δ=2` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.043e-14 | 9.072e1 | 3.082e-5 | 3.082e-5 |
+| Ecken-Schale `t/δ=2.1` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.043e-14 | 9.072e1 | 3.082e-5 | 3.082e-5 |
+| Ecken-Schale `t/δ=2.25` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.047e-14 | 9.078e1 | 3.084e-5 | 3.084e-5 |
+| Ecken-Schale `t/δ=2.4` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.043e-14 | 9.072e1 | 3.082e-5 | 3.082e-5 |
+| Ecken-Schale `t/δ=2.5` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.043e-14 | 9.072e1 | 3.082e-5 | 3.082e-5 |
+| Ecken-Schale `t/δ=3` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.049e-14 | 9.080e1 | 3.085e-5 | 3.085e-5 |
+| Ecken-Schale `t/δ=4` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.043e-14 | 9.072e1 | 3.082e-5 | 3.082e-5 |
+| Ecken-Schale `t/δ=6` | 24 | **24** | 0 | 0 | 0 | 7.150e-14 | 6.043e-14 | 9.072e1 | 3.082e-5 | 3.082e-5 |
+| Rippen-Kamm 4×1.5/0.8 | 0 | 0 | 0 | 0 | 0 | — | — | — | — | — |
+| Rippen-Kamm 4×2/1 | 22 | **22** | 0 | 0 | 0 | 3.242e-14 | 2.217e-14 | 4.992e1 | 1.702e-5 | 1.702e-5 |
+| notch α = 90° | 1 | **1** | 0 | 0 | 0 | 5.729e-14 | 4.976e-14 | 1.120e2 | 3.423e-5 | 3.423e-5 |
+| notch α = 60° | 2 | **2** | 0 | 0 | 0 | 5.729e-14 | 5.106e-14 | 1.150e2 | 3.528e-5 | 3.528e-5 |
+
+**Alle 217 naht-zertifizierten Kanäle bekommen zusätzlich ein h-Budget** —
+`h_vacuous`, `h_no_cover`, `h_not_supporting`, `h_degenerate` und `h_no_budget`
+sind über die ganze Matrix **null**. Wo die Naht steht, steht auch die
+Stützebene. Die beiden Fixturen ohne Zahlen haben gar keinen Naht-Addenden
+(Stufen-Nabe gekrümmt ⇒ P5c, Rippen-Kamm 4×1.5/0.8 mit `Extrude`-Blättern in
+`Ω`) — dieselben zwei strukturellen Gründe wie in §8aa, und die
+`Extrude`-Blätter treffen die Box-Überdeckung genauso wie den Aussenzeugen.
+
+### Die Pflicht-Falsifikatoren
+
+* **`h_cover_contains_omega_384`** — das Fundament: `Ω ⊆ ⋃ Boxen`, geprüft an
+  **40.016** Innenpunkten über zwölf Fixturen gegen die analytische
+  Komplement-Distanz als **unabhängiges** Orakel. Rückdreh: eine gestrichene
+  Box MUSS einen Innenpunkt unbedeckt lassen — sonst ist die Überdeckung nicht
+  tragend.
+* **`h_budget_bounds_the_true_distance_384`** — das Halbraum-Lemma gegen das
+  exakte Orakel: **50.875** Punkte in `Ω` über elf Fixturen, engste Reserve
+  `1.597·10⁻⁵ mm`. Und ausdrücklich im **Umhäng-Band**: gleichverteiltes Proben
+  trifft es an 0 Punkten (es ist `A ≈ 10⁻⁴ mm` schmal — eine Aussage über die
+  Auflösung, keine über Erreichbarkeit), die gezielte Bisektion auf `h − de = 0`
+  an **150 von 211** Strahlen, engste Reserve dort `2.742·10⁻⁵ mm`. `h < 0`
+  — der Fall, den die lokale §8j-Führung gar nicht erfasst — tritt an **660**
+  Proben auf und ist mit abgedeckt.
+* **`h_budget_tau_and_norm_are_derived_384`** — `τ` und der Normfehler sind
+  hergeleitet, nicht geraten: eine um `ε ∈ {10⁻⁴, 10⁻³, 10⁻²} mm` in den Körper
+  geschobene Ebene hebt `τ` auf `≈ ε` (Toleranz ±10 %) und den Addenden mit;
+  jenseits des Deckels `H_TAU_LIMIT_MM = 0.5` gibt es gar kein Budget mehr;
+  eine Ebene mit `|n| = 1 + 10⁻³` hebt den Normposten auf `≈ R·10⁻³`. Dazu die
+  drei Ablationen `τ := 0`, `Norm := 0`, `Rundung := 0` — **jede für sich** muss
+  den Addenden senken.
+* **`h_budget_rounding_absorbs_both_f32_ops_384`** — die ulp-Familie nach §8t
+  über den arithmetischen Schwanz: Bit-Fächer um vierzehn Grössenordnungen von
+  `h`, beide Vorzeichen, drei `δ`, dreimal für
+  `A^geom ∈ {10⁻¹³, 10⁻⁶, 10⁻³}` — **über 200.000 Fälle je Durchgang**. Ohne
+  Rundungsbudget reisst die Familie; der familienminimale Addend `A*` reisst bei
+  `−1 ulp`. Konservativität: `A/A* = 1.0022 … 2.95`. Rollenverteilung wie in
+  §8aa — den ausgelieferten Addenden trägt der algebraische Ausdruck, `A*` zeigt
+  die Schärfe **dieser** Familie.
+* **`seam_proof_refuses_convex_channels_384`** — die Scope-Sperre: ein konvexer
+  Kanal bekommt weder Naht-Addend noch h-Budget, und der Tally weist ihn als
+  `not_concave` aus statt ihn zu verlieren.
+* **`h_budget_is_fail_closed_384`** — jeder Ausgang einzeln: `Extrude`-`Ω` ⇒
+  keine Überdeckung; `n = 0` ohne Sentinel-Signatur ⇒ `Degenerate`; alle Slots
+  Sentinel ⇒ `Vacuous` mit `A_h = 0` **und** dem Nachweis, dass
+  `face_plane_gate` dort `1e30` liefert (der `h`-Ast also unerreichbar ist); ein
+  Sentinel **neben** belegten Slots gewinnt an 2.000 Proben nie den `min`;
+  `Ω = Empty` ⇒ `τ = 0`.
+* **`clamp_frozen_form_is_neutral_at_zero_and_monotone_384`** (erweitert) —
+  `A = A_h = 0` bitweise das heutige Feld; Monotonie in **beiden** Addenden;
+  die volle Kette nie über einem Einzel-Ast.
+
+### Was OFFEN bleibt — die Auflagen für P5b-1A
+
+* **Kein Konsument.** Kein Evaluator liest `h_addend`. Der Verbrauch braucht
+  ein `ChannelLimitMode`-Enum (`Proved` / `LegacyUnproven`) statt eines
+  `Option` mit `unwrap_or(0.0)`: ein invalidierter Beweis (`ProofInvalidated`)
+  ist **nicht** dasselbe wie „bewiesen mit `A = 0`", und ein `unwrap_or` würde
+  genau diesen Unterschied verschlucken.
+* **Atomar in allen sechs Spiegeln.** `min(de_safe, h_safe)` muss in
+  Opcode-Interpreter, WGSL/TSL, C++, fidget, Dual und CPU-Referenz in
+  **einem** Schritt landen; ein halb umgestellter Spiegel ist ein
+  Paritätsbruch.
+* **Richtungs-Pins**: `lim_neu ≤ lim_alt` und `f_neu ≤ f_alt` punktweise, plus
+  ein Alt/Neu-Attributions-Harness, das zeigt, WELCHE Punkte sich bewegen.
+* **Golden**: 35 Szenen bewegen sich dann zwangsläufig — Neuaufbau auf einem
+  Review-Branch, nicht auf `main`.
+* **Lebenszyklus** (R2 aus §8aa): `certify_channel` gehört an den **finalen**
+  Stopp in `synthesize_offset_channels_reported`, **nach** `attach_prisms`, mit
+  `omega_of(&stop)`. Danach darf kein beweisrelevantes Kanal- oder `Ω`-Datum
+  mehr verändert werden; der Schnappschuss-Vergleich fängt jede spätere
+  Änderung ab, erzwingt aber nicht den Zeitpunkt.
+* **Intervallpfad**: `offset_interval` muss neue Stopps mit aktiver Klemme
+  vorerst `Unknown` liefern (fail-closed), bis **P5b-2** die neue Kette
+  op-genau einschliesst. Gleichzeitig eine neue Feldform ausliefern und eine
+  Einschliessung behaupten, ist genau der verbotene Doppelschritt.
+* **Gekrümmte Kanäle** (P5c) und **`Ω`-Blätter jenseits Box/Sphere/Zylinder**
+  bleiben unverändert offen — sie blockieren jetzt Naht-Addend **und**
+  Box-Überdeckung.
+* **`vertex_limit`** ist weiterhin nicht mitbewiesen (eigene Voraussetzung
+  „`v` liegt auf `∂Ω`").
+
+### Prüfungen
+
+* **Golden**: 35/35 byte-identisch, SHA-256 `a0c9fe7b53a8198177d3ad0ef8cff2c9…`
+  unverändert — kein Evaluator, kein Opcode, kein Payload-Wort, kein Spiegel.
+  `check_interp` unberührt.
+* **`cargo nextest run --workspace`**: **1530** (Baseline 1524).
+* **`cargo test -p fielddraft-kernel --lib`**: **1524** (Baseline 1518).
+* **`cargo nextest run --workspace --profile offset`**: **236** (Baseline 230).
+* **`cargo test -p fielddraft-kernel --doc`**: **1**, unverändert.
+* **Web-Vitest**: **2082**, unverändert.
+* Die Zertifizierungs-Matrix aus §8w/§8z bewegt sich **nicht** — P5b-1H hat
+  keinen Konsumenten.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
+- Produktionscode §8ab (P5b-1H): `crates/kernel/src/offset_witness.rs` — die
+  Box-Überdeckung (`omega_cover`, `local_box_to_world`, `WorldBox`), die
+  Stützseiten-Herleitung (`plane_tau`, `is_sentinel_plane`, `H_TAU_LIMIT_MM`),
+  der Beweistyp `HBudget` samt `HStatus`, die Herleitung `h_budget`, der
+  zweite Addend in `frozen_channel_limit`/`frozen_limit_tail`, die
+  Scope-Sperre `SeamProofStatus::NotConcave`, die h-Ablationen in
+  `SeamProofKnobs`, `certify_channel_reported` und die h-Zähler in
+  `SeamProofTally`. `crates/kernel/src/offset_channel.rs` — der Leser
+  `OffsetChannel::h_addend(Ω)` über DIESELBE Schnappschuss-Prüfung.
+  **Kein Evaluator, kein Opcode, kein Payload-Wort, kein Spiegel** — Golden
+  byte-identisch.
+- Pins/Sonden §8ab in `offset_capability_tests.rs`:
+  `h_cover_contains_omega_384`, `h_budget_bounds_the_true_distance_384`,
+  `h_budget_tau_and_norm_are_derived_384`,
+  `h_budget_rounding_absorbs_both_f32_ops_384`,
+  `seam_proof_refuses_convex_channels_384`, `h_budget_is_fail_closed_384`,
+  die Erweiterung von `clamp_frozen_form_is_neutral_at_zero_and_monotone_384`
+  auf beide Addenden und die `#[ignore]`-Sonde `probe_384_h_budget`.
 - Produktionscode §8aa (P5b-0): `crates/kernel/src/offset_witness.rs` — die
   f32-Konstanten `F32_U`/`F32_SUB`, `f32_ceil`, die drei Brücken
   (`point_bridge_mm`, `norm_bridge_mm`, `round_budget`), die eingefrorene

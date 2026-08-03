@@ -322,8 +322,18 @@ impl OffsetChannel {
         self.seam.as_ref()?.addend_for(self, omega)
     }
 
+    /// #384 §8ab — **der bewiesene h-Addend `A_h`**, gegen denselben Kanal und
+    /// dasselbe `Ω` wie [`Self::seam_addend`]. `None`, wenn dieser Kanal kein
+    /// h-Budget hat — dann bleibt sein `h`-Ast auf der Modell-Annahme.
+    ///
+    /// Erst BEIDE zusammen decken die vollständige Kette
+    /// `fl(δ − min(fl(de+A), fl(h+A_h)))`.
+    pub fn h_addend(&self, omega: &crate::bvh::BoundedCsg) -> Option<f32> {
+        self.seam.as_ref()?.h_addend_for(self, omega)
+    }
+
     /// Der Beweis selbst (Diagnose/Bericht). Seine Felder sind privat; die
-    /// Zahl gibt es nur über [`Self::seam_addend`].
+    /// Zahl gibt es nur über [`Self::seam_addend`] / [`Self::h_addend`].
     pub fn seam_proof(&self) -> Option<&crate::offset_witness::CertifiedSeamAddend> {
         self.seam.as_ref()
     }

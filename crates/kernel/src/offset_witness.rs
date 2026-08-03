@@ -44,11 +44,9 @@
 //! `next_down`/`next_up` nach jeder Schranke, aber **kein** f32-Schritt.
 
 use crate::bvh::BoundedCsg;
-use crate::offset_channel::{ChannelArc, OffsetChannel};
+use crate::offset_channel::{ChannelArc, OffsetChannel, END_PLANE_OFF};
 #[cfg(test)]
-use crate::offset_channel::{
-    channel_nearest, face_plane_gate, norm as norm32, sub as sub32, END_PLANE_OFF,
-};
+use crate::offset_channel::{channel_nearest, face_plane_gate, norm as norm32, sub as sub32};
 use crate::offset_interval::{next_down, next_up, Iv};
 use fielddraft_protocol::{Primitive, Transform};
 
@@ -783,17 +781,22 @@ pub(crate) fn norm_bridge_mm(trust: f32) -> Option<f64> {
 /// Ab P5b-1 (**genau diese Klammerung, genau diese f32-Ops**):
 ///
 /// ```text
-/// g      = face_plane_gate(p, ch)       // unverändert
-/// h      = fl(g + δ)                    // unverändert
-/// de_eta = fl(de + A)                   // NEU — ein einziger f32-Add
-/// lim    = fl(δ − min(de_eta, h))       // unverändert
+/// g      = face_plane_gate(p, ch)          // unverändert
+/// h      = fl(g + δ)                       // unverändert
+/// de_eta = fl(de + A)                      // §8aa — ein f32-Add auf der Naht
+/// h_safe = fl(h + A_h)                     // §8ab — ein f32-Add auf der Ebene
+/// lim    = fl(δ − min(de_eta, h_safe))     // unverändert
 /// ```
+///
+/// §8ab hat den zweiten Addenden dazugelegt: `A` bezahlt die Nahtdistanz,
+/// `A_h` die Stützebene. Beide gehen NUR auf ihren eigenen Ast — das
+/// pauschale `δ − min(de,h) − A − A_h` wäre strikt gröber.
 ///
 /// `A` geht **nur** auf die Nahtdistanz. Die Stützebene `h` ist unabhängig
 /// bewiesen (§8j) und wird nicht mit-verschlechtert; `δ − min(de+A, h)` ist
 /// strikt schärfer als das pauschale `δ − min(de,h) − A`.
 ///
-/// **`A = 0` ist bitweise das heutige Feld** (`de + 0.0 == de` für jedes
+/// **`A = A_h = 0` ist bitweise das heutige Feld** (`de + 0.0 == de` für jedes
 /// `de ≥ 0`, und `de` ist eine Norm). Das ist die Feldneutralitäts-Zusage von
 /// P5b-1 für jeden Kanal ohne Addenden — gepinnt, nicht behauptet.
 ///
@@ -809,7 +812,12 @@ pub(crate) fn norm_bridge_mm(trust: f32) -> Option<f64> {
 /// vorhanden: sie ist der Gegenstand des Rundungslemmas und der
 /// Feldneutralitäts-Pins, **kein Evaluator und keine Zusage**.
 #[cfg(test)]
-pub(crate) fn frozen_channel_limit(p: [f32; 3], ch: &OffsetChannel, eta_add: f32) -> f32 {
+pub(crate) fn frozen_channel_limit(
+    p: [f32; 3],
+    ch: &OffsetChannel,
+    eta_add: f32,
+    h_add: f32,
+) -> f32 {
     let dbs = norm32(sub32(p, ch.bound_c)) - ch.bound_r;
     if dbs >= ch.trust {
         return -END_PLANE_OFF;
@@ -820,7 +828,7 @@ pub(crate) fn frozen_channel_limit(p: [f32; 3], ch: &OffsetChannel, eta_add: f32
     if de >= ch.trust {
         return -END_PLANE_OFF;
     }
-    frozen_limit_tail(ch.delta, de, face_plane_gate(p, ch) + ch.delta, eta_add)
+    frozen_limit_tail(ch.delta, de, face_plane_gate(p, ch) + ch.delta, eta_add, h_add)
 }
 
 /// **Der arithmetische Schwanz der eingefrorenen Kette** — genau die drei
@@ -833,9 +841,10 @@ pub(crate) fn frozen_channel_limit(p: [f32; 3], ch: &OffsetChannel, eta_add: f32
 /// an die interessanten Bitmuster gar nicht heran.
 #[cfg(test)]
 #[inline]
-pub(crate) fn frozen_limit_tail(delta: f32, de: f32, h: f32, eta_add: f32) -> f32 {
+pub(crate) fn frozen_limit_tail(delta: f32, de: f32, h: f32, eta_add: f32, h_add: f32) -> f32 {
     let de_eta = de + eta_add;
-    delta - de_eta.min(h)
+    let h_safe = h + h_add;
+    delta - de_eta.min(h_safe)
 }
 
 /// **Lemma 5 (Rundungslemma).** Das kleinste `A`, für das die eingefrorene
@@ -1057,6 +1066,511 @@ pub fn omega_snapshot(node: &BoundedCsg) -> Vec<u8> {
     o
 }
 
+
+// ════════════════════════════════════════════════════════════════════════════
+// §8ab / P5b-1H — das h-Budget: die Stützebene, bewiesen statt angenommen
+// ════════════════════════════════════════════════════════════════════════════
+//
+// §8aa hat den NAHT-Ast bewiesen und den `h`-Ast als Restposten R1 offen
+// gelassen: fällt das `min` auf die Stützebene, liefert die Produktion
+// `fl(δ − h)`, und dafür gab es weder ein geometrisches noch ein
+// Rundungsbudget. Gemessen war R1 dabei alles andere als theoretisch — der
+// `h`-Ast gewinnt an 4,1 % der Proben, und die gezielte Bisektion trifft das
+// Umhäng-Band an 200 von 200 Strahlen.
+//
+// P5b-1H schliesst die Lücke — **ohne** das Feld anzufassen.
+//
+// ## Die Kernidee: global stützen statt lokal
+//
+// §8j führt die Gültigkeit der Ebene LOKAL (`Ω ∩ B(Naht, 2K) ⊆ {h ≥ 0}`) und
+// braucht dafür ein Lokalitäts-Argument über den Lotfusspunkt — das an den
+// Rändern des Trust-Radius nicht ganz aufgeht und ausserdem den Fall `h < 0`
+// (Auswertungspunkt AUSSERHALB `Ω`) gar nicht erfasst.
+//
+// Hier wird stattdessen die **globale** Aussage bewiesen:
+//
+// ```text
+// Ω ⊆ { Ĥ ≥ −τ }        mit  Ĥ(x) = ⟨x, n⟩ − C + δ
+// ```
+//
+// Daraus folgt die ganze Zusage in EINER Zeile, ohne Fallunterscheidung und
+// ohne Lokalität:
+//
+// **Halbraum-Lemma.** Ist `Ω ⊆ Ω'`, so gilt `SDF_Ω ≥ SDF_{Ω'}` punktweise,
+// also `−SDF_Ω ≤ −SDF_{Ω'}`. Für den Halbraum `Ω' = {Ĥ ≥ −τ}` ist
+// `−SDF_{Ω'}(x) = (Ĥ(x) + τ)/|n|` **exakt** — das ist die signierte
+// euklidische Distanz zur Ebene. Also
+//
+// ```text
+// −SDF_Ω(x) ≤ (Ĥ(x) + τ) / |n|   für JEDES x.  ∎
+// ```
+//
+// `−SDF_Ω` ist genau die Grösse, die §8j als obere Schranke braucht: innerhalb
+// `Ω` ist sie `dist(x,∁Ω)`, ausserhalb ist sie `−dist(x,Ω) < 0`. Beide Fälle
+// sind erledigt, und der Punkt AUSSERHALB `Ω` — der bei der lokalen Führung
+// durchs Raster fiel — ist mit drin.
+//
+// ## Was das kostet
+//
+// `Ω ⊆ {Ĥ ≥ −τ}` global ist eine STÄRKERE Forderung als `Ω ∩ B ⊆ {Ĥ ≥ 0}`
+// lokal. Sie kann an Kanälen scheitern, deren Körper weit hinter die Ebene
+// reicht. Das ist erwünscht: solche Kanäle bekommen dann **kein** h-Budget und
+// werden ehrlich gezählt, statt dass ein Lokalitäts-Argument mit unbewiesenen
+// Rändern hingebogen wird.
+//
+// ## Warum `τ` gemessen und nicht bezahlt wird
+//
+// Die Synthese lässt eine Stützseiten-Verletzung von `8·gate_eps` ausdrücklich
+// zu (`set_face_plane_gates`). `gate_eps` steht dem Beweis aber gar nicht zur
+// Verfügung — es ist ein Synthese-Parameter und im Kanal nicht gespeichert.
+// Einen unsichtbaren Aufschlag zu „bezahlen" wäre der verbotene Fudge-Faktor.
+// Stattdessen wird `τ` hier **selbst hergeleitet**: aus einer strukturellen
+// Box-Überdeckung von `Ω` in reeller Intervall-Arithmetik. Damit hängt nichts
+// mehr an der f32-Rechnung der Synthese, und der tatsächliche Wert wird
+// messbar statt geschätzt.
+
+/// Eine achsenparallele Welt-Box (reell, aussen gerundet).
+pub(crate) type WorldBox = ([f64; 3], [f64; 3]);
+
+/// Die Vorwärts-Abbildung `lokal → Welt` einer Box, in reeller
+/// Intervall-Arithmetik: `w = translate + R(q)·(scale ⊙ l)`.
+///
+/// Exakte Gegenrichtung zu [`local_box`]; für eine affine Abbildung ist die
+/// Hülle der acht ABGEBILDETEN Ecken die exakte Bildbox, deshalb werden genau
+/// sie genommen und nicht etwa die Intervall-Form der ganzen Box (die würde
+/// bei schiefer Rotation überschätzen).
+fn local_box_to_world(t: &Transform, lo: [f64; 3], hi: [f64; 3]) -> Option<WorldBox> {
+    let (qx, qy, qz, qw) = (
+        pt(t.rotation[0] as f64),
+        pt(t.rotation[1] as f64),
+        pt(t.rotation[2] as f64),
+        pt(t.rotation[3] as f64),
+    );
+    let two = pt(2.0);
+    let mut wlo = [f64::INFINITY; 3];
+    let mut whi = [f64::NEG_INFINITY; 3];
+    for cx in 0..8 {
+        let l = [
+            if cx & 1 == 0 { lo[0] } else { hi[0] },
+            if cx & 2 == 0 { lo[1] } else { hi[1] },
+            if cx & 4 == 0 { lo[2] } else { hi[2] },
+        ];
+        let v = [
+            rmul(pt(l[0]), pt(t.scale[0] as f64))?,
+            rmul(pt(l[1]), pt(t.scale[1] as f64))?,
+            rmul(pt(l[2]), pt(t.scale[2] as f64))?,
+        ];
+        // `quat_rotate`, Term für Term.
+        let tv = [
+            rmul(two, rsub(rmul(qy, v[2])?, rmul(qz, v[1])?)?)?,
+            rmul(two, rsub(rmul(qz, v[0])?, rmul(qx, v[2])?)?)?,
+            rmul(two, rsub(rmul(qx, v[1])?, rmul(qy, v[0])?)?)?,
+        ];
+        let mk = |k: usize, a: Iv, b: Iv, i: usize, j: usize| -> Option<Iv> {
+            let s = radd(v[k], rmul(qw, tv[k])?)?;
+            let s = radd(s, rmul(a, tv[i])?)?;
+            rsub(s, rmul(b, tv[j])?)
+        };
+        let w = [
+            radd(mk(0, qy, qz, 2, 1)?, pt(t.translate[0] as f64))?,
+            radd(mk(1, qz, qx, 0, 2)?, pt(t.translate[1] as f64))?,
+            radd(mk(2, qx, qy, 1, 0)?, pt(t.translate[2] as f64))?,
+        ];
+        for k in 0..3 {
+            wlo[k] = wlo[k].min(w[k].lo);
+            whi[k] = whi[k].max(w[k].hi);
+        }
+    }
+    (wlo.iter().all(|v| v.is_finite()) && whi.iter().all(|v| v.is_finite()))
+        .then_some((wlo, whi))
+}
+
+/// **Eine strukturelle Box-Überdeckung von `Ω`** — `Ω ⊆ ⋃ Boxen`.
+///
+/// Die Regeln spiegeln [`box_outside_omega`], nur in die andere Richtung:
+///
+/// | Knoten | `Ω ⊆ …` |
+/// |---|---|
+/// | `Empty` | leere Liste |
+/// | `Leaf` Box | die abgebildete lokale Box |
+/// | `Leaf` Sphere | die abgebildete lokale Hüllbox `c ± r` |
+/// | `Leaf` Cylinder | die abgebildete lokale Hüllbox `c ± (r, hh, r)` |
+/// | `Union(A,B)` | Überdeckung von `A` PLUS die von `B` |
+/// | `Intersection(A,B)` | die von `A` (`A∩B ⊆ A`) |
+/// | `Difference(A,B)` | die von `A` (rechts nimmt nur weg) |
+/// | `Offset(inner, δ≤0)` | die von `inner` (der erodierte Körper ist TEILMENGE) |
+/// | `InnerWall` | die des Kindes |
+/// | alles andere | **`None`** — fail-closed |
+///
+/// `None` heisst: kein h-Budget. Eine Überdeckung, die auch nur ein Blatt
+/// rät, wäre wertlos.
+pub(crate) fn omega_cover(node: &BoundedCsg) -> Option<Vec<WorldBox>> {
+    fn go(n: &BoundedCsg, out: &mut Vec<WorldBox>) -> bool {
+        match n {
+            BoundedCsg::Empty => true,
+            BoundedCsg::Leaf { primitive, world_transform, .. } => {
+                let (lo, hi) = match primitive {
+                    Primitive::Box { center, half_extents } => {
+                        let mut lo = [0.0f64; 3];
+                        let mut hi = [0.0f64; 3];
+                        for k in 0..3 {
+                            let c = center[k] as f64;
+                            let e = (half_extents[k] as f64).abs();
+                            lo[k] = next_down(c - e);
+                            hi[k] = next_up(c + e);
+                        }
+                        (lo, hi)
+                    }
+                    Primitive::Sphere { center, radius } => {
+                        let r = (*radius as f64).abs();
+                        let mut lo = [0.0f64; 3];
+                        let mut hi = [0.0f64; 3];
+                        for k in 0..3 {
+                            lo[k] = next_down(center[k] as f64 - r);
+                            hi[k] = next_up(center[k] as f64 + r);
+                        }
+                        (lo, hi)
+                    }
+                    Primitive::Cylinder { center, radius, half_height } => {
+                        let r = (*radius as f64).abs();
+                        let hh = (*half_height as f64).abs();
+                        let e = [r, hh, r];
+                        let mut lo = [0.0f64; 3];
+                        let mut hi = [0.0f64; 3];
+                        for k in 0..3 {
+                            lo[k] = next_down(center[k] as f64 - e[k]);
+                            hi[k] = next_up(center[k] as f64 + e[k]);
+                        }
+                        (lo, hi)
+                    }
+                    _ => return false,
+                };
+                match local_box_to_world(world_transform, lo, hi) {
+                    Some(b) => {
+                        out.push(b);
+                        true
+                    }
+                    None => false,
+                }
+            }
+            BoundedCsg::Union { left, right, .. } => go(left, out) && go(right, out),
+            // `A ∩ B ⊆ A` und `A \ B ⊆ A`: die linke Überdeckung genügt.
+            BoundedCsg::Intersection { left, .. } => go(left, out),
+            BoundedCsg::Difference { left, .. } => go(left, out),
+            BoundedCsg::Offset { inner, delta, .. } => *delta <= 0.0 && go(inner, out),
+            BoundedCsg::InnerWall { inner, .. } => go(inner, out),
+            _ => false,
+        }
+    }
+    let mut out = Vec::new();
+    go(node, &mut out).then_some(out)
+}
+
+/// Ist dieser Slot der unbelegte Sentinel `[0,0,0,−1e30]`?
+#[inline]
+fn is_sentinel_plane(g: &[f32; 4]) -> bool {
+    g[0] == 0.0 && g[1] == 0.0 && g[2] == 0.0 && g[3] == -END_PLANE_OFF
+}
+
+/// **Die Stützseiten-Verletzung `τ` einer Ebene, rigoros hergeleitet.**
+///
+/// `τ = max(0, − min_{y ∈ ⋃Boxen} Ĥ(y))` mit `Ĥ(y) = ⟨y,n⟩ − C + δ`, wobei
+/// `C` der GESPEICHERTE Slot-Wert ist. Damit taucht das von der Synthese
+/// verwendete `c₀` nirgends auf: bewiesen wird direkt über die Zahlen, die im
+/// Kanal stehen — die Rundung der Synthese kann den Beweis nicht mehr
+/// beeinflussen.
+///
+/// Das Minimum einer affinen Form über einer Box ist separabel und wird an
+/// einer Ecke angenommen; jede Achse einzeln, nach UNTEN gerundet.
+fn plane_tau(cover: &[WorldBox], n: [f32; 3], c: f32, delta: f32) -> Option<f64> {
+    let mut worst = f64::INFINITY;
+    for (lo, hi) in cover {
+        let mut s = 0.0f64;
+        for k in 0..3 {
+            let nk = n[k] as f64;
+            let t = if nk >= 0.0 { next_down(nk * lo[k]) } else { next_down(nk * hi[k]) };
+            s = next_down(s + t);
+        }
+        let v = next_down(next_down(s - c as f64) + delta as f64);
+        worst = worst.min(v);
+    }
+    if cover.is_empty() {
+        // `Ω = ∅`: jede Ebene stützt, `τ = 0`.
+        return Some(0.0);
+    }
+    if !worst.is_finite() {
+        return None;
+    }
+    Some(next_up((-worst).max(0.0)))
+}
+
+/// **Das h-Budget eines Kanals.**
+///
+/// Zugesagt ist: fällt das `min` der eingefrorenen Kette auf die Stützebene,
+/// so überschreitet `fl(δ − fl(h + A_h))` die gültige Feld-Untergrenze nicht.
+/// Zusammen mit [`CertifiedSeamAddend`] ist damit die **vollständige** Kette
+/// `fl(δ − min(fl(de+A), fl(h+A_h)))` bewiesen — der Restposten R1 aus §8aa
+/// ist geschlossen.
+///
+/// **Kein Konsument.** Wie beim Naht-Addenden liest kein Evaluator diesen
+/// Wert; der Verbrauch ist P5b-1A.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HBudget {
+    tau_mm: f64,
+    norm_mm: f64,
+    reach_mm: f64,
+    round_mm: f64,
+    encoded_addend: f32,
+    slots: u8,
+}
+
+impl HBudget {
+    /// Die grösste bewiesene Stützseiten-Verletzung über alle belegten Slots
+    /// (mm). `0`, wo die Ebene wirklich stützt.
+    pub fn tau_mm(&self) -> f64 {
+        self.tau_mm
+    }
+    /// Der Anteil aus `|n| ≠ 1` (mm).
+    pub fn norm_mm(&self) -> f64 {
+        self.norm_mm
+    }
+    /// Die bewiesene Reichweiten-Schranke `|Ĥ|` im aktiven Bereich (mm) — die
+    /// Grösse, die den ADDITIVEN Normfehler überhaupt erst zulässt.
+    pub fn reach_mm(&self) -> f64 {
+        self.reach_mm
+    }
+    /// Der reine Rundungsanteil (mm).
+    pub fn round_mm(&self) -> f64 {
+        self.round_mm
+    }
+    /// Der GEOMETRISCHE Anteil `A^geom = τ/ν + R·|1−ν|/ν` (mm) — der Teil, den
+    /// das Halbraum-Lemma verlangt, ohne jedes Rundungsbudget.
+    pub fn geom_mm(&self) -> f64 {
+        next_up(self.tau_mm + self.norm_mm)
+    }
+    /// Der kodierte f32-Addend (Diagnose; die autoritative Ausgabe ist
+    /// [`crate::offset_channel::OffsetChannel::h_addend`]).
+    pub fn addend(&self) -> f32 {
+        self.encoded_addend
+    }
+    /// Zahl der belegten (nicht-Sentinel) Ebenen-Slots. `0` heisst: der
+    /// `h`-Ast ist an diesem Kanal unerreichbar, die Zusage ist gegenstandslos
+    /// wahr.
+    pub fn slots(&self) -> u8 {
+        self.slots
+    }
+}
+
+/// Warum ein Kanal (k)ein h-Budget bekommen hat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HStatus {
+    /// h-Budget bewiesen.
+    Proved,
+    /// Alle vier Slots sind Sentinel — der `h`-Ast kann nie binden. Die Zusage
+    /// gilt gegenstandslos; ehrlicher, das getrennt zu zählen.
+    Vacuous,
+    /// Keine strukturelle Box-Überdeckung von `Ω` (nicht unterstütztes Blatt,
+    /// `Offset(δ>0)`, unbekannter Knoten).
+    NoCover,
+    /// Eine belegte Ebene stützt `Ω` global nicht (oder nur mit einem `τ`,
+    /// das den Addenden unbrauchbar machen würde).
+    NotSupporting,
+    /// Entartete Ebenendaten: `|n|` nicht von null weg beschränkt, nicht
+    /// endliche Koeffizienten.
+    Degenerate,
+    /// Das Rundungsbudget lässt sich nicht schliessen.
+    NoBudget,
+}
+
+/// Die grösste Stützseiten-Verletzung, die wir noch in einen Addenden
+/// verwandeln — darüber ist die Ebene keine Stützebene mehr, sondern eine
+/// Ausrede. `0.5 mm` ist weit über allem Gemessenen (Maximum der Matrix:
+/// s. §8ab) und dient nur als fail-closed-Deckel.
+const H_TAU_LIMIT_MM: f64 = 0.5;
+
+/// **Die Herleitung des h-Addenden.**
+///
+/// Für jeden belegten Slot `k`:
+///
+/// ```text
+/// ν_k = |n_k|                                    (reell, eingeschlossen)
+/// τ_k = max(0, −min_Ω Ĥ_k)                       (Box-Überdeckung, s. plane_tau)
+/// S_k(x) = (Ĥ_k(x) + τ_k)/ν_k  ≥  −SDF_Ω(x)      (Halbraum-Lemma)
+/// ```
+///
+/// **Die ADDITIVE Form** — und der Beweis, der sie trägt. Aus
+/// `S_k − Ĥ_k = (Ĥ_k(1−ν_k) + τ_k)/ν_k` folgt mit einer OBEREN Schranke
+/// `|Ĥ_k| ≤ R_k`:
+///
+/// ```text
+/// A_k^geom = (R_k·|1−ν_k| + τ_k) / ν_k     ⇒   S_k ≤ Ĥ_k + A_k^geom.
+/// ```
+///
+/// Die Reichweiten-Schranke `R_k` ist **bewiesen, nicht angenommen**:
+/// `channel_limit` steigt aus, sobald `|p − bound_c| − bound_r ≥ trust`. Im
+/// aktiven Bereich gilt also `|p_j| ≤ |bound_c_j| + bound_r + trust`, und
+/// damit `|Ĥ_k| ≤ Σ_j |p_j|·|n_kj| + |C_k| + |δ| =: R_k`. Ohne diese Schranke
+/// wäre die additive Form nicht zulässig und man müsste die Division
+/// `(Ĥ+τ)/|n|` ins Feld nehmen.
+///
+/// **Ein Addend für den ganzen Kanal.** `A^geom = max_k A_k^geom`, angewandt
+/// NACH dem `min` über die Slots. Sound, weil die Zusage für JEDEN Slot
+/// einzeln gilt: ist `k'` der f32-Gewinner des `min`, so ist
+/// `h ≈ Ĥ_{k'}` und `−SDF_Ω ≤ S_{k'} ≤ Ĥ_{k'} + A_{k'}^geom ≤ Ĥ_{k'} + A^geom`.
+/// Welcher Slot gewinnt, ist dem Beweis also gleichgültig — er braucht keinen
+/// „richtigen" Gewinner, nur irgendeinen gültigen.
+///
+/// **Sentinel-Slots** (`[0,0,0,−1e30]`) gehen NICHT ein. Sie können den `min`
+/// nicht gewinnen, solange ein belegter Slot existiert: ihr Wert ist
+/// `fl(0 − (−1e30)) = 1e30`, während ein belegter Slot durch `R_k` beschränkt
+/// ist. Sind ALLE Slots Sentinel, ist `h = 1e30` und der `h`-Ast unerreichbar
+/// ([`HStatus::Vacuous`]).
+///
+/// **Das Rundungsbudget** entlang der eingefrorenen Kette
+/// `a_k = fl(fl(fl(p₀n₀ + p₁n₁) + p₂n₂) − C_k)`, `g = min_k a_k`,
+/// `h = fl(g + δ)`, `hs = fl(h + A_h)`, `lim = fl(δ − min(de_eta, hs))`:
+///
+/// ```text
+/// A_h ≥ [ A^geom + ρ_aff + ρ_h + u·(2R + |δ|) + 3·2⁻¹⁵⁰ ] / (1 − 3u)
+/// ```
+///
+/// mit `ρ_aff` = Rundung der affinen Slot-Auswertung und `ρ_h` = Rundung von
+/// `fl(g+δ)`. Dieselbe Bauart wie Lemma 5 des Naht-Astes: die Addition kann
+/// nach unten, die Schluss-Subtraktion nach oben runden, und beide sind drin.
+pub(crate) fn h_budget(
+    ch: &OffsetChannel,
+    cover: &[WorldBox],
+    knobs: SeamProofKnobs,
+) -> Result<HBudget, HStatus> {
+    // Der aktive Bereich: `|p − bound_c| < bound_r + trust` (zwei geprüfte
+    // Ausgänge in `channel_limit`).
+    let mut pmax = [0.0f64; 3];
+    let span = next_up(ch.bound_r as f64 + ch.trust as f64);
+    if !(span.is_finite() && ch.trust > 0.0) {
+        return Err(HStatus::Degenerate);
+    }
+    for k in 0..3 {
+        pmax[k] = next_up((ch.bound_c[k] as f64).abs() + span);
+        if !pmax[k].is_finite() {
+            return Err(HStatus::Degenerate);
+        }
+    }
+    let d_abs = (ch.delta as f64).abs();
+    let mut slots = 0u8;
+    let mut a_geom = 0.0f64;
+    let (mut tau_max, mut norm_max, mut reach_max) = (0.0f64, 0.0f64, 0.0f64);
+    let mut rho_aff = 0.0f64;
+    for g in &ch.face_planes {
+        if is_sentinel_plane(g) {
+            continue;
+        }
+        let n = [g[0], g[1], g[2]];
+        let c = g[3];
+        if !(n.iter().all(|v| v.is_finite()) && c.is_finite()) {
+            return Err(HStatus::Degenerate);
+        }
+        // `ν = |n|`, eingeschlossen. Ein `ν`, das die Null enthält, ist keine
+        // Ebene — fail-closed.
+        let Some(nu) = rnorm([pt(n[0] as f64), pt(n[1] as f64), pt(n[2] as f64)]) else {
+            return Err(HStatus::Degenerate);
+        };
+        if !(nu.lo > 0.5 && nu.hi < 2.0) {
+            return Err(HStatus::Degenerate);
+        }
+        slots += 1;
+        // Reichweite `R_k`.
+        let mut reach = 0.0f64;
+        for k in 0..3 {
+            reach = next_up(reach + next_up(pmax[k] * (n[k] as f64).abs()));
+        }
+        let reach = next_up(next_up(reach + (c as f64).abs()) + d_abs);
+        if !reach.is_finite() {
+            return Err(HStatus::Degenerate);
+        }
+        reach_max = reach_max.max(reach);
+        // `τ_k` aus der Überdeckung.
+        let Some(tau) = plane_tau(cover, n, c, ch.delta) else {
+            return Err(HStatus::NotSupporting);
+        };
+        if !(tau.is_finite() && tau <= H_TAU_LIMIT_MM) {
+            return Err(HStatus::NotSupporting);
+        }
+        let tau = if knobs.h_drop_tau { 0.0 } else { tau };
+        tau_max = tau_max.max(tau);
+        // `A_k^geom = (R·|1−ν| + τ)/ν`, jede Schranke in die ungünstige Richtung.
+        let dev = next_up((1.0 - nu.lo).abs().max((nu.hi - 1.0).abs()));
+        let normpart = if knobs.h_drop_norm { 0.0 } else { next_up(reach * dev) };
+        norm_max = norm_max.max(next_up(normpart / nu.lo));
+        let ak = next_up(next_up(normpart + tau) / nu.lo);
+        if !ak.is_finite() {
+            return Err(HStatus::NoBudget);
+        }
+        a_geom = a_geom.max(ak);
+        // `ρ_aff`: die Rundung von `fl(fl(fl(p₀n₀+p₁n₁)+p₂n₂) − C)`.
+        let mut t = [0.0f64; 3];
+        let mut e = 0.0f64;
+        for k in 0..3 {
+            t[k] = next_up(pmax[k] * (n[k] as f64).abs());
+            e = next_up(e + next_up(next_up(F32_U * t[k]) + F32_SUB));
+        }
+        let s1 = next_up(next_up(t[0] + t[1]) + e);
+        e = next_up(e + next_up(next_up(F32_U * s1) + F32_SUB));
+        let s2 = next_up(next_up(s1 + t[2]) + e);
+        e = next_up(e + next_up(next_up(F32_U * s2) + F32_SUB));
+        let s3 = next_up(next_up(s2 + (c as f64).abs()) + e);
+        e = next_up(e + next_up(next_up(F32_U * s3) + F32_SUB));
+        rho_aff = rho_aff.max(e);
+    }
+    if slots == 0 {
+        return Ok(HBudget {
+            tau_mm: 0.0,
+            norm_mm: 0.0,
+            reach_mm: 0.0,
+            round_mm: 0.0,
+            encoded_addend: 0.0,
+            slots: 0,
+        });
+    }
+    // `ρ_h`: die Rundung von `fl(g + δ)`. `|g + δ| ≤ R + ρ_aff + |δ|`.
+    let gd = next_up(next_up(reach_max + rho_aff) + d_abs);
+    let rho_h = next_up(next_up(F32_U * gd) + F32_SUB);
+    // Das Gesamtbudget.
+    let u3 = next_up(3.0 * F32_U);
+    let den = next_down(1.0 - u3);
+    if !(den > 0.0) {
+        return Err(HStatus::NoBudget);
+    }
+    let mix = next_up(next_up(2.0 * reach_max) + d_abs);
+    let num = next_up(
+        next_up(next_up(next_up(a_geom + rho_aff) + rho_h) + next_up(F32_U * mix))
+            + next_up(3.0 * F32_SUB),
+    );
+    let a_min = if knobs.h_drop_round { a_geom } else { next_up(num / den) };
+    if !(a_min.is_finite() && a_min >= a_geom) {
+        return Err(HStatus::NoBudget);
+    }
+    let Some(mut addend) = f32_ceil(a_min) else {
+        return Err(HStatus::NoBudget);
+    };
+    if let Some(f) = knobs.h_force_addend {
+        addend = f;
+    }
+    for _ in 0..knobs.h_shave_ulps {
+        addend = f32::from_bits(addend.to_bits().saturating_sub(1));
+    }
+    if !(addend.is_finite() && addend >= 0.0) {
+        return Err(HStatus::NoBudget);
+    }
+    Ok(HBudget {
+        tau_mm: tau_max,
+        norm_mm: norm_max,
+        reach_mm: reach_max,
+        round_mm: next_up(a_min - a_geom),
+        encoded_addend: addend,
+        slots,
+    })
+}
+
 // ─── Der Beweistyp ──────────────────────────────────────────────────────────
 
 /// **Das Siegel des Schreibwegs.**
@@ -1126,6 +1640,11 @@ pub struct CertifiedSeamAddend {
     channel_snapshot: Vec<u8>,
     omega_prefilter: u64,
     omega_snapshot: Vec<u8>,
+    /// #384 §8ab / P5b-1H — das h-Budget, falls es bewiesen ist. Es wohnt in
+    /// DERSELBEN versiegelten Zelle wie der Naht-Addend und läuft beim Abruf
+    /// durch DIESELBE Schnappschuss-Prüfung: ein zweiter Vergleichs-Code wäre
+    /// eine zweite Wahrheit.
+    h: Option<HBudget>,
 }
 
 impl CertifiedSeamAddend {
@@ -1177,6 +1696,23 @@ impl CertifiedSeamAddend {
     pub fn bridge_total_mm(&self) -> f64 {
         next_up(next_up(self.geometric_mm + self.q_bridge_mm) + self.norm_bridge_mm)
     }
+    /// #384 §8ab — der bewiesene **h**-Addend `A_h`, gegen denselben Kanal und
+    /// dasselbe `Ω` wie der Naht-Addend. `None`, wenn dieser Kanal kein
+    /// h-Budget hat (dann bleibt sein `h`-Ast auf der Modell-Annahme, s. R1).
+    pub fn h_addend_for(&self, ch: &OffsetChannel, omega: &BoundedCsg) -> Option<f32> {
+        if !self.channel_bytes_accepted(&channel_snapshot(ch)) {
+            return None;
+        }
+        let os = omega_snapshot(omega);
+        if prefilter(&os) != self.omega_prefilter || os != self.omega_snapshot {
+            return None;
+        }
+        Some(self.h.as_ref()?.encoded_addend)
+    }
+    /// Das h-Budget selbst (Diagnose/Bericht).
+    pub fn h_budget(&self) -> Option<&HBudget> {
+        self.h.as_ref()
+    }
     /// Vorfilter-Hashes (Diagnose). **Nicht** die Identität — s. Typ-Doku.
     pub fn prefilters(&self) -> (u64, u64) {
         (self.channel_prefilter, self.omega_prefilter)
@@ -1203,6 +1739,15 @@ pub enum SeamProofStatus {
     NoBridge,
     /// [`WitnessCfg`] ungültig.
     BadConfig,
+    /// #384 §8ab — **Scope-Sperre**: der Kanal ist KONVEX.
+    ///
+    /// `CertifiedSeamAddend` beweist die konkave Erosions-Aussage
+    /// `−SDF_Ω(x) ≤ de + Δ` über `Ω` = dem Körper VOR der Erosion. Am
+    /// Dilations-Stopp ist die Dualität eine andere (`∁Ω` ist dort eine
+    /// Vereinigung unbeschränkter Komplemente, s. `set_face_plane_gates`), und
+    /// einen konvexen Dualsatz gibt es nicht. Bis dahin: fail-closed schon
+    /// beim Prägen, nicht erst beim Lesen.
+    NotConcave,
 }
 
 /// Ablationen für die Gegenproben. `pub(crate)`: ein geschwächter Beweis darf
@@ -1219,6 +1764,16 @@ pub(crate) struct SeamProofKnobs {
     pub shave_ulps: u32,
     /// Den Addenden fest vorgeben (Binärsuche der ulp-Familie).
     pub force_addend: Option<f32>,
+    /// #384 §8ab — `τ := 0` im h-Budget.
+    pub h_drop_tau: bool,
+    /// #384 §8ab — der Normfehler-Anteil `R·|1−ν|/ν := 0`.
+    pub h_drop_norm: bool,
+    /// #384 §8ab — Rundungsbudget des h-Astes weg: `A_h := ceil_f32(A^geom)`.
+    pub h_drop_round: bool,
+    /// #384 §8ab — den h-Addenden um `n` ulp verkleinern.
+    pub h_shave_ulps: u32,
+    /// #384 §8ab — den h-Addenden fest vorgeben.
+    pub h_force_addend: Option<f32>,
 }
 
 /// **Die Zertifizierung EINES Kanals — die einzige Entstehungsstelle eines
@@ -1246,6 +1801,17 @@ pub fn certify_channel(
     ch: &mut OffsetChannel,
     cfg: WitnessCfg,
 ) -> (SeamProofStatus, WitnessCover) {
+    certify_channel_with(omega, ch, cfg, SeamProofKnobs::default()).0
+}
+
+/// Wie [`certify_channel`], gibt zusätzlich den h-Ausgang zurück. `None`
+/// heisst: der Naht-Addend ist gescheitert, ein h-Budget wurde gar nicht erst
+/// versucht (ohne versiegelte Zelle gäbe es keinen Ort dafür).
+pub fn certify_channel_reported(
+    omega: &BoundedCsg,
+    ch: &mut OffsetChannel,
+    cfg: WitnessCfg,
+) -> ((SeamProofStatus, WitnessCover), Option<HStatus>) {
     certify_channel_with(omega, ch, cfg, SeamProofKnobs::default())
 }
 
@@ -1254,32 +1820,39 @@ pub(crate) fn certify_channel_with(
     ch: &mut OffsetChannel,
     cfg: WitnessCfg,
     knobs: SeamProofKnobs,
-) -> (SeamProofStatus, WitnessCover) {
+) -> ((SeamProofStatus, WitnessCover), Option<HStatus>) {
+    let mut hs_out: Option<HStatus> = None;
     ch.seal_seam_proof(SeamProofToken::mint(), None);
     if !cfg.valid() {
-        return (SeamProofStatus::BadConfig, cover_channel(omega, ch, cfg));
+        return ((SeamProofStatus::BadConfig, cover_channel(omega, ch, cfg)), None);
+    }
+    // #384 §8ab — Scope-Sperre: nur der konkave Zweig. Die ganze Zusage spricht
+    // über `Ω` = dem Körper VOR der Erosion; am Dilations-Stopp ist die
+    // Dualität eine andere, und einen konvexen Dualsatz gibt es nicht.
+    if !ch.concave {
+        return ((SeamProofStatus::NotConcave, cover_channel(omega, ch, cfg)), None);
     }
     if ch.arcs.is_empty() {
-        return (SeamProofStatus::NoCover, cover_channel(omega, ch, cfg));
+        return ((SeamProofStatus::NoCover, cover_channel(omega, ch, cfg)), None);
     }
     // Gekrümmt zuerst — ein struktureller Ausschluss, kein Zeugen-Fehlschlag.
     if ch.arcs.iter().any(|a| !(a.sweep < 0.0)) {
-        return (SeamProofStatus::Curved, cover_channel(omega, ch, cfg));
+        return ((SeamProofStatus::Curved, cover_channel(omega, ch, cfg)), None);
     }
     let cover = cover_channel(omega, ch, cfg);
     let Some(eta) = cover.eta else {
-        return (SeamProofStatus::NoCover, cover);
+        return ((SeamProofStatus::NoCover, cover), None);
     };
     let geo = eta.mm();
     if !(geo.is_finite() && geo >= 0.0) {
-        return (SeamProofStatus::NoBridge, cover);
+        return ((SeamProofStatus::NoBridge, cover), None);
     }
     // `ε_q`: das Maximum über alle Bögen — die Zusage gilt für den Kanal, also
     // für seinen schlechtesten Bogen.
     let mut eps_q = 0.0f64;
     for a in &ch.arcs {
         let Some(v) = point_bridge_mm(a) else {
-            return (SeamProofStatus::NoBridge, cover);
+            return ((SeamProofStatus::NoBridge, cover), None);
         };
         eps_q = eps_q.max(v);
     }
@@ -1287,7 +1860,7 @@ pub(crate) fn certify_channel_with(
         eps_q = 0.0;
     }
     let Some(mut eps_d) = norm_bridge_mm(ch.trust) else {
-        return (SeamProofStatus::NoBridge, cover);
+        return ((SeamProofStatus::NoBridge, cover), None);
     };
     if knobs.drop_norm_bridge {
         eps_d = 0.0;
@@ -1295,12 +1868,12 @@ pub(crate) fn certify_channel_with(
     let bridge_total = next_up(next_up(geo + eps_q) + eps_d);
     let (field_round, addend) = if knobs.drop_field_round {
         let Some(a) = f32_ceil(bridge_total) else {
-            return (SeamProofStatus::NoBridge, cover);
+            return ((SeamProofStatus::NoBridge, cover), None);
         };
         (0.0, a)
     } else {
         let Some(v) = round_budget(ch.delta, ch.trust, bridge_total) else {
-            return (SeamProofStatus::NoBridge, cover);
+            return ((SeamProofStatus::NoBridge, cover), None);
         };
         v
     };
@@ -1309,8 +1882,26 @@ pub(crate) fn certify_channel_with(
         addend = f32::from_bits(addend.to_bits().saturating_sub(1));
     }
     if !(addend.is_finite() && addend >= 0.0) {
-        return (SeamProofStatus::NoBridge, cover);
+        return ((SeamProofStatus::NoBridge, cover), None);
     }
+    // #384 §8ab — das h-Budget. Es scheitert unabhängig vom Naht-Addenden;
+    // scheitert es, bleibt der `h`-Ast dieses Kanals auf der Modell-Annahme.
+    let h = match omega_cover(omega) {
+        None => {
+            hs_out = Some(HStatus::NoCover);
+            None
+        }
+        Some(cover) => match h_budget(ch, &cover, knobs) {
+            Ok(b) => {
+                hs_out = Some(if b.slots == 0 { HStatus::Vacuous } else { HStatus::Proved });
+                Some(b)
+            }
+            Err(e) => {
+                hs_out = Some(e);
+                None
+            }
+        },
+    };
     let cs = channel_snapshot(ch);
     let os = omega_snapshot(omega);
     let proof = CertifiedSeamAddend {
@@ -1323,9 +1914,10 @@ pub(crate) fn certify_channel_with(
         channel_snapshot: cs,
         omega_prefilter: prefilter(&os),
         omega_snapshot: os,
+        h,
     };
     ch.seal_seam_proof(SeamProofToken::mint(), Some(proof));
-    (SeamProofStatus::Proved, cover)
+    ((SeamProofStatus::Proved, cover), hs_out)
 }
 
 /// **NUR für die Gegenproben.** Schiebt den Beweis von `src` über den
@@ -1357,6 +1949,14 @@ pub struct SeamProofTally {
     pub no_cover: usize,
     pub no_bridge: usize,
     pub bad_config: usize,
+    pub not_concave: usize,
+    // #384 §8ab — das h-Budget, gezählt UNTER den naht-zertifizierten Kanälen.
+    pub h_proved: usize,
+    pub h_vacuous: usize,
+    pub h_no_cover: usize,
+    pub h_not_supporting: usize,
+    pub h_degenerate: usize,
+    pub h_no_budget: usize,
 }
 
 impl SeamProofTally {
@@ -1367,9 +1967,36 @@ impl SeamProofTally {
             SeamProofStatus::NoCover => self.no_cover += 1,
             SeamProofStatus::NoBridge => self.no_bridge += 1,
             SeamProofStatus::BadConfig => self.bad_config += 1,
+            SeamProofStatus::NotConcave => self.not_concave += 1,
+        }
+    }
+    /// Der h-Ausgang wird NUR für naht-zertifizierte Kanäle gezählt — ohne
+    /// Naht-Addend gibt es gar keine versiegelte Zelle, in der ein h-Budget
+    /// wohnen könnte.
+    pub fn add_h(&mut self, s: HStatus) {
+        match s {
+            HStatus::Proved => self.h_proved += 1,
+            HStatus::Vacuous => self.h_vacuous += 1,
+            HStatus::NoCover => self.h_no_cover += 1,
+            HStatus::NotSupporting => self.h_not_supporting += 1,
+            HStatus::Degenerate => self.h_degenerate += 1,
+            HStatus::NoBudget => self.h_no_budget += 1,
         }
     }
     pub fn total(&self) -> usize {
-        self.proved_seam + self.curved + self.no_cover + self.no_bridge + self.bad_config
+        self.proved_seam
+            + self.curved
+            + self.no_cover
+            + self.no_bridge
+            + self.bad_config
+            + self.not_concave
+    }
+    pub fn h_total(&self) -> usize {
+        self.h_proved
+            + self.h_vacuous
+            + self.h_no_cover
+            + self.h_not_supporting
+            + self.h_degenerate
+            + self.h_no_budget
     }
 }

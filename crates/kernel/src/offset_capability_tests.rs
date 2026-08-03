@@ -12589,8 +12589,11 @@ fn clamp_scan(
     for (om, chans) in omega_and_channels(field) {
         for ch in chans {
             let mut c = ch.clone();
-            let (st, _) = wit::certify_channel(om, &mut c, cfg);
+            let ((st, _), hst) = wit::certify_channel_reported(om, &mut c, cfg);
             tally.add(st);
+            if let Some(h) = hst {
+                tally.add_h(h);
+            }
             // Der Addend ist nur GEGEN sein Ω lesbar — hier ist es zur Hand.
             let a = c.seam_addend(om);
             out.push((c, st, a));
@@ -13091,7 +13094,7 @@ fn clamp_de_family(trust: f32) -> Vec<f32> {
 /// ÜBER der gültigen Feld-Untergrenze und könnte Material entfernen.
 fn clamp_round_reserve(delta: f32, de: f32, h: f32, a: f32, bridge: f64) -> f64 {
     let nd = crate::offset_interval::next_down;
-    let lim = wit::frozen_limit_tail(delta, de, h, a) as f64;
+    let lim = wit::frozen_limit_tail(delta, de, h, a, 0.0) as f64;
     let lb = nd(nd(delta as f64 - de as f64) - bridge);
     lb - lim
 }
@@ -13144,7 +13147,7 @@ fn clamp_rounding_absorbs_both_f32_ops_384() {
                 // η-Zweig: `h` neutral (der Sentinel-Wert der Produktion) und
                 // ein grosser endlicher Wert.
                 for &h in &[1.0e30f32, delta + trust * 4.0] {
-                    if wit::frozen_limit_tail(delta, de, h, 0.0) != delta - de {
+                    if wit::frozen_limit_tail(delta, de, h, 0.0, 0.0) != delta - de {
                         continue; // h-Zweig — nicht Gegenstand von Lemma 5
                     }
                     cases.push((delta, de, h, bridge));
@@ -13468,7 +13471,7 @@ fn clamp_is_fail_closed_384() {
     ] {
         let mut c = base.clone();
         assert_eq!(
-            wit::certify_channel_with(om, &mut c, cfg, knobs).0,
+            wit::certify_channel_with(om, &mut c, cfg, knobs).0 .0,
             wit::SeamProofStatus::Proved
         );
         let weak = c.seam_addend(om).unwrap();
@@ -13490,6 +13493,7 @@ fn clamp_frozen_form_is_neutral_at_zero_and_monotone_384() {
     let delta = 2.0f32;
     let mut g = Lcg(0x7e57_0007);
     let (mut probes, mut strict) = (0usize, 0usize);
+    let mut strict_h = 0usize;
     for (name, field, _e, _l, _h, _c) in cert_matrix(delta) {
         for (_om, chans) in omega_and_channels(&field) {
             for ch in chans {
@@ -13500,16 +13504,16 @@ fn clamp_frozen_form_is_neutral_at_zero_and_monotone_384() {
                         (ch.bound_c[2] as f64 + g.sym() * (ch.bound_r + ch.trust) as f64) as f32,
                     ];
                     let today = oc::channel_limit(p, ch);
-                    let frozen = wit::frozen_channel_limit(p, ch, 0.0);
+                    let frozen = wit::frozen_channel_limit(p, ch, 0.0, 0.0);
                     assert_eq!(
                         today.to_bits(),
                         frozen.to_bits(),
-                        "{name}: die eingefrorene Form ist bei A = 0 NICHT das heutige Feld \
-                         ({today} gegen {frozen}) bei {p:?}"
+                        "{name}: die eingefrorene Form ist bei A = A_h = 0 NICHT das heutige \
+                         Feld ({today} gegen {frozen}) bei {p:?}"
                     );
                     let mut prev = frozen;
                     for a in [1.0e-6f32, 1.0e-4, 1.0e-3, 1.0e-2, 0.5] {
-                        let v = wit::frozen_channel_limit(p, ch, a);
+                        let v = wit::frozen_channel_limit(p, ch, a, 0.0);
                         assert!(
                             v <= prev,
                             "{name}: die Klemme ist in A nicht monoton ({v} > {prev} bei A = {a})"
@@ -13518,6 +13522,25 @@ fn clamp_frozen_form_is_neutral_at_zero_and_monotone_384() {
                             strict += 1;
                         }
                         prev = v;
+                    }
+                    // #384 §8ab — dasselbe für den h-Addenden, und für BEIDE
+                    // gemeinsam: die vollständige Kette darf nur fallen.
+                    let mut prev_h = frozen;
+                    for ah in [1.0e-6f32, 1.0e-4, 1.0e-3, 1.0e-2, 0.5] {
+                        let v = wit::frozen_channel_limit(p, ch, 0.0, ah);
+                        assert!(
+                            v <= prev_h,
+                            "{name}: die Klemme ist in A_h nicht monoton ({v} > {prev_h})"
+                        );
+                        if v < prev_h {
+                            strict_h += 1;
+                        }
+                        prev_h = v;
+                        let both = wit::frozen_channel_limit(p, ch, ah, ah);
+                        assert!(
+                            both <= v && both <= wit::frozen_channel_limit(p, ch, ah, 0.0),
+                            "{name}: die volle Kette liegt über einem ihrer Einzel-Äste"
+                        );
                     }
                     probes += 1;
                 }
@@ -13530,7 +13553,15 @@ fn clamp_frozen_form_is_neutral_at_zero_and_monotone_384() {
         "nur {strict} strikte Absenkungen — dann ist der Addend an diesen Proben ein No-op \
          und der Monotonie-Pin misst nichts"
     );
-    println!("§8aa Pin 7: {probes} Proben, {strict} strikte Absenkungen");
+    assert!(
+        strict_h > 500,
+        "nur {strict_h} strikte Absenkungen über A_h — dann ist der h-Addend an diesen Proben \
+         ein No-op und der Monotonie-Pin misst dort nichts"
+    );
+    println!(
+        "§8aa/§8ab Pin 7: {probes} Proben, {strict} strikte Absenkungen über A, \
+         {strict_h} über A_h"
+    );
 }
 
 /// **§8aa-Pin 8: `channel_limit` konsumiert ausschliesslich `de`.**
@@ -13645,10 +13676,18 @@ fn clamp_shadow_report_matches_the_matrix_384() {
         total.no_cover += t.no_cover;
         total.no_bridge += t.no_bridge;
         total.bad_config += t.bad_config;
+        total.not_concave += t.not_concave;
+        total.h_proved += t.h_proved;
+        total.h_vacuous += t.h_vacuous;
+        total.h_no_cover += t.h_no_cover;
+        total.h_not_supporting += t.h_not_supporting;
+        total.h_degenerate += t.h_degenerate;
+        total.h_no_budget += t.h_no_budget;
     }
     println!(
         "§8aa Shadow: {} Kanäle — {} Naht-Addenden bewiesen / {} curved / {} no_cover / {} no_bridge; \
-         η_geo ≤ {:.3e}, ε_q ≤ {:.3e}, ε_d ≤ {:.3e}, field_round ≤ {:.3e}, A ≤ {:.3e} mm",
+         η_geo ≤ {:.3e}, ε_q ≤ {:.3e}, ε_d ≤ {:.3e}, field_round ≤ {:.3e}, A ≤ {:.3e} mm; \
+         h-Budget: {} proved / {} vacuous / {} no_cover / {} not_supporting",
         total.total(),
         total.proved_seam,
         total.curved,
@@ -13658,13 +13697,38 @@ fn clamp_shadow_report_matches_the_matrix_384() {
         worst[1],
         worst[2],
         worst[3],
-        a_max
+        a_max,
+        total.h_proved,
+        total.h_vacuous,
+        total.h_no_cover,
+        total.h_not_supporting
     );
     assert_eq!(
-        (total.proved_seam, total.curved, total.no_cover, total.no_bridge, total.bad_config),
-        (217, 2, 19, 0, 0),
+        (
+            total.proved_seam,
+            total.curved,
+            total.no_cover,
+            total.no_bridge,
+            total.bad_config,
+            total.not_concave
+        ),
+        (217, 2, 19, 0, 0, 0),
         "der Shadow-Bericht hat sich bewegt — §8aa nachziehen, nicht den Pin"
     );
+    // #384 §8ab — das h-Budget, gezählt unter den naht-zertifizierten Kanälen.
+    assert_eq!(
+        (
+            total.h_proved,
+            total.h_vacuous,
+            total.h_no_cover,
+            total.h_not_supporting,
+            total.h_degenerate,
+            total.h_no_budget
+        ),
+        (217, 0, 0, 0, 0, 0),
+        "der h-Bericht hat sich bewegt — §8ab nachziehen, nicht den Pin"
+    );
+    assert_eq!(total.h_total(), total.proved_seam, "h-Zählung und Naht-Zählung sind auseinander");
     assert!(worst[0] <= 2.3e-3 && worst[1] <= 2.2e-5 && worst[2] <= 1.1e-6 && worst[3] <= 7.3e-7);
     assert!(a_max <= 2.27e-3, "A_max = {a_max:e}");
 }
@@ -13853,4 +13917,595 @@ fn clamp_h_branch_is_reachable_384() {
          R1 zwar erreichbar (h gewinnt an {h_wins_today} Proben), aber das UMHÄNGEN durch \
          P5b-1 nicht — und §8aa müsste genau das sagen"
     );
+}
+
+// ══════════════ #384 §8ab / P5b-1H — das h-Budget ══════════════
+
+/// **§8ab-Sonde: das h-Budget je Fixture.**
+#[test]
+#[ignore]
+fn probe_384_h_budget() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    println!(
+        "| Fixture | Naht | h_proved | h_vacuous | h_no_cover | h_not_sup | h_degen | h_no_budget | τ mm | norm mm | reach mm | round mm | A_h mm |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    for (name, field, _e, _lo, _hi, _n) in cert_matrix(delta) {
+        let (t, chans) = clamp_scan(&field, cfg);
+        let mut mx = [0.0f64; 4];
+        let mut a_max = 0.0f32;
+        for (c, _st, _a) in &chans {
+            let Some(k) = c.seam_proof().and_then(|p| p.h_budget()) else { continue };
+            mx[0] = mx[0].max(k.tau_mm());
+            mx[1] = mx[1].max(k.norm_mm());
+            mx[2] = mx[2].max(k.reach_mm());
+            mx[3] = mx[3].max(k.round_mm());
+        }
+        for (om, cs) in omega_and_channels(&field) {
+            for ch in cs {
+                let mut c = ch.clone();
+                let _ = wit::certify_channel(om, &mut c, cfg);
+                if let Some(v) = c.h_addend(om) {
+                    a_max = a_max.max(v);
+                }
+            }
+        }
+        let cell = |v: f64| if v > 0.0 { format!("{v:.3e}") } else { "—".into() };
+        println!(
+            "| {name} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            t.proved_seam,
+            t.h_proved,
+            t.h_vacuous,
+            t.h_no_cover,
+            t.h_not_supporting,
+            t.h_degenerate,
+            t.h_no_budget,
+            cell(mx[0]),
+            cell(mx[1]),
+            cell(mx[2]),
+            cell(mx[3]),
+            if a_max > 0.0 { format!("{a_max:.3e}") } else { "—".into() },
+        );
+    }
+}
+
+/// **§8ab-Pin 1: die Box-Überdeckung enthält `Ω` wirklich.**
+///
+/// Das Halbraum-Lemma steht und fällt mit `Ω ⊆ ⋃ Boxen`. Geprüft wird das
+/// gegen ein UNABHÄNGIGES Orakel: jeder Punkt, den die analytische
+/// Komplement-Distanz als INNEN ausweist (`dist(x,∁Ω) > 0`), muss in einer
+/// Box liegen. Rückdreh: streicht man eine Box, MUSS ein Innenpunkt
+/// unbedeckt bleiben.
+#[test]
+fn h_cover_contains_omega_384() {
+    let delta = 2.0f32;
+    let mut g = Lcg(0x8ab_c07e2);
+    let (mut inside, mut fixtures) = (0usize, 0usize);
+    for (name, field, exact, lo, hi, _n) in cert_matrix(delta) {
+        let mut covers: Vec<Vec<wit::WorldBox>> = Vec::new();
+        for (om, _c) in omega_and_channels(&field) {
+            if let Some(c) = wit::omega_cover(om) {
+                covers.push(c);
+            }
+        }
+        if covers.is_empty() {
+            continue;
+        }
+        fixtures += 1;
+        let mut here = 0usize;
+        for _ in 0..4000 {
+            let p = [
+                lo[0] + g.next_f64() * (hi[0] - lo[0]),
+                lo[1] + g.next_f64() * (hi[1] - lo[1]),
+                lo[2] + g.next_f64() * (hi[2] - lo[2]),
+            ];
+            if !(exact(p) > 0.0) {
+                continue; // ausserhalb Ω — die Überdeckung sagt darüber nichts
+            }
+            inside += 1;
+            here += 1;
+            for cov in &covers {
+                let ok = cov.iter().any(|(bl, bh)| {
+                    (0..3).all(|k| p[k] >= bl[k] && p[k] <= bh[k])
+                });
+                assert!(ok, "{name}: Innenpunkt {p:?} liegt in KEINER Überdeckungs-Box");
+            }
+        }
+        assert!(here > 50, "{name}: nur {here} Innenpunkte — der Pin misst dort nichts");
+        // Rückdreh: eine gestrichene Box muss eine Lücke hinterlassen.
+        let cov = &covers[0];
+        if cov.len() > 1 {
+            let mut miss = 0usize;
+            for drop in 0..cov.len() {
+                let thin: Vec<wit::WorldBox> =
+                    cov.iter().enumerate().filter(|(i, _)| *i != drop).map(|(_, b)| *b).collect();
+                let mut g2 = Lcg(0xdead_0f0f + drop as u64);
+                for _ in 0..4000 {
+                    let p = [
+                        lo[0] + g2.next_f64() * (hi[0] - lo[0]),
+                        lo[1] + g2.next_f64() * (hi[1] - lo[1]),
+                        lo[2] + g2.next_f64() * (hi[2] - lo[2]),
+                    ];
+                    if !(exact(p) > 0.0) {
+                        continue;
+                    }
+                    if !thin.iter().any(|(bl, bh)| (0..3).all(|k| p[k] >= bl[k] && p[k] <= bh[k])) {
+                        miss += 1;
+                        break;
+                    }
+                }
+            }
+            assert!(
+                miss > 0,
+                "{name}: KEINE der {} Boxen ist tragend — dann ist die Überdeckung nicht \
+                 minimal genug, um etwas zu beweisen",
+                cov.len()
+            );
+        }
+    }
+    assert!(fixtures >= 8 && inside > 5_000, "{fixtures} Fixturen / {inside} Innenpunkte");
+    println!("§8ab Pin 1: {inside} Innenpunkte über {fixtures} Fixturen, alle überdeckt");
+}
+
+/// **§8ab-Pin 2: das Halbraum-Lemma, gegen das exakte Orakel.**
+///
+/// `−SDF_Ω(x) ≤ (Ĥ(x) + τ)/ν ≤ Ĥ(x) + A^geom ≤ h_safe`. Geprüft an Punkten
+/// INNERHALB `Ω` (dort ist `−SDF_Ω = dist(x,∁Ω)`, und genau das liefert die
+/// analytische Referenz) über die ganze Matrix — und ausdrücklich AUCH im
+/// Umhäng-Band `de < h ≤ de+A`, das §8aa als R1 offengelassen hatte.
+#[test]
+fn h_budget_bounds_the_true_distance_384() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    let mut g = Lcg(0x8ab_11feed);
+    let (mut probes, mut inband, mut hneg) = (0usize, 0usize, 0usize);
+    let mut tightest = f64::INFINITY;
+    let mut fixtures = 0usize;
+    for (name, field, exact, _l, _h, _c) in cert_matrix(delta) {
+        let mut here = 0usize;
+        for (om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                let mut c = ch.clone();
+                if wit::certify_channel(om, &mut c, cfg).0 != wit::SeamProofStatus::Proved {
+                    continue;
+                }
+                let (Some(a), Some(ah)) = (c.seam_addend(om), c.h_addend(om)) else { continue };
+                for i in 0..300 {
+                    let arc = &c.arcs[i % c.arcs.len()];
+                    let sp = g.next_f64() as f32;
+                    let rad = (g.next_f64() * c.trust as f64 * 0.98) as f32;
+                    let d = [g.sym(), g.sym(), g.sym()];
+                    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    if !(n > 1.0e-9) {
+                        continue;
+                    }
+                    let p = [
+                        arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n) as f32 * rad,
+                        arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n) as f32 * rad,
+                        arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n) as f32 * rad,
+                    ];
+                    let Some((de, _, _, _)) = oc::channel_nearest(p, &c) else { continue };
+                    if !(de.is_finite() && de < c.trust) {
+                        continue;
+                    }
+                    let h = oc::face_plane_gate(p, &c) + c.delta;
+                    if !h.is_finite() || h >= 1.0e29 {
+                        continue; // alle Slots Sentinel — der h-Ast bindet nie
+                    }
+                    if h < 0.0 {
+                        hneg += 1;
+                    }
+                    if h > de && h <= de + a {
+                        inband += 1;
+                    }
+                    let dist = exact([p[0] as f64, p[1] as f64, p[2] as f64]);
+                    if !(dist > 0.0) {
+                        continue; // ausserhalb Ω: −SDF_Ω < 0, das Orakel sagt nur „0"
+                    }
+                    probes += 1;
+                    here += 1;
+                    let h_safe = (h + ah) as f64;
+                    assert!(
+                        dist <= h_safe,
+                        "{name}: dist(x,∁Ω) = {dist:e} > h_safe = {h_safe:e} bei {p:?}"
+                    );
+                    tightest = tightest.min(h_safe - dist);
+                }
+            }
+        }
+        if here > 0 {
+            fixtures += 1;
+        }
+    }
+    assert!(fixtures >= 8, "nur {fixtures} Fixturen");
+    assert!(probes > 5_000, "nur {probes} Proben in Ω");
+
+    // **Das Umhäng-Band gezielt.** Gleichverteiltes Proben trifft ein
+    // `A`-breites Band nicht (§8aa-Befund); die Bisektion auf den
+    // Vorzeichenwechsel von `h − de` setzt genau dort auf.
+    let mut g2 = Lcg(0x8ab_ba9d);
+    let (mut rays, mut hits) = (0usize, 0usize);
+    let mut band_tight = f64::INFINITY;
+    'outer: for (name, field, exact, _l, _h, _c) in cert_matrix(delta) {
+        for (om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                let mut c = ch.clone();
+                if wit::certify_channel(om, &mut c, cfg).0 != wit::SeamProofStatus::Proved {
+                    continue;
+                }
+                let (Some(a), Some(ah)) = (c.seam_addend(om), c.h_addend(om)) else { continue };
+                let arc = c.arcs[0].clone();
+                for _ in 0..60 {
+                    let sp = g2.next_f64() as f32;
+                    let d = [g2.sym(), g2.sym(), g2.sym()];
+                    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    if !(n > 1.0e-9) {
+                        continue;
+                    }
+                    let at = |t: f64| -> Option<([f32; 3], f32, f32)> {
+                        let p = [
+                            arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n * t) as f32,
+                            arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n * t) as f32,
+                            arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n * t) as f32,
+                        ];
+                        let (de, _, _, _) = oc::channel_nearest(p, &c)?;
+                        let h = oc::face_plane_gate(p, &c) + c.delta;
+                        (de.is_finite() && de < c.trust && h.is_finite() && h < 1.0e29)
+                            .then_some((p, de, h))
+                    };
+                    let (mut lo, mut hi) = (0.0f64, 0.0f64);
+                    let mut prev: Option<(f64, f32)> = None;
+                    let mut found = false;
+                    for k in 1..=64 {
+                        let t = k as f64 / 64.0 * c.trust as f64 * 0.98;
+                        let Some((_p, de, h)) = at(t) else { continue };
+                        let sgn = h - de;
+                        if let Some((pt0, s0)) = prev {
+                            if (s0 > 0.0) != (sgn > 0.0) {
+                                lo = pt0;
+                                hi = t;
+                                found = true;
+                                break;
+                            }
+                        }
+                        prev = Some((t, sgn));
+                    }
+                    if !found {
+                        continue;
+                    }
+                    rays += 1;
+                    for _ in 0..80 {
+                        let mid = 0.5 * (lo + hi);
+                        let (Some((p, de, h)), Some((_p0, de0, h0))) = (at(mid), at(lo)) else {
+                            break;
+                        };
+                        if ((h0 - de0) > 0.0) == ((h - de) > 0.0) {
+                            lo = mid;
+                        } else {
+                            hi = mid;
+                        }
+                        if h > de && h <= de + a {
+                            let dist = exact([p[0] as f64, p[1] as f64, p[2] as f64]);
+                            if dist > 0.0 {
+                                let h_safe = (h + ah) as f64;
+                                assert!(
+                                    dist <= h_safe,
+                                    "{name}: IM UMHÄNG-BAND ist dist(x,∁Ω) = {dist:e} > \
+                                     h_safe = {h_safe:e} bei {p:?}"
+                                );
+                                band_tight = band_tight.min(h_safe - dist);
+                                hits += 1;
+                            }
+                            break;
+                        }
+                    }
+                    if hits >= 150 {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+    assert!(rays > 50, "nur {rays} Strahlen mit h/de-Vorzeichenwechsel");
+    assert!(
+        hits > 0,
+        "das Umhäng-Band de < h ≤ de+A wurde auch GEZIELT an keiner der {rays} Strahlen \
+         innerhalb Ω getroffen — dann prüft der Pin genau den Fall nicht, für den P5b-1H \
+         gebaut ist"
+    );
+    println!(
+        "§8ab Pin 2: {probes} Proben in Ω über {fixtures} Fixturen; engste Reserve \
+         {tightest:.3e} mm; Umhäng-Band gleichverteilt an {inband}, gezielt {hits} Treffer \
+         aus {rays} Strahlen (engste Reserve dort {band_tight:.3e} mm); h < 0 an {hneg}"
+    );
+}
+
+/// **§8ab-Pin 3: `τ` und der Normfehler sind hergeleitet, nicht geraten.**
+///
+/// Der Review verlangt den geometrischen Aufschlag für die von der Synthese
+/// zugelassene Stützseiten-Verletzung (`h_min ≥ −8·gate_eps`). `gate_eps` ist
+/// im Kanal nicht gespeichert; bezahlt wird hier deshalb nicht ein
+/// unsichtbarer Parameter, sondern das SELBST hergeleitete `τ`. Der Pin zeigt,
+/// dass diese Herleitung wirklich misst:
+///
+/// * eine Ebene, die um `ε` IN den Körper geschoben wird, hebt `τ` um `≈ ε`
+///   und den Addenden mit;
+/// * jenseits des Deckels `H_TAU_LIMIT_MM` gibt es gar kein Budget mehr;
+/// * eine Ebene mit `|n| = 1 + 10⁻³` hebt den Normfehler-Anteil um `≈ R·10⁻³`;
+/// * die Ablationen `τ := 0` und `Normfehler := 0` senken den Addenden — ein
+///   Posten, der den Wert nicht bewegt, ist keiner.
+#[test]
+fn h_budget_tau_and_norm_are_derived_384() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    let (_n, field, _e, _l, _h, _c) = cert_matrix(delta)
+        .into_iter()
+        .find(|(n, ..)| n.starts_with("Ecken-Schale t/δ=2.5"))
+        .unwrap();
+    let v = omega_and_channels(&field);
+    let (om, chans) = v.into_iter().next().unwrap();
+    let cover = wit::omega_cover(om).expect("Überdeckung");
+    let base = chans[0].clone();
+    let k0 = wit::h_budget(&base, &cover, Default::default()).expect("h-Budget");
+    assert!(k0.slots() > 0, "die Fixture hat keine belegte Ebene — der Pin misst nichts");
+    let a0 = k0.addend() as f64;
+
+    // (a) Ebene um ε in den Körper schieben ⇒ τ steigt um ≈ ε.
+    let mut seen = 0usize;
+    for eps in [1.0e-4f32, 1.0e-3, 1.0e-2] {
+        let mut m = base.clone();
+        // `Ĥ = ⟨x,n⟩ − C + δ`: C ERHÖHEN senkt Ĥ, schiebt die Ebene also in
+        // den Körper hinein.
+        m.face_planes[0][3] += eps;
+        let k = wit::h_budget(&m, &cover, Default::default()).expect("h-Budget");
+        let got = k.tau_mm();
+        assert!(
+            got >= 0.9 * eps as f64 && got <= 1.1 * eps as f64 + 1.0e-9,
+            "τ = {got:e} statt ≈ {eps:e} — die Herleitung misst die Verletzung nicht"
+        );
+        assert!(k.addend() as f64 > a0 + 0.5 * eps as f64, "der Addend folgt τ nicht");
+        seen += 1;
+    }
+    assert_eq!(seen, 3);
+
+    // (b) jenseits des Deckels: gar kein Budget.
+    let mut far = base.clone();
+    far.face_planes[0][3] += 5.0;
+    assert_eq!(
+        wit::h_budget(&far, &cover, Default::default()).unwrap_err(),
+        wit::HStatus::NotSupporting
+    );
+
+    // (c) Nicht-Einheitsnorm ⇒ der Normfehler-Anteil steigt mit R·|1−ν|.
+    let mut scaled = base.clone();
+    let f = 1.0f32 + 1.0e-3;
+    for k in 0..3 {
+        scaled.face_planes[0][k] *= f;
+    }
+    scaled.face_planes[0][3] *= f;
+    let ks = wit::h_budget(&scaled, &cover, Default::default()).expect("h-Budget");
+    assert!(
+        ks.norm_mm() > 0.5e-3 * k0.reach_mm() && ks.norm_mm() < 2.0e-3 * ks.reach_mm(),
+        "Normfehler {:e} passt nicht zu R = {:e} bei |n| = 1+1e-3",
+        ks.norm_mm(),
+        ks.reach_mm()
+    );
+    assert!(ks.addend() > k0.addend(), "der Addend folgt dem Normfehler nicht");
+
+    // (d) Ablationen: jeder Posten muss den Wert bewegen.
+    for (name, knobs) in [
+        ("τ", wit::SeamProofKnobs { h_drop_tau: true, ..Default::default() }),
+        ("Norm", wit::SeamProofKnobs { h_drop_norm: true, ..Default::default() }),
+        ("Rundung", wit::SeamProofKnobs { h_drop_round: true, ..Default::default() }),
+    ] {
+        // An der SKALIERTEN Ebene sind alle drei Posten von null verschieden.
+        let mut m = scaled.clone();
+        m.face_planes[1][3] += 1.0e-3; // auch τ auf einem zweiten Slot
+        let full = wit::h_budget(&m, &cover, Default::default()).unwrap();
+        let weak = wit::h_budget(&m, &cover, knobs).unwrap();
+        assert!(
+            weak.addend() < full.addend(),
+            "die Ablation {name} ändert den h-Addenden nicht ({} statt {})",
+            weak.addend(),
+            full.addend()
+        );
+    }
+    println!(
+        "§8ab Pin 3: τ₀ = {:.3e}, Norm₀ = {:.3e}, R = {:.3e}, A_h = {:.3e} mm",
+        k0.tau_mm(),
+        k0.norm_mm(),
+        k0.reach_mm(),
+        k0.addend()
+    );
+}
+
+/// **§8ab-Pin 4: das Rundungsbudget des h-Astes, ulp-scharf.**
+///
+/// Dieselbe Bauart wie Lemma 5 des Naht-Astes (§8t/§8aa): eine gezielte
+/// f32-Familie über den arithmetischen Schwanz — Bit-Fächer um jede
+/// Grössenordnung von `h`, dazu Streuwerte, über drei `δ`, gefahren durch
+/// **genau die Ops**, die P5b-1A ins Feld setzt.
+///
+/// Verlangt ist im h-Ast `fl(δ − fl(h + A_h)) ≤ δ − h − A^geom`.
+///
+/// Zwei Gegenproben: ohne Rundungsbudget MUSS die Familie reissen, und der
+/// über der Familie minimale Addend `A*` MUSS bei `−1 ulp` reissen. Wie in
+/// §8aa gilt die Rollenverteilung: den ausgelieferten Addenden trägt der
+/// algebraische Ausdruck, `A*` zeigt die Schärfe DIESER Familie.
+#[test]
+fn h_budget_rounding_absorbs_both_f32_ops_384() {
+    let trust = 3.91f32;
+    for &geom in &[1.0e-13f64, 1.0e-6, 1.0e-3] {
+        let mut cases: Vec<(f32, f32, f64)> = Vec::new();
+        for &d in &[2.0f32, 0.25, 12.5] {
+            for h in clamp_de_family(trust) {
+                for sgn in [1.0f32, -1.0] {
+                    cases.push((d, sgn * h, geom));
+                }
+            }
+        }
+        assert!(cases.len() > 200_000, "nur {} Fälle", cases.len());
+        let need = |a: f32| -> f64 {
+            let nd = crate::offset_interval::next_down;
+            let mut m = f64::INFINITY;
+            for &(d, h, gm) in &cases {
+                let lim = wit::frozen_limit_tail(d, f32::INFINITY, h, 0.0, a) as f64;
+                let lb = nd(nd(nd(d as f64 - h as f64) - gm));
+                m = m.min(lb - lim);
+            }
+            m
+        };
+        // Der bewiesene Addend: derselbe Ausdruck wie in `h_budget`, hier über
+        // der Reichweite der Familie.
+        let reach = trust as f64;
+        let u = wit::F32_U;
+        let num = crate::offset_interval::next_up(
+            geom + u * (2.0 * reach + 12.5) + 3.0 * wit::F32_SUB + u * (reach + 12.5) * 2.0,
+        );
+        let a = wit::f32_ceil(num / (1.0 - 3.0 * u)).unwrap();
+        let m = need(a);
+        assert!(m >= 0.0, "geom = {geom:e}: die Familie reisst mit dem bewiesenen A_h ({m:e})");
+
+        // Gegenprobe 1: ohne Rundungsbudget.
+        let a0 = wit::f32_ceil(geom).unwrap();
+        assert!(
+            need(a0) < 0.0,
+            "geom = {geom:e}: ohne Rundungsbudget (A_h = {a0:e}) bleibt die Familie still"
+        );
+
+        // Gegenprobe 2: der familienminimale Addend, ulp-scharf.
+        let (mut lo, mut hi) = (0u32, a.to_bits());
+        assert!(need(f32::from_bits(lo)) < 0.0);
+        while lo + 1 < hi {
+            let mid = lo + (hi - lo) / 2;
+            if need(f32::from_bits(mid)) >= 0.0 {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        let a_star = f32::from_bits(hi);
+        assert!(need(a_star) >= 0.0);
+        assert!(
+            need(f32::from_bits(hi - 1)) < 0.0,
+            "geom = {geom:e}: A* − 1 ulp reisst NICHT — die Familie ist nicht ulp-scharf"
+        );
+        println!(
+            "§8ab Pin 4: geom = {geom:.3e} | A_h = {a:.6e} | A* = {a_star:.6e} | \
+             A/A* = {:.4} | Reserve = {m:.3e}",
+            a as f64 / a_star as f64
+        );
+    }
+}
+
+/// **§8ab-Pin 5: die Scope-Sperre — ein KONVEXER Kanal bekommt keinen Beweis.**
+///
+/// `CertifiedSeamAddend` beweist die konkave Erosions-Aussage über `Ω` = dem
+/// Körper VOR der Erosion. Am Dilations-Stopp ist die Dualität eine andere,
+/// und einen konvexen Dualsatz gibt es nicht. Vor P5b-1H prägte
+/// `certify_channel_with` trotzdem — der Wert wäre auf einem konvexen Kanal
+/// unbelegt gewesen. Jetzt: fail-closed beim Prägen, und der Tally weist es
+/// ehrlich aus.
+#[test]
+fn seam_proof_refuses_convex_channels_384() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    let (_n, field, _e, _l, _h, _c) = cert_matrix(delta)
+        .into_iter()
+        .find(|(n, ..)| n.starts_with("Ecken-Schale t/δ=2.5"))
+        .unwrap();
+    let v = omega_and_channels(&field);
+    let (om, chans) = v.into_iter().next().unwrap();
+    let base = chans[0].clone();
+    assert!(base.concave, "die Fixture liefert keinen konkaven Kanal");
+
+    let mut ok = base.clone();
+    assert_eq!(wit::certify_channel(om, &mut ok, cfg).0, wit::SeamProofStatus::Proved);
+    assert!(ok.seam_addend(om).is_some() && ok.h_addend(om).is_some());
+
+    let mut convex = base.clone();
+    convex.concave = false;
+    let (st, _) = wit::certify_channel(om, &mut convex, cfg);
+    assert_eq!(st, wit::SeamProofStatus::NotConcave, "ein konvexer Kanal wurde zertifiziert");
+    assert!(convex.seam_addend(om).is_none(), "…und trug trotzdem einen Naht-Addenden");
+    assert!(convex.h_addend(om).is_none(), "…und trotzdem ein h-Budget");
+
+    let mut t = wit::SeamProofTally::default();
+    t.add(st);
+    assert_eq!(t.not_concave, 1);
+    assert_eq!(t.proved_seam, 0);
+    assert_eq!(t.total(), 1, "der Tally verliert den konvexen Kanal");
+}
+
+/// **§8ab-Pin 6: das h-Budget ist fail-closed.**
+///
+/// Kein `Ω`-Cover, entartete Ebene, alle Slots Sentinel — jeder Ausgang
+/// einzeln, und keiner endet in einer Zusage.
+#[test]
+fn h_budget_is_fail_closed_384() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    let (_n, field, _e, _l, _h, _c) = cert_matrix(delta)
+        .into_iter()
+        .find(|(n, ..)| n.starts_with("Ecken-Schale t/δ=2.5"))
+        .unwrap();
+    let v = omega_and_channels(&field);
+    let (om, chans) = v.into_iter().next().unwrap();
+    let cover = wit::omega_cover(om).unwrap();
+    let base = chans[0].clone();
+
+    // (a) nicht unterstütztes Ω-Blatt ⇒ keine Überdeckung.
+    let (_n2, field2, _e2, _l2, _h2, _c2) = cert_matrix(delta)
+        .into_iter()
+        .find(|(n, ..)| n.starts_with("Rippen-Kamm 4×1.5"))
+        .unwrap();
+    let mut nocover = 0usize;
+    for (om2, _c) in omega_and_channels(&field2) {
+        assert!(wit::omega_cover(om2).is_none(), "ein Extrude-Ω lieferte eine Überdeckung");
+        nocover += 1;
+    }
+    assert!(nocover > 0);
+
+    // (b) entartete Ebene: n = 0, aber KEIN Sentinel.
+    let mut degen = base.clone();
+    degen.face_planes[0] = [0.0, 0.0, 0.0, 1.0];
+    assert_eq!(
+        wit::h_budget(&degen, &cover, Default::default()).unwrap_err(),
+        wit::HStatus::Degenerate
+    );
+
+    // (c) alle Slots Sentinel ⇒ gegenstandslos wahr, Addend 0, h-Ast unerreichbar.
+    let mut sentinel = base.clone();
+    sentinel.face_planes = [crate::offset_channel::END_PLANE_NONE; 4];
+    let k = wit::h_budget(&sentinel, &cover, Default::default()).unwrap();
+    assert_eq!(k.slots(), 0);
+    assert_eq!(k.addend(), 0.0);
+    let g = oc::face_plane_gate([1.0, 2.0, 3.0], &sentinel);
+    assert!(g >= 1.0e30, "der Sentinel-Gate-Wert ist {g}, nicht 1e30 — der h-Ast wäre erreichbar");
+
+    // (d) ein Sentinel-Slot NEBEN belegten: er zählt nicht mit und kann den
+    //     min nicht gewinnen.
+    let mut mixed = base.clone();
+    mixed.face_planes[3] = crate::offset_channel::END_PLANE_NONE;
+    let km = wit::h_budget(&mixed, &cover, Default::default()).unwrap();
+    assert!(km.slots() >= 1 && km.slots() <= 3);
+    let mut gsum = 0usize;
+    let mut g2 = Lcg(0x5e7);
+    for _ in 0..2000 {
+        let p = [
+            (base.bound_c[0] as f64 + g2.sym() * 8.0) as f32,
+            (base.bound_c[1] as f64 + g2.sym() * 8.0) as f32,
+            (base.bound_c[2] as f64 + g2.sym() * 8.0) as f32,
+        ];
+        let v = oc::face_plane_gate(p, &mixed);
+        assert!(v < 1.0e29, "der Sentinel gewann den min bei {p:?}");
+        gsum += 1;
+    }
+    assert!(gsum > 1000);
+
+    // (e) Ω = Empty: jede Ebene stützt, τ = 0.
+    let empty = wit::omega_cover(&BoundedCsg::Empty).unwrap();
+    let ke = wit::h_budget(&base, &empty, Default::default()).unwrap();
+    assert_eq!(ke.tau_mm(), 0.0);
 }
