@@ -1641,6 +1641,22 @@ fn enc_channel_candidates(
 
 /// [`crate::offset_channel::channel_limit`], eingeschlossen.
 pub fn enclose_channel_limit(c: &mut Ctx, p: [Iv; 3], ch: &OffsetChannel) -> Enc {
+    // #384 §8ac / P5b-1A — **fail-closed vor der neuen Feldform.**
+    //
+    // Diese Einschliessung modelliert `fl(δ − min(de, h))`. Trägt der Kanal
+    // einen BEWIESENEN Laufzeitmodus, rechnet die Produktion aber
+    // `fl(δ − min(fl(de+A), fl(h+A_h)))` — eine andere Kette mit zwei
+    // zusätzlichen Rundungen. Die alte zweiseitige Zusage gilt dafür nicht
+    // mehr, und sie hier stillschweigend weiterzuführen wäre genau der
+    // verbotene Doppelschritt: neue Feldform ausliefern UND behaupten, sie sei
+    // eingeschlossen.
+    //
+    // Also `Unknown`, bis **P5b-2** `de_safe`/`h_safe`/`min` op-genau
+    // modelliert. `enclose_channel_apply` bleibt unberührt — der
+    // `channel_apply`-Term hat sich nicht bewegt.
+    if ch.limit_mode().is_proved() {
+        return Err(Unknown("P5b-1A: bewiesener Laufzeitmodus, Einschliessung erst in P5b-2"));
+    }
     let neutral = Iv::f32p(-END_PLANE_OFF);
     let bc = fsub3(c, p, c3(ch.bound_c))?;
     let nb = c.fnorm(bc)?;

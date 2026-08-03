@@ -110,7 +110,16 @@ pub const OP_MASKED_BLEND: u32   = 0x40; // +var: n + n×point(3) + mask_r+blend
 /// autoritative Bogen-Geometrie, die jede Laufzeit-Trigonometrie ersetzt.
 pub const ARC_STRIDE: usize = 30;
 
-pub const OP_ARC_CHANNEL: u32    = 0x41; // +41+ARC_STRIDE·N
+pub const OP_ARC_CHANNEL: u32    = 0x41; // +CHANNEL_HEADER+ARC_STRIDE·N
+
+/// #384 §8ac — Worte im `OP_ARC_CHANNEL`-Kopf VOR der Bogenliste.
+///
+/// `9` Grunddaten + `4×4` End-Halbräume (§8f) + `4×4` Fremdflächen-Halbräume
+/// (§8j) + `3` Modus/Addenden (§8ac) = 44. Muss mit `payload_len` in
+/// `cgal-mesher/src/tape_spec.h` und dem Kopf-Kommentar in
+/// `web/src/sdfVmInterpreter.ts` übereinstimmen — gepinnt in
+/// `channel_tape_header_stride_384`.
+pub const CHANNEL_HEADER: usize = 44;
 
 // offset_tree Phase C4 (#384): Rossignac–Requicha-Vertex-Kugel an einer
 // Triple-Junction — pops den Stopp-Wert d, pusht die korrigierte Distanz
@@ -755,6 +764,16 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
                 for g in &ch.face_planes {
                     out.extend_from_slice(g);
                 }
+                // #384 §8ac / P5b-1A: Modus + beide Addenden, VOR der
+                // Bogenliste. Drei Worte, in jedem Tape-Leser identisch
+                // kodiert. `mode` ist feldneutral (die Addenden tragen den
+                // Wert) und steht trotzdem im Tape: der Bericht muss
+                // „unbewiesen" von „bewiesen mit Addend null" unterscheiden
+                // können, und ein Tape ohne diesen Unterschied könnte es nicht.
+                let (a_seam, a_h) = ch.limit_mode().addends();
+                out.push(ch.limit_mode().tape_word());
+                out.push(a_seam);
+                out.push(a_h);
                 for a in &ch.arcs {
                     // #384 §8y: Reihenfolge und Länge stehen in `ARC_STRIDE`;
                     // Emitter und Interpreter teilen sich die Konstante.
@@ -2213,6 +2232,12 @@ pub fn eval_opcodes_with_volumes(
                     let c = rd!();
                     s4 = s4.min(pt[0] * n[0] + pt[1] * n[1] + pt[2] * n[2] - c);
                 }
+                // #384 §8ac / P5b-1A: Modus + beide Addenden (s. Emitter).
+                // Der Modus geht in den FELDwert nicht ein — die Addenden tun
+                // es, und bei `LegacyUnproven` sind sie null.
+                let _mode = rd!();
+                let a_seam = rd!();
+                let a_h = rd!();
                 let arc_base = pc;
                 pc += n * ARC_STRIDE;
                 let d = pop_v!();
@@ -2340,7 +2365,9 @@ pub fn eval_opcodes_with_volumes(
                 let w = w_geo.min(gate);
                 // #384 §8j: Beitrag zum Grenzwert-Register.
                 if best < trust {
-                    lim = lim.max(delta - best.min(s4 + delta));
+                    // #384 §8ac: `de_safe = fl(de + A)`, `h_safe = fl(fl(g+δ) + A_h)`
+                    // — Spiegel von `offset_channel::channel_limit`.
+                    lim = lim.max(delta - (best + a_seam).min((s4 + delta) + a_h));
                 }
                 push_v!(if concave {
                     if w > 0.0 {

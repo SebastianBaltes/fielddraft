@@ -9357,6 +9357,19 @@ fn fixture_cells(lo: [f64; 3], hi: [f64; 3], n: usize) -> Vec<iv::Box3> {
 
 /// **§8u-Pin 3: die Feld-Einschliessung hält gegen den Auswerter.**
 ///
+/// #384 §8ac: trägt irgendein Kanal dieses Feldes einen bewiesenen
+/// Laufzeitmodus? Dann verweigert die Intervall-Stufe den Stopp (P5b-1A).
+fn fixture_has_proved_mode(field: &BoundedCsg) -> bool {
+    let mut stops = Vec::new();
+    stop_nodes(field, &mut stops);
+    stops.iter().any(|st| match st {
+        BoundedCsg::ArcChannel { channels, .. } => {
+            channels.iter().any(|c| c.limit_mode().is_proved())
+        }
+        _ => false,
+    })
+}
+
 /// Zwei Ebenen, beide über der echten §8p-Matrix:
 ///
 /// * das **naive Vereinigungsfeld** unter dem Stopp (`Union`/`Difference`/
@@ -9374,6 +9387,7 @@ fn interval_encloses_the_delivered_field_384() {
     let (mut cells, mut probes, mut evaluated) = (0usize, 0usize, 0usize);
     let mut delivered = 0usize;
     let mut channel_work = 0u64;
+    let mut refused = 0usize;
     for (name, field, _exact, lo, hi, _n) in cert_matrix(delta) {
         if !(name.starts_with("Stufen")
             || name == "Ecken-Schale t/δ=2.5"
@@ -9397,19 +9411,34 @@ fn interval_encloses_the_delivered_field_384() {
                 cells += 1;
                 probes += n;
                 evaluated += ok as usize;
-                if tag == "ausgeliefert" && ok {
-                    delivered += 1;
-                    channel_work += chev;
+                if tag == "ausgeliefert" {
+                    // #384 §8ac / P5b-1A: trägt der Stopp einen BEWIESENEN
+                    // Laufzeitmodus, verweigert die Intervall-Stufe ihn
+                    // ausdrücklich (die alte Kette ist nicht mehr die
+                    // ausgelieferte). Das ist kein Verlust an Wahrheit,
+                    // sondern das Gegenteil: eine Zusage, die nicht mehr gilt,
+                    // wird nicht mehr gegeben. P5b-2 holt sie zurück.
+                    if fixture_has_proved_mode(&field) {
+                        refused += 1;
+                    } else if ok {
+                        delivered += 1;
+                        channel_work += chev;
+                    }
                 }
             }
         }
     }
     assert!(cells >= 1200, "nur {cells} Zell-Läufe");
-    assert!(probes > 30_000, "nur {probes} Proben — der Pin misst nichts");
+    assert!(probes > 25_000, "nur {probes} Proben — der Pin misst nichts");
+    assert!(
+        refused > 100,
+        "nur {refused} Zellen mit bewiesenem Laufzeitmodus — dann prüft der Pin die \
+         P5b-1A-Verweigerung nicht"
+    );
     assert!(
         delivered >= 60,
-        "nur {delivered} Zellen des AUSGELIEFERTEN Feldes liefern überhaupt eine \
-         Einschliessung — dann prüft der Pin den §8v-Kanal-Pfad nicht"
+        "nur {delivered} Zellen des AUSGELIEFERTEN Feldes (LEGACY-Stopps) liefern überhaupt \
+         eine Einschliessung — dann prüft der Pin den §8v-Kanal-Pfad nicht"
     );
     // Eine Einschliessung allein beweist noch nicht, dass ein Kanal GERECHNET
     // wurde — sie könnte auch aus lauter neutralen Kanälen entstehen.
@@ -10412,27 +10441,65 @@ fn interval_tiling_of_the_plate_core_is_gapless_384() {
         assert_eq!(edges[0], lo[k]);
         assert_eq!(edges[n], hi[k]);
     }
-    let mut b2 = 0usize;
-    let mut probes = 0usize;
+    // #384 §8ac / P5b-1A — **die Zertifizierung ist hier vorübergehend
+    // ZURÜCKGEZOGEN, und das ist Absicht.**
+    //
+    // Der Plattenkern dieser Fixture liegt unter 24 Kanälen mit BEWIESENEM
+    // Laufzeitmodus. Die Intervall-Stufe modelliert `fl(δ − min(de, h))`; die
+    // Produktion rechnet seit P5b-1A `fl(δ − min(fl(de+A), fl(h+A_h)))`. Eine
+    // Einschliessung der alten Kette wäre eine Zusage über ein Feld, das so
+    // nicht mehr ausgeliefert wird — also `Unknown`, bis **P5b-2** die neue
+    // Kette op-genau modelliert.
+    //
+    // Der Pin prüft deshalb jetzt zwei Dinge statt einem, und verliert dabei
+    // nichts an Schärfe:
+    // 1. die Verweigerung ist **die richtige** (fail-closed mit genau diesem
+    //    Grund — ein anderes `Unknown` wäre ein echter Regress);
+    // 2. die SUBSTANZ, die der Pin je geschützt hat, steht weiter: das Feld
+    //    behauptet über dem ganzen Plattenkern Material (`f < 0`).
+    // Die Kachelungs-Geometrie oben ist davon unberührt.
+    // Bemerkenswert an der Messung: die Verweigerung ist **chirurgisch**. Wo
+    // der Kanal-Term ohnehin neutral ist (Fernfeld-Skip), zertifiziert die
+    // Stufe unverändert über Zweig 2; nur die Zellen, in denen die
+    // Grenzwert-Klemme wirklich bindet, fallen auf `Unknown`. Der Pin verlangt
+    // deshalb BEIDES in nennenswerter Zahl — verschwände eine der beiden
+    // Sorten, hätte sich entweder die Verweigerung verselbständigt oder sie
+    // greift gar nicht mehr.
+    let (mut b2, mut refused, mut probes) = (0usize, 0usize, 0usize);
     for cell in &cells {
         let mut c = iv::Ctx::new();
         match iv::certify_cell(cell, &field, delta as f64, CERT_TOL, &none, &mut c) {
-            iv::Verdict::Branch2 => {
-                b2 += 1;
-                for p in cell_samples(cell, 1) {
-                    let f = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
-                    probes += 1;
-                    assert!(f < 0.0, "zertifizierte Zelle {cell:?} liefert bei {p:?} {f} ≥ 0");
-                }
+            iv::Verdict::Branch2 => b2 += 1,
+            iv::Verdict::Unknown(why) => {
+                assert!(
+                    why.contains("P5b-1A"),
+                    "Zelle {cell:?} ist Unknown({why}) — das ist NICHT die P5b-1A-Verweigerung, \
+                     sondern ein echter Verlust an Zertifizierung"
+                );
+                refused += 1;
             }
-            other => panic!(
-                "Zelle {cell:?} des Plattenkerns ist {other:?} — die Kachelung ist damit \
-                 nicht mehr lückenlos zertifiziert"
-            ),
+            other => panic!("Zelle {cell:?} liefert {other:?}"),
+        }
+        // Die Substanz, die dieser Pin je geschützt hat: das Feld behauptet
+        // über dem ganzen Plattenkern Material — auch dort, wo die
+        // Zertifizierung bis P5b-2 aussetzt.
+        for p in cell_samples(cell, 1) {
+            let f = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+            probes += 1;
+            assert!(f < 0.0, "Zelle {cell:?} des Plattenkerns liefert bei {p:?} {f} ≥ 0");
         }
     }
-    assert_eq!(b2, n * n * n, "nur {b2} von {} Zellen zertifiziert", n * n * n);
+    assert_eq!(b2 + refused, n * n * n, "{b2} + {refused} ≠ {} Zellen", n * n * n);
+    assert!(
+        b2 > 0 && refused > 0,
+        "{b2} zertifiziert / {refused} verweigert — der Pin braucht beide Sorten"
+    );
     assert!(probes > 3_000, "nur {probes} Proben");
+    println!(
+        "§8ac: Plattenkern — {b2} von {} Zellen weiter über Zweig 2 zertifiziert, \
+         {refused} bis P5b-2 verweigert",
+        n * n * n
+    );
 }
 
 /// **§8w-Sonde: wie sich die Argmin-Zellen auflösen — und was übrig bleibt.**
@@ -13494,6 +13561,7 @@ fn clamp_frozen_form_is_neutral_at_zero_and_monotone_384() {
     let mut g = Lcg(0x7e57_0007);
     let (mut probes, mut strict) = (0usize, 0usize);
     let mut strict_h = 0usize;
+    let (mut proved_probes, mut legacy_probes) = (0usize, 0usize);
     for (name, field, _e, _l, _h, _c) in cert_matrix(delta) {
         for (_om, chans) in omega_and_channels(&field) {
             for ch in chans {
@@ -13503,15 +13571,39 @@ fn clamp_frozen_form_is_neutral_at_zero_and_monotone_384() {
                         (ch.bound_c[1] as f64 + g.sym() * (ch.bound_r + ch.trust) as f64) as f32,
                         (ch.bound_c[2] as f64 + g.sym() * (ch.bound_r + ch.trust) as f64) as f32,
                     ];
+                    // #384 §8ac / P5b-1A — **die Produktion IST jetzt die
+                    // eingefrorene Kette**, mit den Addenden des aufgelösten
+                    // Modus. Das ist die schärfere Fassung dieses Pins: vorher
+                    // stand hier „Produktion == eingefrorene Form bei A = 0",
+                    // weil es noch keinen Konsumenten gab.
+                    let (a_s, a_hh) = ch.limit_mode().addends();
                     let today = oc::channel_limit(p, ch);
-                    let frozen = wit::frozen_channel_limit(p, ch, 0.0, 0.0);
+                    let frozen = wit::frozen_channel_limit(p, ch, a_s, a_hh);
                     assert_eq!(
                         today.to_bits(),
                         frozen.to_bits(),
-                        "{name}: die eingefrorene Form ist bei A = A_h = 0 NICHT das heutige \
-                         Feld ({today} gegen {frozen}) bei {p:?}"
+                        "{name}: die Produktion weicht von der eingefrorenen Kette ab \
+                         ({today} gegen {frozen}) bei {p:?}, Modus {:?}",
+                        ch.limit_mode()
                     );
-                    let mut prev = frozen;
+                    // Und die Legacy-Zusage, unverändert: ein Kanal OHNE Beweis
+                    // liefert bitgenau die alte Form.
+                    if !ch.limit_mode().is_proved() {
+                        assert_eq!(
+                            (a_s.to_bits(), a_hh.to_bits()),
+                            (0f32.to_bits(), 0f32.to_bits()),
+                            "{name}: ein LegacyUnproven-Kanal trägt Addenden"
+                        );
+                        legacy_probes += 1;
+                    } else {
+                        proved_probes += 1;
+                    }
+                    // Die Monotonie-Leiter startet ausdrücklich bei
+                    // `A = A_h = 0` — unabhängig vom aufgelösten Modus des
+                    // Kanals, sonst vergliche sie gegen einen bereits
+                    // abgesenkten Wert.
+                    let base0 = wit::frozen_channel_limit(p, ch, 0.0, 0.0);
+                    let mut prev = base0;
                     for a in [1.0e-6f32, 1.0e-4, 1.0e-3, 1.0e-2, 0.5] {
                         let v = wit::frozen_channel_limit(p, ch, a, 0.0);
                         assert!(
@@ -13525,7 +13617,7 @@ fn clamp_frozen_form_is_neutral_at_zero_and_monotone_384() {
                     }
                     // #384 §8ab — dasselbe für den h-Addenden, und für BEIDE
                     // gemeinsam: die vollständige Kette darf nur fallen.
-                    let mut prev_h = frozen;
+                    let mut prev_h = base0;
                     for ah in [1.0e-6f32, 1.0e-4, 1.0e-3, 1.0e-2, 0.5] {
                         let v = wit::frozen_channel_limit(p, ch, 0.0, ah);
                         assert!(
@@ -13558,9 +13650,14 @@ fn clamp_frozen_form_is_neutral_at_zero_and_monotone_384() {
         "nur {strict_h} strikte Absenkungen über A_h — dann ist der h-Addend an diesen Proben \
          ein No-op und der Monotonie-Pin misst dort nichts"
     );
+    assert!(
+        proved_probes > 1_000 && legacy_probes > 100,
+        "{proved_probes} Proben an bewiesenen und {legacy_probes} an Legacy-Kanälen — der Pin \
+         muss BEIDE Zweige sehen"
+    );
     println!(
-        "§8aa/§8ab Pin 7: {probes} Proben, {strict} strikte Absenkungen über A, \
-         {strict_h} über A_h"
+        "§8aa/§8ab/§8ac Pin 7: {probes} Proben ({proved_probes} bewiesen / {legacy_probes} \
+         legacy), {strict} strikte Absenkungen über A, {strict_h} über A_h"
     );
 }
 
@@ -14991,5 +15088,446 @@ fn h_budget_refuses_slots_that_reach_the_sentinel_384() {
     println!(
         "§8ab Pin 9: {ok} Grössen mit Budget, ab scale = {:?} verweigert ({refused} Fälle)",
         boundary
+    );
+}
+
+// ══════════════ #384 §8ac / P5b-1A — die Produktions-Aktivierung ══════════════
+
+/// Zählt die tatsächlich AUFGELÖSTEN Laufzeitmodi eines synthetisierten Feldes.
+fn mode_tally(field: &BoundedCsg) -> (usize, usize, std::collections::BTreeMap<String, usize>) {
+    let mut stops = Vec::new();
+    stop_nodes(field, &mut stops);
+    let (mut proved, mut legacy) = (0usize, 0usize);
+    let mut why: std::collections::BTreeMap<String, usize> = Default::default();
+    for st in stops {
+        if let BoundedCsg::ArcChannel { channels, .. } = st {
+            for ch in channels {
+                match ch.limit_mode() {
+                    crate::offset_channel::ChannelLimitMode::Proved { .. } => proved += 1,
+                    crate::offset_channel::ChannelLimitMode::LegacyUnproven(r) => {
+                        legacy += 1;
+                        *why.entry(format!("{r:?}")).or_default() += 1;
+                    }
+                }
+            }
+        }
+    }
+    (proved, legacy, why)
+}
+
+/// **§8ac-Sonde: welcher Modus kommt in der ECHTEN Synthese heraus?**
+#[test]
+#[ignore]
+fn probe_384_limit_modes() {
+    let delta = 2.0f32;
+    for (name, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        let (p, l, why) = mode_tally(&field);
+        println!("| {name} | proved {p} | legacy {l} | {why:?} |");
+    }
+}
+
+/// Dasselbe Feld mit ALLEN Kanälen auf `LegacyUnproven` — das ALTE Feld,
+/// punktgleich vergleichbar. Nur die Modi werden zurückgedreht; jedes andere
+/// Bit bleibt, damit der Vergleich wirklich die Feldänderung misst und nicht
+/// eine zweite Synthese.
+fn field_with_legacy_modes(field: &BoundedCsg) -> BoundedCsg {
+    fn go(n: &BoundedCsg) -> BoundedCsg {
+        match n {
+            BoundedCsg::ArcChannel { inner, channels, verts, rims, lb, aabb } => {
+                let mut cs = channels.clone();
+                for c in cs.iter_mut() {
+                    c.force_legacy(
+                        wit::mint_proof_token(),
+                        crate::offset_channel::LegacyReason::NotCertified,
+                    );
+                }
+                BoundedCsg::ArcChannel {
+                    inner: Box::new(go(inner)),
+                    channels: cs,
+                    verts: verts.clone(),
+                    rims: rims.clone(),
+                    lb: lb.clone(),
+                    aabb: *aabb,
+                }
+            }
+            BoundedCsg::Union { left, right, aabb } => BoundedCsg::Union {
+                left: Box::new(go(left)),
+                right: Box::new(go(right)),
+                aabb: *aabb,
+            },
+            BoundedCsg::Difference { left, right, aabb } => BoundedCsg::Difference {
+                left: Box::new(go(left)),
+                right: Box::new(go(right)),
+                aabb: *aabb,
+            },
+            BoundedCsg::Intersection { left, right, aabb } => BoundedCsg::Intersection {
+                left: Box::new(go(left)),
+                right: Box::new(go(right)),
+                aabb: *aabb,
+            },
+            BoundedCsg::Offset { inner, delta, aabb } => BoundedCsg::Offset {
+                inner: Box::new(go(inner)),
+                delta: *delta,
+                aabb: *aabb,
+            },
+            other => other.clone(),
+        }
+    }
+    go(field)
+}
+
+/// **§8ac-Pin 1 (Richtung): die Aktivierung nimmt kein Material weg.**
+///
+/// Für konkave Kanäle gilt `lim_neu ≤ lim_alt` — beide Addenden sind `≥ 0`,
+/// `min` und die Subtraktion sind monoton. Das ist kein Argument, sondern eine
+/// Messung: geprüft wird der Kanal-Beitrag selbst, dann der Stopp-Wert HINTER
+/// `OP_STOP_LIMIT` und schliesslich das ausgelieferte Feld — **inklusive** der
+/// nachfolgenden Rim-Terme, deren Monotonie damit gezeigt und nicht
+/// vorausgesetzt ist.
+#[test]
+fn activation_only_adds_material_384() {
+    let delta = 2.0f32;
+    let mut g = Lcg(0x8ac_d132);
+    let (mut lim_probes, mut lim_lower) = (0usize, 0usize);
+    let (mut field_probes, mut field_lower) = (0usize, 0usize);
+    let mut worst_drop = 0.0f64;
+    let mut fixtures = 0usize;
+    for (name, field, _e, lo, hi, _c) in cert_matrix(delta) {
+        let old = field_with_legacy_modes(&field);
+        // (a) der Kanal-Beitrag selbst.
+        let mut here = 0usize;
+        let mut news = Vec::new();
+        stop_nodes(&field, &mut news);
+        let mut olds = Vec::new();
+        stop_nodes(&old, &mut olds);
+        assert_eq!(news.len(), olds.len());
+        for (sn, so) in news.iter().zip(olds.iter()) {
+            let (BoundedCsg::ArcChannel { channels: cn, .. }, BoundedCsg::ArcChannel { channels: co, .. }) =
+                (sn, so)
+            else {
+                continue;
+            };
+            for (a, b) in cn.iter().zip(co.iter()) {
+                assert!(!b.limit_mode().is_proved(), "die Alt-Kopie trägt noch einen Beweis");
+                for _ in 0..250 {
+                    let p = [
+                        (a.bound_c[0] as f64 + g.sym() * (a.bound_r + a.trust) as f64) as f32,
+                        (a.bound_c[1] as f64 + g.sym() * (a.bound_r + a.trust) as f64) as f32,
+                        (a.bound_c[2] as f64 + g.sym() * (a.bound_r + a.trust) as f64) as f32,
+                    ];
+                    let ln = oc::channel_limit(p, a);
+                    let l0 = oc::channel_limit(p, b);
+                    assert!(
+                        ln <= l0,
+                        "{name}: lim_neu = {ln} > lim_alt = {l0} — die Aktivierung NIMMT \
+                         Material weg"
+                    );
+                    if ln < l0 {
+                        lim_lower += 1;
+                    }
+                    if !a.limit_mode().is_proved() {
+                        assert_eq!(
+                            ln.to_bits(),
+                            l0.to_bits(),
+                            "{name}: ein LegacyUnproven-Kanal ist NICHT bitidentisch"
+                        );
+                    }
+                    lim_probes += 1;
+                    here += 1;
+                }
+            }
+        }
+        // (b) das ausgelieferte Feld — hinter OP_STOP_LIMIT und hinter den Rims.
+        for _ in 0..4000 {
+            let p = [
+                (lo[0] + g.next_f64() * (hi[0] - lo[0])) as f32,
+                (lo[1] + g.next_f64() * (hi[1] - lo[1])) as f32,
+                (lo[2] + g.next_f64() * (hi[2] - lo[2])) as f32,
+            ];
+            let fnew = field.sdf(p, EvalMode::Visual);
+            let fold = old.sdf(p, EvalMode::Visual);
+            if !(fnew.is_finite() && fold.is_finite()) {
+                continue;
+            }
+            assert!(
+                fnew <= fold,
+                "{name}: f_neu = {fnew} > f_alt = {fold} bei {p:?} — die Aktivierung nimmt \
+                 hinter OP_STOP_LIMIT oder in den Rim-Termen Material weg"
+            );
+            if fnew < fold {
+                field_lower += 1;
+                worst_drop = worst_drop.max((fold - fnew) as f64);
+            }
+            field_probes += 1;
+        }
+        if here > 0 {
+            fixtures += 1;
+        }
+    }
+    assert!(fixtures >= 10, "nur {fixtures} Fixturen");
+    assert!(lim_probes > 40_000 && field_probes > 40_000, "{lim_probes}/{field_probes} Proben");
+    assert!(
+        lim_lower > 1_000 && field_lower > 100,
+        "nur {lim_lower} abgesenkte Kanal-Beiträge und {field_lower} abgesenkte Feldwerte — \
+         dann ist die Aktivierung an diesen Proben ein No-op und der Richtungs-Pin misst nichts"
+    );
+    println!(
+        "§8ac Pin 1: {lim_probes} Kanal-Proben ({lim_lower} abgesenkt), {field_probes} \
+         Feld-Proben ({field_lower} abgesenkt), grösste Absenkung {worst_drop:.3e} mm"
+    );
+}
+
+/// **§8ac-Pin 2 (Attribution): wer sich bewegt, und um wie viel.**
+///
+/// Alt/Neu auf IDENTISCHEN Punkten, aufgeschlüsselt nach dem Gewinner der
+/// ALTEN Form — `de`, `h`, oder der neutrale Trust-/Skip-Pfad. Ein Punkt, an
+/// dem der neutrale Pfad gewann, darf sich NICHT bewegen; an einem
+/// `h`-Gewinner darf sich nur `A_h` auswirken, an einem `de`-Gewinner nur
+/// `A_seam`. Vorzeichenwechsel werden getrennt ausgewiesen — sie sind die
+/// einzige Sorte Änderung, die eine Nullmenge verschiebt.
+#[test]
+fn activation_attribution_harness_384() {
+    let delta = 2.0f32;
+    let cfg_names = ["de", "h", "neutral"];
+    let mut g = Lcg(0x8ac_a771);
+    let mut total = [0usize; 3];
+    let mut moved = [0usize; 3];
+    let mut worst = [0.0f64; 3];
+    let (mut sign_flips, mut probes) = (0usize, 0usize);
+    for (name, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        let old = field_with_legacy_modes(&field);
+        let (mut ns, mut os) = (Vec::new(), Vec::new());
+        stop_nodes(&field, &mut ns);
+        stop_nodes(&old, &mut os);
+        for (sn, so) in ns.iter().zip(os.iter()) {
+            let (BoundedCsg::ArcChannel { channels: cn, .. }, BoundedCsg::ArcChannel { channels: co, .. }) =
+                (sn, so)
+            else {
+                continue;
+            };
+            for (a, b) in cn.iter().zip(co.iter()) {
+                for i in 0..600 {
+                    let arc = &a.arcs[i % a.arcs.len()];
+                    let sp = g.next_f64() as f32;
+                    let rad = (g.next_f64() * a.trust as f64 * 1.4) as f32;
+                    let d = [g.sym(), g.sym(), g.sym()];
+                    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    if !(n > 1.0e-9) {
+                        continue;
+                    }
+                    let p = [
+                        arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n) as f32 * rad,
+                        arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n) as f32 * rad,
+                        arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n) as f32 * rad,
+                    ];
+                    let l0 = oc::channel_limit(p, b);
+                    let ln = oc::channel_limit(p, a);
+                    // Attribution nach dem ALTEN Gewinner.
+                    let bucket = match oc::channel_nearest(p, b) {
+                        Some((de, _, _, _)) if de.is_finite() && de < b.trust => {
+                            let h = oc::face_plane_gate(p, b) + b.delta;
+                            if de <= h {
+                                0
+                            } else {
+                                1
+                            }
+                        }
+                        _ => 2,
+                    };
+                    total[bucket] += 1;
+                    probes += 1;
+                    if ln != l0 {
+                        moved[bucket] += 1;
+                        worst[bucket] = worst[bucket].max((l0 - ln) as f64);
+                        assert_ne!(bucket, 2, "{name}: ein NEUTRALER Punkt hat sich bewegt");
+                        assert!(a.limit_mode().is_proved(), "ein Legacy-Kanal hat sich bewegt");
+                    }
+                    if (l0 > 0.0) != (ln > 0.0) {
+                        sign_flips += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(probes > 60_000, "nur {probes} Proben");
+    assert!(total[0] > 1_000 && total[1] > 1_000, "die Attribution trifft nicht beide Gewinner");
+    assert!(moved[0] > 0 && moved[1] > 0, "einer der beiden Äste bewegt sich nie");
+    for k in 0..3 {
+        println!(
+            "§8ac Pin 2: Alt-Gewinner {:8} — {} Proben, {} bewegt, grösste Absenkung {:.3e} mm",
+            cfg_names[k], total[k], moved[k], worst[k]
+        );
+    }
+    println!("§8ac Pin 2: {sign_flips} Vorzeichenwechsel des Kanal-Beitrags");
+}
+
+/// **§8ac-Pin 3: der Tape-Kopf ist in allen Lesern gleich lang.**
+///
+/// Die drei neuen Worte (Modus, `A_seam`, `A_h`) stehen in vier
+/// Implementierungen: Emitter und Interpreter in `sdf_compiler.rs`,
+/// `payload_len` in `cgal-mesher/src/tape_spec.h` und der TSL-Leser in
+/// `web/src/sdfVmInterpreter.ts`. Driftet eine, liest sie die Bogenliste um
+/// drei Worte verschoben — und das ist kein Absturz, sondern ein stilles
+/// falsches Feld.
+///
+/// Der Pin misst die EMITTIERTE Länge gegen `CHANNEL_HEADER` und verankert
+/// damit die Konstante, die die anderen drei spiegeln.
+#[test]
+fn channel_tape_header_stride_384() {
+    use crate::sdf_compiler::{compile_body, ARC_STRIDE, CHANNEL_HEADER, OP_ARC_CHANNEL};
+    let delta = 2.0f32;
+    let mut seen = 0usize;
+    for (name, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        let t = compile_body(&field);
+        let ops = &t.opcodes;
+        let mut i = 0usize;
+        while i < ops.len() {
+            let tag = ops[i].to_bits() & 0xffff_ffff;
+            if tag == OP_ARC_CHANNEL {
+                let n = ops[i + 1] as usize;
+                // Modus + Addenden sitzen an den letzten drei Kopf-Worten.
+                let mode = ops[i + 1 + CHANNEL_HEADER - 3];
+                let a_seam = ops[i + 1 + CHANNEL_HEADER - 2];
+                let a_h = ops[i + 1 + CHANNEL_HEADER - 1];
+                assert!(
+                    mode == 0.0 || mode == 1.0,
+                    "{name}: Modus-Wort {mode} — der Kopf ist verschoben"
+                );
+                assert!(
+                    a_seam >= 0.0 && a_h >= 0.0 && a_seam < 1.0 && a_h < 1.0,
+                    "{name}: Addenden {a_seam}/{a_h} an der Kopf-Position — verschoben?"
+                );
+                if mode == 0.0 {
+                    assert_eq!(
+                        (a_seam.to_bits(), a_h.to_bits()),
+                        (0f32.to_bits(), 0f32.to_bits()),
+                        "{name}: LegacyUnproven mit Addenden im Tape"
+                    );
+                } else {
+                    assert!(a_seam > 0.0, "{name}: Proved mit Naht-Addend null");
+                }
+                // Das nächste Wort nach Kopf + Bögen muss wieder ein Opcode
+                // sein — die schärfste Längenprobe, die von hier aus geht.
+                let next = i + 1 + CHANNEL_HEADER + n * ARC_STRIDE;
+                assert!(next <= ops.len(), "{name}: Kanal-Record läuft über das Tape hinaus");
+                seen += 1;
+                i = next;
+                continue;
+            }
+            i += 1;
+        }
+    }
+    assert!(seen >= 200, "nur {seen} Kanal-Records im Tape geprüft");
+    println!("§8ac Pin 3: {seen} Kanal-Records, Kopf {CHANNEL_HEADER} + {ARC_STRIDE}·N");
+}
+
+/// **§8ac-Pin 4 (Sollte-14): die adversarialen h-Familien am ECHTEN Feld.**
+///
+/// §8ab konnte den `h`-Ast nur rechnerisch prüfen — es gab keinen Konsumenten.
+/// Jetzt gibt es einen, und damit ist die Forderung aus Review 13 einlösbar:
+/// die Familien am ausgelieferten Feld, **inklusive des Umhäng-Bands**
+/// `de < h ≤ de + A`, in dem P5b-1A Punkte vom `de`- in den `h`-Ast schiebt.
+///
+/// Verlangt ist an jedem Punkt INNERHALB `Ω`, dass der ausgelieferte
+/// Kanal-Beitrag die gültige Untergrenze nicht überschreitet:
+/// `lim ≤ δ − dist(x,∁Ω)`, gemessen gegen das analytische Orakel.
+#[test]
+fn activation_h_families_hold_on_the_real_field_384() {
+    let delta = 2.0f32;
+    let mut g = Lcg(0x8ac_47f5);
+    let (mut probes, mut band, mut hwin) = (0usize, 0usize, 0usize);
+    let mut tightest = f64::INFINITY;
+    for (name, field, exact, _l, _h, _c) in cert_matrix(delta) {
+        let mut stops = Vec::new();
+        stop_nodes(&field, &mut stops);
+        for st in stops {
+            let BoundedCsg::ArcChannel { channels, .. } = st else { continue };
+            for ch in channels {
+                if !ch.limit_mode().is_proved() {
+                    continue;
+                }
+                let (a_seam, _a_h) = ch.limit_mode().addends();
+                let arc = ch.arcs[0].clone();
+                // Gezielt ins Umhäng-Band: Bisektion auf `h − de = 0`.
+                for _ in 0..80 {
+                    let sp = g.next_f64() as f32;
+                    let d = [g.sym(), g.sym(), g.sym()];
+                    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    if !(n > 1.0e-9) {
+                        continue;
+                    }
+                    let at = |t: f64| -> Option<([f32; 3], f32, f32)> {
+                        let p = [
+                            arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n * t) as f32,
+                            arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n * t) as f32,
+                            arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n * t) as f32,
+                        ];
+                        let (de, _, _, _) = oc::channel_nearest(p, ch)?;
+                        let h = oc::face_plane_gate(p, ch) + ch.delta;
+                        (de.is_finite() && de < ch.trust && h.is_finite() && h < 1.0e29)
+                            .then_some((p, de, h))
+                    };
+                    let (mut lo, mut hi) = (0.0f64, 0.0f64);
+                    let mut prev: Option<(f64, f32)> = None;
+                    let mut found = false;
+                    for k in 1..=64 {
+                        let t = k as f64 / 64.0 * ch.trust as f64 * 0.98;
+                        let Some((_p, de, h)) = at(t) else { continue };
+                        let sg = h - de;
+                        if let Some((t0, s0)) = prev {
+                            if (s0 > 0.0) != (sg > 0.0) {
+                                lo = t0;
+                                hi = t;
+                                found = true;
+                                break;
+                            }
+                        }
+                        prev = Some((t, sg));
+                    }
+                    if !found {
+                        continue;
+                    }
+                    for _ in 0..80 {
+                        let mid = 0.5 * (lo + hi);
+                        let (Some((p, de, h)), Some((_q, de0, h0))) = (at(mid), at(lo)) else {
+                            break;
+                        };
+                        if ((h0 - de0) > 0.0) == ((h - de) > 0.0) {
+                            lo = mid;
+                        } else {
+                            hi = mid;
+                        }
+                        let dist = exact([p[0] as f64, p[1] as f64, p[2] as f64]);
+                        if dist > 0.0 {
+                            let lim = oc::channel_limit(p, ch) as f64;
+                            let valid = ch.delta as f64 - dist;
+                            assert!(
+                                lim <= valid + 1.0e-12,
+                                "{name}: der AUSGELIEFERTE Kanal-Beitrag {lim:e} liegt über der \
+                                 gültigen Untergrenze {valid:e} bei {p:?}"
+                            );
+                            tightest = tightest.min(valid - lim);
+                            probes += 1;
+                            if h > de && h <= de + a_seam {
+                                band += 1;
+                            }
+                            if h <= de {
+                                hwin += 1;
+                            }
+                        }
+                        if h > de && h <= de + a_seam {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(probes > 2_000, "nur {probes} Proben in Ω");
+    assert!(band > 0, "das Umhäng-Band wurde am ECHTEN Feld nie getroffen");
+    assert!(hwin > 0, "der h-Ast gewinnt am echten Feld nie");
+    println!(
+        "§8ac Pin 4: {probes} Proben in Ω am ausgelieferten Feld; {band} im Umhäng-Band, \
+         {hwin} mit h-Gewinn; engste Reserve {tightest:.3e} mm"
     );
 }

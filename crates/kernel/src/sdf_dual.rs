@@ -506,10 +506,17 @@ fn eval_bounded_d3_open(
                     s4 = min_d3(s4, v);
                 }
                 if de.re < ch.trust as f64 {
+                    // #384 §8ac / P5b-1A: dieselben zwei Addenden wie in
+                    // `channel_limit`. Sie sind KONSTANTEN — der Dual-Anteil
+                    // bleibt damit exakt der Enveloppen-Gradient.
+                    let (a_seam, a_h) = ch.limit_mode().addends();
                     lim = max_d3(
                         lim,
                         D3::from(ch.delta as f64)
-                            - min_d3(de, s4 + D3::from(ch.delta as f64)),
+                            - min_d3(
+                                de + D3::from(a_seam as f64),
+                                s4 + D3::from(ch.delta as f64) + D3::from(a_h as f64),
+                            ),
                     );
                 }
                 // Rollen-Trennung (C4) — Spiegel von `channel_apply`.

@@ -7542,9 +7542,233 @@ war und ist reines Rundungsbudget.
 * Die Zertifizierungs-Matrix aus §8w/§8z bewegt sich **nicht** — P5b-1H hat
   keinen Konsumenten.
 
+## 8ac. P5b-1A — die Aktivierung: die erste Feldänderung des P5b-Strangs (#384, 2026-08-03)
+
+§8aa hat den Naht-Addenden bewiesen, §8ab das h-Budget. Beide lagen bisher
+**unverbraucht** im Kanal: kein Evaluator las sie, das Feld war unverändert.
+P5b-1A verbraucht sie — und das ist die **erste Feldänderung** des ganzen
+P5b-Strangs.
+
+Deshalb liegt dieses Paket auf einem Branch (`p5b-1a`), nicht auf `main`. Die
+Goldens ändern sich, und das ist der definierte Fall „ein bestehender Pin
+kippt".
+
+### Der Paket-Schnitt, und warum er so und nicht anders liegt
+
+Konsultation 14 hat P5b-1 in zwei beweisgetrennte Hälften geschnitten:
+**P5b-1H** (das h-Budget, feldneutral — §8ab) und **P5b-1A** (die Aktivierung,
+hier). Ein Paket, das beides zugleich täte, müsste eine neue Feldform
+ausliefern und gleichzeitig behaupten, sie sei eingeschlossen. Genau das
+verbietet die Doktrin, und §8ac zieht die Konsequenz auch in die andere
+Richtung: **der Intervallpfad verweigert die neuen Stopps**, statt eine
+Einschliessung zu behaupten, die nicht mehr gilt (s. u.).
+
+### Die Verbrauchsform
+
+```text
+de_safe = fl(de + A_seam)                    // §8aa Lemma 5
+h_safe  = fl(fl(g + δ) + A_h)                // §8ab Halbraum-Lemma + Rundung
+lim     = fl(δ − min(de_safe, h_safe))
+```
+
+Für `LegacyUnproven` sind beide Addenden null, und `x + 0.0 == x` für jedes
+`x`, das hier auftreten kann (`de` ist eine Norm, also `≥ 0`; `h = fl(g+δ)` mit
+`δ > 0` ist nie `−0.0`). Unbewiesene, gekrümmte, ungedeckte und konvexe Kanäle
+liefern damit **bitgenau** das alte Feld — gepinnt, nicht behauptet.
+
+**Kein Laufzeit-Hybrid.** Ein „Addend nur, wenn `de` gewinnt" wäre eine
+punktweise Fallunterscheidung, für die es keinen Satz gibt: der Beweis spricht
+über beide Äste, oder über keinen. Der Modus hängt am **Kanal**, nicht am
+Punkt.
+
+### `ChannelLimitMode` — kein `Option`, kein `unwrap_or`
+
+```text
+Proved { seam, h }  |  LegacyUnproven(reason)
+reason ∈ { NotCertified, NotConcave, NoHBudget, ProofInvalidated }
+```
+
+`ProofInvalidated` ist der Grund, für den der Typ überhaupt existiert: die
+Zertifizierung war erfolgreich, aber der Schnappschuss-Abruf gegen Kanal + `Ω`
+schlug fehl. Feldseitig fällt das auf Legacy zurück; im **Bericht** ist es
+ausdrücklich **kein** „bewiesen mit `A = 0`". Ein `Option<f32>` mit
+`unwrap_or(0.0)` hätte genau diesen Unterschied verschluckt.
+
+Gezählt werden die **tatsächlich aufgelösten und serialisierten** Modi, nicht
+erfolgreiche `certify`-Aufrufe.
+
+### Der Lebenszyklus — R2 endlich erzwungen
+
+Der Einbau sitzt im gemeinsamen äusseren Pfad von
+`synthesize_offset_channels_reported`, in genau dieser Reihenfolge:
+
+1. `synthesize_stop` komplett (inklusive Vertex-Snapping und **beider**
+   Halbraum-Sätze);
+2. `attach_prisms`;
+3. den finalen `BoundedCsg::Offset`-Stopp bauen;
+4. **genau dessen** `omega_of(&stop)` als autoritatives `Ω`;
+5. alle finalen Kanäle zertifizieren **und sofort** ihren Laufzeitmodus
+   auflösen;
+6. erst danach `ArcChannel`, Tape und Berichte.
+
+Nach Schritt 5 mutiert kein schnappschuss-relevantes Kanalbit mehr. Der
+Laufzeitmodus geht **nicht** in `channel_snapshot` ein — er ist Ergebnis des
+Beweises, nicht Eingabe; ein Schnappschuss, der sich selbst enthielte, könnte
+nie wieder passen.
+
+### Sechs Spiegel, ein Tape-Kopf
+
+Der Kanal-Kopf wächst um **drei Worte** (Modus, `A_seam`, `A_h`), vor der
+Bogenliste: `CHANNEL_HEADER` 41 → **44**. Geändert in derselben Runde:
+
+| Spiegel | Datei |
+|---|---|
+| CPU-Referenz | `offset_channel::channel_limit` (von `bvh.rs` konsumiert) |
+| Tape-Emitter + Rust-Interpreter | `sdf_compiler.rs` |
+| C++-Interpreter + Spez | `cgal-mesher/src/sdf_interp.h`, `tape_spec.h` |
+| Web/TSL-Interpreter | `web/src/sdfVmInterpreter.ts` |
+| fidget | `fidget_bridge.rs` |
+| Dual | `sdf_dual.rs` |
+
+Der Dual musste mit, sonst gehörten Realteil und Ableitung zu verschiedenen
+Feldern. Die Addenden sind dort **Konstanten** — der Dual-Anteil bleibt exakt
+der Enveloppen-Gradient.
+
+`OP_STOP_LIMIT` selbst hat **keine** neue Semantik bekommen; geändert hat sich
+nur der je-Kanal-Beitrag und dessen Payload.
+
+### Die Messungen
+
+**Richtung** (`activation_only_adds_material_384`): beide Addenden sind `≥ 0`,
+`min` und Subtraktion monoton, also `lim_neu ≤ lim_alt`. Gemessen an **59.500**
+Kanal-Proben und **52.000** Feld-Proben über zwölf Fixturen — geprüft wird
+nicht nur der Kanal-Beitrag, sondern der Wert **hinter** `OP_STOP_LIMIT` und
+hinter den Rim-Termen, deren Monotonie damit gezeigt und nicht vorausgesetzt
+ist. Kein einziger Ausreisser; 8.607 Feldwerte sinken, grösste Absenkung
+`2.267·10⁻³ mm`.
+
+**Attribution** (`activation_attribution_harness_384`), nach dem Gewinner der
+ALTEN Form:
+
+| Alt-Gewinner | Proben | bewegt | grösste Absenkung |
+|---|---|---|---|
+| `de` | 110.601 | 103.081 | `2.267·10⁻³ mm` (= max `A_seam`) |
+| `h` | 8.152 | 5.263 | `3.529·10⁻⁵ mm` (= max `A_h`) |
+| neutral (Trust-/Skip-Pfad) | 24.047 | **0** | — |
+
+Die dritte Zeile ist die wichtigste: wo der Term ohnehin neutral war, bewegt
+sich **nichts**. Und die beiden Maxima treffen exakt die bewiesenen Addenden —
+jeder Ast zahlt genau seinen eigenen. **3** Vorzeichenwechsel des
+Kanal-Beitrags; jeder Legacy-Kanal ist bitidentisch.
+
+**Feldverhalten** (`activation_h_families_hold_on_the_real_field_384`, die
+Sollte-14-Forderung aus Review 13, jetzt mit Konsument einlösbar): **8.652**
+Punkte in `Ω` am ausgelieferten Feld, davon **1.056 im Umhäng-Band** und
+**3.774** mit `h`-Gewinn. Der ausgelieferte Kanal-Beitrag überschreitet die
+gültige Untergrenze `δ − dist(x,∁Ω)` nirgends; engste Reserve `2.682·10⁻⁵ mm`.
+
+**Tape-Kopf** (`channel_tape_header_stride_384`): 238 Kanal-Records, Modus- und
+Addenden-Worte an der erwarteten Position, Legacy ohne Addenden, `Proved` mit
+positivem Naht-Addenden.
+
+### Der Preis: die Intervall-Stufe zieht sich zurück
+
+`enclose_channel_limit` modelliert `fl(δ − min(de, h))`. Die Produktion rechnet
+jetzt `fl(δ − min(fl(de+A), fl(h+A_h)))` — eine andere Kette mit zwei
+zusätzlichen Rundungen. Die alte zweiseitige Zusage gilt dafür nicht mehr, und
+sie stillschweigend weiterzuführen wäre der verbotene Doppelschritt.
+
+Also **`Unknown`**, sobald ein Kanal des Stopps einen bewiesenen Laufzeitmodus
+trägt. `enclose_channel_apply` bleibt unberührt — der `channel_apply`-Term hat
+sich nicht bewegt.
+
+Bemerkenswert an der Messung: **die Verweigerung ist chirurgisch.** Am
+Plattenkern der Ecken-Schale zertifizieren **285 von 512** Zellen unverändert
+über Zweig 2 (dort ist der Kanal-Term ohnehin im Fernfeld-Skip); nur die
+**227** Zellen, in denen die Grenzwert-Klemme wirklich bindet, fallen auf
+`Unknown`. **P5b-2** modelliert `de_safe`/`h_safe`/`min` op-genau und holt sie
+zurück.
+
+### Prüfungen
+
+* **Golden**: SHA-256 `a0c9fe7b…` → **`915bab98…`**. Drei Szenen bewegen sich:
+  `arc_channel_steinmetz` (1197 → 1203 Worte), `arc_channel_notch` (507 → 510),
+  `vertex_sphere_corner` (3650 → 3722). Die Wortzahl wächst durch den
+  Kopf (3 Worte je Kanal), die Feldwerte sinken — Beispiel
+  `−1.1999884 → −1.2000003`.
+* **C++-Parität**: `check_interp` gegen das neue Golden — **35 Szenen, 17.920
+  Vergleiche, worst_err = 0.000002, 0 Fehler**. Der C++-Spiegel liest den
+  44-Wort-Kopf korrekt.
+* **Modus-Verteilung in der echten Synthese**: **217 Proved / 21
+  LegacyUnproven** (2 gekrümmt an der Stufen-Nabe, 19 `Extrude`-`Ω` am
+  Rippen-Kamm 4×1.5/0.8) — deckungsgleich mit dem Shadow-Bericht aus §8aa/§8ab.
+
+### Gekippte Pins — jeder einzeln benannt
+
+Drei, alle als direkte Folge der beiden bewussten Änderungen:
+
+1. **`clamp_frozen_form_is_neutral_at_zero_and_monotone_384`** (eigener Pin aus
+   v0.64.0). Er verglich die Produktion gegen die eingefrorene Kette **bei
+   `A = 0`** — richtig, solange es keinen Konsumenten gab. Jetzt vergleicht er
+   gegen die Kette mit den **Addenden des aufgelösten Modus** und prüft
+   zusätzlich, dass jeder Legacy-Kanal Addenden von exakt null trägt. Das ist
+   die **schärfere** Fassung. Die Monotonie-Leiter startet ausdrücklich bei
+   `A = A_h = 0`, sonst vergliche sie gegen einen bereits abgesenkten Wert.
+2. **`interval_encloses_the_delivered_field_384`** (§8v/§8w). Für Stopps mit
+   bewiesenem Modus gibt es keine Einschliessung mehr. Der Pin zählt diese
+   Zellen jetzt getrennt (`refused`) und verlangt sie ausdrücklich; die
+   Escape-Assertion — der lasttragende Teil — bleibt unverändert bei null.
+3. **`interval_tiling_of_the_plate_core_is_gapless_384`** (§8w). Der
+   Plattenkern ist nicht mehr durchgehend Zweig-2-zertifiziert. Der Pin
+   verlangt jetzt, dass jede Zelle **entweder** weiter zertifiziert **oder**
+   mit **genau der P5b-1A-Begründung** verweigert wird (ein anderes `Unknown`
+   wäre ein echter Regress), dass beide Sorten vorkommen, und dass die
+   Substanz — `f < 0` über dem ganzen Kern — unverändert steht.
+
+Keine Toleranz wurde gelockert, kein Pin gelöscht.
+
+### Was OFFEN bleibt
+
+* **P5b-2** — die Intervall-Modellierung der neuen Kette. Bis dahin sind die
+  227 Kernzellen und die „ausgeliefert"-Einschliessung der bewiesenen Fixturen
+  nicht zertifiziert. Das ist die grösste offene Position dieses Pakets.
+* **Web/TSL- und fidget-Parität nicht laufzeit-verifiziert.** Der TSL-Leser ist
+  angepasst und typecheckt; ein GPU-Lauf (Playwright) stand hier nicht zur
+  Verfügung. fidget ist symbolisch mitgezogen. Beide brauchen vor dem Merge
+  einen echten Lauf.
+* **P5c** (gekrümmte Kanäle) und **`Ω`-Blätter jenseits Box/Sphere/Zylinder**
+  bleiben unverändert offen — sie sind der Grund für die 21 Legacy-Kanäle.
+* **`vertex_limit`** ist weiterhin nicht mitbewiesen und unverändert.
+* **Über-Claim-Richtung**: die Feldrichtung ist ausschliesslich „mehr
+  Material". Für die Unter-Claim-Zeugen ist das eine Verbesserung; die
+  Über-Claim-/Phantom-Sonden der Matrix laufen unverändert grün, aber die
+  Richtung *könnte* sie prinzipiell verschlechtern — sie gehören bei jeder
+  Vergrösserung der Addenden erneut angesehen.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
+- Produktionscode §8ac (P5b-1A, **erste Feldänderung**):
+  `crates/kernel/src/offset_channel.rs` — `ChannelLimitMode`/`LegacyReason`,
+  das private Feld `OffsetChannel::mode`, `limit_mode`/`resolve_limit_mode`/
+  `force_legacy` (versiegelt), die neue Verbrauchsform in `channel_limit` und
+  die Zertifizierung am finalen Stopp in
+  `synthesize_offset_channels_reported`.
+  `crates/kernel/src/offset_witness.rs` — `mint_proof_token`.
+  `crates/kernel/src/sdf_compiler.rs` — `CHANNEL_HEADER = 44`, die drei neuen
+  Kopf-Worte in Emitter und Interpreter, der neue `lim`-Beitrag.
+  `crates/kernel/src/fidget_bridge.rs`, `crates/kernel/src/sdf_dual.rs` —
+  dieselben zwei Addenden.
+  `cgal-mesher/src/sdf_interp.h` + `tape_spec.h` (Header 41 → 44),
+  `web/src/sdfVmInterpreter.ts` (TSL-Leser).
+  `crates/kernel/src/offset_interval.rs` — die P5b-1A-Verweigerung in
+  `enclose_channel_limit`.
+- Pins/Sonden §8ac in `offset_capability_tests.rs`: `mode_tally`,
+  `field_with_legacy_modes`, `fixture_has_proved_mode`,
+  `activation_only_adds_material_384`, `activation_attribution_harness_384`,
+  `channel_tape_header_stride_384`,
+  `activation_h_families_hold_on_the_real_field_384`, die Sonde
+  `probe_384_limit_modes` sowie die drei umgezielten Pins (s. §8ac).
 - Produktionscode §8ab (P5b-1H): `crates/kernel/src/offset_witness.rs` — die
   Box-Überdeckung (`omega_cover`, `local_box_to_world`, `WorldBox`), die
   Stützseiten-Herleitung (`plane_tau`, `is_sentinel_plane`, `H_TAU_LIMIT_MM`),

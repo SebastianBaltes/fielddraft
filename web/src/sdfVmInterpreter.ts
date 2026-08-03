@@ -921,10 +921,11 @@ export function buildVmSdfEvalFn(
         // Offset-Stopp — 1:1-Spiegel der CPU-Referenz
         // (`kernel offset_channel::channel_apply` / `eval_opcodes`
         // OP_ARC_CHANNEL-Arm), inklusive des exakten Bounding-Sphere-Skips
-        // (feldwert-identisch). Header 41: n(1) concave(1) delta(1) trust(1)
+        // (feldwert-identisch). Header 44: n(1) concave(1) delta(1) trust(1)
         // gate(1) bound_c(3) bound_r(1) end_planes(4×4 — das dritte Gate,
         // #384 §8f) face_planes(4×4 — das vierte Gate, #384 §8j, identisches
-        // Slot-Format und derselbe min); je Bogen 27 Floats:
+        // Slot-Format und derselbe min) mode(1) a_seam(1) a_h(1) (#384 §8ac);
+        // je Bogen ARC_STRIDE Floats:
         // c(3) u(3) v(3) r(1) sweep(1; <0 = Segment) bc(3) br(1)
         // m1s(3) m2s(3) m1e(3) m2e(3).
         const nArcs = floatToIntFn({ v: rd() }).toVar();
@@ -950,6 +951,14 @@ export function buildVmSdfEvalFn(
           const gc = rd();
           s4.assign(min(s4, vec3(ptx, pty, ptz).dot(gn).sub(gc)));
         }
+        // #384 §8ac / P5b-1A — Modus + beide Addenden, vor der Bogenliste.
+        // Identisch kodiert in sdf_compiler.rs, sdf_interp.h und hier. Der
+        // Modus geht in den Feldwert nicht ein (er trennt im BERICHT
+        // „unbewiesen" von „bewiesen mit Addend null"); die Addenden tun es,
+        // und bei LegacyUnproven sind beide null.
+        rd();
+        const aSeam = rd().toVar();
+        const aH = rd().toVar();
         const arcBase = pc.toVar();
         pc.addAssign(nArcs.mul(ARC_STRIDE));
         const d = popV().toVar();
@@ -1073,7 +1082,10 @@ export function buildVmSdfEvalFn(
             const w = min(wGeo, gate);
             // §8j: Beitrag zum Grenzwert-Register.
             If(best.lessThan(trust), () => {
-              stopLim.assign(max(stopLim, delta.sub(min(best, s4.add(delta)))));
+              // #384 §8ac: de_safe = de + A_seam, h_safe = (s4 + delta) + A_h.
+              stopLim.assign(
+                max(stopLim, delta.sub(min(best.add(aSeam), s4.add(delta).add(aH)))),
+              );
             });
             const inactive = wGeo.greaterThan(0.0).select(d, min(d, wGeo.negate()));
             const concRes = w.greaterThan(0.0).select(min(d, w.negate()), inactive);

@@ -1287,8 +1287,9 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         // offset_tree Phase B (#384): Kanal-Korrekturkoerper an einem
         // dualen Offset-Stopp — 1:1-Spiegel des Rust-CPU-Interpreters
         // (sdf_compiler.rs OP_ARC_CHANNEL / offset_channel::channel_apply),
-        // inklusive des exakten Bounding-Sphere-Skips. Header 41 Floats
-        // (9 + 4x4 End-Halbraeume §8f + 4x4 Fremdflaechen-Halbraeume §8j),
+        // inklusive des exakten Bounding-Sphere-Skips. Header 44 Floats
+        // (9 + 4x4 End-Halbraeume §8f + 4x4 Fremdflaechen-Halbraeume §8j
+        // + 3 Modus/Addenden §8ac),
         // je Bogen FD_ARC_STRIDE:
         // c(3) u(3) v(3) r sweep(<0 = Segment) bc(3) br
         // m1s(3) m2s(3) m1e(3) m2e(3) e(2) d_e   (#384 §8y).
@@ -1318,6 +1319,12 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
           float v = pt[0] * gn[0] + pt[1] * gn[1] + pt[2] * gn[2] - gc;
           s4 = fminf_(s4, v);
         }
+        // #384 §8ac / P5b-1A: Modus + beide Addenden, vor der Bogenliste.
+        // Der Modus geht in den Feldwert nicht ein; die Addenden tun es, und
+        // bei LegacyUnproven sind sie null.
+        (void)rd();
+        float a_seam = rd();
+        float a_h = rd();
         int base = pc;
         pc += n * kArc;
         float d = pop_v();
@@ -1442,7 +1449,9 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float w = fminf_(w_geo, gate);
         // §8j: Beitrag zum Grenzwert-Register.
         if (best < trust) {
-          stop_lim = fmaxf_(stop_lim, delta - fminf_(best, s4 + delta));
+          // #384 §8ac: de_safe = fl(de + A_seam), h_safe = fl(fl(s4+delta) + A_h).
+          stop_lim = fmaxf_(stop_lim,
+                            delta - fminf_(best + a_seam, (s4 + delta) + a_h));
         }
         push_v(concave
                    ? (w > 0.0f ? fminf_(d, -w)

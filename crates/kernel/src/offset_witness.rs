@@ -1722,6 +1722,18 @@ impl SeamProofToken {
     }
 }
 
+/// #384 §8ac — ein Siegel für die Synthese, die den Laufzeitmodus unmittelbar
+/// nach [`certify_channel`] auflöst.
+///
+/// Das ist die EINZIGE Stelle, an der ein Siegel dieses Modul verlässt, und sie
+/// existiert, weil der Lebenszyklus es verlangt: zertifizieren und auflösen
+/// gehören in denselben Schritt am finalen Stopp. Der Modus selbst ist harmlos
+/// — er trägt keine Zahl, die nicht schon durch die Schnappschuss-Prüfung
+/// gegangen wäre.
+pub(crate) fn mint_proof_token() -> SeamProofToken {
+    SeamProofToken::mint()
+}
+
 /// **Der bewiesene Naht-Addend eines Kanals.**
 ///
 /// **Was zugesagt ist — und NUR das.** Für jeden Punkt `x` mit

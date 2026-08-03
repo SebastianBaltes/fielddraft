@@ -169,6 +169,70 @@ pub struct ChannelArc {
     pub m2e: [f32; 3],
 }
 
+/// #384 §8ac / P5b-1A — **warum ein Kanal auf der alten Form bleibt.**
+///
+/// Jeder Grund ist ein eigener Fall, weil sie sich im Bericht unterscheiden
+/// müssen. `ProofInvalidated` ist der wichtigste: die Zertifizierung war
+/// erfolgreich, aber der Schnappschuss-Abruf scheiterte — feldseitig fällt das
+/// auf Legacy zurück, im Bericht ist es **nicht** „bewiesen mit A = 0", sondern
+/// ein Beweis, der unterwegs ungültig wurde.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyReason {
+    /// Die Naht-Zertifizierung ist gescheitert (gekrümmt, kein Cover, keine
+    /// Brücke, ungültige Konfiguration).
+    NotCertified,
+    /// Konvexer Kanal — die Erosions-Aussage gilt dort nicht (§8ab).
+    NotConcave,
+    /// Naht-Addend bewiesen, h-Budget nicht.
+    NoHBudget,
+    /// Zertifiziert, aber der Abruf gegen Kanal + `Ω` schlug fehl. **Nicht**
+    /// dasselbe wie „bewiesen mit A = 0".
+    ProofInvalidated,
+}
+
+/// #384 §8ac / P5b-1A — **der aufgelöste Laufzeitmodus der Grenzwert-Klemme.**
+///
+/// Ausdrücklich ein Modus und kein `Option<f32>`: ein `unwrap_or(0.0)` würde
+/// „kein Beweis" und „Beweis mit Addend null" zu demselben Wert verschmelzen,
+/// und genau diesen Unterschied muss der Bericht führen können.
+///
+/// Feldseitig sind beide Zweige **eine** Formel — `Legacy` ist der Fall
+/// `A = A_h = 0`, und dass der bitgenau das alte Feld liefert, ist gepinnt.
+/// Es gibt **keinen** Laufzeit-Hybrid „Addend nur, wenn `de` gewinnt": das
+/// wäre eine punktweise Fallunterscheidung, für die es keinen Satz gibt.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ChannelLimitMode {
+    /// Beide Addenden bewiesen (§8aa Naht, §8ab Stützebene) und gegen genau
+    /// diesen Kanal und sein `Ω` abgerufen.
+    Proved { seam: f32, h: f32 },
+    /// Kein Beweis — das Feld bleibt bitgenau das alte.
+    LegacyUnproven(LegacyReason),
+}
+
+impl ChannelLimitMode {
+    /// Die beiden Addenden. `Legacy` liefert `(0, 0)` — das ist die
+    /// FELD-Antwort, nicht die Bericht-Antwort.
+    #[inline]
+    pub fn addends(&self) -> (f32, f32) {
+        match self {
+            ChannelLimitMode::Proved { seam, h } => (*seam, *h),
+            ChannelLimitMode::LegacyUnproven(_) => (0.0, 0.0),
+        }
+    }
+    pub fn is_proved(&self) -> bool {
+        matches!(self, ChannelLimitMode::Proved { .. })
+    }
+    /// Die Tape-Kodierung des Modus (ein Wort, vor den Addenden).
+    #[inline]
+    pub fn tape_word(&self) -> f32 {
+        if self.is_proved() {
+            1.0
+        } else {
+            0.0
+        }
+    }
+}
+
 /// Ein Kanal-Korrekturkörper: eine Naht-Kurve (Arc-Spline) samt
 /// Gating-Daten für EINEN dualen Offset-Stopp.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -254,6 +318,19 @@ pub struct OffsetChannel {
     /// sich bewegt. Der Verbrauch ist P5b-1.
     #[serde(skip)]
     seam: Option<crate::offset_witness::CertifiedSeamAddend>,
+    /// #384 §8ac / P5b-1A — **der aufgelöste Laufzeitmodus.**
+    ///
+    /// Aufgelöst wird er EINMAL, in der Synthese, unmittelbar nach der
+    /// Zertifizierung am finalen Stopp; danach darf kein
+    /// schnappschuss-relevantes Kanalbit mehr mutieren. Er geht **nicht** in
+    /// [`crate::offset_witness::channel_snapshot`] ein — er ist Ergebnis des
+    /// Beweises, nicht Eingabe, und ein Schnappschuss, der sich selbst
+    /// enthielte, könnte nie wieder passen.
+    ///
+    /// `#[serde(skip)]`: die Diagnose-JSON bleibt unverändert; ins Tape geht er
+    /// über [`ChannelLimitMode::tape_word`].
+    #[serde(skip)]
+    mode: ChannelLimitMode,
 }
 
 impl OffsetChannel {
@@ -287,6 +364,7 @@ impl OffsetChannel {
             branch,
             parents,
             seam: None,
+            mode: ChannelLimitMode::LegacyUnproven(LegacyReason::NotCertified),
         }
     }
 
@@ -330,6 +408,56 @@ impl OffsetChannel {
     /// `fl(δ − min(fl(de+A), fl(h+A_h)))`.
     pub fn h_addend(&self, omega: &crate::bvh::BoundedCsg) -> Option<f32> {
         self.seam.as_ref()?.h_addend_for(self, omega)
+    }
+
+    /// #384 §8ac — **der aufgelöste Laufzeitmodus.** Vor der Auflösung in der
+    /// Synthese ist er `LegacyUnproven(NotCertified)`.
+    pub fn limit_mode(&self) -> ChannelLimitMode {
+        self.mode
+    }
+
+    /// #384 §8ac — **den Laufzeitmodus auflösen.** Verlangt dasselbe Siegel wie
+    /// [`Self::seal_seam_proof`]: der Modus ist eine Beweis-Folge, kein
+    /// Konfigurationsfeld.
+    ///
+    /// Der Abruf läuft durch [`Self::seam_addend`]/[`Self::h_addend`], also
+    /// durch die bitweise Schnappschuss-Prüfung gegen Kanal UND `Ω`. Schlägt
+    /// sie nach erfolgreicher Zertifizierung fehl, ist das
+    /// [`LegacyReason::ProofInvalidated`] — feldseitig Legacy, im Bericht
+    /// ausdrücklich **kein** Beweis.
+    pub(crate) fn resolve_limit_mode(
+        &mut self,
+        _token: crate::offset_witness::SeamProofToken,
+        omega: &crate::bvh::BoundedCsg,
+        certified: bool,
+    ) -> ChannelLimitMode {
+        let m = if !self.concave {
+            ChannelLimitMode::LegacyUnproven(LegacyReason::NotConcave)
+        } else if !certified {
+            ChannelLimitMode::LegacyUnproven(LegacyReason::NotCertified)
+        } else {
+            match (self.seam_addend(omega), self.h_addend(omega)) {
+                (Some(seam), Some(h)) => ChannelLimitMode::Proved { seam, h },
+                (Some(_), None) => {
+                    ChannelLimitMode::LegacyUnproven(LegacyReason::NoHBudget)
+                }
+                (None, _) => {
+                    ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated)
+                }
+            }
+        };
+        self.mode = m;
+        m
+    }
+
+    /// #384 §8ac — den Modus ohne Zertifizierungsversuch auf Legacy setzen
+    /// (kein `Ω`, kein Beweis). Verlangt dasselbe Siegel.
+    pub(crate) fn force_legacy(
+        &mut self,
+        _token: crate::offset_witness::SeamProofToken,
+        why: LegacyReason,
+    ) {
+        self.mode = ChannelLimitMode::LegacyUnproven(why);
     }
 
     /// Der Beweis selbst (Diagnose/Bericht). Seine Felder sind privat; die
@@ -777,7 +905,22 @@ pub fn channel_limit(p: [f32; 3], ch: &OffsetChannel) -> f32 {
     if de >= ch.trust {
         return -END_PLANE_OFF;
     }
-    ch.delta - de.min(face_plane_gate(p, ch) + ch.delta)
+    let (a_seam, a_h) = ch.mode.addends();
+    // #384 §8ac / P5b-1A — **die bewiesene Kette, op für op** (§8aa Lemma 5,
+    // §8ab Halbraum-Lemma + Rundungsbudget):
+    //
+    //   de_safe = fl(de + A_seam)
+    //   h_safe  = fl(fl(g + δ) + A_h)
+    //   lim     = fl(δ − min(de_safe, h_safe))
+    //
+    // Für `LegacyUnproven` sind beide Addenden null, und `x + 0.0 == x` für
+    // jedes `x`, das hier auftreten kann (`de` ist eine Norm, also `≥ 0`;
+    // `h = fl(g+δ)` mit `δ > 0` ist nie `−0.0`) — die alte Form bleibt
+    // BITGENAU stehen. Kein Laufzeit-Hybrid: der Modus hängt am Kanal, nicht
+    // am Punkt.
+    let de_safe = de + a_seam;
+    let h_safe = (face_plane_gate(p, ch) + ch.delta) + a_h;
+    ch.delta - de_safe.min(h_safe)
 }
 
 /// Spiegel von [`channel_limit`] für die Vertex-Kugel: `v` liegt auf `∂Ω`,
@@ -3432,6 +3575,9 @@ fn build_channel(
         // #384 §8aa: die Synthese beweist nichts — `certify_channel` tut es,
         // und nur sie kann die versiegelte Zelle beschreiben.
         seam: None,
+        // #384 §8ac: bis die Zertifizierung am FINALEN Stopp gelaufen ist,
+        // ist jeder Kanal Legacy. Fail-closed by construction.
+        mode: ChannelLimitMode::LegacyUnproven(LegacyReason::NotCertified),
     })
 }
 
@@ -6404,6 +6550,49 @@ pub fn synthesize_offset_channels_reported(
                 Box::new(attach_prisms(*inner, &prisms, delta))
             };
             let stop = BoundedCsg::Offset { inner, delta, aabb };
+            // ════════════════════════════════════════════════════════════════
+            // #384 §8ac / P5b-1A — **der Lebenszyklus, endlich erzwungen** (R2).
+            //
+            // Genau HIER und nirgends sonst: `synthesize_stop` ist komplett
+            // (inklusive Vertex-Snapping und beider Halbraum-Sätze),
+            // `attach_prisms` ist gelaufen, und `stop` ist der FINALE
+            // `Offset`-Knoten. Sein `omega_of` ist das autoritative `Ω` —
+            // dasselbe, gegen das der Evaluator später rechnet.
+            //
+            // Zertifiziert und aufgelöst wird in EINEM Zug; danach mutiert
+            // kein schnappschuss-relevantes Kanalbit mehr, und erst dann
+            // entsteht der `ArcChannel`-Knoten.
+            let mut channels = channels;
+            if !channels.is_empty() {
+                let cfg = crate::offset_witness::WitnessCfg::default();
+                match crate::offset_witness::omega_of(&stop) {
+                    Some(omega) => {
+                        // `omega_of` borgt aus `stop`; die Kanäle sind eine
+                        // eigene Liste, also ist das kollisionsfrei.
+                        for ch in channels.iter_mut() {
+                            let certified = crate::offset_witness::certify_channel(
+                                omega, ch, cfg,
+                            )
+                            .0 == crate::offset_witness::SeamProofStatus::Proved;
+                            ch.resolve_limit_mode(
+                                crate::offset_witness::mint_proof_token(),
+                                omega,
+                                certified,
+                            );
+                        }
+                    }
+                    None => {
+                        // Kein `Offset(δ ≤ 0)`-Stopp ⇒ kein `Ω` ⇒ kein Beweis.
+                        for ch in channels.iter_mut() {
+                            ch.force_legacy(
+                                crate::offset_witness::mint_proof_token(),
+                                LegacyReason::NotCertified,
+                            );
+                        }
+                    }
+                }
+            }
+            let channels = channels;
             if channels.is_empty() && verts.is_empty() && rims.is_empty() {
                 // Reiner Prisma-Fall (Status exact/tolerance ist schon in
                 // `synthesize_stop` notiert) oder gar keine Korrektur.

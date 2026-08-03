@@ -766,8 +766,13 @@ fn channel_to_tree(
     let s4 = s4.expect("face_planes ist ein Array fester Länge");
     // #384 §8j: Grenzwert-Beitrag `δ − min(de, h)`, neutral ab `de ≥ K`.
     let trust_t = Tree::from(ch.trust as f64);
+    // #384 §8ac / P5b-1A: `de_safe = de + A_seam`, `h_safe = (s4 + δ) + A_h`.
+    // Bei `LegacyUnproven` sind beide Addenden null — symbolisch derselbe
+    // Baum wie zuvor.
+    let (a_seam, a_h) = ch.limit_mode().addends();
     let lim_on = Tree::from(ch.delta as f64)
-        - best.clone().min(s4.clone() + ch.delta as f64);
+        - (best.clone() + a_seam as f64)
+            .min(s4.clone() + ch.delta as f64 + a_h as f64);
     // NICHT über `select_lt`: dessen `y + (x−y)·m` löscht bei einem
     // 1e30-Sentinel die Mantisse aus (x + 1e30 == 1e30 in f32).
     // Additive Maske stattdessen — exakt für beide Zweige.

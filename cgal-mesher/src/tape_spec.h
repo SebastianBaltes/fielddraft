@@ -106,9 +106,9 @@ inline int payload_len(const float* buf, int n, uint32_t tag, int pc) {
     case OP_ARC_CHANNEL: {
       if (pc >= n) return -1;
       int np = (int)buf[pc];
-      // Header 41 (9 + 4x4 End-Halbraeume §8f + 4x4 Fremdflaechen-
-      // Halbraeume §8j), je Bogen FD_ARC_STRIDE.
-      return 41 + FD_ARC_STRIDE * np;
+      // Header 44 (9 + 4x4 End-Halbraeume §8f + 4x4 Fremdflaechen-
+      // Halbraeume §8j + 3 Modus/Addenden §8ac), je Bogen FD_ARC_STRIDE.
+      return 44 + FD_ARC_STRIDE * np;
     }
     case OP_VERTEX_SPHERE: return 16;
     case OP_RIM_FILLET: {
