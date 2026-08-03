@@ -30,7 +30,7 @@
 //!
 //! **Immer noch keine Feldänderung.** `channel_limit`, `channel_apply` und
 //! jeder Evaluator bleiben unangetastet; das Golden ist byte-identisch. Kein
-//! Konsument liest [`OffsetChannel::eta_addend`] — der Verbrauch ist P5b-1,
+//! Konsument liest [`OffsetChannel::seam_addend`] — der Verbrauch ist P5b-1,
 //! der Intervallspiegel P5b-2, die Bogen-Zeugen P5c.
 //!
 //! ## Warum hier NICHT das f32-Modell gilt
@@ -44,9 +44,10 @@
 //! `next_down`/`next_up` nach jeder Schranke, aber **kein** f32-Schritt.
 
 use crate::bvh::BoundedCsg;
+use crate::offset_channel::{ChannelArc, OffsetChannel};
+#[cfg(test)]
 use crate::offset_channel::{
-    channel_nearest, face_plane_gate, norm as norm32, sub as sub32, ChannelArc, OffsetChannel,
-    END_PLANE_OFF,
+    channel_nearest, face_plane_gate, norm as norm32, sub as sub32, END_PLANE_OFF,
 };
 use crate::offset_interval::{next_down, next_up, Iv};
 use fielddraft_protocol::{Primitive, Transform};
@@ -804,9 +805,10 @@ pub(crate) fn norm_bridge_mm(trust: f32) -> Option<f64> {
 /// laufen ungerichtet in f32). Die erste §8aa-Fassung stellte die Funktion
 /// `pub` neben einen scheinbar passenden öffentlichen Beweiswert — genau die
 /// Kombination, aus der ein Konsument eine Vollketten-Garantie ablesen würde,
-/// die es nicht gibt. Deshalb jetzt `pub(crate)`: sie ist der Gegenstand des
-/// Rundungslemmas und der Feldneutralitäts-Pins, **kein Evaluator und keine
-/// Zusage**.
+/// die es nicht gibt. Deshalb jetzt `pub(crate)` und nur in Test-Builds
+/// vorhanden: sie ist der Gegenstand des Rundungslemmas und der
+/// Feldneutralitäts-Pins, **kein Evaluator und keine Zusage**.
+#[cfg(test)]
 pub(crate) fn frozen_channel_limit(p: [f32; 3], ch: &OffsetChannel, eta_add: f32) -> f32 {
     let dbs = norm32(sub32(p, ch.bound_c)) - ch.bound_r;
     if dbs >= ch.trust {
@@ -829,6 +831,7 @@ pub(crate) fn frozen_channel_limit(p: [f32; 3], ch: &OffsetChannel, eta_add: f32
 /// sondern unmöglich. Die ulp-Familie der Gegenprobe kann `de`, `h` und `δ`
 /// so frei wählen, wie es der Beweis behauptet — über die Geometrie käme man
 /// an die interessanten Bitmuster gar nicht heran.
+#[cfg(test)]
 #[inline]
 pub(crate) fn frozen_limit_tail(delta: f32, de: f32, h: f32, eta_add: f32) -> f32 {
     let de_eta = de + eta_add;
@@ -1130,8 +1133,7 @@ impl CertifiedSeamAddend {
     /// bewiesen wurde. Beide Vergleiche sind bitweise; der Hash ist bloss der
     /// billige Vorfilter davor.
     pub fn addend_for(&self, ch: &OffsetChannel, omega: &BoundedCsg) -> Option<f32> {
-        let cs = channel_snapshot(ch);
-        if prefilter(&cs) != self.channel_prefilter || cs != self.channel_snapshot {
+        if !self.channel_bytes_accepted(&channel_snapshot(ch)) {
             return None;
         }
         let os = omega_snapshot(omega);
@@ -1139,6 +1141,20 @@ impl CertifiedSeamAddend {
             return None;
         }
         Some(self.encoded_addend)
+    }
+    /// Die autoritative Kanal-Prüfung: Vorfilter, dann bitweiser Vergleich.
+    /// Genau EINE Instanz dieser Logik — [`addend_for`](Self::addend_for) und
+    /// der Byte-Positions-Pin laufen durch dieselbe Funktion.
+    fn channel_bytes_accepted(&self, cs: &[u8]) -> bool {
+        prefilter(cs) == self.channel_prefilter && cs == &self.channel_snapshot[..]
+    }
+    /// **Nur für die Pins** (Review 14, Sollte-11): schickt eine rohe
+    /// Byte-Folge durch DIESELBE Prüfung, die `addend_for` nimmt. Vorher
+    /// behauptete der Byte-Untertest nur `Vec`-Ungleichheit — das folgt aus
+    /// der Sprachsemantik und misst nichts am Abrufpfad.
+    #[cfg(test)]
+    pub(crate) fn channel_bytes_accepted_for_test(&self, cs: &[u8]) -> bool {
+        self.channel_bytes_accepted(cs)
     }
     /// `η_geo` aus [`cover_channel`] (mm).
     pub fn geometric_mm(&self) -> f64 {
@@ -1318,7 +1334,11 @@ pub(crate) fn certify_channel_with(
 /// Diese Funktion existiert, damit die Ablehnung PRÜFBAR ist. Ohne sie wäre
 /// eine Verpflanzung ausserhalb dieses Moduls zwar unmöglich (das Siegel lässt
 /// sich nicht beschaffen), aber eben auch nicht als Pin zu zeigen — und ein
-/// unbeobachteter Schutz ist in diesem Programm kein Schutz.
+/// unbeobachteter Schutz ist in diesem Programm kein Schutz. In
+/// Produktions-Builds existiert sie gar nicht (Review 14, Sollte-10): sonst
+/// könnte jedes Crate-Modul sie rufen, und „kein anderes Modul kann
+/// verpflanzen" wäre nur noch fast wahr.
+#[cfg(test)]
 pub(crate) fn transplant_proof(src: &OffsetChannel, dst: &mut OffsetChannel) {
     let p = src.seam_proof().cloned();
     dst.seal_seam_proof(SeamProofToken::mint(), p);

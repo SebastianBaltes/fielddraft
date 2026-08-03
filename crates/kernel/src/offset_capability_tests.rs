@@ -13275,19 +13275,25 @@ fn clamp_proof_cannot_be_transplanted_384() {
     }
     assert!(transplanted >= 10, "nur {transplanted} echte Verpflanzungen geprüft");
 
-    // (2) JEDE Byte-Position des Kanal-Schnappschusses muss zählen. Statt
-    //     sieben ausgewählter Felder: alle Bytes, jeweils ±1 und XOR 0x80.
+    // (2) JEDE Byte-Position des Kanal-Schnappschusses muss zählen: alle
+    //     Bytes, jeweils XOR 0x01 und XOR 0x80, durch DIE Prüfung geschickt,
+    //     die auch `addend_for` nimmt (Review 14, Sollte-11 — vorher stand
+    //     hier nur eine `Vec`-Ungleichheit, die aus der Sprachsemantik folgt
+    //     und den Abrufpfad nie berührte).
+    let proof_a = a.seam_proof().expect("Kanal a trägt einen Beweis");
+    assert!(
+        proof_a.channel_bytes_accepted_for_test(&snap_a),
+        "die UNMUTIERTE Folge wird abgelehnt — der Untertest misst eine kaputte Prüfung"
+    );
     let mut probed_bytes = 0usize;
     for pos in 0..snap_a.len() {
         for xor in [1u8, 0x80] {
             let mut m = snap_a.clone();
             m[pos] ^= xor;
-            assert_ne!(
-                m, snap_a,
-                "Byte {pos} liess sich nicht verändern — der Pin misst dort nichts"
+            assert!(
+                !proof_a.channel_bytes_accepted_for_test(&m),
+                "Byte {pos} (XOR {xor:#04x}): der Abrufpfad akzeptierte die Mutation"
             );
-            // Der Schnappschuss ist die Autorität: ein abweichender Schnappschuss
-            // MUSS abgelehnt werden. Geprüft über den Beweistyp selbst.
             probed_bytes += 1;
         }
     }
