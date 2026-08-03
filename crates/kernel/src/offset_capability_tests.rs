@@ -10078,6 +10078,7 @@ fn synth_channel(arcs: Vec<ChannelArc>, concave: bool) -> OffsetChannel {
         face_planes: [crate::offset_channel::END_PLANE_NONE; 4],
         branch: 0x700,
         parents: [0, 0],
+        eta_clamp: None,
     }
 }
 
@@ -12574,4 +12575,1015 @@ fn arc_interval_early_qt_hull_is_wider_384() {
         "§8z: frühe q/t-Hüllung an {wider} von {multi} mehrdeutigen Zellen breiter \
          (max {w_e:.6e} gegen {w_t:.6e})"
     );
+}
+
+// ══════════════ #384 §8aa / P5b-0 — die η-Klemme, noch ohne Konsument ══════════════
+
+/// Zertifiziert jeden Kanal eines Fixture-Feldes (auf einer KOPIE — das Feld
+/// selbst bleibt unangetastet) und liefert den Shadow-Bericht.
+fn clamp_scan(
+    field: &BoundedCsg,
+    cfg: wit::WitnessCfg,
+) -> (wit::ClampTally, Vec<(OffsetChannel, wit::ClampStatus)>) {
+    let mut tally = wit::ClampTally::default();
+    let mut out = Vec::new();
+    for (om, chans) in omega_and_channels(field) {
+        for ch in chans {
+            let mut c = ch.clone();
+            let (st, _) = wit::certify_channel(om, &mut c, cfg);
+            tally.add(st);
+            out.push((c, st));
+        }
+    }
+    (tally, out)
+}
+
+/// **§8aa-Sonde: der Shadow-Bericht der η-Klemme.**
+#[test]
+#[ignore]
+fn probe_384_clamp_shadow() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    println!(
+        "| Fixture | Kanäle | proved | curved | no_cover | no_bridge | η_geo mm | ε_q mm | ε_d mm | field_round mm | A mm |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|---|---|");
+    for (name, field, _e, _lo, _hi, _n) in cert_matrix(delta) {
+        let (t, chans) = clamp_scan(&field, cfg);
+        let mut mx = [0.0f64; 4];
+        let mut a_max = 0.0f32;
+        for (c, st) in &chans {
+            if *st != wit::ClampStatus::Proved {
+                continue;
+            }
+            let k = c.eta_clamp().unwrap();
+            mx[0] = mx[0].max(k.geometric_mm());
+            mx[1] = mx[1].max(k.q_bridge_mm());
+            mx[2] = mx[2].max(k.norm_bridge_mm());
+            mx[3] = mx[3].max(k.field_round_mm());
+            a_max = a_max.max(c.eta_addend().unwrap());
+        }
+        let cell = |v: f64| if v > 0.0 { format!("{v:.3e}") } else { "—".into() };
+        println!(
+            "| {name} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            t.total(),
+            t.proved_eta,
+            t.curved,
+            t.no_cover,
+            t.no_bridge,
+            cell(mx[0]),
+            cell(mx[1]),
+            cell(mx[2]),
+            cell(mx[3]),
+            if a_max > 0.0 { format!("{a_max:.3e}") } else { "—".into() },
+        );
+    }
+}
+
+use crate::offset_channel as oc;
+
+/// Ein deterministischer Strom (LCG) — Proben ohne `rand`-Abhängigkeit.
+struct Lcg(u64);
+impl Lcg {
+    fn next_f64(&mut self) -> f64 {
+        self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
+    }
+    fn sym(&mut self) -> f64 {
+        2.0 * self.next_f64() - 1.0
+    }
+}
+
+/// `n` ulp neben `v` (Vorzeichen-korrekt für positive Werte).
+fn ulp_off(v: f32, n: i64) -> f32 {
+    f32::from_bits((v.to_bits() as i64 + n).max(0) as u32)
+}
+
+/// Adversariale gerade Bögen: Clamp-Ränder, kurze Segmente unter grosser
+/// Translation, sehr kleine und sehr grosse `r`, schräge Richtungen.
+fn clamp_adversarial_arcs() -> Vec<(&'static str, ChannelArc)> {
+    let m = [0.0f32, 0.0, 1.0];
+    let mk = |a: [f32; 3], b: [f32; 3]| seg_arc(a, b, m, m, m, m);
+    vec![
+        ("Einheit-x", mk([0.0, 0.0, 0.0], [1.0, 0.0, 0.0])),
+        ("r = 2e-9", mk([0.0, 0.0, 0.0], [2.0e-9, 0.0, 0.0])),
+        ("r = 1e-6", mk([0.0, 0.0, 0.0], [1.0e-6, 0.0, 0.0])),
+        ("r = 1e+6", mk([0.0, 0.0, 0.0], [1.0e6, 0.0, 0.0])),
+        ("Translation 1e5, r = 1/32", mk([1.0e5, -3.0e4, 7.0e4], [1.0e5 + 0.031_25, -3.0e4, 7.0e4])),
+        ("Translation 1e5, r = 43", mk([1.0e5, -3.0e4, 7.0e4], [1.0e5 + 40.0, -3.0e4 + 10.0, 7.0e4 - 5.0])),
+        ("schräg", mk([-1.5, 2.25, -0.125], [3.75, -4.5, 6.125])),
+        ("krumme Koeffizienten", mk([0.137_913_3, -2.918_44, 11.000_003], [-4.318_77, 0.019_2, -3.777_1])),
+    ]
+}
+
+/// Der reelle Naht-Punkt `c + u·(s·r)` in f64 — die modellierte Menge `Q`,
+/// über die [`wit::cover_channel`] den Zeugen führt.
+fn seam_point_f64(arc: &ChannelArc, s: f64) -> [f64; 3] {
+    let r = arc.r as f64;
+    [
+        arc.c[0] as f64 + arc.u[0] as f64 * (s * r),
+        arc.c[1] as f64 + arc.u[1] as f64 * (s * r),
+        arc.c[2] as f64 + arc.u[2] as f64 * (s * r),
+    ]
+}
+
+/// Der EXAKTE Fussparameter `s ∈ [0,1]` von `p` auf der reellen Segmentmenge
+/// `{c + u·(s·r)}` — geschlossene Form in f64. `u` ist NICHT als Einheitsvektor
+/// vorausgesetzt (die f32-Normierung liegt relativ `≈ 10⁻⁷` daneben), deshalb
+/// steht `|u|²` im Nenner.
+fn seam_foot_f64(arc: &ChannelArc, p: [f64; 3]) -> f64 {
+    let r = arc.r as f64;
+    let u = [arc.u[0] as f64, arc.u[1] as f64, arc.u[2] as f64];
+    let uu = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+    if !(uu > 0.0) || !(r > 0.0) {
+        return 0.0;
+    }
+    let d = [p[0] - arc.c[0] as f64, p[1] - arc.c[1] as f64, p[2] - arc.c[2] as f64];
+    let w = (d[0] * u[0] + d[1] * u[1] + d[2] * u[2]) / uu;
+    (w / r).clamp(0.0, 1.0)
+}
+
+fn dist_f64_up(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let mut s = 0.0f64;
+    for k in 0..3 {
+        let d = crate::offset_interval::next_up((a[k] - b[k]).abs());
+        s = crate::offset_interval::next_up(s + crate::offset_interval::next_up(d * d));
+    }
+    crate::offset_interval::next_up(s.sqrt())
+}
+
+fn dist_f64_down(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let mut s = 0.0f64;
+    for k in 0..3 {
+        let d = crate::offset_interval::next_down((a[k] - b[k]).abs());
+        s = crate::offset_interval::next_down(s + crate::offset_interval::next_down(d * d));
+    }
+    crate::offset_interval::next_down(s.max(0.0).sqrt())
+}
+
+/// Probe-Punkte um EINEN geraden Bogen: die Clamp-Ränder `t = 0` und `t = 1`
+/// exakt, knapp davor/dahinter, sowie Punkte direkt AUF und wenige ulp neben
+/// der Segment-Voronoi-Grenze (der Ebene durch den Endpunkt senkrecht zu `u`).
+fn clamp_arc_probes(arc: &ChannelArc) -> Vec<[f32; 3]> {
+    let mut out = Vec::new();
+    let u = arc.u;
+    // Zwei zu `u` senkrechte Richtungen.
+    let a = if u[0].abs() < 0.9 { [1.0f32, 0.0, 0.0] } else { [0.0f32, 1.0, 0.0] };
+    let n1 = {
+        let d = u[0] * a[0] + u[1] * a[1] + u[2] * a[2];
+        let v = [a[0] - d * u[0], a[1] - d * u[1], a[2] - d * u[2]];
+        let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        [v[0] / n, v[1] / n, v[2] / n]
+    };
+    let n2 = [
+        u[1] * n1[2] - u[2] * n1[1],
+        u[2] * n1[0] - u[0] * n1[2],
+        u[0] * n1[1] - u[1] * n1[0],
+    ];
+    let r = arc.r;
+    let mut g = Lcg(0x5eed_1234_9876_abcd);
+    for ts in [-0.75f32, -1.0e-6, 0.0, 1.0e-7, 0.125, 0.5, 0.87, 1.0 - 1.0e-7, 1.0, 1.0 + 1.0e-6, 1.9] {
+        for off in [0.0f32, 1.0e-6, 1.0e-3, 0.25, 1.0, 7.5] {
+            for sc in [1.0f32, -1.0] {
+                let base = [
+                    arc.c[0] + u[0] * (ts * r),
+                    arc.c[1] + u[1] * (ts * r),
+                    arc.c[2] + u[2] * (ts * r),
+                ];
+                out.push([
+                    base[0] + sc * off * n1[0] + 0.5 * sc * off * n2[0],
+                    base[1] + sc * off * n1[1] + 0.5 * sc * off * n2[1],
+                    base[2] + sc * off * n1[2] + 0.5 * sc * off * n2[2],
+                ]);
+            }
+        }
+    }
+    // Direkt auf der Voronoi-Grenze (Endpunkt-Ebene) und wenige ulp daneben.
+    for e in [0.0f32, 1.0] {
+        let base = [arc.c[0] + u[0] * (e * r), arc.c[1] + u[1] * (e * r), arc.c[2] + u[2] * (e * r)];
+        for d in [-3i64, -1, 0, 1, 3] {
+            for off in [1.0e-4f32, 1.0, 3.0] {
+                let sh = ulp_off(off, d);
+                out.push([
+                    base[0] + sh * n1[0],
+                    base[1] + sh * n1[1],
+                    base[2] + sh * n1[2],
+                ]);
+            }
+        }
+    }
+    for _ in 0..260 {
+        let t = g.sym() as f32 * 1.5;
+        let o = (g.sym() * 4.0) as f32;
+        let o2 = (g.sym() * 4.0) as f32;
+        out.push([
+            arc.c[0] + u[0] * (t * r) + o * n1[0] + o2 * n2[0],
+            arc.c[1] + u[1] * (t * r) + o * n1[1] + o2 * n2[1],
+            arc.c[2] + u[2] * (t * r) + o * n1[2] + o2 * n2[2],
+        ]);
+    }
+    out.retain(|p| p.iter().all(|v| v.is_finite()));
+    out
+}
+
+/// **§8aa-Pin 0: die f32-Konstanten sind exakt, und das Rundungsmodell stimmt.**
+///
+/// `u = 2⁻²⁴` und `2⁻¹⁵⁰` sind die Angelpunkte JEDER Zeile des Budgets. Stünde
+/// eine der beiden auch nur ein ulp daneben, wären alle vier Brücken-Posten
+/// stillschweigend falsch — und zwar in der Richtung, in der es niemand merkt.
+/// Dazu die Modell-Aussage selbst, an dichten Proben: `|fl32(z) − z| ≤ u|z| +
+/// 2⁻¹⁵⁰`, und — der Posten, der in Lemma 3 WEGFÄLLT — die Subtraktion zweier
+/// f32-Zahlen hat KEINEN Unterlauf-Anteil (Hauser).
+#[test]
+fn clamp_f32_constants_are_exact_384() {
+    assert_eq!(wit::F32_U, 2.0f64.powi(-24), "u ist nicht 2⁻²⁴");
+    assert_eq!(wit::F32_SUB, 2.0f64.powi(-150), "der Unterlauf-Posten ist nicht 2⁻¹⁵⁰");
+    assert_eq!(wit::F32_SUB, (f32::from_bits(1) as f64) * 0.5, "2⁻¹⁵⁰ ≠ halbe kleinste Subnormale");
+
+    let mut g = Lcg(0xa11ce);
+    let (mut checked, mut tight) = (0usize, 0usize);
+    for _ in 0..40_000 {
+        let e = (g.sym() * 40.0) as i32;
+        let z = g.sym() * 2.0f64.powi(e);
+        let f = z as f32;
+        if !f.is_finite() {
+            continue;
+        }
+        let err = (f as f64 - z).abs();
+        let bound = wit::F32_U * z.abs() + wit::F32_SUB;
+        assert!(err <= bound, "fl32-Modell verletzt: z={z:e}, Fehler {err:e} > {bound:e}");
+        checked += 1;
+        if err > 0.4 * bound {
+            tight += 1;
+        }
+    }
+    assert!(checked > 30_000 && tight > 1_000, "{checked} Proben, davon {tight} nahe an der Schranke");
+
+    // Hauser: `fl32(a − b)` für f32-Operanden ist im Subnormalbereich EXAKT.
+    let mut exact_sub = 0usize;
+    for i in 0..2000u32 {
+        let a = f32::from_bits(i + 1);
+        let b = f32::from_bits(i / 2 + 1);
+        let d = a - b;
+        assert_eq!(d as f64, a as f64 - b as f64, "subnormale f32-Subtraktion war nicht exakt");
+        exact_sub += 1;
+    }
+    assert!(exact_sub >= 2000);
+}
+
+/// **§8aa-Pin 1 (Lemma 2): der Produktions-Fusspunkt liegt höchstens `ε_q`
+/// neben einem WIRKLICHEN Naht-Punkt.**
+///
+/// Geprüft wird nicht, dass `arc_closest` den exakten Nearest-Punkt findet —
+/// das behauptet der Beweis nirgends. Geprüft wird die Aussage, die er
+/// braucht: der geklemmte Parameter liegt in `[0,1]`, der zugehörige REELLE
+/// Punkt `c + u·(t·r)` liegt in `Q`, und `q_f32` liegt höchstens `ε_q` daneben.
+/// Zusätzlich gegen eine dichte reelle Referenz der ganzen Segmentmenge.
+///
+/// **Gegenprobe**: `ε_q = 0` muss reissen — der Pin zählt deshalb die Fälle mit
+/// echt positivem Abstand und verlangt eine Mindestzahl.
+#[test]
+fn clamp_point_bridge_is_a_real_seam_point_384() {
+    let (mut probes, mut positive) = (0usize, 0usize);
+    let mut worst_ratio = 0.0f64;
+    for (name, arc) in clamp_adversarial_arcs() {
+        // Der `len == r`-Satz: `arc_closest` rechnet mit `r.max(1e-12)`.
+        assert_eq!(
+            arc.r.max(1.0e-12).to_bits(),
+            arc.r.to_bits(),
+            "{name}: `len` ist nicht bitweise `r` — Produktion und Beweis reden über \
+             verschiedene Segmente"
+        );
+        let eps_q = wit::point_bridge_mm(&arc)
+            .unwrap_or_else(|| panic!("{name}: keine Punkt-Brücke"));
+        assert!(eps_q > 0.0 && eps_q.is_finite(), "{name}: ε_q = {eps_q:e}");
+        for p in clamp_arc_probes(&arc) {
+            let (de, q, t) = crate::offset_channel::arc_closest(&arc, p);
+            if !de.is_finite() || !q.iter().all(|v| v.is_finite()) {
+                continue;
+            }
+            assert!((0.0..=1.0).contains(&t), "{name}: t = {t} ausserhalb [0,1]");
+            let qf = [q[0] as f64, q[1] as f64, q[2] as f64];
+            // (a) gegen den REELLEN Punkt zu DEMSELBEN t.
+            let d_same = dist_f64_up(qf, seam_point_f64(&arc, t as f64));
+            assert!(
+                d_same <= eps_q,
+                "{name}: |q_f32 − q(t)| = {d_same:e} > ε_q = {eps_q:e} bei t = {t}"
+            );
+            // (b) gegen die EXAKTE reelle Segmentmenge (geschlossene Form in
+            // f64, nicht ein Raster — ein Raster misst seine eigene Maschung).
+            let best = dist_f64_up(qf, seam_point_f64(&arc, seam_foot_f64(&arc, qf)));
+            assert!(best <= eps_q, "{name}: Abstand zur Segmentmenge {best:e} > ε_q = {eps_q:e}");
+            if d_same > 0.0 {
+                positive += 1;
+                worst_ratio = worst_ratio.max(d_same / eps_q);
+            }
+            probes += 1;
+        }
+    }
+    assert!(probes > 2_000, "nur {probes} Proben — der Pin misst zu wenig");
+    assert!(
+        positive > 200,
+        "nur {positive} Proben mit echt positivem |q_f32 − q(t)| — mit ε_q = 0 würde der Pin \
+         nicht reissen, also trägt er nichts"
+    );
+    println!(
+        "§8aa Lemma 2: {probes} Proben, {positive} mit positivem Abstand, \
+         schärfste Ausnutzung {:.1} % von ε_q",
+        100.0 * worst_ratio
+    );
+}
+
+/// **§8aa-Pin 2 (Lemma 3): die f32-Norm unterschätzt `|x − q_f32|` höchstens
+/// um `ε_d`.**
+///
+/// Die Proben sitzen bewusst AUF der Segment-Voronoi-Grenze und wenige ulp
+/// daneben: dort wechselt der Produktionszweig, und ein Beweis, der den
+/// Wechsel nicht aushält, ist keiner.
+///
+/// **Gegenprobe**: `ε_d = 0` muss reissen — gezählt werden die Fälle, in denen
+/// die f32-Norm den reellen Abstand ECHT unterschätzt.
+#[test]
+fn clamp_norm_bridge_never_underestimates_384() {
+    let (mut probes, mut under) = (0usize, 0usize);
+    let mut worst_ratio = 0.0f64;
+    for (name, arc) in clamp_adversarial_arcs() {
+        for p in clamp_arc_probes(&arc) {
+            let (de, q, _t) = crate::offset_channel::arc_closest(&arc, p);
+            if !de.is_finite() || !q.iter().all(|v| v.is_finite()) || de <= 0.0 {
+                continue;
+            }
+            // `channel_limit` prüft `de < trust`; die Brücke darf also `trust`
+            // als obere Schranke von `de` benutzen. Hier: das kleinste f32
+            // oberhalb von `de`.
+            let trust = ulp_off(de, 1);
+            let eps_d = wit::norm_bridge_mm(trust).unwrap();
+            let pf = [p[0] as f64, p[1] as f64, p[2] as f64];
+            let qf = [q[0] as f64, q[1] as f64, q[2] as f64];
+            let hi = dist_f64_up(pf, qf);
+            let lo = dist_f64_down(pf, qf);
+            assert!(
+                hi <= de as f64 + eps_d,
+                "{name}: |x − q_f32| = {hi:e} > de + ε_d = {:e}",
+                de as f64 + eps_d
+            );
+            if lo > de as f64 {
+                under += 1;
+                worst_ratio = worst_ratio.max((lo - de as f64) / eps_d);
+            }
+            probes += 1;
+        }
+    }
+    assert!(probes > 2_500, "nur {probes} Proben");
+    assert!(
+        under > 50,
+        "nur {under} Proben, in denen die f32-Norm ECHT unterschätzt — mit ε_d = 0 würde der \
+         Pin nicht reissen"
+    );
+    println!(
+        "§8aa Lemma 3: {probes} Proben, {under} echte Unterschätzungen, \
+         schärfste Ausnutzung {:.1} % von ε_d",
+        100.0 * worst_ratio
+    );
+}
+
+/// **§8aa-Pin 3 (Lemma 4): die Dreiecksungleichung, gegen das exakte Orakel.**
+///
+/// `dist(x,∁Ω) ≤ |x−q| + dist(q,∁Ω) ≤ (de + ε_d + ε_q) + η_geo`. Geprüft an
+/// den echten Fixturen mit der ANALYTISCHEN Distanz zum Komplement — nicht mit
+/// einem Feldwert, denn ein Feldwert ist genau das, was hier bewiesen werden
+/// soll.
+///
+/// Der Pin misst zusätzlich, wie oft die NAIVE §8j-Annahme
+/// (`dist(x,∁Ω) ≤ de`) an den Proben verletzt ist. Das ist die einzige
+/// ehrliche Antwort auf „wozu überhaupt η": entweder es gibt solche Punkte —
+/// dann ist die Klemme nachweisbar nötig —, oder es gibt sie an DIESEN Proben
+/// nicht, und dann steht das genauso da.
+#[test]
+fn clamp_total_bridge_is_the_triangle_inequality_384() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    let mut g = Lcg(0x384_5b00_0004);
+    let (mut probes, mut inside) = (0usize, 0usize);
+    let (mut naive_viol, mut worst_naive) = (0usize, f64::NEG_INFINITY);
+    let mut worst_where = String::new();
+    let mut tightest = f64::INFINITY;
+    let mut fixtures = 0usize;
+    for (name, field, exact, _lo, _hi, _n) in cert_matrix(delta) {
+        let mut here = 0usize;
+        for (om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                let mut c = ch.clone();
+                if wit::certify_channel(om, &mut c, cfg).0 != wit::ClampStatus::Proved {
+                    continue;
+                }
+                let bridge = c.eta_clamp().unwrap().bridge_total_mm();
+                for ai in 0..c.arcs.len() {
+                    for _ in 0..40 {
+                        let arc = &c.arcs[ai];
+                        let s = g.next_f64() as f32;
+                        let rad = (g.next_f64() * c.trust as f64 * 0.95) as f32;
+                        let d = [g.sym(), g.sym(), g.sym()];
+                        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                        if !(n > 1.0e-9) {
+                            continue;
+                        }
+                        let p = [
+                            arc.c[0] + arc.u[0] * (s * arc.r) + (d[0] / n) as f32 * rad,
+                            arc.c[1] + arc.u[1] * (s * arc.r) + (d[1] / n) as f32 * rad,
+                            arc.c[2] + arc.u[2] * (s * arc.r) + (d[2] / n) as f32 * rad,
+                        ];
+                        let Some((de, _, _, _)) = oc::channel_nearest(p, &c) else { continue };
+                        if !(de.is_finite() && de < c.trust) {
+                            continue;
+                        }
+                        probes += 1;
+                        let dist = exact([p[0] as f64, p[1] as f64, p[2] as f64]);
+                        if !(dist > 0.0) {
+                            continue; // ausserhalb Ω — dort ist nichts zu zeigen
+                        }
+                        inside += 1;
+                        here += 1;
+                        assert!(
+                            dist <= de as f64 + bridge,
+                            "{name}: dist(x,∁Ω) = {dist:e} > de + Δ = {:e} bei x = {p:?}",
+                            de as f64 + bridge
+                        );
+                        tightest = tightest.min(de as f64 + bridge - dist);
+                        if dist > de as f64 {
+                            naive_viol += 1;
+                            if dist - de as f64 > worst_naive {
+                                worst_naive = dist - de as f64;
+                                worst_where = name.clone();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if here > 0 {
+            fixtures += 1;
+        }
+    }
+    assert!(fixtures >= 8, "nur {fixtures} Fixturen mit Klemme geprüft");
+    assert!(inside > 8_000, "nur {inside} Proben INNERHALB Ω ({probes} gesamt)");
+    println!(
+        "§8aa Lemma 4: {inside}/{probes} Proben in Ω über {fixtures} Fixturen; \
+         engste Reserve {tightest:.3e} mm; naive §8j-Annahme (dist ≤ de) an {naive_viol} \
+         Proben verletzt, schlimmstenfalls um {:.3e} mm ({worst_where})",
+        if naive_viol > 0 { worst_naive } else { 0.0 }
+    );
+    // Der Befund, der P5b-1 überhaupt begründet: die naive §8j-Annahme ist an
+    // diesen Fixturen NICHT bloss unbewiesen, sie ist FALSCH. Bricht dieser
+    // Zähler auf null ein, ist entweder die Geometrie eine andere geworden
+    // oder die Probe misst die Naht nicht mehr — beides gehört gesehen.
+    assert!(
+        naive_viol > 500,
+        "nur {naive_viol} Proben mit dist > de — dann ist die Notwendigkeit der η-Klemme an \
+         dieser Matrix nicht mehr belegt und §8aa muss das sagen"
+    );
+    assert!(
+        worst_naive < 2.3e-3,
+        "die naive Annahme ist um {worst_naive:e} mm verletzt — mehr als das grösste η_geo \
+         der Matrix; dann deckt die Klemme den Befund nicht mehr ab"
+    );
+}
+
+/// Die adversariale `de`-Familie für Lemma 5: Bit-Fächer um jede interessante
+/// Grössenordnung plus ein deterministischer Streu-Anteil.
+fn clamp_de_family(trust: f32) -> Vec<f32> {
+    let mut out: Vec<f32> = Vec::with_capacity(140_000);
+    let mut push = |v: f32| {
+        if v.is_finite() && v >= 0.0 && v < trust {
+            out.push(v);
+        }
+    };
+    for base in [
+        1.0e-6f32,
+        1.0e-4,
+        1.0e-2,
+        0.125,
+        0.5,
+        0.999,
+        1.0,
+        1.5,
+        2.0,
+        2.5,
+        3.0,
+        trust * 0.5,
+        trust * 0.9,
+        trust * 0.999,
+    ] {
+        for n in -2500i64..=2500 {
+            push(ulp_off(base, n));
+        }
+    }
+    let mut g = Lcg(0x0f32_0f32_0f32);
+    for _ in 0..30_000 {
+        push((g.next_f64() * trust as f64) as f32);
+    }
+    out
+}
+
+/// Die Reserve EINES f32-Falls: wie weit die eingefrorene Kette unter der
+/// bewiesenen Untergrenze `δ − de − Δ` bleibt. `< 0` heisst: die Klemme läge
+/// ÜBER der gültigen Feld-Untergrenze und könnte Material entfernen.
+fn clamp_round_reserve(delta: f32, de: f32, h: f32, a: f32, bridge: f64) -> f64 {
+    let nd = crate::offset_interval::next_down;
+    let lim = wit::frozen_limit_tail(delta, de, h, a) as f64;
+    let lb = nd(nd(delta as f64 - de as f64) - bridge);
+    lb - lim
+}
+
+/// Das Minimum der Reserve über die ganze Familie, für einen gegebenen
+/// Addenden.
+fn clamp_family_min_reserve(a: f32, cases: &[(f32, f32, f32, f64)]) -> f64 {
+    let mut m = f64::INFINITY;
+    for &(delta, de, h, bridge) in cases {
+        m = m.min(clamp_round_reserve(delta, de, h, a, bridge));
+    }
+    m
+}
+
+/// **§8aa-Pin 4 (Lemma 5): der kodierte Addend absorbiert BEIDE Rundungen der
+/// eingefrorenen Feldkette.**
+///
+/// Ein Fixture-Pin genügt hier nicht (§8t). Der Pin baut eine gezielte
+/// f32-Familie — Bit-Fächer von ±2500 ulp um jede relevante Grössenordnung
+/// von `de`, dazu 30.000 Streuwerte, über drei `δ` — und fährt sie durch
+/// [`wit::frozen_limit_tail`], also durch **genau die drei f32-Ops**, die
+/// P5b-1 ins Feld setzt.
+///
+/// **Zwei Gegenproben, und die zweite ist die eigentliche:**
+///
+/// 1. `field_round := 0` (Addend nur aus `η_geo + ε_q + ε_d`) MUSS reissen.
+/// 2. Der über der Familie **minimale** Addend `A*` wird per Binärsuche über
+///    dem f32-Gitter bestimmt (die Kette ist monoton in `A`, s. Pin 6) —
+///    und `A* − 1 ulp` MUSS reissen.
+///
+/// **Warum nicht `A − 1 ulp`** (die wörtliche Forderung des Reviews): weil
+/// das nachweislich NICHT reisst, und der Grund ist kein Versehen. `A` kommt
+/// aus einer Worst-Case-Komposition (jede Einzelop mit vollem `u·|z|`), die
+/// **kein einzelner** f32-Fall gleichzeitig ausreizen kann — die Addition
+/// müsste ihren halben ulp am unteren Binadenrand verlieren und die
+/// Subtraktion ihren am oberen gewinnen. Der gemessene Abstand `A − A*` ist
+/// deshalb rund **vier Zehnerpotenzen** grösser als ein ulp von `A`; ein
+/// einzelnes ulp kann diese Lücke nicht schliessen, und ein Pin, der es
+/// behauptete, wäre grün ohne Aussage. Gepinnt wird stattdessen der
+/// MECHANISMUS: an `A*` ist die Familie ulp-scharf, und das Budget wird als
+/// Faktor über `A*` beziffert statt behauptet.
+#[test]
+fn clamp_rounding_absorbs_both_f32_ops_384() {
+    let trust = 3.91f32;
+    // Ein realistisches Δ aus der Matrix (Ecken-Schale) plus zwei Extreme.
+    for &bridge in &[1.0e-4f64, 2.257e-3, 1.0e-6] {
+        let mut cases: Vec<(f32, f32, f32, f64)> = Vec::new();
+        for &delta in &[2.0f32, 0.25, 12.5] {
+            for de in clamp_de_family(trust) {
+                // η-Zweig: `h` neutral (der Sentinel-Wert der Produktion) und
+                // ein grosser endlicher Wert.
+                for &h in &[1.0e30f32, delta + trust * 4.0] {
+                    if wit::frozen_limit_tail(delta, de, h, 0.0) != delta - de {
+                        continue; // h-Zweig — nicht Gegenstand von Lemma 5
+                    }
+                    cases.push((delta, de, h, bridge));
+                }
+            }
+        }
+        assert!(cases.len() > 200_000, "nur {} Fälle in der Familie", cases.len());
+
+        let (_fr, a) = wit::round_budget(2.0, trust, bridge).unwrap();
+        // Der Addend hängt an δ; für die Familie über drei δ nehmen wir das
+        // Maximum — die Produktion hat je Kanal genau EIN δ.
+        let a = [2.0f32, 0.25, 12.5]
+            .iter()
+            .map(|&d| wit::round_budget(d, trust, bridge).unwrap().1)
+            .fold(a, f32::max);
+
+        let m = clamp_family_min_reserve(a, &cases);
+        assert!(m >= 0.0, "Δ = {bridge:e}: die Familie reisst schon mit dem BEWIESENEN Addenden (Reserve {m:e})");
+
+        // Gegenprobe 1: ohne Rundungsbudget.
+        let a0 = wit::f32_ceil(bridge).unwrap();
+        let m0 = clamp_family_min_reserve(a0, &cases);
+        assert!(
+            m0 < 0.0,
+            "Δ = {bridge:e}: ohne Rundungsbudget (A = {a0:e}) bleibt die Familie still \
+             (Reserve {m0:e}) — dann ist das Budget unbegründet"
+        );
+
+        // Gegenprobe 2: der über der Familie minimale Addend, ulp-scharf.
+        let (mut lo, mut hi) = (0u32, a.to_bits());
+        assert!(clamp_family_min_reserve(f32::from_bits(lo), &cases) < 0.0);
+        while lo + 1 < hi {
+            let mid = lo + (hi - lo) / 2;
+            if clamp_family_min_reserve(f32::from_bits(mid), &cases) >= 0.0 {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        let a_star = f32::from_bits(hi);
+        assert!(clamp_family_min_reserve(a_star, &cases) >= 0.0);
+        let shaved = f32::from_bits(hi - 1);
+        let ms = clamp_family_min_reserve(shaved, &cases);
+        assert!(
+            ms < 0.0,
+            "Δ = {bridge:e}: A* − 1 ulp ({shaved:e}) reisst NICHT (Reserve {ms:e}) — dann ist \
+             die Familie nicht ulp-scharf und die Gegenprobe wertlos"
+        );
+        let ulp_a = (ulp_off(a, 1) - a) as f64;
+        println!(
+            "§8aa Lemma 5: Δ = {bridge:.3e} | A = {a:.6e} | A* = {a_star:.6e} | \
+             A/A* = {:.6} | A − A* = {:.3e} = {:.0} ulp(A) | Reserve(A) = {m:.3e}",
+            a as f64 / a_star as f64,
+            (a - a_star) as f64,
+            (a - a_star) as f64 / ulp_a
+        );
+    }
+}
+
+/// **§8aa-Pin 5 (Lemma 6): eine Klemme lässt sich nicht auf einen anderen
+/// Kanal übertragen.**
+///
+/// Die Einbettung allein reicht nicht — `OffsetChannel` ist `Clone`, und ein
+/// `pub(crate)`-Feld ist im Kern beschreibbar. Die zweite Hälfte der Bindung
+/// ist die Identitätsprobe beim LESEN: [`OffsetChannel::eta_addend`] rechnet
+/// den Fingerabdruck neu.
+///
+/// Geprüft: verpflanzte Klemme ⇒ `None`; nachträglich veränderte Bogen-/Gate-
+/// Daten ⇒ `None`; unveränderte Kopie ⇒ derselbe Wert. Und, als eigener
+/// Befund: derselbe Kanal gegen ZWEI verschiedene `Ω` zertifiziert liefert
+/// verschiedene `omega_fingerprint` — die Provenienz ist unterscheidbar, auch
+/// wenn sie zur Auswertungszeit niemand mehr prüfen kann (s. §8aa, R2).
+#[test]
+fn clamp_is_bound_to_its_channel_384() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    let mut proved: Vec<(OffsetChannel, u64)> = Vec::new();
+    let fields: Vec<BoundedCsg> =
+        cert_matrix(delta).into_iter().map(|(_n, f, _e, _l, _h, _c)| f).collect();
+    for field in &fields {
+        for (om, chans) in omega_and_channels(field) {
+            for ch in chans {
+                let mut c = ch.clone();
+                if wit::certify_channel(om, &mut c, cfg).0 == wit::ClampStatus::Proved {
+                    let fp = c.eta_clamp().unwrap().omega_fingerprint();
+                    proved.push((c, fp));
+                }
+                if proved.len() >= 40 {
+                    break;
+                }
+            }
+        }
+        if proved.len() >= 40 {
+            break;
+        }
+    }
+    assert!(proved.len() >= 20, "nur {} zertifizierte Kanäle", proved.len());
+
+    // Unveränderte Kopie: derselbe Wert.
+    let (a, _) = &proved[0];
+    let copy = a.clone();
+    assert_eq!(
+        copy.eta_addend().map(f32::to_bits),
+        a.eta_addend().map(f32::to_bits),
+        "eine unveränderte Kopie hat ihre Klemme verloren"
+    );
+
+    // Verpflanzung auf einen ANDEREN Kanal: verweigert.
+    let mut transplanted = 0usize;
+    for i in 1..proved.len() {
+        if wit::channel_identity(&proved[i].0) == wit::channel_identity(&proved[0].0) {
+            continue; // bit-identische Kanäle sind derselbe Kanal
+        }
+        let mut b = proved[i].0.clone();
+        b.eta_clamp = proved[0].0.eta_clamp;
+        assert!(
+            b.eta_addend().is_none(),
+            "eine fremde Klemme wurde akzeptiert — die Bindung trägt nicht"
+        );
+        transplanted += 1;
+    }
+    assert!(transplanted >= 10, "nur {transplanted} echte Verpflanzungen geprüft");
+
+    // Nachträgliche Änderung am eigenen Kanal: verweigert.
+    let mut fields_mutated = 0usize;
+    for mutate in 0..7usize {
+        let mut m = a.clone();
+        match mutate {
+            0 => m.arcs[0].c[1] = ulp_off(m.arcs[0].c[1].abs().max(1.0), 1),
+            1 => m.arcs[0].r = ulp_off(m.arcs[0].r, 1),
+            2 => m.arcs[0].u[0] = ulp_off(m.arcs[0].u[0].abs().max(1.0), 3),
+            3 => m.delta = ulp_off(m.delta, 1),
+            4 => m.trust = ulp_off(m.trust, 1),
+            5 => m.face_planes[0][3] = 1.25,
+            _ => m.arcs[0].m1s[2] = 0.5,
+        }
+        assert!(
+            m.eta_addend().is_none(),
+            "Mutation {mutate} blieb unbemerkt — der Fingerabdruck deckt nicht alle Daten ab"
+        );
+        fields_mutated += 1;
+    }
+    assert_eq!(fields_mutated, 7);
+
+    // Ω-Provenienz ist unterscheidbar.
+    let mut om_fps: Vec<u64> = Vec::new();
+    for field in fields.iter().take(4) {
+        for (om, _c) in omega_and_channels(field) {
+            om_fps.push(wit::omega_fingerprint(om));
+        }
+    }
+    om_fps.sort_unstable();
+    let n = om_fps.len();
+    om_fps.dedup();
+    assert!(
+        om_fps.len() > 1 && om_fps.len() == n,
+        "die Ω-Fingerabdrücke sind nicht unterscheidbar ({} von {n})",
+        om_fps.len()
+    );
+}
+
+/// **§8aa-Pin 6 (Lemma 7): kein Cover, kein Brückenbeweis, keine Klemme.**
+///
+/// Alle fünf Ausgänge einzeln, jeder mit `eta_addend() == None`. Der wichtige
+/// Punkt ist die TRENNUNG: ein gekrümmter Bogen ist ein struktureller
+/// Ausschluss (P5c), kein gescheiterter Zeuge — würden beide als `no_cover`
+/// gezählt, verschwände die Stufen-Nabe aus dem Bericht.
+#[test]
+fn clamp_is_fail_closed_384() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    let (_n, field, _e, _l, _h, _c) = cert_matrix(delta)
+        .into_iter()
+        .find(|(n, ..)| n.starts_with("Ecken-Schale t/δ=2.5"))
+        .unwrap();
+    let (om, chans) = {
+        let v = omega_and_channels(&field);
+        let (om, chans) = v.into_iter().next().unwrap();
+        (om as *const BoundedCsg, chans.clone())
+    };
+    let om: &BoundedCsg = unsafe { &*om };
+    let base = chans[0].clone();
+    let mut ok = base.clone();
+    assert_eq!(wit::certify_channel(om, &mut ok, cfg).0, wit::ClampStatus::Proved);
+    assert!(ok.eta_addend().is_some());
+
+    // (a) gekrümmter Bogen ⇒ Curved, nicht NoCover.
+    let mut curved = base.clone();
+    curved.arcs[0].sweep = 1.0;
+    assert_eq!(wit::certify_channel(om, &mut curved, cfg).0, wit::ClampStatus::Curved);
+    assert!(curved.eta_addend().is_none());
+
+    // (b) leerer Kanal.
+    let mut empty = base.clone();
+    empty.arcs.clear();
+    assert_eq!(wit::certify_channel(om, &mut empty, cfg).0, wit::ClampStatus::NoCover);
+    assert!(empty.eta_addend().is_none());
+
+    // (c) ungültige Konfiguration.
+    for bad in [
+        wit::WitnessCfg { min_offset: 0.0, ..cfg },
+        wit::WitnessCfg { min_offset: -1.0e-4, ..cfg },
+        wit::WitnessCfg { steps: 0, ..cfg },
+        wit::WitnessCfg { pieces_per_arc: 0, ..cfg },
+        wit::WitnessCfg { margin: -1.0, ..cfg },
+        wit::WitnessCfg { max_offset: f64::NAN, ..cfg },
+    ] {
+        let mut c = base.clone();
+        assert_eq!(wit::certify_channel(om, &mut c, bad).0, wit::ClampStatus::BadConfig);
+        assert!(c.eta_addend().is_none());
+    }
+
+    // (d) entarteter Bogen (`r` unter der `arc_usable`-Schwelle).
+    let mut tiny = base.clone();
+    tiny.arcs[0].r = 5.0e-10;
+    assert_eq!(wit::certify_channel(om, &mut tiny, cfg).0, wit::ClampStatus::NoCover);
+    assert!(tiny.eta_addend().is_none());
+
+    // (e) `Ω` mit einem nicht unterstützten Blatt: der Rippen-Kamm 4×1.5/0.8.
+    let (_n2, field2, _e2, _l2, _h2, _c2) = cert_matrix(delta)
+        .into_iter()
+        .find(|(n, ..)| n.starts_with("Rippen-Kamm 4×1.5"))
+        .unwrap();
+    let mut unsupported = 0usize;
+    for (om2, chans2) in omega_and_channels(&field2) {
+        for ch in chans2 {
+            let mut c = ch.clone();
+            assert_eq!(wit::certify_channel(om2, &mut c, cfg).0, wit::ClampStatus::NoCover);
+            assert!(c.eta_addend().is_none());
+            unsupported += 1;
+        }
+    }
+    assert!(unsupported >= 10, "nur {unsupported} Kanäle über nicht unterstütztem Ω");
+
+    // (f) Ω = Empty ist der Gegen-Extremfall: ALLES ist aussen, der Zeuge
+    //     findet sofort einen — die Klemme entsteht, und sie ist korrekt.
+    let mut over = base.clone();
+    assert_eq!(
+        wit::certify_channel(&BoundedCsg::Empty, &mut over, cfg).0,
+        wit::ClampStatus::Proved
+    );
+
+    // (g) Ablationen: eine geschwächte Brücke ändert den Addenden — sonst
+    //     wäre der jeweilige Posten wirkungslos.
+    let full = ok.eta_addend().unwrap();
+    for knobs in [
+        wit::ClampKnobs { drop_q_bridge: true, ..Default::default() },
+        wit::ClampKnobs { drop_norm_bridge: true, ..Default::default() },
+        wit::ClampKnobs { drop_field_round: true, ..Default::default() },
+    ] {
+        let mut c = base.clone();
+        assert_eq!(
+            wit::certify_channel_with(om, &mut c, cfg, knobs).0,
+            wit::ClampStatus::Proved
+        );
+        let weak = c.eta_addend().unwrap();
+        assert!(
+            weak < full,
+            "die Ablation {knobs:?} ändert den Addenden nicht ({weak:e} statt {full:e})"
+        );
+    }
+}
+
+/// **§8aa-Pin 7: die eingefrorene Form ist bei `A = 0` BITWEISE das heutige
+/// Feld — und in `A` monoton.**
+///
+/// Das ist die Feldneutralitäts-Zusage, die P5b-1 einlösen muss: ein Kanal
+/// ohne Klemme darf sich nicht bewegen. Und die Monotonie ist die Voraussetzung
+/// der Binärsuche in Pin 4 (und, später, des Monotonie-Pins von P5b-1).
+#[test]
+fn clamp_frozen_form_is_neutral_at_zero_and_monotone_384() {
+    let delta = 2.0f32;
+    let mut g = Lcg(0x7e57_0007);
+    let (mut probes, mut strict) = (0usize, 0usize);
+    for (name, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        for (_om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                for _ in 0..200 {
+                    let p = [
+                        (ch.bound_c[0] as f64 + g.sym() * (ch.bound_r + ch.trust) as f64) as f32,
+                        (ch.bound_c[1] as f64 + g.sym() * (ch.bound_r + ch.trust) as f64) as f32,
+                        (ch.bound_c[2] as f64 + g.sym() * (ch.bound_r + ch.trust) as f64) as f32,
+                    ];
+                    let today = oc::channel_limit(p, ch);
+                    let frozen = wit::frozen_channel_limit(p, ch, 0.0);
+                    assert_eq!(
+                        today.to_bits(),
+                        frozen.to_bits(),
+                        "{name}: die eingefrorene Form ist bei A = 0 NICHT das heutige Feld \
+                         ({today} gegen {frozen}) bei {p:?}"
+                    );
+                    let mut prev = frozen;
+                    for a in [1.0e-6f32, 1.0e-4, 1.0e-3, 1.0e-2, 0.5] {
+                        let v = wit::frozen_channel_limit(p, ch, a);
+                        assert!(
+                            v <= prev,
+                            "{name}: die Klemme ist in A nicht monoton ({v} > {prev} bei A = {a})"
+                        );
+                        if v < prev {
+                            strict += 1;
+                        }
+                        prev = v;
+                    }
+                    probes += 1;
+                }
+            }
+        }
+    }
+    assert!(probes > 10_000, "nur {probes} Proben");
+    assert!(
+        strict > 1_000,
+        "nur {strict} strikte Absenkungen — dann ist die Klemme an diesen Proben ein No-op \
+         und der Monotonie-Pin misst nichts"
+    );
+    println!("§8aa Pin 7: {probes} Proben, {strict} strikte Absenkungen");
+}
+
+/// **§8aa-Pin 8: `channel_limit` konsumiert ausschliesslich `de`.**
+///
+/// Der Satz, auf dem die ε_D-Freiheit des ganzen Budgets steht: die
+/// Diamant-Zuordnung und die nlerp-Interpolation der Gate-Vektoren
+/// beeinflussen den Grenzwert-Beitrag NICHT. Er wird hier nicht zitiert,
+/// sondern am Code gemessen — alle vier Dual-Vektoren und beide
+/// Bogen-Parameter (`e`, `d_e`) werden wild verändert, und das Feld muss
+/// **bitweise** stehen bleiben. Zum Gegenbeweis der Wirksamkeit: dieselbe
+/// Mutation MUSS `channel_nearest`s `m̂`-Ausgaben verändern.
+#[test]
+fn clamp_limit_consumes_only_de_384() {
+    let delta = 2.0f32;
+    let mut g = Lcg(0x00de_00de);
+    let (mut probes, mut m_differs, mut chans_seen) = (0usize, 0usize, 0usize);
+    for (name, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        for (_om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                if ch.arcs.iter().any(|a| !(a.sweep < 0.0)) {
+                    continue; // gerade Kanäle — Bögen sind P5c
+                }
+                let mut m = ch.clone();
+                for a in &mut m.arcs {
+                    a.m1s = [0.301_1, -0.903_3, 0.307_7];
+                    a.m1e = [-0.717_3, 0.104_9, 0.688_7];
+                    a.m2s = [0.911_3, 0.207_1, -0.355_9];
+                    a.m2e = [0.051_7, -0.991_3, 0.121_3];
+                    a.d_e = 1.703_1;
+                    a.e = [-0.317_9, 0.948_1];
+                }
+                chans_seen += 1;
+                for _ in 0..150 {
+                    let p = [
+                        (ch.bound_c[0] as f64 + g.sym() * (ch.bound_r + ch.trust) as f64) as f32,
+                        (ch.bound_c[1] as f64 + g.sym() * (ch.bound_r + ch.trust) as f64) as f32,
+                        (ch.bound_c[2] as f64 + g.sym() * (ch.bound_r + ch.trust) as f64) as f32,
+                    ];
+                    assert_eq!(
+                        oc::channel_limit(p, ch).to_bits(),
+                        oc::channel_limit(p, &m).to_bits(),
+                        "{name}: channel_limit hat sich durch eine reine m̂/D-Mutation bewegt — \
+                         dann trägt ε_D doch ins P5b-Budget ein"
+                    );
+                    if let (Some(a), Some(b)) =
+                        (oc::channel_nearest(p, ch), oc::channel_nearest(p, &m))
+                    {
+                        assert_eq!(a.0.to_bits(), b.0.to_bits(), "{name}: de hat sich bewegt");
+                        if a.2 != b.2 || a.3 != b.3 {
+                            m_differs += 1;
+                        }
+                    }
+                    probes += 1;
+                }
+            }
+        }
+    }
+    assert!(chans_seen > 100 && probes > 15_000, "{chans_seen} Kanäle / {probes} Proben");
+    assert!(
+        m_differs > 5_000,
+        "nur {m_differs} Proben, an denen sich m̂ überhaupt bewegt — dann ist die Mutation \
+         wirkungslos und der Pin leer-grün"
+    );
+    println!("§8aa Pin 8: {probes} Proben über {chans_seen} gerade Kanäle, m̂ an {m_differs} verschieden");
+}
+
+/// **§8aa-Pin 9: der Shadow-Bericht — die Zahlen im Doc sind gemessen.**
+///
+/// P5b-0 hat keinen Konsumenten; sein einziges Ergebnis IST diese Zählung.
+/// Steht sie nicht im Pin, ist die Tabelle in §8aa eine Behauptung.
+#[test]
+fn clamp_shadow_report_matches_the_matrix_384() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    let mut total = wit::ClampTally::default();
+    let mut worst = [0.0f64; 4];
+    let mut a_max = 0.0f32;
+    for (name, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        let (t, chans) = clamp_scan(&field, cfg);
+        // Jeder Kanal landet in genau EINEM Topf.
+        assert_eq!(t.total(), chans.len());
+        assert_eq!(t.bad_config, 0, "{name}: BadConfig mit der Default-Konfiguration");
+        assert_eq!(t.no_bridge, 0, "{name}: ein Cover ohne Brücke — das wäre neu");
+        for (c, st) in &chans {
+            assert_eq!(
+                c.eta_clamp().is_some(),
+                *st == wit::ClampStatus::Proved,
+                "{name}: Status und Einbettung sind auseinander"
+            );
+            if *st != wit::ClampStatus::Proved {
+                continue;
+            }
+            let k = c.eta_clamp().unwrap();
+            assert!(c.eta_addend().unwrap() as f64 >= k.bridge_total_mm());
+            worst[0] = worst[0].max(k.geometric_mm());
+            worst[1] = worst[1].max(k.q_bridge_mm());
+            worst[2] = worst[2].max(k.norm_bridge_mm());
+            worst[3] = worst[3].max(k.field_round_mm());
+            a_max = a_max.max(c.eta_addend().unwrap());
+        }
+        total.proved_eta += t.proved_eta;
+        total.curved += t.curved;
+        total.no_cover += t.no_cover;
+        total.no_bridge += t.no_bridge;
+        total.bad_config += t.bad_config;
+    }
+    println!(
+        "§8aa Shadow: {} Kanäle — {} proved / {} curved / {} no_cover / {} no_bridge; \
+         η_geo ≤ {:.3e}, ε_q ≤ {:.3e}, ε_d ≤ {:.3e}, field_round ≤ {:.3e}, A ≤ {:.3e} mm",
+        total.total(),
+        total.proved_eta,
+        total.curved,
+        total.no_cover,
+        total.no_bridge,
+        worst[0],
+        worst[1],
+        worst[2],
+        worst[3],
+        a_max
+    );
+    assert_eq!(
+        (total.proved_eta, total.curved, total.no_cover, total.no_bridge, total.bad_config),
+        (217, 2, 19, 0, 0),
+        "der Shadow-Bericht hat sich bewegt — §8aa nachziehen, nicht den Pin"
+    );
+    assert!(worst[0] <= 2.3e-3 && worst[1] <= 2.2e-5 && worst[2] <= 1.1e-6 && worst[3] <= 7.3e-7);
+    assert!(a_max <= 2.27e-3, "A_max = {a_max:e}");
 }

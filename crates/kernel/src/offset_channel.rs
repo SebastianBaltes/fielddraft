@@ -234,6 +234,43 @@ pub struct OffsetChannel {
     /// Kanal (`branch`), gemessen/gesnappt wird an den Eltern. Reine
     /// Metadaten — feldneutral, kein Opcode sieht sie.
     pub parents: [u64; 2],
+    /// #384 §8aa / P5b-0 — **die η-Klemme dieses Kanals, falls sie bewiesen
+    /// ist.** Gesetzt wird sie AUSSCHLIESSLICH von
+    /// [`crate::offset_witness::certify_channel`], und zwar erst, wenn
+    /// Channel-Cover, geometrisches `η`, f32-Punkt-/Norm-Brücke und das
+    /// Rundungslemma der eingefrorenen Feldkette GEMEINSAM vorliegen.
+    ///
+    /// **Das ist die Eigentumsgrenze**: der Beweiswert wohnt in dem Kanal,
+    /// über den er spricht. Ein `f32` in einer Seitentabelle liesse sich
+    /// versehentlich auf einen anderen Kanal anwenden; ein Feld hier nicht —
+    /// und wer es doch umkopiert, fällt über die Identitätsprobe in
+    /// [`Self::eta_addend`].
+    ///
+    /// **Feldneutral in P5b-0**: kein Evaluator, kein Opcode, kein Spiegel
+    /// liest dieses Feld. `#[serde(skip)]`, damit auch keine Diagnose-JSON
+    /// sich bewegt. Der Verbrauch ist P5b-1.
+    #[serde(skip)]
+    pub(crate) eta_clamp: Option<crate::offset_witness::EtaClamp>,
+}
+
+impl OffsetChannel {
+    /// #384 §8aa — **der einzige Weg an die Zahl.**
+    ///
+    /// Liefert den bewiesenen `f32`-Addenden `A` der eingefrorenen Feldkette
+    /// `fl(δ − min(fl(de + A), h))`, aber nur, wenn die eingebettete Klemme
+    /// **zu genau diesem Kanal** gehört: die Identitätsprobe rechnet den
+    /// Fingerabdruck über alle Bogen- und Gate-Daten neu und vergleicht ihn
+    /// mit dem beim Beweis gespeicherten. Ein umkopierter oder nachträglich
+    /// veränderter Kanal liefert `None` — fail-closed.
+    pub fn eta_addend(&self) -> Option<f32> {
+        self.eta_clamp.as_ref()?.addend_for(self)
+    }
+
+    /// Die Klemme selbst (Diagnose/Bericht). Ihre Felder sind privat; die
+    /// Zahl gibt es nur über [`Self::eta_addend`].
+    pub fn eta_clamp(&self) -> Option<&crate::offset_witness::EtaClamp> {
+        self.eta_clamp.as_ref()
+    }
 }
 
 /// offset_tree Phase C4 (#384): Rossignac–Requicha-**Vertex-Kugel** an
@@ -276,15 +313,18 @@ pub struct VertexSphere {
 // ─── f32-Vektor-Helfer (lokal, um keine Modul-Abhängigkeit zu ziehen) ────────
 
 #[inline]
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+pub(crate) fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 #[inline]
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
+/// #384 §8aa: `pub(crate)`, damit [`crate::offset_witness`] die eingefrorene
+/// P5b-1-Kette aus **denselben** Helfern baut statt aus einem Nachbau — ein
+/// zweiter `norm` wäre eine zweite Wahrheit.
 #[inline]
-fn norm(a: [f32; 3]) -> f32 {
+pub(crate) fn norm(a: [f32; 3]) -> f32 {
     dot(a, a).sqrt()
 }
 
@@ -3323,6 +3363,9 @@ fn build_channel(
         face_planes: [END_PLANE_NONE; 4],
         branch,
         parents,
+        // #384 §8aa: die Synthese beweist nichts — `certify_channel` tut es,
+        // und nur sie darf hier etwas hineinschreiben.
+        eta_clamp: None,
     })
 }
 

@@ -6598,9 +6598,377 @@ die Auswahl überlebt UND sein Downstream ist in die Hülle eingegangen. **Alle
   bleibt es bei Unterteilung/Unknown.
 * **Skizzen-Blätter** (Rippen-Kamm 4×1.5/0.8), **P5b**, **P6a**: unverändert.
 
+## 8aa. P5b-0 — die f32-Brücke unter dem η, und ein Klemm-Typ, der sich nicht verpflanzen lässt (#384, 2026-08-03)
+
+§8x hat den geometrischen Zeugen geliefert: `dist(q, ∁Ω) ≤ η_geo` für jeden
+Punkt `q` der **modellierten** Naht `Q`. Die Produktion sieht `Q` nie. Sie
+sieht einen f32-Fusspunkt und eine f32-Norm, und zwischen diesen beiden Welten
+lag bis jetzt gar nichts.
+
+P5b-0 legt die Brücke — und zwar nur sie. **Keine Feldänderung.**
+`channel_limit`, `channel_apply` und jeder Evaluator bleiben unangetastet;
+Golden 35/35 byte-identisch (SHA-256 `a0c9fe7b…` vor und nach), `check_interp`
+unberührt, keine Zahl der Zertifizierungs-Matrix bewegt sich. Der Verbrauch ist
+**P5b-1**, der Intervallspiegel **P5b-2**, die Bogen-Zeugen **P5c**.
+
+### Warum P5b überhaupt das Feld ändern MUSS
+
+Die naheliegende Lesart — „P5b ist eine Analyse-Erweiterung, die Produktion
+bleibt" — ist falsch, und das ist keine Geschmacksfrage. Aus dem Zeugen folgt
+für einen Auswertungspunkt `x`
+
+```text
+dist(x, ∁Ω) ≤ |x − q| + η    ⇒    f_wahr(x) ≥ δ − (de + η).
+```
+
+Die Produktion klemmt auf `δ − de`. Ist `η > 0`, liegt dieser Wert um bis zu
+`η` **über** der bewiesenen Untergrenze und kann Material entfernen. Eine
+Intervall-Hülle der unveränderten Produktion zeigt bloss, was sie rechnet; sie
+macht die zu hohe Klemme nicht wahr.
+
+Und der Fall ist nicht hypothetisch. Pin 3 misst die naive §8j-Annahme
+`dist(x,∁Ω) ≤ de` an 12.894 Punkten INNERHALB von `Ω` gegen das analytische
+Komplement-Orakel: **an 2.039 Punkten ist sie verletzt**, am schlimmsten um
+`6.396·10⁻⁴ mm` an der Ecken-Schale `t/δ = 3`. Genau dort, wo §8r/§8s die
+Unter-Claims fanden. Die η-Klemme ist damit nicht Vorsorge, sondern Reparatur.
+
+### Die schärfere Form — η geht NUR auf die Nahtdistanz
+
+Die grobe Form wäre `δ − min(de, h) − η`. Die richtige ist
+
+```text
+δ − min(de + η_field, h),   h = s₄ + δ.
+```
+
+Die Stützebene `h` ist in §8j **unabhängig** bewiesen; sie mit `η` zu
+verschlechtern wäre ein Verlust ohne Gegenleistung. Die eingefrorene
+Produktionsform von P5b-1 lautet deshalb, op für op und mit genau dieser
+Klammerung:
+
+```text
+g      = face_plane_gate(p, ch)      // min über vier affine Formen — unverändert
+h      = fl32(g + δ)                 // unverändert
+de_eta = fl32(de + A)                // NEU: ein einziger f32-Add
+lim    = fl32(δ − min(de_eta, h))    // unverändert
+```
+
+Sie steht ab sofort als `offset_witness::frozen_channel_limit` im Code — nicht
+als Absicht, sondern als **Gegenstand des Rundungslemmas**. Ihr arithmetischer
+Schwanz ist in `frozen_limit_tail` herausgezogen, und `frozen_channel_limit`
+ruft ihn auf: Beweisgegenstand und Feldform können nicht auseinanderdriften.
+
+**`A = 0` ist bitweise das heutige Feld** (`de + 0.0 == de` für jede Norm
+`de ≥ 0`) — an 47.600 Proben über die ganze Matrix gepinnt. Das ist die
+Feldneutralitäts-Zusage, die P5b-1 für jeden Kanal ohne Klemme einlösen muss.
+
+### Die vier Posten der Brücke
+
+| Posten | Was er bezahlt | gemessenes Maximum |
+|---|---|---|
+| `η_geo` | §8x: `dist(q,∁Ω) ≤ η_geo` für `q ∈ Q` | `2.257·10⁻³ mm` |
+| `ε_q` | `q_f32` liegt neben einem WIRKLICHEN Punkt von `Q` | `2.166·10⁻⁵ mm` |
+| `ε_d` | die f32-Norm unterschätzt `\|x − q_f32\|` | `1.060·10⁻⁶ mm` |
+| `field_round` | die zwei Rundungen der eingefrorenen Kette | `7.248·10⁻⁷ mm` |
+| **`A`** | der kodierte f32-Addend | **`2.267·10⁻³ mm`** |
+
+#### Lemma 1 — vollständiges Cover ⇒ `η_geo`
+
+Unverändert §8x. `cover_channel` setzt `eta = None`, sobald auch nur EIN Stück
+ohne Zeugen bleibt — nachgeprüft, nicht angenommen. Damit gibt es keinen Fall
+„globales `η` aus dem gedeckten Teil wird auf den ungedeckten angewendet", und
+die Eigentumsgrenze ist **der Kanal**: `η_ch = max` über alle Stücke.
+
+#### Lemma 2 — die Punkt-Brücke `ε_q`
+
+Der robuste Weg **verzichtet** auf die Behauptung, `arc_closest` berechne den
+exakten Nearest-Punkt. Es genügt irgendein zurückgegebener Punkt. Die
+Produktion klemmt `t` auf `[0,1]`; der reelle Punkt `q(t) = c + u·(t·r)` liegt
+damit ohne weitere Annahme **in** `Q` — derselben Menge, die `piece_box`
+lückenlos kachelt. Ob `t` der exakte Projektionsparameter ist, ist irrelevant;
+Projektions- und Endpunktzweig sind gemeinsam abgedeckt.
+
+Ein Satz, der leicht durchrutscht: `arc_closest` rechnet mit
+`len = arc.r.max(1e-12)`, `arc_usable` verlangt `r ≥ 10⁻⁹ > 10⁻¹²`, also ist
+`len` **bitweise** `arc.r`. Ohne diesen Schritt spräche die Produktion über ein
+anderes Segment als der Beweis. Er ist eigens gepinnt.
+
+Die Kette je Komponente — `fl(t·r)`, `fl(u_k·ã)`, `fl(c_k + b̃)` — wird mit
+`|fl(z) − z| ≤ u|z| + 2⁻¹⁵⁰` und `|t·r| ≤ r` nach oben abgeschätzt und über die
+drei Achsen aufwärts gerundet zusammengezogen.
+
+#### Lemma 3 — die Norm-Brücke `ε_d`
+
+`|x − q_f32| ≤ de + ε_d`. Die Subtraktion zweier f32-Zahlen hat **keinen**
+Unterlauf-Posten (Hauser: ein subnormales exaktes Ergebnis ist darstellbar) —
+mitgepinnt. Für Quadrat, beide Additionen und die Wurzel greift je
+`fl(z) ≥ z(1−u) − 2⁻¹⁵⁰`, und daraus
+
+```text
+D ≤ (de + 2⁻¹⁵⁰)·(1−u)^{−7/2} + √(6·2⁻¹⁵⁰·(1−u)^{−5}).
+```
+
+Der Wurzel-Posten (`≈ 6·10⁻²³ mm`) darf nicht weggelassen werden: `√` ist bei
+`S ≈ 0` nicht Lipschitz, ein absoluter Fehler im Radikanden schlägt dort als
+seine Wurzel durch. Er ist bedeutungslos — aber „bedeutungslos" ist keine
+Beweisführung. `de < trust` ist von `channel_limit` an zwei Stellen geprüft;
+deshalb darf `trust` als obere Schranke von `de` dienen.
+
+#### Lemma 4 — die Dreiecksungleichung
+
+```text
+dist(x,∁Ω) ≤ |x − q| + dist(q,∁Ω) ≤ (de + ε_d + ε_q) + η_geo =: de + Δ.
+```
+
+Gemessen an 12.894 Punkten in `Ω` über elf Fixturen: engste Reserve
+`5.017·10⁻⁵ mm`, kein einziger Ausreisser.
+
+#### Lemma 5 — das Rundungsbudget
+
+Ein nach oben gerundetes `η` genügt **nicht**: `fl(de + A)` kann nach unten,
+`fl(δ − ·)` nach oben runden. Verlangt ist `fl(δ − fl(de+A)) ≤ δ − de − Δ`;
+hinreichend ist
+
+```text
+A ≥ [ trust·(2u + u²) + Δ + u·|δ| + 3·2⁻¹⁵⁰ ] / (1 − 2u − u²).
+```
+
+Beide Rundungen stecken darin: die Addition im `trust`-Term, die Subtraktion im
+`u·|δ|`-Term plus dem `u·de_eta`-Anteil im Nenner. Ein blosses
+`ceil_f32(η_geo + Brücke)` hätte weder das eine noch das andere — und genau das
+weist die erste Gegenprobe nach.
+
+**Der η-Zweig, und nur er.** Fällt das `min` auf `h`, liefert die Kette
+`fl(δ − h)` — denselben Wert wie heute, gestützt auf dieselbe unabhängige
+Stützebenen-Aussage. Lemma 5 spricht ausdrücklich NICHT über diesen Zweig
+(Restposten R1, s. u.).
+
+#### Lemma 6 — die Kanalbindung
+
+Ein opaker nackter Millimeterwert liesse sich versehentlich auf einen anderen
+Kanal anwenden. Die Bindung ist deshalb **doppelt**:
+
+1. **Einbettung.** `EtaClamp` wohnt als `#[serde(skip)]`-Feld IM geprüften
+   `OffsetChannel`; `certify_channel` ist die einzige Stelle, die es setzt, und
+   sie tut es in derselben Phase, in der sie beweist.
+2. **Identitätsprobe beim Lesen.** `OffsetChannel::eta_addend` rechnet einen
+   FNV-Fingerabdruck über alle Bogen-, `δ`-, `trust`- und Halbraum-Daten neu
+   und vergleicht ihn. Eine verpflanzte oder nachträglich veränderte Klemme
+   liefert `None`.
+
+Die zweite Hälfte ist nötig, weil `OffsetChannel` `Clone` ist und das Feld im
+Kern `pub(crate)` sein muss (sonst könnte kein Pin die Verpflanzung überhaupt
+versuchen). **Privatheit ist hier nicht die Durchsetzung — die Probe ist es.**
+
+`dist_bridge = None` ist damit verschwunden: entweder existiert ein vollständig
+konstruierter `EtaClamp`, oder es gibt keinen.
+
+#### Lemma 7 — fail-closed
+
+Kein Cover, kein Brückenbeweis, gekrümmter Bogen, ungültige Konfiguration,
+entarteter Bogen, leerer Kanal, nicht unterstütztes `Ω`-Blatt: alles endet in
+„keine Klemme". Bei `None` bleibt das heutige `channel_limit` stehen —
+ausdrücklich weiter als **unbewiesene Modell-Annahme** (Capability-Status
+„unbewiesen"), **nicht** still neutralisiert.
+
+Die Ausgänge sind getrennt gezählt, und das ist Absicht: ein gekrümmter Bogen
+ist ein STRUKTURELLER Ausschluss (P5c), kein gescheiterter Zeuge. Würden beide
+als „kein Cover" laufen, verschwände die Stufen-Nabe aus dem Bericht.
+
+### Der Shadow-Bericht — 217 von 238 Kanälen
+
+Kein Evaluator konsumiert die Klemme. Das einzige Ergebnis von P5b-0 IST diese
+Zählung, und sie ist gepinnt (`clamp_shadow_report_matches_the_matrix_384`),
+nicht bloss gedruckt.
+
+| Fixture | Kanäle | proved | curved | no_cover | η_geo mm | ε_q mm | ε_d mm | field_round mm | A mm |
+|---|---|---|---|---|---|---|---|---|---|
+| Stufen-Nabe | 2 | 0 | **2** | 0 | — | — | — | — | — |
+| Ecken-Schale `t/δ=2` | 24 | **24** | 0 | 0 | 6.488e-4 | 9.400e-6 | 8.154e-7 | 5.852e-7 | 6.590e-4 |
+| Ecken-Schale `t/δ=2.1` | 24 | **24** | 0 | 0 | 1.000e-4 | 9.400e-6 | 8.154e-7 | 5.851e-7 | 1.108e-4 |
+| Ecken-Schale `t/δ=2.25` | 24 | **24** | 0 | 0 | 1.000e-4 | 9.401e-6 | 8.154e-7 | 5.851e-7 | 1.108e-4 |
+| Ecken-Schale `t/δ=2.4` | 24 | **24** | 0 | 0 | 1.000e-4 | 9.402e-6 | 8.154e-7 | 5.851e-7 | 1.108e-4 |
+| Ecken-Schale `t/δ=2.5` | 24 | **24** | 0 | 0 | 1.000e-4 | 9.403e-6 | 8.154e-7 | 5.851e-7 | 1.108e-4 |
+| Ecken-Schale `t/δ=3` | 24 | **24** | 0 | 0 | 2.257e-3 | 9.407e-6 | 8.154e-7 | 5.854e-7 | 2.267e-3 |
+| Ecken-Schale `t/δ=4` | 24 | **24** | 0 | 0 | 1.000e-4 | 9.418e-6 | 8.154e-7 | 5.851e-7 | 1.108e-4 |
+| Ecken-Schale `t/δ=6` | 24 | **24** | 0 | 0 | 1.210e-3 | 9.448e-6 | 8.154e-7 | 5.853e-7 | 1.219e-3 |
+| Rippen-Kamm 4×1.5/0.8 | 19 | 0 | 0 | **19** | — | — | — | — | — |
+| Rippen-Kamm 4×2/1 | 22 | **22** | 0 | 0 | 1.000e-4 | 8.336e-6 | 8.154e-7 | 5.851e-7 | 1.097e-4 |
+| notch α = 90° | 1 | **1** | 0 | 0 | 1.000e-4 | 2.056e-5 | 8.154e-7 | 5.851e-7 | 1.220e-4 |
+| notch α = 60° | 2 | **2** | 0 | 0 | 1.865e-4 | 2.166e-5 | 1.060e-6 | 7.248e-7 | 2.088e-4 |
+
+**217 von 238 Kanälen (91 %) tragen eine bewiesene Klemme**, `no_bridge` und
+`bad_config` sind über die ganze Matrix **null** — wo das Cover steht, steht
+auch die Brücke. Die 21 offenen Kanäle sind dieselben zwei strukturellen Gründe
+wie in §8x: die Stufen-Nabe hat gekrümmte Nähte (P5c), der Rippen-Kamm
+4×1.5/0.8 hat `Extrude`-Blätter in `Ω`.
+
+Bemerkenswert ist die **Grössenordnung der Posten**: `η_geo` dominiert um
+Faktor 5 bis 200, `ε_q` liegt bei `10⁻⁵`, `ε_d` und `field_round` bei `10⁻⁷`.
+Die f32-Brücke ist also nicht der Preis — der geometrische Zeuge ist es.
+
+### Die Pflicht-Falsifikatoren
+
+* **`clamp_f32_constants_are_exact_384`** — `u = 2⁻²⁴` und `2⁻¹⁵⁰` bitgenau,
+  das Rundungsmodell `|fl32(z) − z| ≤ u|z| + 2⁻¹⁵⁰` an 40.000 Proben über 80
+  Zehnerpotenzen (1.000 davon oberhalb 40 % der Schranke, sonst misst der Pin
+  nichts), plus Hauser für die subnormale f32-Subtraktion.
+* **`clamp_point_bridge_is_a_real_seam_point_384`** (Lemma 2) — acht
+  adversariale Segmente (Clamp-Ränder `t = 0/1`, `r` von `2·10⁻⁹` bis `10⁶`,
+  kurzes Segment unter `10⁵`-Translation, krumme Koeffizienten), 3.376 Proben
+  gegen die **geschlossene Form** der reellen Segmentmenge (kein Raster — ein
+  Raster misst seine eigene Maschung). Schärfste Ausnutzung **68.4 %** von
+  `ε_q`; alle 3.376 Proben haben echt positiven Abstand, `ε_q = 0` risse also.
+* **`clamp_norm_bridge_never_underestimates_384`** (Lemma 3) — dieselben
+  Segmente, Proben AUF der Segment-Voronoi-Grenze und wenige ulp daneben, 3.200
+  Fälle. **1.478 echte Unterschätzungen** durch die f32-Norm, schärfste
+  Ausnutzung **59.0 %** von `ε_d`.
+* **`clamp_total_bridge_is_the_triangle_inequality_384`** (Lemma 4) — 12.894
+  Punkte in `Ω` über elf Fixturen gegen das analytische Komplement-Orakel;
+  engste Reserve `5.017·10⁻⁵ mm`. Und der Zähler, der P5b-1 begründet: **2.039
+  Verletzungen der naiven §8j-Annahme**, schlimmstenfalls `6.396·10⁻⁴ mm`.
+  Bricht dieser Zähler auf null ein, sagt der Pin es.
+* **`clamp_rounding_absorbs_both_f32_ops_384`** (Lemma 5) — die ulp-Familie:
+  Bit-Fächer von ±2500 ulp um vierzehn Grössenordnungen von `de` plus 30.000
+  Streuwerte, über drei `δ`, dreimal wiederholt für `Δ ∈ {10⁻⁶, 10⁻⁴,
+  2.26·10⁻³}` — **über 200.000 Fälle je Durchgang**, gefahren durch genau die
+  drei f32-Ops der eingefrorenen Kette.
+* **`clamp_is_bound_to_its_channel_384`** (Lemma 6) — ≥10 echte Verpflanzungen
+  zwischen verschiedenen Kanälen (alle verweigert), sieben Ein-ulp-Mutationen
+  am eigenen Kanal (alle bemerkt: `c`, `r`, `u`, `δ`, `trust`, `face_plane`,
+  `m̂`), unveränderte Kopie behält den Wert, und die `Ω`-Fingerabdrücke sind
+  paarweise verschieden.
+* **`clamp_is_fail_closed_384`** (Lemma 7) — alle Ausgänge einzeln: gekrümmt,
+  leer, sechs ungültige Konfigurationen, entarteter Bogen, nicht unterstütztes
+  `Ω`-Blatt (19 Kanäle des Rippen-Kamms), und der Gegen-Extremfall `Ω = Empty`
+  (dort MUSS die Klemme entstehen). Dazu drei Ablationen: `ε_q := 0`,
+  `ε_d := 0`, `field_round := 0` müssen den Addenden **jede für sich** senken —
+  ein Posten, der den Wert nicht bewegt, ist keiner.
+* **`clamp_frozen_form_is_neutral_at_zero_and_monotone_384`** — 47.600 Proben:
+  `A = 0` bitweise identisch mit `channel_limit`, und `limit(A₂) ≤ limit(A₁)`
+  für `A₂ ≥ A₁` mit 6.029 strikten Absenkungen (sonst wäre die Monotonie ein
+  No-op-Pin).
+* **`clamp_limit_consumes_only_de_384`** — der Pflichtsatz, gemessen statt
+  zitiert (s. u.).
+
+### Der Pflichtsatz, am Code geprüft
+
+> `channel_limit` konsumiert ausschliesslich `de`; `t`, `nlerp` und die
+> Diamant-Zuordnungsabweichung beeinflussen diesen Wert nicht. Daher trägt
+> `ε_D` keinen Posten zum P5b-Budget bei.
+
+Am Code nachgesehen: `channel_limit` bindet `channel_nearest(p, ch)` als
+`(de, _, _, _)` — Fusspunkt und beide `m̂` fallen weg. `offset_interval`
+notiert dieselbe Beobachtung seit §8v als „Limit-Lemma". Für gerade Bögen wird
+`diamond` gar nicht erst betreten.
+
+Gemessen wird es trotzdem: `clamp_limit_consumes_only_de_384` verändert an 236
+geraden Kanälen alle vier Dual-Vektoren sowie `e` und `d_e` wild und verlangt
+**bitweise** denselben `channel_limit`-Wert an 35.400 Proben. Zum Nachweis der
+Wirksamkeit muss dieselbe Mutation die `m̂`-Ausgaben von `channel_nearest`
+verändern — sie tut es an allen 35.400.
+
+**Eine Präzisierung**, damit der Satz nicht mehr sagt als er darf: `t` geht
+sehr wohl in `de` ein (es bestimmt `q_f32`). Was NICHT eingeht, ist die
+Zuordnungs-ABWEICHUNG: der Beweis verlangt nirgends, dass `t` der exakte
+Projektionsparameter ist — nur, dass der zugehörige reelle Punkt in `Q` liegt,
+und das sichert die Klemmung auf `[0,1]`. Genau deshalb ist `ε_D`
+budgetneutral.
+
+### Abweichungen vom Berater-Design
+
+* **Die Ein-ulp-Gegenprobe greift an `A*`, nicht an `A`.** Das Review verlangt
+  „Rundungsreserve um ein ulp verkleinern muss an einer gezielt gesuchten
+  f32-Familie reissen". Am bewiesenen `A` reisst sie **nachweislich nicht**,
+  und der Grund ist kein Versehen: `A` kommt aus einer Worst-Case-Komposition
+  (jede Einzelop mit vollem `u·|z|`), die **kein einzelner** f32-Fall
+  gleichzeitig ausreizen kann — die Addition müsste ihren halben ulp am unteren
+  Binadenrand verlieren und die Subtraktion ihren am oberen gewinnen. Gemessen:
+  `A − A* = 2.688` bis `2.9·10⁶` ulp von `A`, je nach `Δ`. Ein einzelnes ulp
+  kann diese Lücke nicht schliessen; ein Pin, der es behauptete, wäre grün ohne
+  Aussage.
+  Gepinnt wird deshalb der MECHANISMUS, in zwei Stufen: (1) `field_round := 0`
+  MUSS reissen — tut es; (2) der über der Familie **minimale** Addend `A*` wird
+  per Binärsuche über dem f32-Gitter bestimmt (zulässig, weil die Kette in `A`
+  monoton ist — eigener Pin), und `A* − 1 ulp` MUSS reissen — tut es. Die
+  Familie ist damit nachweislich ulp-scharf, und die Konservativität des
+  geschlossenen Ausdrucks steht als Zahl da statt als Gefühl:
+  `A/A* = 1.00028` (`Δ = 2.26·10⁻³`), `1.00714` (`Δ = 10⁻⁴`), `1.4268`
+  (`Δ = 10⁻⁶`).
+* **`certify_channel` ist NICHT in die Synthese verdrahtet.** Der Berater
+  bevorzugt die Einbettung „während derselben Synthesephase" — der
+  Einbettungs-MECHANISMUS ist genau das (das Feld sitzt im Kanal, und nur
+  `certify_channel` schreibt es), aber der Aufruf steht noch nicht in
+  `synthesize_channels`. Grund: `cover_channel` kostet je Kanal 24 Stücke × 18
+  Leiterstufen × ~32 Richtungen × einen Baumlauf; das in jeden Regen zu legen,
+  während **kein Konsument** die Zahl liest, wäre Laufzeit für nichts. `Ω` ist
+  an dieser Stelle verfügbar (`omega_of` am `Offset`-Kind); der Aufruf gehört
+  in P5b-1, zusammen mit dem Konsumenten.
+
+### Restposten — was NICHT bewiesen ist
+
+* **R1 — der `h`-Zweig.** Fällt das `min` auf die Stützebene, liefert die Kette
+  `fl(δ − h)`, und ob diese Rundung die Stützebenen-Aussage einhält, ist
+  **unverändert offen** — es ist derselbe Ausdruck wie heute, und §8j hat ihn
+  nie mit Rundungsbudget geführt. P5b-1 verschiebt zusätzlich eine dünne Schale
+  von Punkten (`h ∈ (de, de+A]`) aus dem `de`-Zweig in den `h`-Zweig; dort
+  ruhen sie ab dann auf R1 statt auf Lemma 5. Der ausgelieferte Wert ist in
+  dieser Schale **kleiner** (konservativer) als heute, aber „konservativer" ist
+  kein Beweis.
+* **R2 — die `Ω`-Provenienz ist nicht lesezeit-prüfbar.** Der
+  `omega_fingerprint` wird beim Beweis gespeichert und ist diagnostisch
+  unterscheidbar (gepinnt), aber zur Auswertungszeit gibt es kein `Ω` mehr,
+  gegen das man ihn halten könnte. Zwei bit-identische Kanäle unter
+  verschiedenen `Ω` wären für die Identitätsprobe derselbe Kanal. Die Garantie
+  kommt allein daher, dass `certify_channel` Beweis und Einbettung in EINEM
+  Schritt tut.
+* **`vertex_limit` ist NICHT mitbewiesen.** Es hat eine eigene Voraussetzung
+  („`v` liegt auf `∂Ω`"), und das Channel-Cover sagt darüber nichts. Der Scope
+  von P5b ist ausdrücklich: **`channel_limit` für vollständig gedeckte, gerade
+  Kanäle.**
+* **Gekrümmte Kanäle** bekommen keine Klemme. P5c muss `cover_channel` auf
+  A0-Bögen erweitern — eine eigenständige Beweisfront (reelle Einschliessung
+  der vollständigen algebraischen Bogen-Bildmenge, lückenlose Kachelung in
+  autoritativer Diamant-Domäne, beide Endpunkte, Sektor-/Minor-Invariante, der
+  `|e| ≈ 1`-Defekt, verschobene Bogenstück-Box vollständig in `∁Ω`, dieselbe
+  Zeugenabbildung und derselbe Verschiebungsvektor wie im Budget).
+* **`Ω`-Blätter jenseits Box/Sphere/Zylinder** — für `Extrude` bräuchte es
+  einen trennenden Halbraum aus dem 2D-Profil. Unverändert §8x.
+* **Die Zusage selbst ist unverändert.** `channel_limit` steht bis P5b-1 weiter
+  auf der Modell-Annahme; P5b-0 hat den Beweis gebaut, nicht eingelöst.
+
+### Prüfungen
+
+* **Golden**: 35/35 byte-identisch, SHA-256 `a0c9fe7b53a8198177d3ad0ef8cff2c9…`
+  vor und nach — kein Evaluator, kein Opcode, kein Payload-Wort, kein Spiegel.
+  `check_interp` unberührt (keine Tape-Änderung).
+* **`cargo nextest run --workspace`**: **1523** (Baseline 1513).
+* **`cargo test -p fielddraft-kernel --lib`**: **1517** (Baseline 1507).
+* **`cargo nextest run --workspace --profile offset`**: **229** (Baseline 219).
+* **Web-Vitest**: **2082**, unverändert (keine Web-Änderung ausser der
+  Release-Note).
+* Die Zertifizierungs-Matrix aus §8w/§8z bewegt sich **nicht** — P5b-0 hat
+  keinen Konsumenten.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
+- Produktionscode §8aa (P5b-0): `crates/kernel/src/offset_witness.rs` — die
+  f32-Konstanten `F32_U`/`F32_SUB`, `f32_ceil`, die drei Brücken
+  (`point_bridge_mm`, `norm_bridge_mm`, `round_budget`), die eingefrorene
+  Feldform (`frozen_channel_limit`, `frozen_limit_tail`), die Bindung
+  (`channel_identity`, `omega_fingerprint`), der opake `EtaClamp` samt
+  `ClampStatus`/`ClampKnobs`/`ClampTally` und die einzige Entstehungsstelle
+  `certify_channel`/`certify_channel_with`.
+  `crates/kernel/src/offset_channel.rs` — das `#[serde(skip)]`-Feld
+  `OffsetChannel::eta_clamp`, die Leser `eta_addend`/`eta_clamp`, und `sub`/
+  `norm` als `pub(crate)` (damit die eingefrorene Kette aus DENSELBEN Helfern
+  gebaut wird statt aus einem Nachbau). **Kein Evaluator, kein Opcode, kein
+  Payload-Wort, kein Spiegel, keine Diagnose-JSON** — Golden byte-identisch.
+- Pins/Sonden §8aa in `offset_capability_tests.rs`: `Lcg`, `ulp_off`,
+  `clamp_adversarial_arcs`, `seam_point_f64`/`seam_foot_f64`,
+  `dist_f64_up`/`dist_f64_down`, `clamp_arc_probes`, `clamp_scan`,
+  `clamp_de_family`, `clamp_round_reserve`, `clamp_family_min_reserve`, die
+  neun `clamp_*_384`-Pins und die `#[ignore]`-Sonde `probe_384_clamp_shadow`.
 - `crates/kernel/src/offset_capability_tests.rs` — §8k: die exakten
   Komplement-Referenzen (`dist_obb_union_complement_exact`,
   `dist_hub_complement_exact`), die zweiseitige Sonde (`two_sided_scan`) und
