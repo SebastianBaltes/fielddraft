@@ -8227,7 +8227,7 @@ Kanalebenen. Die `de`-Projektion der Alternativen genügt unverändert —
 | `A_h` genullt | `h_safe` gewinnt | **3.200 / 3.200** Escapes |
 | Addend vor dem rohen `de ≥ trust`-Test | gezielt: `trust − A_seam ≤ de < trust` | **517 / 960** Escapes |
 | `min` vor den Addenden | `h_safe` gewinnt | **3.200 / 3.200** Escapes |
-| `fl(fl(s4+δ)+A_h)` reell zusammengefasst | `h_safe` gewinnt | **kein Escape** — s. u. |
+| `fl(fl(s4+δ)+A_h)` reell zusammengefasst | adversariale f32-Familie | **kein Escape** — Paritätspin, s. Review 21 |
 
 Die dritte Zeile brauchte eine **gezielte** Familie: gleichverteiltes Proben
 trifft das Band `trust − A_seam ≤ de < trust` nie (es ist `≈ 10⁻⁴` von `≈ 4 mm`
@@ -8235,7 +8235,9 @@ breit) — eine Aussage über die Auflösung der Probe, keine über Erreichbarke
 Per Bisektion auf `de = trust` sind es 120 Punkte, und die Ablation reisst an
 mehr als der Hälfte.
 
-Die fünfte Zeile ist ein **ehrlicher Befund, keine Lücke**: die Reassoziation
+Die fünfte Zeile zählt seit Review 21 **nicht** als fünfte lasttragende
+Ablation — sie ist ein Paritätspin (s. u.). Sie ist ein **ehrlicher Befund,
+keine Lücke**: die Reassoziation
 unterscheidet sich nur um EIN ulp, und die Intervall-Stufe rundet nach jeder Op
 selbst nach aussen. Ihre eigene Breite deckt den Effekt zu — die falsch
 geklammerte Hülle ist an diesen Punkten **immer noch eine gültige
@@ -8245,6 +8247,68 @@ Hülle **bewegt sich** an 320 von 400 Zellen (die beiden Additionen sind also
 wirklich beide modelliert), und ein Escape wäre ein NEUER Befund, den der Pin
 ausdrücklich meldet statt ihn wegzurunden. Dass die Kette an dieser Stelle
 gepinnt ist, tragen `A_h genullt` und `min vor den Addenden`.
+
+### Review 21 — die Konsumgrenze war nicht lasttragend gepinnt
+
+**Der Blocker.** `interval_uses_the_omega_resolved_mode_384` (Pin 3) übergibt
+den Modus **von Hand** und pinnt damit nur die untergeordnete Aussage
+„`enclose_channel_limit(…, m₂)` trägt den Produktionswert, mit `m₁` verfehlt es
+ihn". Der Knopf `stored_mode_dispatch` sitzt aber im `ArcChannel`-Arm von
+`enclose_node` — und wurde von **keinem** Test gesetzt. Ein Rückdrehen der
+Konsumgrenze auf `stored_limit_mode()` hätte Pin 3 grün gelassen: genau die
+Review-19-Fehlerklasse (Ω-Verpflanzung), gespiegelt in die Intervall-Stufe.
+
+**Der neue Pin 4** (`interval_stored_mode_dispatch_escapes_through_enclose_node_384`)
+fährt die Verpflanzungsfamilie durch die ECHTE Grenze: der unter `Ω₁` bewiesene
+Kanal (`A_seam = 1,108·10⁻⁴`, `A_h = 2,687·10⁻⁵`) wird **unverändert** in
+**12** vollständige `ArcChannel`-Knoten über fremde `Ω₂` gesetzt; die
+Produktionswerte kommen aus dem echten Auswerter (`BoundedCsg::sdf` →
+`resolve_stop_modes_at`). Gemessen:
+
+* **26.400 / 26.400** Feldwerte liegen in der normalen `enclose_node`-Hülle;
+* mit `Knobs { stored_mode_dispatch: true }` fallen **672** davon **heraus**,
+  verteilt über **10** Fixturen (**811** Zellen bewegen sich).
+
+Anti-Leer-Gates: `Ω₁`-Modus `Proved` mit **beiden** Addenden `> 0`, der
+gespeicherte Modus ebenfalls `Proved` (sonst wäre der Knopf ein No-op), jedes
+`Ω₂` mit anderem Schnappschuss und produktionsseitig auf Legacy aufgelöst, und
+eine Mindestzahl eingeschlossener Proben.
+
+**Sollte 1 — die fünfte Ablation ehrlich eingeordnet.** `fuse_h_additions` ist
+**kein** Soundness-Knopf und zählt nicht als fünfte lasttragende Ablation: eine
+anders geklammerte natürliche Intervallerweiterung kann trotz falscher
+Produktionsklammerung eine **gültige Obermenge** bleiben — `Ctx::fadd`
+verbreitert jeden Zwischenschritt nach aussen und nimmt den ein-ulp-Unterschied
+auf. Ein Escape wäre nur durch nach innen gerichtete Rundung zu erzwingen; das
+koppelte zwei Fehler und bewiese nichts. Pin 2 zählt deshalb jetzt **vier**
+Ablationen (`assert_eq!(broken, 4)`), und die Stelle hat einen eigenen
+**Struktur-/Paritätspin** `interval_h_chain_bracketing_is_op_exact_384`:
+
+* eine **adversariale skalare f32-Familie**, in der die Reassoziation die Bits
+  wirklich ändert — **7.272 von 65.100** Proben mit
+  `fl(fl(s4+δ)+A_h) != fl(s4+fl(δ+A_h))`;
+* die **echte Intervall-Unterkette enthält ihre produktiven Zwischenwerte**
+  `h0 = fl(s4+δ)` und `h_safe = fl(h0+A_h)` an **allen 400** Punkten. Dafür ist
+  die h-Unterkette in den internen Helfer `enc_h_chain` → `HChain { h0, h_safe }`
+  ausfaktorisiert; die Zwischenwerte waren vorher gar nicht beobachtbar;
+* die zusammengefasste Kette liefert an **338 von 400** Punkten ein **anderes**
+  Intervall (sie ist gültig, aber nicht dieselbe Kette);
+* am Endergebnis **0 Escapes von 3.200** Werten (108 Hüllen bewegt) — als
+  Erwartung festgehalten: ein Escape lässt den Pin reissen und wäre ein NEUER
+  Befund.
+
+**Sollte 2 — Sichtbarkeit.** `enclose_channel_limit` ist jetzt `pub(crate)`.
+Mit einem fremden Modus aufgerufen ist ihre Zusage nur bedingt-mathematisch
+(„so sähe die Hülle aus, WENN das Feld diesen Modus nähme"), keine
+stopgebundene Einschliessung des ausgelieferten Feldes; die entsteht erst an
+der Konsumgrenze in `enclose_node`, die den Modus SELBST auflöst. Eine
+öffentliche Fassung war nicht nötig — alle Aufrufer sind Pins im selben Crate.
+
+**Kleinkram.** Der `use`-Block in `offset_interval.rs` war unformatiert
+(`ChannelLimitMode,ChannelArc`) und ist von Hand gerichtet. **`cargo fmt` wurde
+NICHT gefahren**: das Repo ist nicht rustfmt-default-formatiert — ein
+`cargo fmt -p fielddraft-kernel` schreibt **138 Dateien** um (u.a.
+`use`-Reihenfolge und Struct-Literale) und wurde vollständig zurückgenommen.
 
 ### Prüfungen
 
@@ -8277,15 +8341,21 @@ gepinnt ist, tragen `A_h genullt` und `min vor den Addenden`.
   op-genaue Kette in `enclose_channel_limit` (Modus als Argument, drei
   f32-Additionen, `min`, `fsub`), die Modus-Durchreichung in `enclose_stop`
   und die Auflösung an der Konsumgrenze im `ArcChannel`-Arm von
-  `enclose_node`; die fünf `Knobs` `drop_seam_addend`, `drop_h_addend`,
-  `addend_before_far_test`, `fuse_h_additions`, `min_before_addends`.
+  `enclose_node`; der ausfaktorisierte Helfer `enc_h_chain`/`HChain`
+  (Review 21); die vier lasttragenden `Knobs` `drop_seam_addend`,
+  `drop_h_addend`, `addend_before_far_test`, `min_before_addends` plus die
+  beiden Struktur-Knöpfe `fuse_h_additions` (Parität) und
+  `stored_mode_dispatch` (Konsumgrenze).
   `crates/kernel/src/offset_channel.rs` — `stored_limit_mode` (nur für die
   Gegenprobe). **Kein Evaluator, kein Opcode, kein Spiegel, kein Tape-Wort** —
   Golden byte-identisch.
 - Pins §8ad in `offset_capability_tests.rs`: `tight_cell`,
   `proved_channels_with_stop`, `interval_encloses_the_new_limit_chain_384`,
   `interval_p5b2_ablations_are_load_bearing_384`,
-  `interval_uses_the_omega_resolved_mode_384`, plus die beiden
+  `interval_uses_the_omega_resolved_mode_384`,
+  `interval_stored_mode_dispatch_escapes_through_enclose_node_384` (Review 21,
+  Blocker), `interval_h_chain_bracketing_is_op_exact_384` (Review 21, Sollte 1),
+  plus die beiden
   zurückgeschärften Pins `interval_tiling_of_the_plate_core_is_gapless_384`
   und `interval_encloses_the_delivered_field_384`.
 - Produktionscode §8ac (P5b-1A, **erste Feldänderung**):

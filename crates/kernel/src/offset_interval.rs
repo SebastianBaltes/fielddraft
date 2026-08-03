@@ -92,7 +92,8 @@
 
 use crate::bvh::BoundedCsg;
 use crate::offset_channel::{
-    ChannelLimitMode,ChannelArc, OffsetChannel, VertexSphere, END_PLANE_OFF, LB_AVAIL};
+    ChannelArc, ChannelLimitMode, OffsetChannel, VertexSphere, END_PLANE_OFF, LB_AVAIL,
+};
 use crate::offset_lb::{LbBlock, LbPiece, LB_NONE};
 use fielddraft_protocol::{Primitive, Transform};
 
@@ -396,6 +397,16 @@ pub struct Knobs {
     pub addend_before_far_test: bool,
     /// #384 §8ad / P5b-2 — **`fl(fl(s4+δ)+A_h)` reell zusammenfassen**
     /// (`fl(s4 + (δ+A_h))`). Über ℝ identisch, über f32 nicht.
+    ///
+    /// **Struktur-/Paritätsknopf, KEINE lasttragende Soundness-Ablation**
+    /// (Review 21, Sollte 1): eine anders geklammerte natürliche
+    /// Intervallerweiterung bleibt trotz falscher Produktionsklammerung eine
+    /// gültige Obermenge — [`Ctx::fadd`] verbreitert jeden Zwischenschritt nach
+    /// aussen und nimmt den ein-ulp-Unterschied auf. Einen Escape zu erzwingen
+    /// (etwa per nach innen gerichteter Rundung) würde zwei Fehler koppeln und
+    /// nichts beweisen. Gemessen wird stattdessen die PARITÄT der
+    /// Zwischenwerte `h0` und `h_safe` (s. [`HChain`]). Die Soundness dieser
+    /// Stelle tragen `drop_h_addend` und `min_before_addends`.
     pub fuse_h_additions: bool,
     /// #384 §8ad / P5b-2 — **das `min` VOR die Addenden ziehen**:
     /// `fl(δ − fl(min(de, h₀) + A_seam))` statt
@@ -405,6 +416,12 @@ pub struct Knobs {
     /// #384 §8ad / P5b-2 — **den GESPEICHERTEN statt des Ω-aufgelösten Modus
     /// nehmen.** Ein unter `Ω₁` bewiesener Kanal gälte dann auch unter `Ω₂`
     /// als bewiesen — die Produktion tut das nicht.
+    ///
+    /// Der Knopf sitzt an der ECHTEN Konsumgrenze (`ArcChannel`-Arm von
+    /// [`enclose_node`]), nicht am Argument von [`enclose_channel_limit`] —
+    /// sonst prüfte ein Pin nur, dass ein von Hand übergebener Modus
+    /// durchgereicht wird, und ein Rückfall auf `stored_limit_mode()` bliebe
+    /// grün (Review 21, Blocker).
     pub stored_mode_dispatch: bool,
     /// Genau EINEN Kandidaten aus der Hülle streichen (§8w-Gegenprobe). Milder
     /// als `first_arc_wins` und damit die schärfere Probe: sie trifft nur den
@@ -1672,6 +1689,63 @@ fn enc_channel_candidates(
     Ok(Candidates { arcs: out, none_possible })
 }
 
+/// Die beiden Zwischenwerte der h-Unterkette — **beobachtbar gemacht**
+/// (#384 §8ad, Review 21, Sollte 1). Ohne sie liesse sich nur das Endergebnis
+/// prüfen, und genau dort deckt die Aussen-Rundung der Stufe den
+/// ulp-Unterschied zwischen `fl(fl(s4+δ)+A_h)` und `fl(s4+fl(δ+A_h))` zu.
+pub(crate) struct HChain {
+    /// `fl(s4 + δ)` — existiert nur in der PRODUKTIVEN Klammerung; die
+    /// zusammengefasste Gegenprobe hat diesen Zwischenwert gar nicht.
+    ///
+    /// Die Produktion braucht nur `h_safe`; `h0` existiert, damit der
+    /// Paritätspin die Klammerung beobachten kann, ohne sie nachzubauen.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub h0: Option<Iv>,
+    /// `fl(h0 + A_h)` bzw. — in der Gegenprobe — `fl(s4 + fl(δ + A_h))`.
+    pub h_safe: Iv,
+}
+
+/// Die h-Unterkette von [`crate::offset_channel::channel_limit`] als eigener
+/// Baustein: `h0 = fl(s4 + δ)`, `h_safe = fl(h0 + A_h)`.
+///
+/// **Warum ausfaktorisiert** (Review 21, Sollte 1): die Gegenprobe
+/// `fuse_h_additions` liefert am Endergebnis KEINEN Escape — die Stufe rundet
+/// nach jeder Op nach aussen, und ihre eigene Breite deckt das eine ulp zu.
+/// Der Unterschied ist damit nur an den ZWISCHENWERTEN messbar. Als Helfer
+/// gibt die Kette sie testseitig heraus, ohne dass ein Pin die Klammerung
+/// nachbauen müsste — was genau die Fehlerklasse wäre, die er prüfen soll.
+fn enc_h_chain(c: &mut Ctx, s4: Iv, delta: f32, a_h: f32, fuse: bool) -> Result<HChain, Unknown> {
+    if fuse {
+        // Gegenprobe: reell zusammengefasst — über ℝ identisch, über f32 nicht.
+        let dh = c.fadd(Iv::f32p(delta), Iv::f32p(a_h))?;
+        return Ok(HChain { h0: None, h_safe: c.fadd(s4, dh)? });
+    }
+    let h0 = c.fadd(s4, Iv::f32p(delta))?;
+    Ok(HChain { h0: Some(h0), h_safe: c.fadd(h0, Iv::f32p(a_h))? })
+}
+
+/// #384 §8ad (Review 21, Sollte 1) — **nur für den Paritätspin**: der
+/// Ebenen-Gate-Wert `s4` als Hülle, damit der Pin die h-Unterkette auf dem
+/// ECHTEN `s4` der Zelle fährt statt auf einem nachgebauten.
+#[cfg(test)]
+pub(crate) fn enc_gate_planes_for_test(c: &mut Ctx, p: [Iv; 3], planes: &[[f32; 4]; 4]) -> Enc {
+    enc_gate_planes(c, p, planes)
+}
+
+/// #384 §8ad (Review 21, Sollte 1) — **nur für den Paritätspin**: die
+/// h-Unterkette einzeln, mit beiden Zwischenwerten. Die Produktion ruft sie
+/// ausschliesslich aus [`enclose_channel_limit`] heraus.
+#[cfg(test)]
+pub(crate) fn enc_h_chain_for_test(
+    c: &mut Ctx,
+    s4: Iv,
+    delta: f32,
+    a_h: f32,
+    fuse: bool,
+) -> Result<HChain, Unknown> {
+    enc_h_chain(c, s4, delta, a_h, fuse)
+}
+
 /// [`crate::offset_channel::channel_limit`], eingeschlossen — **inklusive der
 /// beiden P5b-Addenden** (#384 §8ad / P5b-2).
 ///
@@ -1687,6 +1761,15 @@ fn enc_channel_candidates(
 /// des Ω-aufgelösten Modus nähme, würde einen unter `Ω₁` bewiesenen Kanal auch
 /// unter `Ω₂` als bewiesen einschliessen — die Produktion tut das nicht, und
 /// die Hülle wäre falsch. Gepinnt.
+///
+/// **Sichtbarkeit `pub(crate)`** (#384 §8ad, Review 21, Sollte 2). Mit einem
+/// FREMDEN Modus aufgerufen sagt diese Funktion nur etwas Bedingtes zu — „so
+/// sähe die Hülle aus, WENN das Feld diesen Modus nähme" —, nicht die
+/// stopgebundene Einschliessung des ausgelieferten Feldes. Die unbedingte
+/// Zusage entsteht erst an der Konsumgrenze im `ArcChannel`-Arm von
+/// [`enclose_node`], wo `inner` und `channels` gemeinsam vorliegen und der
+/// Modus SELBST aufgelöst wird. Deshalb ist der Kern crate-intern; jeder
+/// externe Zertifizierer geht über [`enclose_node`].
 ///
 /// **Die Reihenfolge ist die des Feldes, Schritt für Schritt:**
 ///
@@ -1717,7 +1800,7 @@ fn enc_channel_candidates(
 /// weiterhin ausschliesslich `de`. Die Addenden sind kanal-konstant, `s4` hängt
 /// nur an `p` und den Kanalebenen — die `de`-Projektion der Alternativen genügt
 /// also nach wie vor.
-pub fn enclose_channel_limit(
+pub(crate) fn enclose_channel_limit(
     c: &mut Ctx,
     p: [Iv; 3],
     ch: &OffsetChannel,
@@ -1759,15 +1842,9 @@ pub fn enclose_channel_limit(
         let val = |c: &mut Ctx| -> Enc {
             // (e) — die drei f32-Additionen, einzeln.
             let de_safe = c.fadd(de, Iv::f32p(a_seam))?;
-            let h_safe = if fuse {
-                // Gegenprobe: reell zusammengefasst — über ℝ identisch,
-                // über f32 nicht.
-                let dh = c.fadd(Iv::f32p(ch.delta), Iv::f32p(a_h))?;
-                c.fadd(s4, dh)?
-            } else {
-                let h0 = c.fadd(s4, Iv::f32p(ch.delta))?;
-                c.fadd(h0, Iv::f32p(a_h))?
-            };
+            // Die h-Unterkette als eigener Baustein — beide Zwischenwerte sind
+            // dadurch beobachtbar (Review 21, Sollte 1; s. [`HChain`]).
+            let h_safe = enc_h_chain(c, s4, ch.delta, a_h, fuse)?.h_safe;
             // (f) + (g) — Auswahl ohne Rundung, dann die Subtraktion.
             if c.knobs.min_before_addends {
                 // Gegenprobe: erst wählen, dann addieren.

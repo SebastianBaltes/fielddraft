@@ -16540,9 +16540,16 @@ fn interval_encloses_the_new_limit_chain_384() {
 ///
 /// Wird der Addend NUR im Spiegel genullt, muss mindestens ein echter
 /// Produktionswert aus der mutierten Hülle fallen — und in der echten drin
-/// liegen. Dazu die drei Struktur-Rückdrehknöpfe: Addend vor den rohen
-/// `de ≥ trust`-Test, die beiden h-Additionen reell zusammengefasst, und der
-/// gespeicherte statt des Ω-aufgelösten Modus.
+/// liegen. Dazu die Struktur-Rückdrehknöpfe „Addend vor den rohen
+/// `de ≥ trust`-Test" und „`min` vor den Addenden": **vier** lasttragende
+/// Ablationen, jede mit echten Escapes.
+///
+/// **Nicht hier** (Review 21, Sollte 1): `fuse_h_additions` ist kein
+/// Soundness-Knopf — eine anders geklammerte natürliche Intervallerweiterung
+/// bleibt eine gültige Obermenge. Diese Stelle misst der Paritätspin
+/// [`interval_h_chain_bracketing_is_op_exact_384`]. Und `stored_mode_dispatch`
+/// sitzt an der Konsumgrenze, misst also nur durch `enclose_node` etwas —
+/// [`interval_stored_mode_dispatch_escapes_through_enclose_node_384`].
 #[test]
 fn interval_p5b2_ablations_are_load_bearing_384() {
     let delta = 2.0f32;
@@ -16687,12 +16694,12 @@ fn interval_p5b2_ablations_are_load_bearing_384() {
         (escapes, inside_real, hull_differs)
     };
 
-    // Die Zellweite je Gegenprobe: die drei groben Rückdrehknöpfe wirken um
-    // `≈ 10⁻⁴ mm` und werden von einer `10⁻⁶`-Zelle nicht verdeckt. Die
-    // reell-zusammengefasste h-Addition unterscheidet sich dagegen nur um ein
-    // ulp — dort MUSS die Zelle auf einen Punkt zusammenfallen, sonst ist die
-    // eigene Rundungsbreite der Hülle grösser als der Effekt.
-    let cases: [(&str, iv::Knobs, u8, f64); 5] = [
+    // Die Zellweite je Gegenprobe: alle vier Rückdrehknöpfe wirken um
+    // `≈ 10⁻⁴ mm` und werden von einer `10⁻⁶`-Zelle nicht verdeckt. (Die
+    // reell zusammengefasste h-Addition unterscheidet sich nur um ein ulp und
+    // ist keine Soundness-Ablation — sie steht seit Review 21 im Paritätspin
+    // `interval_h_chain_bracketing_is_op_exact_384`.)
+    let cases: [(&str, iv::Knobs, u8, f64); 4] = [
         ("A_seam genullt", iv::Knobs { drop_seam_addend: true, ..Default::default() }, 0, 1.0e-6),
         ("A_h genullt", iv::Knobs { drop_h_addend: true, ..Default::default() }, 1, 1.0e-6),
         (
@@ -16700,12 +16707,6 @@ fn interval_p5b2_ablations_are_load_bearing_384() {
             iv::Knobs { addend_before_far_test: true, ..Default::default() },
             2,
             1.0e-6,
-        ),
-        (
-            "h-Additionen reell zusammengefasst",
-            iv::Knobs { fuse_h_additions: true, ..Default::default() },
-            1,
-            0.0,
         ),
         (
             "min vor den Addenden",
@@ -16723,38 +16724,6 @@ fn interval_p5b2_ablations_are_load_bearing_384() {
         };
         let (esc, inside, diff) = run(knobs, fam, r);
         assert!(inside > 20, "{why}: nur {inside} Werte in der echten Hülle");
-        if why == "h-Additionen reell zusammengefasst" {
-            // **Ehrlicher Befund statt erzwungener Gegenprobe.** Diese
-            // Reassoziation unterscheidet sich nur um EIN ulp — und die
-            // Intervall-Stufe rundet nach jeder Op selbst nach aussen. Ihre
-            // eigene Breite deckt den Effekt also zu: die falsch geklammerte
-            // Hülle ist an diesen Punkten immer noch eine GÜLTIGE
-            // Einschliessung, nur anders hergeleitet. Ein Escape wäre hier
-            // nicht zu erzwingen, ohne die Zelle zu verbiegen.
-            //
-            // Was der Pin stattdessen festhält: die Hülle bewegt sich
-            // überhaupt. Wären beide Additionen gar nicht modelliert, wäre der
-            // Knopf ein No-op und die Kette an dieser Stelle ungeprüft — dass
-            // sie es nicht ist, zeigt `A_h genullt` (3.200 Escapes) und
-            // `min vor den Addenden`.
-            assert!(
-                diff > 0,
-                "{why}: die Hülle bewegt sich an KEINEM der {inside} Punkte — dann sind die \
-                 beiden h-Additionen gar nicht modelliert"
-            );
-            assert_eq!(
-                esc, 0,
-                "{why}: {esc} Escapes — das wäre ein NEUER Befund (die Reassoziation ist \
-                 hier bisher sound); bitte ansehen, bevor irgendetwas gelockert wird"
-            );
-            println!(
-                "§8ad Pin 2: {why} — kein Escape (die Aussen-Rundung der Stufe deckt das ulp \
-                 zu), aber die Hülle bewegt sich an {diff} von {} Zellen",
-                fam.len()
-            );
-            broken += 1;
-            continue;
-        }
         assert!(
             esc > 0,
             "{why}: KEIN Produktionswert fällt aus der mutierten Hülle ({inside} geprüft) — \
@@ -16766,7 +16735,7 @@ fn interval_p5b2_ablations_are_load_bearing_384() {
         );
         broken += 1;
     }
-    assert_eq!(broken, 5);
+    assert_eq!(broken, 4);
 }
 
 /// **§8ad-Pin 3: der Spiegel nimmt den Ω-AUFGELÖSTEN Modus, nicht den
@@ -16777,6 +16746,12 @@ fn interval_p5b2_ablations_are_load_bearing_384() {
 /// `stored_mode_is_proved` würde die Addenden weiter modellieren und läge
 /// damit neben dem Feld. Gegenrichtung mitgeprüft: unter `Ω₁` trägt derselbe
 /// Kanal seinen Beweis, sonst wäre der Pin leer-grün.
+///
+/// **Reichweite** (Review 21, Blocker): dieser Pin übergibt den Modus VON HAND
+/// und pinnt damit nur die untergeordnete Aussage über
+/// `enclose_channel_limit`. Dass `enclose_node` den Modus auch WIRKLICH aus
+/// `Ω` auflöst, pinnt erst
+/// [`interval_stored_mode_dispatch_escapes_through_enclose_node_384`].
 #[test]
 fn interval_uses_the_omega_resolved_mode_384() {
     let delta = 2.0f32;
@@ -16846,5 +16821,289 @@ fn interval_uses_the_omega_resolved_mode_384() {
     println!(
         "§8ad Pin 3: {checked} Proben; die Ω₂-Hülle trägt jeden Produktionswert, die Hülle \
          mit dem Ω₁-Modus verfehlt {differ}"
+    );
+}
+
+/// **§8ad-Pin 4 (Review 21, Blocker): die Ω-gebundene Konsumgrenze, durch
+/// `enclose_node` gefahren.**
+///
+/// Pin 3 übergibt den Modus VON HAND und prüft damit nur die untergeordnete
+/// Aussage „`enclose_channel_limit(…, m₂)` trägt den Produktionswert, mit `m₁`
+/// verfehlt es ihn". Würde man im `ArcChannel`-Arm von [`iv::enclose_node`]
+/// morgen auf `stored_limit_mode()` zurückdrehen, bliebe Pin 3 grün — das ist
+/// die Review-19-Fehlerklasse (Ω-Verpflanzung) im Intervallspiegel.
+///
+/// Dieser Pin läuft deshalb durch die ECHTE Konsumgrenze:
+/// (1) ein unter `Ω₁` bewiesener Kanal mit POSITIVEN Addenden wird
+/// **unverändert** in vollständige `ArcChannel`-Knoten über fremde `Ω₂`
+/// verpflanzt (die Verpflanzungsfamilie aus §8ac);
+/// (2) die Produktionswerte des `Ω₂`-Feldes kommen aus dem echten Auswerter
+/// (`BoundedCsg::sdf`, der seinerseits `resolve_stop_modes_at` fährt);
+/// (3) das normale [`iv::enclose_node`] muss JEDEN dieser Werte einschliessen;
+/// (4) mit `stored_mode_dispatch` muss mindestens einer AUS der Hülle fallen.
+///
+/// Anti-Leer-Gates: unter `Ω₁` muss der Kanal wirklich `Proved` sein und beide
+/// Addenden `> 0` tragen, der gespeicherte Modus muss `Proved` sein (sonst ist
+/// der Knopf ein No-op), jedes `Ω₂` muss sich vom `Ω₁`-Schnappschuss
+/// unterscheiden und produktionsseitig auf Legacy auflösen — und es braucht
+/// eine Mindestzahl normal eingeschlossener Proben.
+#[test]
+fn interval_stored_mode_dispatch_escapes_through_enclose_node_384() {
+    let delta = 2.0f32;
+    let m = cert_matrix(delta);
+    let f1 = m.iter().find(|(n, ..)| n.starts_with("Ecken-Schale t/δ=2.5")).unwrap();
+    let (stop1, ch1) = proved_channels_with_stop(&f1.1).into_iter().next().unwrap();
+    let om1 = wit::omega_of(&stop1).unwrap();
+    let snap1 = wit::omega_snapshot(om1);
+    let m1 = ch1.limit_mode_at_stop(&stop1);
+    assert!(m1.is_proved(), "unter Ω₁ nicht bewiesen — der Pin misst nichts");
+    let (a_seam, a_h) = m1.addends();
+    assert!(a_seam > 0.0 && a_h > 0.0, "Addenden {a_seam}/{a_h} — der Pin misst nichts");
+    // Der Knopf nimmt genau DIESEN Modus; ist er nicht bewiesen, ist er ein No-op.
+    assert!(
+        ch1.stored_limit_mode().is_proved(),
+        "der gespeicherte Modus ist gar nicht bewiesen — dann ist der Rückdrehknopf ein No-op"
+    );
+
+    let stored = iv::Knobs { stored_mode_dispatch: true, ..Default::default() };
+    let (mut nodes, mut inside, mut escapes, mut moved) = (0usize, 0usize, 0usize, 0usize);
+    let mut fixtures_with_escapes = 0usize;
+    for (name, field, ..) in m.iter() {
+        let mut stops = Vec::new();
+        stop_nodes(field, &mut stops);
+        let mut here = 0usize;
+        for st in stops {
+            let BoundedCsg::ArcChannel { inner, verts, rims, lb, aabb, .. } = st else { continue };
+            if wit::omega_of(inner).map(wit::omega_snapshot) == Some(snap1.clone()) {
+                continue; // das ist Ω₁ selbst — keine Verpflanzung.
+            }
+            // (1) der UNVERÄNDERTE Kanal unter einem fremden Ω.
+            let node = BoundedCsg::ArcChannel {
+                inner: inner.clone(),
+                channels: vec![ch1.clone()],
+                verts: verts.clone(),
+                rims: rims.clone(),
+                lb: lb.clone(),
+                aabb: *aabb,
+            };
+            // Produktionsseitig fällt der Modus auf Legacy — sonst misst der
+            // Knopf keinen Unterschied.
+            let prod = crate::offset_channel::resolve_stop_modes(inner, &[ch1.clone()]);
+            assert!(
+                !prod[0].is_proved(),
+                "{name}: der verpflanzte Kanal gilt unter dem fremden Ω weiter als bewiesen"
+            );
+            nodes += 1;
+            let mut g = Lcg(0x8ad_2100);
+            let arc = ch1.arcs[0].clone();
+            for _ in 0..300 {
+                let sp = g.next_f64() as f32;
+                let rad = (g.next_f64() * ch1.trust as f64 * 0.9) as f32;
+                let d = [g.sym(), g.sym(), g.sym()];
+                let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                if !(n > 1.0e-9) {
+                    continue;
+                }
+                let p = [
+                    arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n) as f32 * rad,
+                    arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n) as f32 * rad,
+                    arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n) as f32 * rad,
+                ];
+                let cell = tight_cell(p, 1.0e-6);
+                let mut c0 = iv::Ctx::new();
+                let Ok(real) = iv::enclose_node(&mut c0, &node, cell.world_f32()) else { continue };
+                let mut c1 = iv::Ctx::with_knobs(stored);
+                let Ok(mutd) = iv::enclose_node(&mut c1, &node, cell.world_f32()) else { continue };
+                if mutd.lo != real.lo || mutd.hi != real.hi {
+                    moved += 1;
+                }
+                for q in cell_samples(&cell, 1) {
+                    let qf = [q[0] as f32, q[1] as f32, q[2] as f32];
+                    let v = node.sdf(qf, EvalMode::Visual) as f64;
+                    // (3) die ECHTE Hülle trägt jeden Produktionswert.
+                    assert!(
+                        real.contains(v),
+                        "{name}: enclose_node verfehlt den Feldwert {v} bei {qf:?} ({real:?})"
+                    );
+                    inside += 1;
+                    // (4) die Hülle mit dem GESPEICHERTEN Modus nicht.
+                    if !mutd.contains(v) {
+                        escapes += 1;
+                        here += 1;
+                    }
+                }
+            }
+        }
+        if here > 0 {
+            fixtures_with_escapes += 1;
+        }
+    }
+    assert!(nodes >= 5, "nur {nodes} verpflanzte Ω₂-Knoten");
+    assert!(inside > 10_000, "nur {inside} eingeschlossene Proben — der Pin misst zu wenig");
+    assert!(
+        escapes > 100 && fixtures_with_escapes >= 3,
+        "nur {escapes} Escapes an {fixtures_with_escapes} Fixturen: der Rückdrehknopf an der \
+         KONSUMGRENZE reisst nicht — dann bindet der Pin die Ω-Auflösung in enclose_node nicht"
+    );
+    println!(
+        "§8ad Pin 4: {nodes} Ω₂-Knoten, {inside} Feldwerte alle von enclose_node eingeschlossen; \
+         mit stored_mode_dispatch fallen {escapes} heraus ({fixtures_with_escapes} Fixturen, \
+         {moved} Zellen bewegt), A_seam = {a_seam:.3e}, A_h = {a_h:.3e}"
+    );
+}
+
+/// **§8ad-Pin 5 (Review 21, Sollte 1): die Klammerung der h-Unterkette — ein
+/// STRUKTUR-/PARITÄTSPIN, keine Soundness-Ablation.**
+///
+/// `fuse_h_additions` liefert am Endergebnis keinen Escape, und das ist **kein
+/// Soundness-Verdacht**: eine anders geklammerte natürliche
+/// Intervallerweiterung kann trotz falscher Produktionsklammerung eine gültige
+/// Obermenge bleiben — `Ctx::fadd` verbreitert jeden Zwischenschritt nach
+/// aussen und nimmt den ein-ulp-Unterschied auf. Einen Escape zu ERZWINGEN
+/// (etwa per nach innen gerichteter Rundung) würde zwei Fehler koppeln und
+/// nichts beweisen.
+///
+/// Gemessen wird deshalb, was messbar IST:
+/// 1. eine adversariale skalare f32-Familie, in der
+///    `fl(fl(s4+δ)+A_h) != fl(s4+fl(δ+A_h))` wirklich gilt — die Reassoziation
+///    ist also keine leere Mutation;
+/// 2. die echte Intervall-Unterkette enthält ihre produktiven Zwischenwerte
+///    `h0 = fl(s4+δ)` und `h_safe = fl(h0+A_h)` an JEDEM Punkt dieser Familie;
+/// 3. die zusammengefasste Kette weicht an einem messbaren Teil davon ab — sie
+///    ist gültig, aber nicht dieselbe Kette;
+/// 4. am Endergebnis bleibt der Knopf escape-frei — ein Escape wäre ein NEUER
+///    Befund und lässt den Pin reissen, statt weggerundet zu werden.
+#[test]
+fn interval_h_chain_bracketing_is_op_exact_384() {
+    let delta = 2.0f32;
+    // (1) Die adversariale Skalar-Familie: echte (δ, A_h) aus bewiesenen
+    // Kanälen und echte Gate-Werte `s4` — gesammelt wird nur, wo die
+    // Reassoziation die f32-Bits WIRKLICH ändert.
+    let mut g = Lcg(0x8ad_1c8a);
+    let mut fam: Vec<(OffsetChannel, oc::ChannelLimitMode, [f32; 3])> = Vec::new();
+    let (mut scalar_diff, mut scalar_total) = (0usize, 0usize);
+    for (_n, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        for (stop, ch) in proved_channels_with_stop(&field) {
+            let mode = ch.limit_mode_at_stop(&stop);
+            let (_, a_h) = mode.addends();
+            if !(a_h > 0.0) {
+                continue;
+            }
+            let arc = ch.arcs[0].clone();
+            for _ in 0..300 {
+                let sp = g.next_f64() as f32;
+                let rad = (g.next_f64() * ch.trust as f64 * 0.9) as f32;
+                let d = [g.sym(), g.sym(), g.sym()];
+                let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                if !(n > 1.0e-9) {
+                    continue;
+                }
+                let p = [
+                    arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n) as f32 * rad,
+                    arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n) as f32 * rad,
+                    arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n) as f32 * rad,
+                ];
+                let s4 = oc::face_plane_gate(p, &ch);
+                if !s4.is_finite() || s4.abs() > 1.0e29 {
+                    continue;
+                }
+                scalar_total += 1;
+                let exact = (s4 + ch.delta) + a_h;
+                let fused = s4 + (ch.delta + a_h);
+                if exact.to_bits() != fused.to_bits() {
+                    scalar_diff += 1;
+                    if fam.len() < 400 {
+                        fam.push((ch.clone(), mode, p));
+                    }
+                }
+            }
+        }
+    }
+    assert!(scalar_total > 1_000, "nur {scalar_total} Skalar-Proben");
+    assert!(
+        fam.len() > 50,
+        "nur {} Punkte mit fl(fl(s4+δ)+A_h) != fl(s4+fl(δ+A_h)) von {scalar_total} — dann ist \
+         die Reassoziation an dieser Familie eine leere Mutation",
+        fam.len()
+    );
+
+    // (2)+(3) Die ECHTE Unterkette trägt ihre Zwischenwerte; die
+    // zusammengefasste weicht messbar ab.
+    let (mut checked, mut fused_moved) = (0usize, 0usize);
+    for (ch, mode, p) in &fam {
+        let (_, a_h) = mode.addends();
+        let cell = tight_cell(*p, 0.0);
+        let mut c = iv::Ctx::new();
+        let Ok(s4) = iv::enc_gate_planes_for_test(&mut c, cell.world_f32(), &ch.face_planes) else {
+            continue;
+        };
+        let Ok(exact) = iv::enc_h_chain_for_test(&mut c, s4, ch.delta, a_h, false) else {
+            continue;
+        };
+        let Ok(fused) = iv::enc_h_chain_for_test(&mut c, s4, ch.delta, a_h, true) else {
+            continue;
+        };
+        let h0 = oc::face_plane_gate(*p, ch) + ch.delta;
+        let h_safe = h0 + a_h;
+        assert!(
+            exact.h0.expect("die produktive Klammerung hat ein h0").contains(h0 as f64),
+            "die Unterkette verfehlt h0 = {h0}"
+        );
+        assert!(exact.h_safe.contains(h_safe as f64), "die Unterkette verfehlt h_safe = {h_safe}");
+        assert!(
+            fused.h0.is_none(),
+            "die zusammengefasste Kette hat gar kein h0 — dort ist nichts zu vergleichen"
+        );
+        if fused.h_safe.lo != exact.h_safe.lo || fused.h_safe.hi != exact.h_safe.hi {
+            fused_moved += 1;
+        }
+        checked += 1;
+    }
+    assert!(checked > 50, "nur {checked} Unterketten geprüft");
+    assert!(
+        fused_moved > 0,
+        "die zusammengefasste Kette liefert an allen {checked} Punkten dasselbe Intervall — \
+         dann ist der Knopf ein No-op und die Klammerung ungeprüft"
+    );
+
+    // (4) Am Endergebnis bleibt der Knopf escape-frei — der ehrliche Befund.
+    let knobs = iv::Knobs { fuse_h_additions: true, ..Default::default() };
+    let (mut inside, mut escapes, mut hull_moved) = (0usize, 0usize, 0usize);
+    for (ch, mode, p) in &fam {
+        let cell = tight_cell(*p, 0.0);
+        let mut c0 = iv::Ctx::new();
+        let Ok(real) = iv::enclose_channel_limit(&mut c0, cell.world_f32(), ch, *mode) else {
+            continue;
+        };
+        let mut c1 = iv::Ctx::with_knobs(knobs);
+        let Ok(mutd) = iv::enclose_channel_limit(&mut c1, cell.world_f32(), ch, *mode) else {
+            continue;
+        };
+        if mutd.lo != real.lo || mutd.hi != real.hi {
+            hull_moved += 1;
+        }
+        for q in cell_samples(&cell, 1) {
+            let qf = [q[0] as f32, q[1] as f32, q[2] as f32];
+            let got = oc::channel_limit(qf, ch, *mode) as f64;
+            if real.contains(got) {
+                inside += 1;
+                if !mutd.contains(got) {
+                    escapes += 1;
+                }
+            }
+        }
+    }
+    assert!(inside > 50, "nur {inside} Werte in der echten Hülle");
+    assert_eq!(
+        escapes, 0,
+        "{escapes} Escapes am Endergebnis — das wäre ein NEUER Befund (die Reassoziation ist \
+         dort bisher eine gültige, nur anders hergeleitete Obermenge); bitte ansehen, bevor \
+         irgendetwas gelockert wird"
+    );
+    println!(
+        "§8ad Pin 5 (Parität, NICHT lasttragend): {scalar_diff} von {scalar_total} Skalar-Proben \
+         zeigen fl(fl(s4+δ)+A_h) != fl(s4+fl(δ+A_h)); die echte Unterkette enthält h0 und h_safe \
+         an allen {checked} Punkten, die zusammengefasste weicht an {fused_moved} ab; am \
+         Endergebnis {escapes} Escapes von {inside} Werten ({hull_moved} Hüllen bewegt)"
     );
 }
