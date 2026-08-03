@@ -297,8 +297,9 @@ pub(crate) fn node_to_tree(node: &BoundedCsg, p: &[Tree; 3]) -> Result<Tree, Str
                     None => l,
                 });
             };
-            for ch in channels {
-                let (nd, l) = channel_to_tree(&d0, &lbt, &d, p, ch);
+            let modes = crate::offset_channel::resolve_stop_modes(inner, channels);
+            for (ci, ch) in channels.iter().enumerate() {
+                let (nd, l) = channel_to_tree(&d0, &lbt, &d, p, ch, modes[ci]);
                 d = nd;
                 acc(l, &mut lim);
             }
@@ -677,6 +678,7 @@ fn channel_to_tree(
     d: &Tree,
     p: &[Tree; 3],
     ch: &crate::offset_channel::OffsetChannel,
+    mode: crate::offset_channel::ChannelLimitMode,
 ) -> (Tree, Tree) {
     // Laufende argmin-Register: (best, q, m1, m2) als Trees.
     let mut best = Tree::from(f64::INFINITY.min(1e30));
@@ -769,7 +771,7 @@ fn channel_to_tree(
     // #384 §8ac / P5b-1A: `de_safe = de + A_seam`, `h_safe = (s4 + δ) + A_h`.
     // Bei `LegacyUnproven` sind beide Addenden null — symbolisch derselbe
     // Baum wie zuvor.
-    let (a_seam, a_h) = ch.limit_mode().addends();
+    let (a_seam, a_h) = mode.addends();
     let lim_on = Tree::from(ch.delta as f64)
         - (best.clone() + a_seam as f64)
             .min(s4.clone() + ch.delta as f64 + a_h as f64);

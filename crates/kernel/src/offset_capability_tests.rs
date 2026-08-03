@@ -2567,14 +2567,14 @@ fn stop_terms_are_order_independent_384() {
                     ];
                     for d0 in [-6.0f32, -2.0, -0.5, 0.0, 0.5, 2.0, 6.0] {
                         let base =
-                            crate::offset_channel::stop_apply(d0, p, channels, verts, None);
+                            crate::offset_channel::stop_apply(d0, p, channels, verts, None, &channels.iter().map(|c| c.limit_mode_channel_only()).collect::<Vec<_>>());
                         if base != d0 {
                             active += 1;
                         }
                         for (c, v) in
                             [(&rev_ch, verts), (&rot_ch, verts), (channels, &rev_vs)]
                         {
-                            let got = crate::offset_channel::stop_apply(d0, p, c, v, None);
+                            let got = crate::offset_channel::stop_apply(d0, p, c, v, None, &c.iter().map(|c| c.limit_mode_channel_only()).collect::<Vec<_>>());
                             assert_eq!(
                                 got.to_bits(),
                                 base.to_bits(),
@@ -2798,7 +2798,17 @@ fn stop_limit_never_exceeds_the_naive_field_384() {
             BoundedCsg::ArcChannel { inner, channels, verts, lb, .. } => {
                 if channels.first().map(|c| c.concave).unwrap_or(false) {
                     let d0 = inner.sdf(p, EvalMode::Visual);
-                    let d = crate::offset_channel::stop_apply(d0, p, channels, verts, lb.as_ref());
+                    let d = crate::offset_channel::stop_apply(
+                        d0,
+                        p,
+                        channels,
+                        verts,
+                        lb.as_ref(),
+                        &channels
+                            .iter()
+                            .map(|c| c.limit_mode_channel_only())
+                            .collect::<Vec<_>>(),
+                    );
                     if d - d0 > *worst {
                         *worst = d - d0;
                         *at = p;
@@ -4081,7 +4091,7 @@ fn eval_mut(n: &BoundedCsg, p: [f32; 3], lb: &dyn Fn([f32; 3]) -> f32) -> f32 {
             let mut d = d0;
             let mut lim = -crate::offset_channel::END_PLANE_OFF;
             for ch in channels {
-                lim = lim.max(crate::offset_channel::channel_limit(p, ch));
+                lim = lim.max(crate::offset_channel::channel_limit(p, ch, ch.limit_mode_channel_only()));
                 d = channel_apply_mut(d0, d, p, ch, extra);
             }
             for vs in verts {
@@ -5026,7 +5036,7 @@ fn decompose_at(field: &BoundedCsg, pf: [f32; 3], mode: P8pMode) -> String {
         let mut best_de = f32::INFINITY;
         for (ci, ch) in channels.iter().enumerate() {
             let skip = oc::channel_skip(d, pf, ch);
-            let lc = oc::channel_limit(pf, ch);
+            let lc = oc::channel_limit(pf, ch, ch.limit_mode_channel_only());
             lim = lim.max(lc);
             let before = d;
             d = eval_term(d0, d, pf, ch, lbv, mode);
@@ -5207,7 +5217,7 @@ fn eval_p8p(n: &BoundedCsg, p: [f32; 3], mode: P8pMode) -> f32 {
             let mut d = d0;
             let mut lim = -oc::END_PLANE_OFF;
             for ch in channels {
-                lim = lim.max(oc::channel_limit(p, ch));
+                lim = lim.max(oc::channel_limit(p, ch, ch.limit_mode_channel_only()));
                 if oc::channel_skip(d, p, ch) {
                     continue;
                 }
@@ -9364,7 +9374,7 @@ fn fixture_has_proved_mode(field: &BoundedCsg) -> bool {
     stop_nodes(field, &mut stops);
     stops.iter().any(|st| match st {
         BoundedCsg::ArcChannel { channels, .. } => {
-            channels.iter().any(|c| c.limit_mode().is_proved())
+            channels.iter().any(|c| c.limit_mode_channel_only().is_proved())
         }
         _ => false,
     })
@@ -10769,7 +10779,7 @@ fn interval_prune_can_skip_even_the_first_arc_384() {
     // Die Produktion liefert `d` — weil `channel_nearest` `None` ist.
     let got = crate::offset_channel::channel_apply(5.0, 5.0, p, &ch, 10.0);
     assert_eq!(got, 5.0, "die Produktion liefert {got}, erwartet war der unveränderte `d`");
-    let lim = crate::offset_channel::channel_limit(p, &ch);
+    let lim = crate::offset_channel::channel_limit(p, &ch, ch.limit_mode_channel_only());
     assert_eq!(lim, -crate::offset_channel::END_PLANE_OFF, "channel_limit ist nicht neutral");
 
     // (1) Mit dem Fix: die Hülle enthält beides.
@@ -13576,19 +13586,19 @@ fn clamp_frozen_form_is_neutral_at_zero_and_monotone_384() {
                     // Modus. Das ist die schärfere Fassung dieses Pins: vorher
                     // stand hier „Produktion == eingefrorene Form bei A = 0",
                     // weil es noch keinen Konsumenten gab.
-                    let (a_s, a_hh) = ch.limit_mode().addends();
-                    let today = oc::channel_limit(p, ch);
+                    let (a_s, a_hh) = ch.limit_mode_channel_only().addends();
+                    let today = oc::channel_limit(p, ch, ch.limit_mode_channel_only());
                     let frozen = wit::frozen_channel_limit(p, ch, a_s, a_hh);
                     assert_eq!(
                         today.to_bits(),
                         frozen.to_bits(),
                         "{name}: die Produktion weicht von der eingefrorenen Kette ab \
                          ({today} gegen {frozen}) bei {p:?}, Modus {:?}",
-                        ch.limit_mode()
+                        ch.limit_mode_channel_only()
                     );
                     // Und die Legacy-Zusage, unverändert: ein Kanal OHNE Beweis
                     // liefert bitgenau die alte Form.
-                    if !ch.limit_mode().is_proved() {
+                    if !ch.limit_mode_channel_only().is_proved() {
                         assert_eq!(
                             (a_s.to_bits(), a_hh.to_bits()),
                             (0f32.to_bits(), 0f32.to_bits()),
@@ -13727,8 +13737,8 @@ fn clamp_geometry_subchain_consumes_only_de_384() {
                         (ch.bound_c[2] as f64 + g.sym() * (ch.bound_r + ch.trust) as f64) as f32,
                     ];
                     assert_eq!(
-                        oc::channel_limit(p, ch).to_bits(),
-                        oc::channel_limit(p, &m).to_bits(),
+                        oc::channel_limit(p, ch, ch.limit_mode_channel_only()).to_bits(),
+                        oc::channel_limit(p, &m, m.limit_mode_channel_only()).to_bits(),
                         "{name}: channel_limit hat sich durch eine reine m̂/D-Mutation bewegt — \
                          dann trägt ε_D doch ins P5b-Budget ein"
                     );
@@ -15131,7 +15141,7 @@ fn mode_tally(field: &BoundedCsg) -> (usize, usize, std::collections::BTreeMap<S
     for st in stops {
         if let BoundedCsg::ArcChannel { channels, .. } = st {
             for ch in channels {
-                match ch.limit_mode() {
+                match ch.limit_mode_channel_only() {
                     crate::offset_channel::ChannelLimitMode::Proved { .. } => proved += 1,
                     crate::offset_channel::ChannelLimitMode::LegacyUnproven(r) => {
                         legacy += 1;
@@ -15237,15 +15247,15 @@ fn activation_only_adds_material_384() {
                 continue;
             };
             for (a, b) in cn.iter().zip(co.iter()) {
-                assert!(!b.limit_mode().is_proved(), "die Alt-Kopie trägt noch einen Beweis");
+                assert!(!b.limit_mode_channel_only().is_proved(), "die Alt-Kopie trägt noch einen Beweis");
                 for _ in 0..250 {
                     let p = [
                         (a.bound_c[0] as f64 + g.sym() * (a.bound_r + a.trust) as f64) as f32,
                         (a.bound_c[1] as f64 + g.sym() * (a.bound_r + a.trust) as f64) as f32,
                         (a.bound_c[2] as f64 + g.sym() * (a.bound_r + a.trust) as f64) as f32,
                     ];
-                    let ln = oc::channel_limit(p, a);
-                    let l0 = oc::channel_limit(p, b);
+                    let ln = oc::channel_limit(p, a, a.limit_mode_channel_only());
+                    let l0 = oc::channel_limit(p, b, b.limit_mode_channel_only());
                     assert!(
                         ln <= l0,
                         "{name}: lim_neu = {ln} > lim_alt = {l0} — die Aktivierung NIMMT \
@@ -15254,7 +15264,7 @@ fn activation_only_adds_material_384() {
                     if ln < l0 {
                         lim_lower += 1;
                     }
-                    if !a.limit_mode().is_proved() {
+                    if !a.limit_mode_channel_only().is_proved() {
                         assert_eq!(
                             ln.to_bits(),
                             l0.to_bits(),
@@ -15349,8 +15359,8 @@ fn activation_attribution_harness_384() {
                         arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n) as f32 * rad,
                         arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n) as f32 * rad,
                     ];
-                    let l0 = oc::channel_limit(p, b);
-                    let ln = oc::channel_limit(p, a);
+                    let l0 = oc::channel_limit(p, b, b.limit_mode_channel_only());
+                    let ln = oc::channel_limit(p, a, a.limit_mode_channel_only());
                     // Attribution nach dem ALTEN Gewinner.
                     let bucket = match oc::channel_nearest(p, b) {
                         Some((de, _, _, _)) if de.is_finite() && de < b.trust => {
@@ -15369,7 +15379,7 @@ fn activation_attribution_harness_384() {
                         moved[bucket] += 1;
                         worst[bucket] = worst[bucket].max((l0 - ln) as f64);
                         assert_ne!(bucket, 2, "{name}: ein NEUTRALER Punkt hat sich bewegt");
-                        assert!(a.limit_mode().is_proved(), "ein Legacy-Kanal hat sich bewegt");
+                        assert!(a.limit_mode_channel_only().is_proved(), "ein Legacy-Kanal hat sich bewegt");
                     }
                     if (l0 > 0.0) != (ln > 0.0) {
                         sign_flips += 1;
@@ -15472,10 +15482,10 @@ fn activation_h_families_hold_on_the_real_field_384() {
         for st in stops {
             let BoundedCsg::ArcChannel { channels, .. } = st else { continue };
             for ch in channels {
-                if !ch.limit_mode().is_proved() {
+                if !ch.limit_mode_channel_only().is_proved() {
                     continue;
                 }
-                let (a_seam, _a_h) = ch.limit_mode().addends();
+                let (a_seam, _a_h) = ch.limit_mode_channel_only().addends();
                 let arc = ch.arcs[0].clone();
                 // Gezielt ins Umhäng-Band: Bisektion auf `h − de = 0`.
                 for _ in 0..80 {
@@ -15528,7 +15538,7 @@ fn activation_h_families_hold_on_the_real_field_384() {
                         }
                         let dist = exact([p[0] as f64, p[1] as f64, p[2] as f64]);
                         if dist > 0.0 {
-                            let lim = oc::channel_limit(p, ch) as f64;
+                            let lim = oc::channel_limit(p, ch, ch.limit_mode_channel_only()) as f64;
                             let valid = ch.delta as f64 - dist;
                             assert!(
                                 lim <= valid + 1.0e-12,
@@ -15636,7 +15646,7 @@ fn activation_mutation_invalidates_the_runtime_mode_384() {
     for st in &stops {
         if let BoundedCsg::ArcChannel { channels, .. } = st {
             for c in channels {
-                if c.limit_mode().is_proved()
+                if c.limit_mode_channel_only().is_proved()
                     && c.face_planes.iter().any(|g| g[3] != -crate::offset_channel::END_PLANE_OFF)
                 {
                     base = Some(c.clone());
@@ -15651,7 +15661,7 @@ fn activation_mutation_invalidates_the_runtime_mode_384() {
         .iter()
         .position(|g| g[3] != -crate::offset_channel::END_PLANE_OFF)
         .unwrap();
-    let (a0, h0) = base.limit_mode().addends();
+    let (a0, h0) = base.limit_mode_channel_only().addends();
     assert!(a0 > 0.0 && h0 > 0.0, "die Ausgangs-Addenden sind null — der Pin misst nichts");
 
     // Probe-Punkte, an denen der Term wirklich bindet.
@@ -15671,7 +15681,7 @@ fn activation_mutation_invalidates_the_runtime_mode_384() {
             arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n) as f32 * rad,
             arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n) as f32 * rad,
         ];
-        if oc::channel_limit(p, &base) > -1.0e29 {
+        if oc::channel_limit(p, &base, base.limit_mode_channel_only()) > -1.0e29 {
             pts.push(p);
         }
     }
@@ -15679,7 +15689,7 @@ fn activation_mutation_invalidates_the_runtime_mode_384() {
     // §8ac-Korrektur (achtzehntes Review, Punkt 5): der Tape-Teil hat vorher
     // KEIN Tape gemessen — er kompilierte das UNMUTIERTE Feld, warf das
     // Ergebnis weg und rekonstruierte Modus/Addenden wieder aus
-    // `ch.limit_mode()`. Jetzt wird der mutierte Kanal wirklich in den
+    // `ch.limit_mode_channel_only()`. Jetzt wird der mutierte Kanal wirklich in den
     // `ArcChannel`-Knoten eingesetzt, kompiliert, und die drei Kopf-Worte
     // werden aus dem emittierten Tape GELESEN.
     let tape_mode = |ch: &OffsetChannel| -> (f32, f32, f32) {
@@ -15725,14 +15735,14 @@ fn activation_mutation_invalidates_the_runtime_mode_384() {
         );
         // (2) der NACHGEPRÜFTE Modus ist Legacy(ProofInvalidated).
         assert_eq!(
-            m.limit_mode(),
+            m.limit_mode_channel_only(),
             crate::offset_channel::ChannelLimitMode::LegacyUnproven(
                 crate::offset_channel::LegacyReason::ProofInvalidated
             ),
             "{why}: der mutierte Kanal gilt weiter als bewiesen"
         );
         // (3) Produktion: die Addenden sind weg.
-        let (s, hh) = m.limit_mode().addends();
+        let (s, hh) = m.limit_mode_channel_only().addends();
         assert_eq!((s, hh), (0.0, 0.0), "{why}: die Produktion liest weiter Addenden");
         // (4) Tape: Modus-Wort 0, Addenden 0.
         assert_eq!(tape_mode(&m), (0.0, 0.0, 0.0), "{why}: das Tape trägt weiter den Beweis");
@@ -15744,8 +15754,8 @@ fn activation_mutation_invalidates_the_runtime_mode_384() {
                 crate::offset_channel::LegacyReason::NotCertified,
             );
             assert_eq!(
-                oc::channel_limit(*p, &m).to_bits(),
-                oc::channel_limit(*p, &legacy).to_bits(),
+                oc::channel_limit(*p, &m, m.limit_mode_channel_only()).to_bits(),
+                oc::channel_limit(*p, &legacy, legacy.limit_mode_channel_only()).to_bits(),
                 "{why}: der Feldwert ist nicht der Legacy-Wert"
             );
         }
@@ -15769,13 +15779,13 @@ fn activation_mutation_invalidates_the_runtime_mode_384() {
         !recert.cached_limit_mode().is_proved(),
         "eine erfolglose Rezertifizierung liess den GESPEICHERTEN Modus stehen"
     );
-    assert!(!recert.limit_mode().is_proved());
+    assert!(!recert.limit_mode_channel_only().is_proved());
 
     // (7) Der unveränderte Kanal behält seinen Modus — sonst wäre der Pin
     //     grün, weil er ALLES invalidiert.
     let intact = base.clone();
-    assert!(intact.limit_mode().is_proved(), "der unveränderte Kanal verlor seinen Modus");
-    assert_eq!(intact.limit_mode().addends(), (a0, h0));
+    assert!(intact.limit_mode_channel_only().is_proved(), "der unveränderte Kanal verlor seinen Modus");
+    assert_eq!(intact.limit_mode_channel_only().addends(), (a0, h0));
     println!(
         "§8ac Pin 5: 7 Mutationen + erfolglose Rezertifizierung entziehen den Modus; \
          unveränderter Kanal behält A_seam = {a0:.3e}, A_h = {h0:.3e}"
@@ -15830,7 +15840,7 @@ fn activation_is_measurable_on_the_gpu_fixture_384() {
     for st in &stops {
         let BoundedCsg::ArcChannel { channels, .. } = st else { continue };
         for c in channels {
-            let (s, h) = c.limit_mode().addends();
+            let (s, h) = c.limit_mode_channel_only().addends();
             amax = (amax.0.max(s), amax.1.max(h));
         }
     }
@@ -16007,7 +16017,7 @@ fn activation_forged_digest_still_falls_back_384() {
     for st in &stops {
         if let BoundedCsg::ArcChannel { channels, .. } = st {
             for c in channels {
-                if c.limit_mode().is_proved()
+                if c.limit_mode_channel_only().is_proved()
                     && c.face_planes.iter().any(|g| g[3] != -crate::offset_channel::END_PLANE_OFF)
                 {
                     base = Some(c.clone());
@@ -16043,13 +16053,13 @@ fn activation_forged_digest_still_falls_back_384() {
         assert!(m.cached_limit_mode().is_proved(), "{why}: der Pin misst nichts");
         // … und der EXAKTE Vergleich fängt es trotzdem.
         assert_eq!(
-            m.limit_mode(),
+            m.limit_mode_channel_only(),
             crate::offset_channel::ChannelLimitMode::LegacyUnproven(
                 crate::offset_channel::LegacyReason::ProofInvalidated
             ),
             "{why}: der gefälschte Digest hat den Modus gerettet — ein Hash reicht hier nicht"
         );
-        assert_eq!(m.limit_mode().addends(), (0.0, 0.0));
+        assert_eq!(m.limit_mode_channel_only().addends(), (0.0, 0.0));
         // Auch im Tape.
         let f = field_with_single_channel(&field, m.clone());
         let t = compile_body(&f);
@@ -16074,16 +16084,244 @@ fn activation_forged_digest_still_falls_back_384() {
     }
     assert_eq!(forged, 2);
 
-    // Und: `seam = None` bei gespeichertem Proved ⇒ ebenfalls Legacy — die
-    // Beweis-Löschung ist strukturell abgedeckt, nicht per Caller-Disziplin.
+    // §8ac-Korrektur (19. Review, Pin-Hygiene): der frühere „wiped proof"-Teil
+    // behauptete `seam == None bei gespeichertem Proved`, rief aber nur
+    // `force_legacy_final_channel` — das setzt den Modus, LÖSCHT die
+    // Beweiszelle aber nicht. Behauptung und Messung liefen auseinander.
+    //
+    // Jetzt wird die Zelle wirklich über den Beweismodul-Weg gewischt: eine
+    // Zertifizierung mit ungültiger Konfiguration ruft `seal_seam_proof(None)`.
+    // Und dabei zeigt sich der eigentliche Punkt: `seal_seam_proof` entzieht
+    // den Modus SELBST, der Zustand „Proved mit leerer Beweiszelle" ist über
+    // den versiegelten Weg also gar nicht mehr erreichbar. Der `seam == None`-
+    // Zweig in `limit_mode_for` ist damit Redundanz, kein Hauptpfad — und
+    // genau das steht hier jetzt statt einer falschen Behauptung.
     let mut wiped = base.clone();
-    wit::force_legacy_final_channel(
-        &mut wiped,
-        crate::offset_channel::LegacyReason::NotCertified,
-    );
-    assert!(!wiped.limit_mode().is_proved());
+    assert!(wiped.seam_proof().is_some() && wiped.cached_limit_mode().is_proved());
+    let bad = wit::WitnessCfg { min_offset: 0.0, ..wit::WitnessCfg::default() };
+    let (st, _) = wit::certify_channel(&BoundedCsg::Empty, &mut wiped, bad);
+    assert_eq!(st, wit::SeamProofStatus::BadConfig);
+    assert!(wiped.seam_proof().is_none(), "die Beweiszelle wurde nicht gewischt");
+    assert!(!wiped.cached_limit_mode().is_proved(), "der Schreibweg entzog den Modus nicht");
+    assert!(!wiped.limit_mode_channel_only().is_proved());
     println!(
         "§8ac Pin 7: P⁻¹ = {p_inv:#x}; zwei Digest-Fälschungen rekonstruieren D_alt exakt und \
          fallen trotzdem auf Legacy"
+    );
+}
+
+/// **§8ac-Pin 8 (Blocker des neunzehnten Reviews): ein UNVERÄNDERTER
+/// bewiesener Kanal unter einem ANDEREN `Ω` verliert seinen Modus — bis ins
+/// Tape.**
+///
+/// Der exakte Kanal-Vergleich aus v0.65.2 stand auf einem Bein. Der Beweis
+/// wird beim Auflösen gegen Kanal **und** `Ω` geprüft, `limit_mode()` prüfte
+/// zur Laufzeit aber nur den Kanal. Ein bewiesener, **bit-identischer** Kanal,
+/// unter einen Stopp mit anderem `Ω` kopiert, behielt damit seinen Modus:
+/// `OffsetChannel` ist `Clone`, `BoundedCsg::ArcChannel` ist öffentlich
+/// konstruierbar — und `seam_addend(Ω₂)` hätte korrekt `None` gesagt, wurde
+/// vom Feld- und Tape-Pfad aber nie gefragt. Das war die §8aa-B3-Familie,
+/// wieder offen.
+///
+/// Der Pin fährt genau die vom Review verlangte Kette:
+/// (1) bewiesenen Kanal unter `Ω₁` gewinnen; (2) `seam_addend(Ω₂) == None`;
+/// (3) den UNVERÄNDERTEN Kanal unter einen `ArcChannel` über `Ω₂` setzen;
+/// (4) Laufzeitmodus, Feldwert **und** die emittierten Kopf-Worte müssen
+/// Legacy/null sein.
+#[test]
+fn activation_omega_transplant_reaches_neither_field_nor_tape_384() {
+    use crate::sdf_compiler::{compile_body, CHANNEL_HEADER, OP_ARC_CHANNEL};
+    let delta = 2.0f32;
+    let mut fields: Vec<(String, BoundedCsg)> = Vec::new();
+    for (n, f, _e, _l, _h, _c) in cert_matrix(delta) {
+        fields.push((n, f));
+    }
+    // Zwei Stopps mit VERSCHIEDENEM Ω, beide mit bewiesenen Kanälen.
+    let pick = |f: &BoundedCsg| -> Option<(BoundedCsg, OffsetChannel)> {
+        let mut stops = Vec::new();
+        stop_nodes(f, &mut stops);
+        for st in stops {
+            if let BoundedCsg::ArcChannel { inner, channels, .. } = st {
+                for c in channels {
+                    if c.limit_mode_at_stop(inner).is_proved() {
+                        return Some(((**inner).clone(), c.clone()));
+                    }
+                }
+            }
+        }
+        None
+    };
+    let a = fields
+        .iter()
+        .find(|(n, _)| n.starts_with("Ecken-Schale t/δ=2.5"))
+        .and_then(|(_, f)| pick(f))
+        .expect("Ω₁ mit bewiesenem Kanal");
+    let b = fields
+        .iter()
+        .find(|(n, _)| n.starts_with("Rippen-Kamm 4×2"))
+        .and_then(|(_, f)| pick(f))
+        .expect("Ω₂ mit bewiesenem Kanal");
+    let (stop1, ch1) = a;
+    let (stop2, _ch2) = b;
+    let om1 = wit::omega_of(&stop1).unwrap();
+    let om2 = wit::omega_of(&stop2).unwrap();
+    assert_ne!(
+        wit::omega_snapshot(om1),
+        wit::omega_snapshot(om2),
+        "die beiden Ω sind gleich — der Pin misst nichts"
+    );
+
+    // (1) unter Ω₁ bewiesen …
+    assert!(ch1.limit_mode_for(om1).is_proved());
+    let (a_seam, a_h) = ch1.limit_mode_for(om1).addends();
+    assert!(a_seam > 0.0, "der Ausgangs-Addend ist null");
+    // (2) … und der Beweis-Abruf gegen Ω₂ verweigert korrekt.
+    assert!(ch1.seam_addend(om2).is_none(), "seam_addend akzeptierte das fremde Ω");
+    assert!(ch1.h_addend(om2).is_none());
+    // (3) derselbe, UNVERÄNDERTE Kanal — der Kanal-Schnappschuss passt weiter.
+    assert!(
+        ch1.limit_mode_channel_only().is_proved(),
+        "der Pin misst nichts, wenn schon der Kanal-Vergleich greift"
+    );
+    // (4) unter Ω₂: Laufzeitmodus …
+    assert_eq!(
+        ch1.limit_mode_for(om2),
+        crate::offset_channel::ChannelLimitMode::LegacyUnproven(
+            crate::offset_channel::LegacyReason::ProofInvalidated
+        ),
+        "der verpflanzte Kanal gilt unter dem fremden Ω weiter als bewiesen"
+    );
+    assert_eq!(ch1.limit_mode_at_stop(&stop2).addends(), (0.0, 0.0));
+
+    // … Feldwert …
+    let mut g = Lcg(0x8ac_04e6);
+    let (mut probes, mut differ) = (0usize, 0usize);
+    for _ in 0..4000 {
+        let arc = &ch1.arcs[probes % ch1.arcs.len()];
+        let sp = g.next_f64() as f32;
+        let rad = (g.next_f64() * ch1.trust as f64 * 0.9) as f32;
+        let d = [g.sym(), g.sym(), g.sym()];
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if !(n > 1.0e-9) {
+            continue;
+        }
+        let p = [
+            arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n) as f32 * rad,
+            arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n) as f32 * rad,
+            arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n) as f32 * rad,
+        ];
+        let under2 = oc::channel_limit(p, &ch1, ch1.limit_mode_at_stop(&stop2));
+        let legacy = oc::channel_limit(
+            p,
+            &ch1,
+            crate::offset_channel::ChannelLimitMode::LegacyUnproven(
+                crate::offset_channel::LegacyReason::NotCertified,
+            ),
+        );
+        assert_eq!(
+            under2.to_bits(),
+            legacy.to_bits(),
+            "unter Ω₂ liefert das Feld nicht den Legacy-Wert"
+        );
+        let under1 = oc::channel_limit(p, &ch1, ch1.limit_mode_for(om1));
+        if under1 != legacy {
+            differ += 1;
+        }
+        probes += 1;
+    }
+    assert!(probes > 1_000, "nur {probes} Proben");
+    assert!(
+        differ > 100,
+        "unter Ω₁ unterscheidet sich das Feld an nur {differ} Proben vom Legacy-Wert — dann \
+         misst der Pin die Verpflanzung nicht"
+    );
+
+    // … und die emittierten Kopf-Worte.
+    let stop2_field = fields
+        .iter()
+        .find(|(n, _)| n.starts_with("Rippen-Kamm 4×2"))
+        .map(|(_, f)| f.clone())
+        .unwrap();
+    let transplanted = field_with_single_channel(&stop2_field, ch1.clone());
+    let t = compile_body(&transplanted);
+    let ops = &t.opcodes;
+    let mut i = 0usize;
+    let mut seen = false;
+    while i < ops.len() {
+        if ops[i].to_bits() & 0xffff_ffff == OP_ARC_CHANNEL {
+            let b = i + 1 + CHANNEL_HEADER - 3;
+            assert_eq!(
+                (ops[b], ops[b + 1], ops[b + 2]),
+                (0.0, 0.0, 0.0),
+                "das Tape trägt den unter Ω₁ bewiesenen Beweis unter Ω₂ weiter"
+            );
+            seen = true;
+            break;
+        }
+        i += 1;
+    }
+    assert!(seen, "kein OP_ARC_CHANNEL im Tape");
+
+    // Gegenprobe: unter dem EIGENEN Ω trägt derselbe Kanal seinen Beweis auch
+    // wirklich ins Tape — sonst wäre der Pin grün, weil alles Legacy ist.
+    let home_field = fields
+        .iter()
+        .find(|(n, _)| n.starts_with("Ecken-Schale t/δ=2.5"))
+        .map(|(_, f)| f.clone())
+        .unwrap();
+    let home = field_with_single_channel(&home_field, ch1.clone());
+    let th = compile_body(&home);
+    let oh = &th.opcodes;
+    let mut i = 0usize;
+    let mut ok = false;
+    while i < oh.len() {
+        if oh[i].to_bits() & 0xffff_ffff == OP_ARC_CHANNEL {
+            let b = i + 1 + CHANNEL_HEADER - 3;
+            assert_eq!(oh[b], 1.0, "unter dem eigenen Ω fehlt der Beweis im Tape");
+            assert_eq!(oh[b + 1], a_seam);
+            assert_eq!(oh[b + 2], a_h);
+            ok = true;
+            break;
+        }
+        i += 1;
+    }
+    assert!(ok);
+
+    // **Der konkrete öffentliche Post-Synthese-Pfad.** Ein zweiter
+    // `synthesize_offset_channels`-Lauf auf einem bereits synthetisierten Baum
+    // synthetisiert dessen `inner` neu, lässt die äusseren `channels` aber
+    // stehen — das Ω-Gerüst unter dem gecachten Modus kann sich also ändern.
+    // Mit der Ω-Prüfung ist das kein Problem mehr: bleibt `Ω` bitgleich, gilt
+    // der Beweis weiter; ändert es sich, fällt der Modus. Beides gemessen.
+    let again = crate::offset_channel::synthesize_offset_channels(home_field.clone(), 0.05);
+    let mut stops = Vec::new();
+    stop_nodes(&again, &mut stops);
+    let (mut kept, mut dropped) = (0usize, 0usize);
+    for st in &stops {
+        if let BoundedCsg::ArcChannel { inner, channels, .. } = st {
+            for c in channels {
+                if c.limit_mode_at_stop(inner).is_proved() {
+                    kept += 1;
+                } else {
+                    dropped += 1;
+                }
+                // Was auch immer herauskommt: der Modus stimmt mit dem
+                // überein, was `seam_addend` gegen DASSELBE Ω sagt.
+                let om = wit::omega_of(inner);
+                assert_eq!(
+                    c.limit_mode_at_stop(inner).is_proved(),
+                    om.and_then(|o| c.seam_addend(o)).is_some()
+                        && om.and_then(|o| c.h_addend(o)).is_some(),
+                    "Laufzeitmodus und Beweis-Abruf sind nach der Re-Synthese auseinander"
+                );
+            }
+        }
+    }
+    assert!(kept + dropped > 0, "die Re-Synthese liefert keine Kanäle");
+    println!(
+        "§8ac Pin 8: Ω-Verpflanzung — Laufzeit, {probes} Feldwerte ({differ} unter Ω₁ \
+         verschieden) und Tape fallen auf Legacy; unter dem eigenen Ω trägt das Tape \
+         A_seam = {a_seam:.3e}, A_h = {a_h:.3e}. Re-Synthese: {kept} Kanäle behalten den \
+         Beweis, {dropped} verlieren ihn — und Modus und Abruf stimmen überall überein"
     );
 }

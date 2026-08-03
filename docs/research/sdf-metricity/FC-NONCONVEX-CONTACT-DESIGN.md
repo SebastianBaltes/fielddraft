@@ -7941,6 +7941,90 @@ Named-Points-Spec (8 Punkte, Schranke `1e-5`) — der inzwischen **auf echter GP
 grün gefahren** ist: 4 Kanäle `mode = 1`, `A_seam ≈ 1.056·10⁻⁴`, 435 Punkte
 `worst 1.9·10⁻⁶`, benannte Punkte `worst 1.2·10⁻⁷`.
 
+### §8ac-Korrektur: das neunzehnte Mathe-Review (v0.65.3)
+
+Der exakte Kanal-Schnappschuss-Vergleich aus v0.65.2 ist ausdrücklich
+**merge-fest** bestätigt: Serialisierung vollständig, `CmpSink` präfix-sicher,
+der adversariale FNV-Pin misst genau die verlangte Konstruktion, der
+`seal_seam_proof`-Schreibweg und der Tape-Pin sind real. Was fehlte, war die
+**andere Hälfte des Beweispaares**.
+
+#### B — die Ω-Verpflanzung umging den Freeze-Vergleich
+
+Der Modus wird beim **Auflösen** gegen Kanal **und** `Ω` geprüft.
+`limit_mode()` prüfte zur **Laufzeit** aber nur `aktueller Kanal == gespeicherter
+Kanal-Schnappschuss`. Ein bewiesener, **unveränderter** Kanal aus `Ω₁`, unter
+einen Stopp mit `Ω₂` kopiert, behielt damit seinen Modus: `OffsetChannel` ist
+`Clone`, `BoundedCsg::ArcChannel` ist öffentlich konstruierbar, der
+Kanal-Schnappschuss passt weiterhin — also lieferten Compiler, fidget, Dual und
+CPU die für `Ω₁` bewiesenen Addenden unter `Ω₂` aus. `seam_addend(Ω₂)` hätte
+korrekt `None` gesagt; der Feld- und Tape-Pfad hat es nie gefragt.
+
+Das ist die **§8aa-B3-Familie** („bit-identischer Kanal, anderes `Ω`") — wieder
+offen, diesmal bis ins Tape. Und es gibt einen konkreten **öffentlichen**
+Post-Synthese-Pfad dorthin: ein zweiter `synthesize_offset_channels`-Lauf
+synthetisiert den `inner` eines bereits synthetisierten `ArcChannel` neu und
+lässt die äusseren `channels` stehen — das `Ω`-Gerüst unter dem gecachten Modus
+kann sich also ändern, ohne dass ein einziges Kanalbit wandert.
+
+**Gefixt über Weg (a): Ω an jeder Konsumgrenze.**
+
+* `limit_mode_for(Ω)` prüft **beide** Schnappschüsse exakt im Strom —
+  `matches_channel` **und** der neue `matches_omega`. `omega_snapshot` teilt
+  sich jetzt denselben `SnapshotSink`-Serialisierer wie der Kanal (eine Quelle,
+  zwei Senken; die alte Handkopie ist weg).
+* `limit_mode_at_stop(inner)` ist die Form, die jeder Verbraucher benutzt:
+  `Ω = omega_of(inner)`, kein `Ω` ⇒ kein Beweis.
+* `resolve_stop_modes(inner, channels)` löst **einmal pro Baum-Walk / Emit /
+  Tree-Build** auf — die Ω-Prüfung bleibt aus der Punkt-Schleife heraus.
+  Genutzt von CPU-Baum (`bvh.rs`, beide Arme), Tape-Emitter, fidget, Dual und
+  der Diagnose.
+* `channel_limit(p, ch, mode)` und `stop_apply(…, modes)` nehmen den
+  **aufgelösten** Modus als Argument. Ein `channel_limit`, das ihn selbst aus
+  dem Kanal zöge, könnte `Ω` gar nicht prüfen — genau das war die Lücke.
+* Die Tape-**Interpreter** (C++, TSL) brauchen weiterhin keine `Ω`-Daten: der
+  Emitter hat fail-closed entschieden, die drei Kopf-Worte tragen das Ergebnis.
+
+Der Intervallpfad fragt `stored_mode_is_proved()` — ohne `Ω` lässt sich nicht
+auflösen, und für die Verweigerung ist der gespeicherte Modus die
+**konservative** Antwort (er verweigert auch dort, wo der Beweis zur Laufzeit
+gar nicht griffe). Verweigern ist an dieser Stelle immer sicher.
+
+Ein Nebenschauplatz, der dabei sauber wurde: das `end_region_violation`-Audit
+läuft **innerhalb** von `synthesize_stop`, also vor der Zertifizierung. Es
+bekommt jetzt einen expliziten Legacy-Vektor, statt den Modus aus dem Kanal zu
+raten — es misst damit weiterhin genau den naiven Stopp, wie immer.
+
+**Gepinnt** (`activation_omega_transplant_reaches_neither_field_nor_tape_384`),
+exakt die vom Review verlangte Kette: bewiesenen Kanal unter `Ω₁` gewinnen ⇒
+`seam_addend(Ω₂) == None` ⇒ den **unveränderten** Kanal unter einen
+`ArcChannel` über `Ω₂` setzen ⇒ Laufzeitmodus, **4.000 Feldwerte** und die
+emittierten Kopf-Worte fallen auf Legacy/null. Gegenprobe: unter dem eigenen
+`Ω` trägt dasselbe Tape `A_seam = 1.108·10⁻⁴`, `A_h = 2.687·10⁻⁵` — sonst wäre
+der Pin grün, weil alles Legacy ist. Dazu der **Re-Synthese-Pfad** als eigener
+Fall: nach einem zweiten `synthesize_offset_channels` behalten 24 Kanäle ihren
+Beweis und 24 verlieren ihn — und an **jedem** stimmt der Laufzeitmodus mit dem,
+was `seam_addend`/`h_addend` gegen dasselbe `Ω` sagen.
+
+#### Pin-Hygiene — Behauptung und Messung wieder deckungsgleich
+
+Der „wiped proof"-Untertest des FNV-Pins behauptete `seam == None bei
+gespeichertem Proved`, rief aber nur `force_legacy_final_channel` — das setzt
+den Modus, **löscht die Beweiszelle aber nicht**. Jetzt wird sie über den
+Beweismodul-Weg wirklich gewischt (Zertifizierung mit ungültiger
+Konfiguration ⇒ `seal_seam_proof(None)`), und dabei zeigt sich der eigentliche
+Punkt: weil `seal_seam_proof` den Modus **selbst** entzieht, ist der Zustand
+„Proved mit leerer Beweiszelle" über den versiegelten Weg gar nicht erreichbar.
+Der `seam == None`-Zweig in `limit_mode_for` ist damit **Redundanz, kein
+Hauptpfad** — und genau das steht jetzt dort, statt einer falschen Behauptung.
+
+#### Prüfungen
+
+Golden **unverändert `915bab98…`** — der reguläre Syntheseweg löst gegen das
+echte `Ω` auf, der Happy Path bleibt feldneutral. C++-Parität erneut 35 Szenen
+/ 17.920 Vergleiche / 0 Fehler. nextest **1541** (1540), offset-Profil **247**
+(246), Doctests **1**, Vitest **2082**. Kein fremder Pin gekippt.
+
 ### Was OFFEN bleibt
 
 * **P5b-2** — die Intervall-Modellierung der neuen Kette. Bis dahin sind die

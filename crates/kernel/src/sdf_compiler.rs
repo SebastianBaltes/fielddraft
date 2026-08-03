@@ -747,7 +747,12 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
                     }
                 }
             }
-            for ch in channels {
+            // #384 §8ac (19. Review): EINMAL an der Konsumgrenze auflösen —
+            // hier liegt `inner` und damit `Ω` vor. Die Tape-Interpreter
+            // brauchen danach keine Ω-Daten: der Emitter hat fail-closed
+            // entschieden, die drei Kopf-Worte tragen das Ergebnis.
+            let modes = crate::offset_channel::resolve_stop_modes(inner, channels);
+            for (ci, ch) in channels.iter().enumerate() {
                 out.push(op(OP_ARC_CHANNEL));
                 out.push(ch.arcs.len() as f32);
                 out.push(if ch.concave { 1.0 } else { 0.0 });
@@ -770,8 +775,13 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
                 // Wert) und steht trotzdem im Tape: der Bericht muss
                 // „unbewiesen" von „bewiesen mit Addend null" unterscheiden
                 // können, und ein Tape ohne diesen Unterschied könnte es nicht.
-                let (a_seam, a_h) = ch.limit_mode().addends();
-                out.push(ch.limit_mode().tape_word());
+                // #384 §8ac (19. Review): der Modus kommt aus der einmal
+                // aufgelösten Liste — mit dem `Ω` DIESES Stopps. Ein
+                // `ch.limit_mode()` ohne `Ω` hätte die Verpflanzung
+                // durchgelassen, und das Tape trüge sie bis in C++ und GPU.
+                let mode = modes[ci];
+                let (a_seam, a_h) = mode.addends();
+                out.push(mode.tape_word());
                 out.push(a_seam);
                 out.push(a_h);
                 for a in &ch.arcs {

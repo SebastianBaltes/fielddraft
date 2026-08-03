@@ -585,7 +585,17 @@ impl BoundedCsg {
                 // #384 §8i: `d0` ist der NAIVE Stopp-Wert; alle Kanal-/
                 // Vertex-Gates rechnen gegen ihn (Kaskaden-Schnitt).
                 let d0 = inner.sdf_open(p, mode, open);
-                let d = crate::offset_channel::stop_apply(d0, p, channels, verts, lb.as_ref());
+                // #384 §8ac (19. Review): die Modi EINMAL an der Konsumgrenze
+                // auflösen — hier liegt `inner` vor, also auch `Ω`.
+                let modes = crate::offset_channel::resolve_stop_modes(inner, channels);
+                let d = crate::offset_channel::stop_apply(
+                    d0,
+                    p,
+                    channels,
+                    verts,
+                    lb.as_ref(),
+                    &modes,
+                );
                 // Phase 4 (#398): ∂P-Rand-Fillet NACH Kanälen/Vertices
                 // (disjunkte Masken, Reihenfolge feldwert-neutral). Spiegel des
                 // `OP_RIM_FILLET`-Decodes und des Dual-Arms.
@@ -896,8 +906,9 @@ impl BoundedCsg {
                 let mut lim = -crate::offset_channel::END_PLANE_OFF;
                 // #384 §8o: die untere Distanzschranke des Stopps (`OP_STOP_LB`).
                 let lbv = crate::offset_channel::stop_lb_value(d0, p, lb.as_ref());
-                for ch in channels {
-                    lim = lim.max(crate::offset_channel::channel_limit(p, ch));
+                let modes = crate::offset_channel::resolve_stop_modes(inner, channels);
+                for (ci, ch) in channels.iter().enumerate() {
+                    lim = lim.max(crate::offset_channel::channel_limit(p, ch, modes[ci]));
                     // #384 §8i: Gate gegen den naiven Stopp-Wert `d0`.
                     let nd = crate::offset_channel::channel_apply(d0, d, p, ch, lbv - ch.delta);
                     if nd != d {

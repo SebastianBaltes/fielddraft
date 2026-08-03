@@ -179,8 +179,7 @@ pub fn collect_limit_modes(node: &BoundedCsg) -> Vec<(bool, f32, f32)> {
     fn go(n: &BoundedCsg, out: &mut Vec<(bool, f32, f32)>) {
         match n {
             BoundedCsg::ArcChannel { inner, channels, .. } => {
-                for c in channels {
-                    let m = c.limit_mode();
+                for m in resolve_stop_modes(inner, channels) {
                     let (s, h) = m.addends();
                     out.push((m.is_proved(), s, h));
                 }
@@ -447,36 +446,74 @@ impl OffsetChannel {
         self.seam.as_ref()?.h_addend_for(self, omega)
     }
 
-    /// #384 §8ac — **der aufgelöste Laufzeitmodus, gegen den AKTUELLEN Kanal
-    /// nachgeprüft.**
+    /// #384 §8ac — **der aufgelöste Laufzeitmodus, gegen den aktuellen Kanal
+    /// UND das aktuelle `Ω` nachgeprüft.**
     ///
-    /// §8ac-Korrektur (siebzehntes Review): der gespeicherte Modus allein war
-    /// nicht sicher. Die beweisrelevanten Felder sind öffentlich mutierbar, und
-    /// `limit_mode()` gab den EINMAL aufgelösten Modus unverändert zurück — wer
-    /// `trust` vergrösserte oder eine `face_plane` verschob, bekam die alten,
-    /// jetzt zu kleinen Addenden von allen sechs Spiegeln geliefert.
+    /// Die Geschichte dieser Funktion ist die Geschichte zweier Lücken:
     ///
-    /// §8ac-Korrektur (achtzehntes Review): die erste Reparatur verglich einen
-    /// FNV-64-**Digest** — und der ist deterministisch fälschbar (s.
-    /// [`crate::offset_witness::CertifiedSeamAddend::matches_channel`]). Jetzt
-    /// wird der Schnappschuss des aktuellen Kanals **im Strom erzeugt und Byte
-    /// für Byte** gegen den im Beweis gespeicherten gehalten — exakter
-    /// Vergleich, keine Allokation, dieselbe Serialisierung wie
-    /// `channel_snapshot`.
+    /// * **17. Review**: der gespeicherte Modus wurde ungeprüft
+    ///   zurückgegeben — wer `trust` vergrösserte, bekam die alten, jetzt zu
+    ///   kleinen Addenden.
+    /// * **18. Review**: die erste Reparatur verglich einen FNV-64-Digest, und
+    ///   der ist deterministisch fälschbar (s.
+    ///   [`crate::offset_witness::CertifiedSeamAddend::matches_channel`]).
+    /// * **19. Review**: der exakte Kanal-Vergleich stand auf EINEM Bein. Der
+    ///   Beweis wurde beim Auflösen gegen Kanal **und** `Ω` geprüft, zur
+    ///   Laufzeit aber nur gegen den Kanal. Ein UNVERÄNDERTER bewiesener Kanal,
+    ///   unter einen Stopp mit anderem `Ω` kopiert, behielt seinen Modus —
+    ///   `OffsetChannel` ist `Clone`, `BoundedCsg::ArcChannel` öffentlich
+    ///   konstruierbar, und ein zweiter `synthesize_offset_channels`-Lauf baut
+    ///   sogar den `inner` neu, während die äusseren `channels` stehen bleiben.
+    ///   Das war die §8aa-B3-Familie („bit-identischer Kanal, anderes `Ω`") —
+    ///   wieder offen, diesmal bis ins Tape.
     ///
-    /// Zwei Ausgänge fallen auf `LegacyUnproven(ProofInvalidated)`:
-    /// * der Kanal hat sich seit dem Auflösen bewegt;
-    /// * der Beweis ist verschwunden (`seam == None`), der Modus aber noch
-    ///   `Proved`. Das deckt jede Beweis-Löschung **strukturell** ab, ohne auf
-    ///   die Reihenfolge im Aufrufer zu bauen.
+    /// Jetzt werden **beide** Schnappschüsse im Strom erzeugt und Byte für Byte
+    /// verglichen. Es gibt keinen Weg mehr, einen Beweis zu konsumieren, ohne
+    /// das `Ω` vorzulegen, für das er geführt wurde.
+    pub fn limit_mode_for(&self, omega: &crate::bvh::BoundedCsg) -> ChannelLimitMode {
+        match self.mode {
+            ChannelLimitMode::Proved { seam, h } => match self.seam.as_ref() {
+                Some(proof) if proof.matches_channel(self) && proof.matches_omega(omega) => {
+                    ChannelLimitMode::Proved { seam, h }
+                }
+                _ => ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated),
+            },
+            m => m,
+        }
+    }
+
+    /// #384 §8ac — derselbe Abruf, aber ausgehend vom **Stopp-Knoten** eines
+    /// `ArcChannel`: `Ω` ist das Kind seines `Offset`-Knotens.
     ///
-    /// Die `Ω`-Bindung wird hier NICHT erneut geprüft — `Ω` liegt zur
-    /// Auswertungszeit nicht vor. Sie ist beim Auflösen bitweise geprüft
-    /// worden; diese Funktion bewacht die Zeit DANACH.
+    /// Das ist die Form, die jede Konsumgrenze benutzt — CPU-Baum, Emitter,
+    /// fidget, Dual und die Diagnose. Hat der Stopp nicht die erwartete Form,
+    /// gibt es kein `Ω` und damit keinen Beweis: fail-closed.
+    pub fn limit_mode_at_stop(&self, stop_inner: &crate::bvh::BoundedCsg) -> ChannelLimitMode {
+        match crate::offset_witness::omega_of(stop_inner) {
+            Some(om) => self.limit_mode_for(om),
+            None => ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated),
+        }
+    }
+
+    /// #384 §8ac — trägt dieser Kanal ÜBERHAUPT einen bewiesenen Modus?
     ///
-    /// Der Vergleich liegt hinter beiden Early-Outs von [`channel_limit`]; er
-    /// kostet nur an Punkten, die den Term wirklich erreichen.
-    pub fn limit_mode(&self) -> ChannelLimitMode {
+    /// Ohne `Ω` lässt sich nicht auflösen; für die Intervall-Stufe zählt aber
+    /// nur, ob sie verweigern muss. Der gespeicherte Modus ist dafür die
+    /// KONSERVATIVE Antwort: er sagt auch dann „bewiesen", wenn der Beweis zur
+    /// Laufzeit gar nicht mehr griffe — und Verweigern ist an dieser Stelle
+    /// immer sicher.
+    pub fn stored_mode_is_proved(&self) -> bool {
+        self.mode.is_proved()
+    }
+
+    /// #384 §8ac — **nur für Pins**: der Modus mit Kanal-, aber OHNE
+    /// Ω-Nachprüfung. Das ist genau die Fassung, die das neunzehnte Review als
+    /// unzureichend erkannt hat; sie existiert weiter, damit die Pins, die
+    /// ausschliesslich den KANAL-Freeze messen, kein `Ω` mitschleppen müssen.
+    /// Kein Produktionspfad ruft sie — die sechs Spiegel gehen über
+    /// [`Self::limit_mode_for`] bzw. [`resolve_stop_modes`].
+    #[cfg(test)]
+    pub(crate) fn limit_mode_channel_only(&self) -> ChannelLimitMode {
         match self.mode {
             ChannelLimitMode::Proved { seam, h } => match self.seam.as_ref() {
                 Some(proof) if proof.matches_channel(self) => {
@@ -950,6 +987,26 @@ pub fn concave_gate(gate_w: f32, base: f32, extra: f32) -> f32 {
     }
 }
 
+/// #384 §8ac (19. Review) — **die Konsumgrenze**: alle Laufzeitmodi eines
+/// `ArcChannel`-Stopps EINMAL auflösen, mit dem `Ω` des mitgeführten
+/// `inner`-Knotens.
+///
+/// Jeder Verbraucher (CPU-Baum, Tape-Emitter, fidget, Dual, Diagnose) hat
+/// `inner` und `channels` zur Hand und ruft genau das hier — die Ω-Prüfung
+/// läuft damit einmal pro Baum-Walk, nicht pro Punkt.
+pub fn resolve_stop_modes(
+    stop_inner: &crate::bvh::BoundedCsg,
+    channels: &[OffsetChannel],
+) -> Vec<ChannelLimitMode> {
+    match crate::offset_witness::omega_of(stop_inner) {
+        Some(om) => channels.iter().map(|c| c.limit_mode_for(om)).collect(),
+        None => vec![
+            ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated);
+            channels.len()
+        ],
+    }
+}
+
 /// #384 §8j — **der Grenzwert-Beitrag EINES Kanals.**
 ///
 /// Jeder Naht-Punkt liegt auf `∂Ω`, also gilt `dist(x, ∁Ω) ≤ de`
@@ -973,7 +1030,7 @@ pub fn concave_gate(gate_w: f32, base: f32, extra: f32) -> f32 {
 /// Kanal ohnehin nicht zuständig, und die Untergrenze bliebe ohne Nutzen
 /// hinter dem naiven Feld zurück.
 #[inline]
-pub fn channel_limit(p: [f32; 3], ch: &OffsetChannel) -> f32 {
+pub fn channel_limit(p: [f32; 3], ch: &OffsetChannel, mode: ChannelLimitMode) -> f32 {
     let dbs = norm(sub(p, ch.bound_c)) - ch.bound_r;
     if dbs >= ch.trust {
         return -END_PLANE_OFF;
@@ -984,11 +1041,11 @@ pub fn channel_limit(p: [f32; 3], ch: &OffsetChannel) -> f32 {
     if de >= ch.trust {
         return -END_PLANE_OFF;
     }
-    // §8ac-Korrektur (Blocker): über `limit_mode()`, NICHT über das rohe Feld
-    // — der Getter prüft den Digest nach und entzieht einem mutierten Kanal
-    // seine Addenden. Genau hier lag die Lücke: Produktion und Tape lasen den
-    // gecachten Modus ohne Nachprüfung.
-    let (a_seam, a_h) = ch.limit_mode().addends();
+    // §8ac-Korrektur (19. Review): der Modus kommt als ARGUMENT — aufgelöst
+    // an der Konsumgrenze, wo `Ω` einmal vorliegt. Ein `channel_limit`, das
+    // ihn selbst aus dem Kanal zöge, könnte `Ω` gar nicht prüfen; genau das
+    // war die Lücke. Und es hält die Ω-Prüfung aus der Punkt-Schleife heraus.
+    let (a_seam, a_h) = mode.addends();
     // #384 §8ac / P5b-1A — **die bewiesene Kette, op für op** (§8aa Lemma 5,
     // §8ab Halbraum-Lemma + Rundungsbudget):
     //
@@ -1154,14 +1211,22 @@ pub fn stop_apply(
     channels: &[OffsetChannel],
     verts: &[VertexSphere],
     lb: Option<&crate::offset_lb::LbBlock>,
+    modes: &[ChannelLimitMode],
 ) -> f32 {
+    // #384 §8ac (19. Review): die Modi kommen von der Konsumgrenze, wo `Ω`
+    // einmal vorlag. Passt die Länge nicht, ist das ein Aufrufer-Fehler und
+    // KEIN Anlass zu raten — fail-closed auf Legacy.
     let mut d = d0;
     let mut lim = -END_PLANE_OFF;
     // #384 §8o: EIN `L` je Stopp, von allen Termen geteilt (Spiegel von
     // `OP_STOP_LB`, das direkt nach `OP_STOP_BASE` steht).
     let lbv = stop_lb_value(d0, p, lb);
-    for ch in channels {
-        lim = lim.max(channel_limit(p, ch));
+    for (i, ch) in channels.iter().enumerate() {
+        let mode = modes
+            .get(i)
+            .copied()
+            .unwrap_or(ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated));
+        lim = lim.max(channel_limit(p, ch, mode));
         d = channel_apply(d0, d, p, ch, lbv - ch.delta);
     }
     for vs in verts {
@@ -2233,6 +2298,13 @@ fn end_region_violation(
     tol: f32,
 ) -> EndRegionProbe {
     let mut probe = EndRegionProbe::default();
+    // #384 §8ac (19. Review): dieses Audit läuft INNERHALB von
+    // `synthesize_stop`, also VOR der Zertifizierung am finalen Stopp — die
+    // Kanäle sind hier per Konstruktion alle `LegacyUnproven`. Der explizite
+    // Legacy-Vektor hält das fest, statt es aus dem Kanal zu raten, und lässt
+    // das Audit genau das messen, was es immer gemessen hat: den naiven Stopp.
+    let modes =
+        vec![ChannelLimitMode::LegacyUnproven(LegacyReason::NotCertified); channels.len()];
     let mut worst: Option<(f32, f32, [f32; 3])> = None;
     for ch in channels {
         if ch.arcs.is_empty() {
@@ -2296,7 +2368,7 @@ fn end_region_violation(
                     // der Auswerter. Bis §8p stand hier `None` und der Zeuge
                     // mass den `G`-Kappen-Pfad — ehrlich, aber am Rippen-Kamm
                     // 87-fach stumpfer als das Feld.
-                    let corr = stop_apply(d, x, channels, verts, lb);
+                    let corr = stop_apply(d, x, channels, verts, lb, &modes);
                     // #384 §8r — derselbe Punkt, die andere Richtung.
                     let (u2, looked) =
                         under_claim_witness(probe.under, d, x, corr, lb, dabs, tol);
@@ -2370,7 +2442,7 @@ fn end_region_violation(
                     continue;
                 }
                 // #384 §8q: derselbe Block wie im Kanal-Zweig (s. o.).
-                let corr = stop_apply(d, x, channels, verts, lb);
+                let corr = stop_apply(d, x, channels, verts, lb, &modes);
                 // #384 §8r: und derselbe Unter-Claim-Zeuge (s. o.).
                 let (u2, looked) = under_claim_witness(probe.under, d, x, corr, lb, dabs, tol);
                 probe.under = u2;

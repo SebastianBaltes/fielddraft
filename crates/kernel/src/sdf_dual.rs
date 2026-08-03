@@ -452,7 +452,8 @@ fn eval_bounded_d3_open(
                 }
                 None => D3::from(crate::offset_lb::LB_NONE as f64),
             };
-            for ch in channels {
+            let modes = crate::offset_channel::resolve_stop_modes(inner, channels);
+            for (ci, ch) in channels.iter().enumerate() {
                 if crate::offset_channel::channel_skip(d.re as f32, p_re, ch) {
                     continue;
                 }
@@ -509,7 +510,7 @@ fn eval_bounded_d3_open(
                     // #384 §8ac / P5b-1A: dieselben zwei Addenden wie in
                     // `channel_limit`. Sie sind KONSTANTEN — der Dual-Anteil
                     // bleibt damit exakt der Enveloppen-Gradient.
-                    let (a_seam, a_h) = ch.limit_mode().addends();
+                    let (a_seam, a_h) = modes[ci].addends();
                     lim = max_d3(
                         lim,
                         D3::from(ch.delta as f64)

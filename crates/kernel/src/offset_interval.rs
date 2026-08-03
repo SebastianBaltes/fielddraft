@@ -1654,7 +1654,12 @@ pub fn enclose_channel_limit(c: &mut Ctx, p: [Iv; 3], ch: &OffsetChannel) -> Enc
     // Also `Unknown`, bis **P5b-2** `de_safe`/`h_safe`/`min` op-genau
     // modelliert. `enclose_channel_apply` bleibt unberührt — der
     // `channel_apply`-Term hat sich nicht bewegt.
-    if ch.limit_mode().is_proved() {
+    // #384 §8ac (19. Review): ohne `Ω` lässt sich der Modus nicht auflösen —
+    // hier zählt aber ohnehin nur, OB der Kanal überhaupt einen bewiesenen
+    // Modus tragen soll. Der gespeicherte Modus ist dafür die konservative
+    // Antwort: er verweigert auch dann, wenn der Beweis zur Laufzeit gar nicht
+    // greifen würde. Verweigern ist hier immer sicher.
+    if ch.stored_mode_is_proved() {
         return Err(Unknown("P5b-1A: bewiesener Laufzeitmodus, Einschliessung erst in P5b-2"));
     }
     let neutral = Iv::f32p(-END_PLANE_OFF);

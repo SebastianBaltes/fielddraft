@@ -1086,71 +1086,81 @@ pub fn channel_snapshot(ch: &OffsetChannel) -> Vec<u8> {
 /// „die Bäume sind gleich" es sein müsste und **schärfer** als ein Hash es
 /// sein kann. Alle nicht unterstützten Varianten fallen bewusst in EINEN Topf:
 /// sie sind für den Beweis ununterscheidbar, weil sie alle nichts beweisen.
-pub fn omega_snapshot(node: &BoundedCsg) -> Vec<u8> {
-    fn go(n: &BoundedCsg, o: &mut Vec<u8>) {
+fn serialize_omega<S: SnapshotSink>(node: &BoundedCsg, s: &mut S) {
+    fn go<S: SnapshotSink>(n: &BoundedCsg, s: &mut S) {
+        if s.done() {
+            return;
+        }
         match n {
-            BoundedCsg::Empty => o.push(1),
+            BoundedCsg::Empty => s.put(&[1]),
             BoundedCsg::Leaf { primitive, world_transform, .. } => {
-                o.push(2);
-                put_f32x3(o, world_transform.translate);
+                s.put(&[2]);
+                sn_f32x3(s, world_transform.translate);
                 for x in world_transform.rotation {
-                    put_f32(o, x);
+                    sn_f32(s, x);
                 }
-                put_f32x3(o, world_transform.scale);
+                sn_f32x3(s, world_transform.scale);
                 match primitive {
                     Primitive::Box { center, half_extents } => {
-                        o.push(21);
-                        put_f32x3(o, *center);
-                        put_f32x3(o, *half_extents);
+                        s.put(&[21]);
+                        sn_f32x3(s, *center);
+                        sn_f32x3(s, *half_extents);
                     }
                     Primitive::Sphere { center, radius } => {
-                        o.push(22);
-                        put_f32x3(o, *center);
-                        put_f32(o, *radius);
+                        s.put(&[22]);
+                        sn_f32x3(s, *center);
+                        sn_f32(s, *radius);
                     }
                     Primitive::Cylinder { center, radius, half_height } => {
-                        o.push(23);
-                        put_f32x3(o, *center);
-                        put_f32(o, *radius);
-                        put_f32(o, *half_height);
+                        s.put(&[23]);
+                        sn_f32x3(s, *center);
+                        sn_f32(s, *radius);
+                        sn_f32(s, *half_height);
                     }
                     // Jedes andere Blatt liefert `false` — seine Parameter
                     // sind für den Beweis ununterscheidbar.
-                    _ => o.push(29),
+                    _ => s.put(&[29]),
                 }
             }
             BoundedCsg::Union { left, right, .. } => {
-                o.push(3);
-                go(left, o);
-                go(right, o);
+                s.put(&[3]);
+                go(left, s);
+                go(right, s);
             }
             BoundedCsg::Intersection { left, right, .. } => {
-                o.push(4);
-                go(left, o);
-                go(right, o);
+                s.put(&[4]);
+                go(left, s);
+                go(right, s);
             }
             BoundedCsg::Difference { left, right, .. } => {
-                o.push(5);
-                go(left, o);
-                go(right, o);
+                s.put(&[5]);
+                go(left, s);
+                go(right, s);
             }
             BoundedCsg::Offset { inner, delta, .. } => {
-                o.push(6);
-                put_f32(o, *delta);
-                go(inner, o);
+                s.put(&[6]);
+                sn_f32(s, *delta);
+                go(inner, s);
             }
             BoundedCsg::InnerWall { inner, .. } => {
-                o.push(7);
-                go(inner, o);
+                s.put(&[7]);
+                go(inner, s);
             }
             // Alle übrigen Varianten: bedingungslos `false`, also ein Topf.
-            _ => o.push(8),
+            _ => s.put(&[8]),
         }
     }
-    let mut o = Vec::with_capacity(256);
-    o.extend_from_slice(b"FD384-OM1");
-    go(node, &mut o);
-    o
+    s.put(b"FD384-OM1");
+    go(node, s);
+}
+
+/// Der kanonische `Ω`-Schnappschuss als Puffer. Teilt sich die Serialisierung
+/// mit dem Strom-Vergleich in [`CertifiedSeamAddend::matches_omega`] — eine
+/// Quelle, zwei Senken, genau wie beim Kanal.
+pub fn omega_snapshot(node: &BoundedCsg) -> Vec<u8> {
+    let mut s = VecSink(Vec::with_capacity(256));
+    serialize_omega(node, &mut s);
+    s.0
 }
 
 
@@ -1881,8 +1891,7 @@ impl CertifiedSeamAddend {
         if !self.channel_bytes_accepted(&channel_snapshot(ch)) {
             return None;
         }
-        let os = omega_snapshot(omega);
-        if prefilter(&os) != self.omega_prefilter || os != self.omega_snapshot {
+        if !self.matches_omega(omega) {
             return None;
         }
         Some(self.encoded_addend)
@@ -1905,6 +1914,20 @@ impl CertifiedSeamAddend {
         let mut c = CmpSink { want: &self.channel_snapshot, pos: 0, ok: true };
         serialize_channel(ch, &mut c);
         c.ok && c.pos == self.channel_snapshot.len()
+    }
+
+    /// #384 §8ac-Korrektur (neunzehntes Review) — **die zweite Hälfte des
+    /// Beweispaares: ist das AKTUELLE `Ω` noch das bewiesene?**
+    ///
+    /// Derselbe allokationsfreie Strom-Vergleich wie
+    /// [`Self::matches_channel`], nur über `Ω`. Ohne ihn stand die
+    /// Laufzeit-Prüfung auf einem Bein: der Kanal-Schnappschuss passt
+    /// weiterhin, wenn man einen UNVERÄNDERTEN bewiesenen Kanal unter einen
+    /// Stopp mit anderem `Ω` kopiert — die §8aa-B3-Familie, wieder offen.
+    pub(crate) fn matches_omega(&self, omega: &BoundedCsg) -> bool {
+        let mut c = CmpSink { want: &self.omega_snapshot, pos: 0, ok: true };
+        serialize_omega(omega, &mut c);
+        c.ok && c.pos == self.omega_snapshot.len()
     }
 
     /// Die autoritative Kanal-Prüfung: Vorfilter, dann bitweiser Vergleich.
@@ -1949,8 +1972,7 @@ impl CertifiedSeamAddend {
         if !self.channel_bytes_accepted(&channel_snapshot(ch)) {
             return None;
         }
-        let os = omega_snapshot(omega);
-        if prefilter(&os) != self.omega_prefilter || os != self.omega_snapshot {
+        if !self.matches_omega(omega) {
             return None;
         }
         Some(self.h.as_ref()?.encoded_addend)
