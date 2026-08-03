@@ -1722,16 +1722,94 @@ impl SeamProofToken {
     }
 }
 
-/// #384 §8ac — ein Siegel für die Synthese, die den Laufzeitmodus unmittelbar
-/// nach [`certify_channel`] auflöst.
+/// #384 §8ac-Korrektur — **ein allokationsfreier Digest über GENAU die Daten
+/// von [`channel_snapshot`].**
 ///
-/// Das ist die EINZIGE Stelle, an der ein Siegel dieses Modul verlässt, und sie
-/// existiert, weil der Lebenszyklus es verlangt: zertifizieren und auflösen
-/// gehören in denselben Schritt am finalen Stopp. Der Modus selbst ist harmlos
-/// — er trägt keine Zahl, die nicht schon durch die Schnappschuss-Prüfung
-/// gegangen wäre.
-pub(crate) fn mint_proof_token() -> SeamProofToken {
-    SeamProofToken::mint()
+/// Rolle und Grenzen, damit sie nicht verwechselt werden:
+///
+/// * Die **autoritative Bindung** eines Beweises an Kanal und `Ω` ist und
+///   bleibt der **bitweise** Schnappschuss-Vergleich in
+///   [`CertifiedSeamAddend::addend_for`]. Der läuft einmal, beim Auflösen des
+///   Laufzeitmodus.
+/// * Dieser Digest ist etwas anderes: ein **Mutations-Melder** für die Zeit
+///   DANACH. Er beantwortet nicht „gehört dieser Beweis hierher", sondern
+///   „hat sich der Kanal seit dem Auflösen bewegt". Dafür darf er ein Hash
+///   sein — er kann eine Zusage nur zurückziehen, nie erteilen.
+///
+/// Er allokiert nicht, weil er im Auswertungspfad liegt (hinter beiden
+/// Early-Outs von `channel_limit`, also nur für Punkte, die den Term wirklich
+/// erreichen).
+pub(crate) fn channel_digest(ch: &OffsetChannel) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut w = |v: u64| {
+        h ^= v;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    let mut f = |v: f32| w(v.to_bits() as u64);
+    f(ch.arcs.len() as f32);
+    for a in &ch.arcs {
+        for x in a.c.iter().chain(a.u.iter()).chain(a.v.iter()) {
+            f(*x);
+        }
+        f(a.r);
+        f(a.sweep);
+        f(a.e[0]);
+        f(a.e[1]);
+        f(a.d_e);
+        for x in a.bc.iter() {
+            f(*x);
+        }
+        f(a.br);
+        for x in a.m1s.iter().chain(a.m2s.iter()).chain(a.m1e.iter()).chain(a.m2e.iter()) {
+            f(*x);
+        }
+    }
+    f(ch.delta);
+    f(if ch.concave { 1.0 } else { 0.0 });
+    f(ch.trust);
+    f(ch.gate);
+    for x in ch.bound_c.iter() {
+        f(*x);
+    }
+    f(ch.bound_r);
+    for g in ch.end_planes.iter().chain(ch.face_planes.iter()) {
+        for x in g {
+            f(*x);
+        }
+    }
+    w(ch.branch);
+    w(ch.parents[0]);
+    w(ch.parents[1]);
+    h
+}
+
+/// #384 §8ac-Korrektur (siebzehntes Review, Sollte 2) — **die atomare
+/// Zertifizierung des FINALEN Kanals.**
+///
+/// Vorher war `mint_proof_token` `pub(crate)`: jedes Kernmodul konnte ein
+/// Siegel prägen, und damit bestand die dokumentierte Typsystem-Grenze nicht
+/// mehr. Jetzt verlässt der Token dieses Modul nie — die Synthese ruft EINE
+/// Funktion, die zertifiziert und den Laufzeitmodus in demselben Schritt
+/// auflöst.
+///
+/// Gibt den aufgelösten Modus zurück (für den Tally: gezählt wird, was
+/// wirklich aufgelöst wurde, nicht was `certify` gemeldet hat).
+pub fn certify_and_resolve_final_channel(
+    omega: &BoundedCsg,
+    ch: &mut OffsetChannel,
+    cfg: WitnessCfg,
+) -> crate::offset_channel::ChannelLimitMode {
+    let certified = certify_channel(omega, ch, cfg).0 == SeamProofStatus::Proved;
+    ch.resolve_limit_mode(SeamProofToken::mint(), omega, certified)
+}
+
+/// #384 §8ac-Korrektur — kein `Ω` am Stopp ⇒ kein Beweis, Modus auf Legacy.
+/// Auch dieser Weg braucht das Siegel und bekommt es nur hier.
+pub fn force_legacy_final_channel(
+    ch: &mut OffsetChannel,
+    why: crate::offset_channel::LegacyReason,
+) {
+    ch.force_legacy(SeamProofToken::mint(), why);
 }
 
 /// **Der bewiesene Naht-Addend eines Kanals.**
@@ -1954,6 +2032,12 @@ pub(crate) fn certify_channel_with(
     knobs: SeamProofKnobs,
 ) -> ((SeamProofStatus, WitnessCover), Option<HStatus>) {
     let mut hs_out: Option<HStatus> = None;
+    // §8ac-Korrektur (Blocker): **jede Löschung des Beweises setzt ZUERST den
+    // Laufzeitmodus zurück.** Vorher begann jede Neuzertifizierung mit
+    // `seam = None`, liess den aufgelösten Modus aber stehen — ein
+    // Proved-Kanal, dessen Beweis verschwunden war, lieferte weiter seine
+    // alten Addenden an alle sechs Spiegel.
+    ch.invalidate_limit_mode(SeamProofToken::mint());
     ch.seal_seam_proof(SeamProofToken::mint(), None);
     if !cfg.valid() {
         return ((SeamProofStatus::BadConfig, cover_channel(omega, ch, cfg)), None);

@@ -7727,15 +7727,129 @@ Drei, alle als direkte Folge der beiden bewussten Änderungen:
 
 Keine Toleranz wurde gelockert, kein Pin gelöscht.
 
+### §8ac-Korrektur: das siebzehnte Mathe-Review (v0.65.1)
+
+Bestätigt hat es die Substanz: die Feldform (Klammerung, Vorzeichenrichtung,
+`max` über gültige Untergrenzen), **alle sechs Spiegel-Klammerungen einzeln**
+(der f64-symbolische Dual ist konservativ, eine f32-Nachbildung ist dort nicht
+nötig), den regulären Syntheseweg (zertifizieren nach `attach_prisms` gegen
+`omega_of` des finalen Stopps, danach nur noch feldneutrales `retain`) und den
+Intervall-Übergang. **Ein Blocker, zwei verpflichtende Sollte-Punkte.**
+
+#### B1 — der gecachte Modus überlebte die Beweis-Invalidierung
+
+Der Modus speicherte die Addenden **einmalig**; Produktion und Tape lasen
+danach `mode.addends()` ohne erneute Prüfung. Die beweisrelevanten Kanalfelder
+sind aber **öffentlich mutierbar**, und `certify_channel` begann jede
+Neuzertifizierung zwar mit `seam = None`, setzte den aufgelösten Modus aber
+**nicht** zurück.
+
+Angriffspfad: `Proved`-Kanal → `trust` vergrössern → `seam_addend(Ω)` liefert
+korrekt `None`, aber `limit_mode()` bleibt `Proved` → alle sechs Spiegel
+verbrauchen die alten Addenden. Über `trust` erweitert das den
+Gültigkeitsbereich **über das bewiesene Reichweiten- und Rundungsbudget
+hinaus** — ein zu kleiner Addend wird als bewiesen ausgeliefert. Die
+§8ac-Aussage „der Schnappschuss fängt jede spätere Änderung ab" galt für den
+Beweis-ABRUF, nicht für den KONSUM-Pfad.
+
+**Gefixt, zweistufig:**
+
+1. **Jede Löschung des Beweises setzt zuerst den Modus zurück.**
+   `certify_channel_with` ruft `invalidate_limit_mode` vor `seal_seam_proof`.
+2. **Die Freeze-Grenze ist strukturell** — über einen **Mutations-Melder**:
+   `ChannelLimitMode::Proved` trägt jetzt den `channel_digest` des Kanals im
+   Moment des Auflösens, und `limit_mode()` rechnet ihn bei **jedem** Abruf neu
+   und vergleicht. Weicht er ab, ist der Kanal
+   `LegacyUnproven(ProofInvalidated)` — für Produktion, Tape, fidget, Dual und
+   Bericht gleichermassen, weil alle durch diesen einen Getter gehen.
+   (`channel_limit` las vorher das rohe Feld; genau das war die Lücke.)
+
+**Warum dieser Schnitt und nicht der unveränderliche Runtime-Typ.** Die
+Alternative wäre gewesen, die beweisrelevanten Felder privat zu machen. Sie
+haben in der Produktion nur **11 Schreibstellen**, aber über **500
+Lesestellen** quer durch `offset_interval`, `sdf_compiler`, `sdf_dual`,
+`fidget_bridge` und die Tests — ein Umbau dieser Grösse in einer
+Korrektur-Runde wäre mehr Risiko als Gewinn. Der Digest erreicht dieselbe
+Wirkung an der Stelle, an der sie zählt, und kostet nur dort etwas: er liegt
+**hinter beiden Early-Outs** von `channel_limit`, wird also nur für Punkte
+gerechnet, die den Term überhaupt erreichen.
+
+**Rollen sauber getrennt, damit nichts verwechselt wird:** die *autoritative*
+Bindung eines Beweises an Kanal und `Ω` ist und bleibt der **bitweise**
+Schnappschuss-Vergleich beim Auflösen. Der Digest ist etwas anderes — ein
+**Mutations-Melder** für die Zeit danach. Er beantwortet nicht „gehört dieser
+Beweis hierher", sondern „hat sich der Kanal seither bewegt". Dafür darf er ein
+64-Bit-Hash sein: **er kann eine Zusage nur zurückziehen, nie erteilen.**
+
+Gepinnt (`activation_mutation_invalidates_the_runtime_mode_384`): sieben
+Mutationen — darunter ausdrücklich `trust` in **beide** Richtungen und eine
+**belegte** `face_plane` (Versatz und Normale), nicht nur Metadaten — plus eine
+erfolglose Rezertifizierung. Jede muss Laufzeitmodus, Addenden, **Tape-Wort**
+und Feldwert gemeinsam auf Legacy ziehen; der unveränderte Kanal behält seinen
+Modus (sonst wäre der Pin grün, weil er alles invalidiert).
+
+#### Sollte 2 — das Siegel verlässt das Beweismodul nicht mehr
+
+`mint_proof_token` war `pub(crate)`: jedes Kernmodul konnte prägen, die
+dokumentierte Typsystem-Grenze bestand nicht mehr. Ersetzt durch zwei atomare
+Funktionen **im Beweismodul** — `certify_and_resolve_final_channel` (zertifiziert
+und löst den Modus in einem Schritt auf) und `force_legacy_final_channel`. Der
+Token wird nur noch modulintern geprägt.
+
+#### Sollte 3 — die Laufzeit-Pins tragen jetzt Last
+
+Der GPU-Spec verlangte nur `channels > 0` und tolerierte `1e-2` — **mehr als
+die gesamte P5b-Feldänderung** (`2.267·10⁻³`). Ein TSL-Spiegel, der beide
+Addenden ignoriert, wäre durchgekommen. Nachgezogen:
+
+* **Diagnose**: `offsetChannelDiagnostics` liefert additiv je Kanal
+  `{mode, a_seam, a_h}` (über `limit_mode()`, also inklusive Digest-Prüfung —
+  die Diagnose zeigt, was die Produktion wirklich verbraucht). Der Spec weist
+  damit nach, dass wirklich ein Tape-Kanal `mode = 1` mit `A_seam > 0` trägt.
+* **Benannte Punkte**: `activation_is_measurable_on_the_gpu_fixture_384` sucht
+  auf **derselben** Fixture Punkte, an denen aufgelöste gegen genullte Addenden
+  messbar auseinanderliegen (gefunden: 24 Punkte, `Δ ≈ 1.056·10⁻⁴ mm`), und der
+  Spec prüft GPU gegen CPU an genau diesen Punkten.
+* **Toleranz**: `1e-2` → **`1e-5`**. Gemessenes f32-Rauschen `1.9·10⁻⁶`; `1e-5`
+  liegt robust darüber (Faktor 5) und eine Zehnerpotenz **unter** der
+  Feldänderung dieser Fixture — hier also lasttragend.
+* **fidget**: die bestehenden fidget-Pins fahren eine BOGEN-Fixture und belegen
+  P5b nicht (Bögen bekommen gar keinen Beweis). Der neue Pin fährt die gerade,
+  gedeckte Erosions-Fixture und prüft Baum gegen CPU an den benannten Punkten —
+  Parität `1.08·10⁻⁷`.
+
+**Ein ehrlicher Nebenbefund**: auf dieser Fixture ist `A_h = 0`, und das ist
+kein Mangel — ihre Kanäle haben keine belegte Fremdebene, das h-Budget ist
+`Vacuous` und der `h`-Ast kann dort gar nicht binden. Der `h`-Ast am echten
+Feld steht in `activation_h_families_hold_on_the_real_field_384` (1.056 Punkte
+im Umhäng-Band).
+
+#### Prüfungen
+
+Golden **unverändert `915bab98…`** — die Lebenszyklus-Härtung ist auf dem Happy
+Path feldneutral, wie gefordert. C++-Parität erneut 35 Szenen / 17.920
+Vergleiche / 0 Fehler. nextest **1539** (1537), Kernel-Lib **1533** (1531),
+offset-Profil **245** (243), Doctests **1**, Vitest **2082**.
+
+**Ein weiterer gekippter Pin**, benannt: `clamp_limit_consumes_only_de_384`
+(§8aa). Er mutiert `m̂`/`e`/`d_e` und verlangt Bit-Identität von
+`channel_limit` — jetzt entzieht genau diese Mutation dem Kanal (richtigerweise)
+seinen Modus. Der Pflichtsatz spricht über die **Geometrie**-Kette, nicht über
+die Addenden; beide Seiten laufen deshalb auf Legacy, und der Vergleich misst
+wieder genau das, was er soll. Dass die Mutation den Modus entzieht, ist
+Gegenstand von `activation_mutation_invalidates_the_runtime_mode_384`.
+
 ### Was OFFEN bleibt
 
 * **P5b-2** — die Intervall-Modellierung der neuen Kette. Bis dahin sind die
   227 Kernzellen und die „ausgeliefert"-Einschliessung der bewiesenen Fixturen
   nicht zertifiziert. Das ist die grösste offene Position dieses Pakets.
-* **Web/TSL- und fidget-Parität nicht laufzeit-verifiziert.** Der TSL-Leser ist
-  angepasst und typecheckt; ein GPU-Lauf (Playwright) stand hier nicht zur
-  Verfügung. fidget ist symbolisch mitgezogen. Beide brauchen vor dem Merge
-  einen echten Lauf.
+* **Web/TSL-Parität nicht laufzeit-verifiziert.** Der TSL-Leser ist angepasst,
+  typecheckt, und der Spec ist seit v0.65.1 lasttragend (Modus-Nachweis,
+  benannte Punkte, Toleranz `1e-5`) — aber ein GPU-Lauf stand hier nicht zur
+  Verfügung. **fidget ist seit v0.65.1 laufzeit-belegt** (Baum gegen CPU auf der
+  geraden Erosions-Fixture, Parität `1.08·10⁻⁷`). Der Browser-Lauf bleibt eine
+  Vorbedingung des Merges.
 * **P5c** (gekrümmte Kanäle) und **`Ω`-Blätter jenseits Box/Sphere/Zylinder**
   bleiben unverändert offen — sie sind der Grund für die 21 Legacy-Kanäle.
 * **`vertex_limit`** ist weiterhin nicht mitbewiesen und unverändert.

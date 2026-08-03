@@ -92,6 +92,23 @@ test("eroded union: GPU SDF-VM interpreter matches the CPU mirror (44-word chann
   const nChannels = (diag as { channels: number }[]).reduce((a, d) => a + d.channels, 0);
   expect(nChannels, "eroded union synthesizes offset channels").toBeGreaterThan(0);
 
+  // #384 §8ac (Review 17, Sollte 3a): `channels > 0` allein belegt die
+  // FELDÄNDERUNG nicht — ein TSL-Spiegel, der beide Addenden ignoriert, hätte
+  // sie bestanden. Nachgewiesen wird deshalb, dass wirklich ein Tape-Kanal
+  // `mode = 1` mit `A_seam > 0` trägt. (`A_h` ist auf DIESER Fixture null: ihre
+  // Kanäle haben keine belegte Fremdebene, das h-Budget ist `Vacuous` — der
+  // `h`-Ast kann dort gar nicht binden. Rust-seitig gepinnt in
+  // `activation_is_measurable_on_the_gpu_fixture_384`.)
+  const modes = (diag as { modes?: { mode: number; a_seam: number; a_h: number }[] }[]).flatMap(
+    (d) => d.modes ?? [],
+  );
+  const proved = modes.filter((m) => m.mode === 1 && m.a_seam > 0);
+  logs.push(`limit modes: ${JSON.stringify(modes)}`);
+  expect(
+    proved.length,
+    "at least one channel carries a PROVED runtime mode with a nonzero seam addend",
+  ).toBeGreaterThan(0);
+
   await page.waitForFunction(() => typeof (window as any).__fdSdfVmProbe === "function", null, {
     timeout: 180_000,
   });
@@ -156,5 +173,40 @@ test("eroded union: GPU SDF-VM interpreter matches the CPU mirror (44-word chann
     )} (gpu ${result.gpu[worstIdx]}, cpu ${result.cpu[worstIdx]})`,
   );
   console.log("=== SDF-VM OFFSET PARITY ===\n" + logs.join("\n"));
-  expect(worst, "GPU interpreter matches CPU mirror").toBeLessThan(1e-2);
+  // #384 §8ac (Review 17, Sollte 3c): die alte Schranke `1e-2` war GRÖSSER als
+  // die gesamte P5b-Feldänderung (max 2.267e-3, auf dieser Fixture 1.056e-4) —
+  // ein Spiegel, der beide Addenden ignoriert, wäre durchgekommen. Gemessenes
+  // f32-Rauschen: 1.9e-6. `1e-5` liegt robust darüber (Faktor 5) und eine
+  // Zehnerpotenz UNTER der Feldänderung dieser Fixture, ist hier also
+  // lasttragend.
+  expect(worst, "GPU interpreter matches CPU mirror").toBeLessThan(1e-5);
+
+  // #384 §8ac (Review 17, Sollte 3b): dieselben Punkte, an denen der Rust-Pin
+  // `activation_is_measurable_on_the_gpu_fixture_384` eine messbare Differenz
+  // zwischen aufgelösten und genullten Addenden gefunden hat (Δ ≈ 1.056e-4 mm).
+  // Dort MUSS die GPU der CPU eng folgen — täte der TSL-Leser die Addenden
+  // nicht, läge er hier um genau diese Δ daneben.
+  const NAMED: [number, number, number][] = [
+    [-8.848736, 8.38731, 10.621585],
+    [10.199106, 9.40144, 10.867469],
+    [-9.756075, 10.500658, 9.796462],
+    [9.763255, 8.002688, 9.53302],
+    [9.704189, 9.751533, 8.23549],
+    [8.604908, 10.021617, 9.055423],
+    [7.794852, 8.713275, 10.338061],
+    [-9.220748, -9.391123, 9.07008],
+  ];
+  const named = await page.evaluate(async (pts) => {
+    const kernel = (window as any).__fdKernel;
+    const gpu = await (window as any).__fdSdfVmProbe(pts);
+    const cpu = pts.map((p: number[]) => kernel.inner.sdfAt(p[0], p[1], p[2]));
+    return { gpu, cpu };
+  }, NAMED);
+  let namedWorst = 0;
+  for (let i = 0; i < NAMED.length; i++) {
+    namedWorst = Math.max(namedWorst, Math.abs(named.gpu[i] - named.cpu[i]));
+  }
+  logs.push(`named-point parity: worst |gpu-cpu| = ${namedWorst}`);
+  console.log("=== SDF-VM OFFSET PARITY (named) ===\n" + logs.join("\n"));
+  expect(namedWorst, "GPU matches CPU at the points where the addends bite").toBeLessThan(1e-5);
 });

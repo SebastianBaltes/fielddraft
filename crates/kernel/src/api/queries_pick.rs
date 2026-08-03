@@ -156,10 +156,30 @@ impl Kernel {
                 } else {
                     0
                 };
+                // #384 §8ac — **additive Diagnose der Laufzeitmodi.**
+                //
+                // Rein für die Berichte und den GPU-Paritäts-Spec: ohne sie
+                // kann von JS aus niemand nachweisen, dass ein Tape-Kanal
+                // wirklich `mode = 1` mit Addenden `> 0` trägt — und ein
+                // Spec, der das nicht nachweist, könnte von einem Spiegel
+                // bestanden werden, der beide Addenden ignoriert.
+                // Kein Feldpfad liest das hier.
+                let modes: Vec<serde_json::Value> =
+                    crate::offset_channel::collect_limit_modes(&bounded)
+                        .into_iter()
+                        .map(|(proved, seam, h)| {
+                            serde_json::json!({
+                                "mode": if proved { 1 } else { 0 },
+                                "a_seam": seam,
+                                "a_h": h,
+                            })
+                        })
+                        .collect();
                 serde_json::json!({
                     "channels": n_ch,
                     "arcs": n_arcs,
                     "interference": interference,
+                    "modes": modes,
                 })
             })
             .collect();

@@ -169,6 +169,38 @@ pub struct ChannelArc {
     pub m2e: [f32; 3],
 }
 
+/// #384 §8ac — die aufgelösten Laufzeitmodi aller Kanäle eines Baumes, für die
+/// **Diagnose** (`offsetChannelDiagnostics`). `(proved, A_seam, A_h)` je Kanal.
+///
+/// Läuft über [`OffsetChannel::limit_mode`], also inklusive der
+/// Digest-Nachprüfung — die Diagnose zeigt, was die Produktion wirklich
+/// verbraucht, nicht was einmal aufgelöst wurde.
+pub fn collect_limit_modes(node: &BoundedCsg) -> Vec<(bool, f32, f32)> {
+    fn go(n: &BoundedCsg, out: &mut Vec<(bool, f32, f32)>) {
+        match n {
+            BoundedCsg::ArcChannel { inner, channels, .. } => {
+                for c in channels {
+                    let m = c.limit_mode();
+                    let (s, h) = m.addends();
+                    out.push((m.is_proved(), s, h));
+                }
+                go(inner, out);
+            }
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. } => {
+                go(left, out);
+                go(right, out);
+            }
+            BoundedCsg::Offset { inner, .. } | BoundedCsg::InnerWall { inner, .. } => go(inner, out),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    go(node, &mut out);
+    out
+}
+
 /// #384 §8ac / P5b-1A — **warum ein Kanal auf der alten Form bleibt.**
 ///
 /// Jeder Grund ist ein eigener Fall, weil sie sich im Bericht unterscheiden
@@ -204,7 +236,12 @@ pub enum LegacyReason {
 pub enum ChannelLimitMode {
     /// Beide Addenden bewiesen (§8aa Naht, §8ab Stützebene) und gegen genau
     /// diesen Kanal und sein `Ω` abgerufen.
-    Proved { seam: f32, h: f32 },
+    ///
+    /// `digest` ist der Mutations-Melder (§8ac-Korrektur, Blocker): der Wert
+    /// von [`crate::offset_witness::channel_digest`] IM MOMENT DES AUFLÖSENS.
+    /// Weicht er beim Abruf ab, hat sich der Kanal seither bewegt, und der
+    /// Modus gilt als `LegacyUnproven` — fail-closed.
+    Proved { seam: f32, h: f32, digest: u64 },
     /// Kein Beweis — das Feld bleibt bitgenau das alte.
     LegacyUnproven(LegacyReason),
 }
@@ -215,7 +252,7 @@ impl ChannelLimitMode {
     #[inline]
     pub fn addends(&self) -> (f32, f32) {
         match self {
-            ChannelLimitMode::Proved { seam, h } => (*seam, *h),
+            ChannelLimitMode::Proved { seam, h, .. } => (*seam, *h),
             ChannelLimitMode::LegacyUnproven(_) => (0.0, 0.0),
         }
     }
@@ -410,10 +447,50 @@ impl OffsetChannel {
         self.seam.as_ref()?.h_addend_for(self, omega)
     }
 
-    /// #384 §8ac — **der aufgelöste Laufzeitmodus.** Vor der Auflösung in der
-    /// Synthese ist er `LegacyUnproven(NotCertified)`.
+    /// #384 §8ac — **der aufgelöste Laufzeitmodus, gegen den AKTUELLEN Kanal
+    /// nachgeprüft.**
+    ///
+    /// §8ac-Korrektur (siebzehntes Review, Blocker): der gespeicherte Modus
+    /// allein war nicht sicher. Die beweisrelevanten Felder sind öffentlich
+    /// mutierbar, und `limit_mode()` gab den EINMAL aufgelösten Modus
+    /// unverändert zurück — wer `trust` vergrösserte oder eine `face_plane`
+    /// verschob, bekam die alten, jetzt zu kleinen Addenden von allen sechs
+    /// Spiegeln geliefert. Die §8ac-Behauptung „der Schnappschuss fängt jede
+    /// spätere Änderung ab" galt für den Beweis-ABRUF, nicht für den
+    /// KONSUM-Pfad.
+    ///
+    /// Jetzt wird bei jedem Abruf der Digest des aktuellen Kanals gegen den
+    /// beim Auflösen gespeicherten gehalten. Passt er nicht, ist der Kanal
+    /// `LegacyUnproven(ProofInvalidated)` — und zwar für Produktion, Tape und
+    /// Bericht gleichermassen, weil alle drei durch DIESE Funktion gehen.
+    ///
+    /// Der Digest liegt hinter beiden Early-Outs von [`channel_limit`]; er
+    /// kostet nur an Punkten, die den Term wirklich erreichen.
     pub fn limit_mode(&self) -> ChannelLimitMode {
+        match self.mode {
+            ChannelLimitMode::Proved { digest, .. }
+                if digest != crate::offset_witness::channel_digest(self) =>
+            {
+                ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated)
+            }
+            m => m,
+        }
+    }
+
+    /// Der GESPEICHERTE Modus, ohne Nachprüfung — nur für die Pins, die genau
+    /// den Unterschied zwischen gespeichert und nachgeprüft messen.
+    #[cfg(test)]
+    pub(crate) fn cached_limit_mode(&self) -> ChannelLimitMode {
         self.mode
+    }
+
+    /// #384 §8ac-Korrektur — den Laufzeitmodus zurücksetzen. Jede Löschung
+    /// oder Ersetzung des Beweises geht hier zuerst durch.
+    pub(crate) fn invalidate_limit_mode(
+        &mut self,
+        _token: crate::offset_witness::SeamProofToken,
+    ) {
+        self.mode = ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated);
     }
 
     /// #384 §8ac — **den Laufzeitmodus auflösen.** Verlangt dasselbe Siegel wie
@@ -437,7 +514,11 @@ impl OffsetChannel {
             ChannelLimitMode::LegacyUnproven(LegacyReason::NotCertified)
         } else {
             match (self.seam_addend(omega), self.h_addend(omega)) {
-                (Some(seam), Some(h)) => ChannelLimitMode::Proved { seam, h },
+                (Some(seam), Some(h)) => ChannelLimitMode::Proved {
+                    seam,
+                    h,
+                    digest: crate::offset_witness::channel_digest(self),
+                },
                 (Some(_), None) => {
                     ChannelLimitMode::LegacyUnproven(LegacyReason::NoHBudget)
                 }
@@ -905,7 +986,11 @@ pub fn channel_limit(p: [f32; 3], ch: &OffsetChannel) -> f32 {
     if de >= ch.trust {
         return -END_PLANE_OFF;
     }
-    let (a_seam, a_h) = ch.mode.addends();
+    // §8ac-Korrektur (Blocker): über `limit_mode()`, NICHT über das rohe Feld
+    // — der Getter prüft den Digest nach und entzieht einem mutierten Kanal
+    // seine Addenden. Genau hier lag die Lücke: Produktion und Tape lasen den
+    // gecachten Modus ohne Nachprüfung.
+    let (a_seam, a_h) = ch.limit_mode().addends();
     // #384 §8ac / P5b-1A — **die bewiesene Kette, op für op** (§8aa Lemma 5,
     // §8ab Halbraum-Lemma + Rundungsbudget):
     //
@@ -6570,22 +6655,18 @@ pub fn synthesize_offset_channels_reported(
                         // `omega_of` borgt aus `stop`; die Kanäle sind eine
                         // eigene Liste, also ist das kollisionsfrei.
                         for ch in channels.iter_mut() {
-                            let certified = crate::offset_witness::certify_channel(
+                            // §8ac-Korrektur (Sollte 2): EINE Funktion im
+                            // Beweismodul — das Siegel verlässt es nicht mehr.
+                            crate::offset_witness::certify_and_resolve_final_channel(
                                 omega, ch, cfg,
-                            )
-                            .0 == crate::offset_witness::SeamProofStatus::Proved;
-                            ch.resolve_limit_mode(
-                                crate::offset_witness::mint_proof_token(),
-                                omega,
-                                certified,
                             );
                         }
                     }
                     None => {
                         // Kein `Offset(δ ≤ 0)`-Stopp ⇒ kein `Ω` ⇒ kein Beweis.
                         for ch in channels.iter_mut() {
-                            ch.force_legacy(
-                                crate::offset_witness::mint_proof_token(),
+                            crate::offset_witness::force_legacy_final_channel(
+                                ch,
                                 LegacyReason::NotCertified,
                             );
                         }

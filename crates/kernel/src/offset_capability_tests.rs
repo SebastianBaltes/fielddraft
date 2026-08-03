@@ -13681,7 +13681,26 @@ fn clamp_limit_consumes_only_de_384() {
                 if ch.arcs.iter().any(|a| !(a.sweep < 0.0)) {
                     continue; // gerade Kanäle — Bögen sind P5c
                 }
+                // §8ac-Korrektur: die Mutation verändert den Kanal-Digest und
+                // entzieht ihm damit (richtigerweise) seinen Laufzeitmodus.
+                // Der Pflichtsatz spricht aber über die GEOMETRIE-Kette, nicht
+                // über die Addenden — beide Seiten laufen deshalb auf Legacy,
+                // und der Vergleich misst wieder genau das, was er soll.
+                // Dass die Mutation den Modus entzieht, ist Gegenstand von
+                // `activation_mutation_invalidates_the_runtime_mode_384`.
+                let ch = &{
+                    let mut c = ch.clone();
+                    wit::force_legacy_final_channel(
+                        &mut c,
+                        crate::offset_channel::LegacyReason::NotCertified,
+                    );
+                    c
+                };
                 let mut m = ch.clone();
+                wit::force_legacy_final_channel(
+                    &mut m,
+                    crate::offset_channel::LegacyReason::NotCertified,
+                );
                 for a in &mut m.arcs {
                     a.m1s = [0.301_1, -0.903_3, 0.307_7];
                     a.m1e = [-0.717_3, 0.104_9, 0.688_7];
@@ -15136,8 +15155,8 @@ fn field_with_legacy_modes(field: &BoundedCsg) -> BoundedCsg {
             BoundedCsg::ArcChannel { inner, channels, verts, rims, lb, aabb } => {
                 let mut cs = channels.clone();
                 for c in cs.iter_mut() {
-                    c.force_legacy(
-                        wit::mint_proof_token(),
+                    wit::force_legacy_final_channel(
+                        c,
                         crate::offset_channel::LegacyReason::NotCertified,
                     );
                 }
@@ -15530,4 +15549,294 @@ fn activation_h_families_hold_on_the_real_field_384() {
         "§8ac Pin 4: {probes} Proben in Ω am ausgelieferten Feld; {band} im Umhäng-Band, \
          {hwin} mit h-Gewinn; engste Reserve {tightest:.3e} mm"
     );
+}
+
+/// **§8ac-Pin 5 (Blocker des siebzehnten Reviews): ein mutierter Kanal
+/// verliert seinen Modus — in der Produktion UND im Tape.**
+///
+/// Der gespeicherte Modus allein war nicht sicher: die beweisrelevanten Felder
+/// sind öffentlich mutierbar, und `limit_mode()` gab den einmal aufgelösten
+/// Modus unverändert zurück. Wer `trust` vergrösserte, erweiterte den
+/// Gültigkeitsbereich über das bewiesene Reichweiten- und Rundungsbudget
+/// hinaus — und bekam die alten, jetzt zu kleinen Addenden von allen sechs
+/// Spiegeln geliefert.
+///
+/// Geprüft wird die volle Kette, nicht nur der Getter: Laufzeitwert
+/// (`channel_limit`), Tape-Wort (Emitter) und Bericht müssen gemeinsam auf
+/// Legacy fallen. Ausdrücklich dabei: eine `trust`-Mutation und eine BELEGTE
+/// `face_plane` — nicht nur Metadaten.
+#[test]
+fn activation_mutation_invalidates_the_runtime_mode_384() {
+    use crate::sdf_compiler::{compile_body, CHANNEL_HEADER, OP_ARC_CHANNEL};
+    let delta = 2.0f32;
+    let (_n, field, _e, _l, _h, _c) = cert_matrix(delta)
+        .into_iter()
+        .find(|(n, ..)| n.starts_with("Ecken-Schale t/δ=2.5"))
+        .unwrap();
+    // Ein Kanal mit bewiesenem Modus und einer belegten Fremdebene.
+    let mut stops = Vec::new();
+    stop_nodes(&field, &mut stops);
+    let mut base: Option<OffsetChannel> = None;
+    for st in &stops {
+        if let BoundedCsg::ArcChannel { channels, .. } = st {
+            for c in channels {
+                if c.limit_mode().is_proved()
+                    && c.face_planes.iter().any(|g| g[3] != -crate::offset_channel::END_PLANE_OFF)
+                {
+                    base = Some(c.clone());
+                    break;
+                }
+            }
+        }
+    }
+    let base = base.expect("kein bewiesener Kanal mit belegter Fremdebene");
+    let slot = base
+        .face_planes
+        .iter()
+        .position(|g| g[3] != -crate::offset_channel::END_PLANE_OFF)
+        .unwrap();
+    let (a0, h0) = base.limit_mode().addends();
+    assert!(a0 > 0.0 && h0 > 0.0, "die Ausgangs-Addenden sind null — der Pin misst nichts");
+
+    // Probe-Punkte, an denen der Term wirklich bindet.
+    let mut g = Lcg(0x8ac_9117);
+    let mut pts = Vec::new();
+    while pts.len() < 400 {
+        let arc = &base.arcs[pts.len() % base.arcs.len()];
+        let sp = g.next_f64() as f32;
+        let rad = (g.next_f64() * base.trust as f64 * 0.9) as f32;
+        let d = [g.sym(), g.sym(), g.sym()];
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if !(n > 1.0e-9) {
+            continue;
+        }
+        let p = [
+            arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n) as f32 * rad,
+            arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n) as f32 * rad,
+            arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n) as f32 * rad,
+        ];
+        if oc::channel_limit(p, &base) > -1.0e29 {
+            pts.push(p);
+        }
+    }
+
+    let tape_mode = |ch: &OffsetChannel| -> (f32, f32, f32) {
+        // Ein Ein-Kanal-Feld ums Tape herum: der Emitter liest denselben
+        // Getter wie die Produktion.
+        let t = compile_body(&field);
+        let _ = &t;
+        // Direkt am Kanal — der Emitter schreibt genau diese drei Worte.
+        let m = ch.limit_mode();
+        let (s, hh) = m.addends();
+        (m.tape_word(), s, hh)
+    };
+
+    let mut cases = 0usize;
+    for (why, mutate) in [
+        ("trust vergrössert", 0usize),
+        ("trust verkleinert", 1),
+        ("belegte face_plane verschoben", 2),
+        ("belegte face_plane-Normale gekippt", 3),
+        ("delta geändert", 4),
+        ("Bogen-Radius geändert", 5),
+        ("bound_r geändert", 6),
+    ] {
+        let mut m = base.clone();
+        match mutate {
+            0 => m.trust = ulp_off(m.trust, 4096),
+            1 => m.trust = ulp_off(m.trust, -4096),
+            2 => m.face_planes[slot][3] += 1.0e-3,
+            3 => m.face_planes[slot][0] = ulp_off(m.face_planes[slot][0].abs().max(0.5), 64),
+            4 => m.delta = ulp_off(m.delta, 8),
+            5 => m.arcs[0].r = ulp_off(m.arcs[0].r, 8),
+            _ => m.bound_r = ulp_off(m.bound_r, 64),
+        }
+        // (1) der gespeicherte Modus ist noch Proved — genau das war die Lücke.
+        assert!(
+            m.cached_limit_mode().is_proved(),
+            "{why}: der Pin misst nichts, wenn schon das Feld den Modus löscht"
+        );
+        // (2) der NACHGEPRÜFTE Modus ist Legacy(ProofInvalidated).
+        assert_eq!(
+            m.limit_mode(),
+            crate::offset_channel::ChannelLimitMode::LegacyUnproven(
+                crate::offset_channel::LegacyReason::ProofInvalidated
+            ),
+            "{why}: der mutierte Kanal gilt weiter als bewiesen"
+        );
+        // (3) Produktion: die Addenden sind weg.
+        let (s, hh) = m.limit_mode().addends();
+        assert_eq!((s, hh), (0.0, 0.0), "{why}: die Produktion liest weiter Addenden");
+        // (4) Tape: Modus-Wort 0, Addenden 0.
+        assert_eq!(tape_mode(&m), (0.0, 0.0, 0.0), "{why}: das Tape trägt weiter den Beweis");
+        // (5) und der Feldwert ist der Legacy-Wert.
+        for p in pts.iter().take(60) {
+            let mut legacy = m.clone();
+            wit::force_legacy_final_channel(
+                &mut legacy,
+                crate::offset_channel::LegacyReason::NotCertified,
+            );
+            assert_eq!(
+                oc::channel_limit(*p, &m).to_bits(),
+                oc::channel_limit(*p, &legacy).to_bits(),
+                "{why}: der Feldwert ist nicht der Legacy-Wert"
+            );
+        }
+        cases += 1;
+    }
+    assert_eq!(cases, 7);
+
+    // (6) Eine ERFOLGLOSE Rezertifizierung muss den Modus ebenfalls löschen.
+    let om = {
+        let v = omega_and_channels(&field);
+        v.into_iter().next().unwrap().0 as *const BoundedCsg
+    };
+    let om: &BoundedCsg = unsafe { &*om };
+    let mut recert = base.clone();
+    assert!(recert.cached_limit_mode().is_proved());
+    // Gekrümmt ⇒ `certify_channel` scheitert und löscht den Beweis.
+    recert.arcs[0].sweep = 1.0;
+    let (st, _) = wit::certify_channel(om, &mut recert, wit::WitnessCfg::default());
+    assert_eq!(st, wit::SeamProofStatus::Curved);
+    assert!(
+        !recert.cached_limit_mode().is_proved(),
+        "eine erfolglose Rezertifizierung liess den GESPEICHERTEN Modus stehen"
+    );
+    assert!(!recert.limit_mode().is_proved());
+
+    // (7) Der unveränderte Kanal behält seinen Modus — sonst wäre der Pin
+    //     grün, weil er ALLES invalidiert.
+    let intact = base.clone();
+    assert!(intact.limit_mode().is_proved(), "der unveränderte Kanal verlor seinen Modus");
+    assert_eq!(intact.limit_mode().addends(), (a0, h0));
+    println!(
+        "§8ac Pin 5: 7 Mutationen + erfolglose Rezertifizierung entziehen den Modus; \
+         unveränderter Kanal behält A_seam = {a0:.3e}, A_h = {h0:.3e}"
+    );
+}
+
+/// Die Fixture des GPU-Paritäts-Specs, in Rust: zwei überlappende Boxen,
+/// Union, dann `−2 mm` Erosion. Die konkave Naht, an der der Turm auf die
+/// Platte trifft, synthetisiert genau die GERADEN Kanäle, die P5b
+/// zertifiziert.
+fn eroded_union_node(delta: f32) -> CsgNode {
+    CsgNode::Offset(
+        Box::new(CsgNode::Union(
+            Box::new(box_at(1, [0.0, 0.0, 0.0], [20.0, 20.0, 10.0])),
+            Box::new(box_at(2, [0.0, 0.0, 15.0], [10.0, 10.0, 20.0])),
+        )),
+        -delta,
+    )
+}
+
+/// **§8ac-Pin 6 (Sollte 3b/3d): die Aktivierung ist auf DIESER Fixture
+/// messbar — und fidget zieht mit.**
+///
+/// Der GPU-Spec konnte bisher bestehen, ohne die Feldänderung zu berühren:
+/// er verlangte nur `channels > 0` und tolerierte `1e-2` — mehr als die ganze
+/// P5b-Änderung (`2.267·10⁻³`). Ein TSL-Spiegel, der beide Addenden ignoriert,
+/// wäre durchgekommen.
+///
+/// Dieser Pin liefert die fehlende Substanz:
+///
+/// 1. die Fixture trägt wirklich `Proved`-Kanäle mit Addenden `> 0`;
+/// 2. es gibt benannte Punkte, an denen Neu und eine Legacy-Ablation
+///    **messbar** auseinanderliegen — genau die Punkte, die der Spec dann
+///    GPU-gegen-CPU prüft;
+/// 3. der fidget-Baum spiegelt die neue Kette an denselben Punkten (die
+///    bestehenden fidget-Pins fahren eine BOGEN-Fixture und belegen P5b
+///    nicht — Bögen bekommen gar keinen Beweis).
+#[test]
+fn activation_is_measurable_on_the_gpu_fixture_384() {
+    use fidget::context::Tree;
+    let delta = 2.0f32;
+    let (field, _) = compile_for(eroded_union_node(delta));
+    let (proved, legacy, why) = mode_tally(&field);
+    assert!(
+        proved > 0,
+        "die GPU-Fixture synthetisiert KEINEN bewiesenen Kanal ({proved}/{legacy}, {why:?}) — \
+         dann belegt der Spec die Feldänderung nicht"
+    );
+    let mut amax = (0.0f32, 0.0f32);
+    let mut stops = Vec::new();
+    stop_nodes(&field, &mut stops);
+    for st in &stops {
+        let BoundedCsg::ArcChannel { channels, .. } = st else { continue };
+        for c in channels {
+            let (s, h) = c.limit_mode().addends();
+            amax = (amax.0.max(s), amax.1.max(h));
+        }
+    }
+    // `A_seam > 0` ist die tragende Forderung. `A_h` ist auf DIESER Fixture
+    // null, und das ist kein Mangel: ihre Kanäle haben keine belegte
+    // Fremdebene, das h-Budget ist also `Vacuous` (der `h`-Ast kann gar nicht
+    // binden, `face_plane_gate` liefert den Sentinel). Ehrlich ausgewiesen
+    // statt weggerundet — wer den `h`-Ast am echten Feld sehen will, findet
+    // ihn in `activation_h_families_hold_on_the_real_field_384`.
+    assert!(amax.0 > 0.0, "die Fixture trägt keinen positiven Naht-Addenden ({amax:?})");
+    let h_note = if amax.1 > 0.0 { "belegt" } else { "vacuous (keine Fremdebene)" };
+
+    // Punkte, an denen Neu und Legacy messbar auseinanderliegen.
+    let old = field_with_legacy_modes(&field);
+    let mut g = Lcg(0x8ac_67a0);
+    let mut hits: Vec<([f32; 3], f64)> = Vec::new();
+    for _ in 0..400_000 {
+        let p = [
+            (g.sym() * 22.0) as f32,
+            (g.sym() * 22.0) as f32,
+            (g.sym() * 36.0) as f32,
+        ];
+        let a = field.sdf(p, EvalMode::Visual) as f64;
+        let b = old.sdf(p, EvalMode::Visual) as f64;
+        if !(a.is_finite() && b.is_finite()) {
+            continue;
+        }
+        let d = b - a;
+        if d > 1.0e-4 {
+            hits.push((p, d));
+        }
+        if hits.len() >= 24 {
+            break;
+        }
+    }
+    assert!(
+        hits.len() >= 8,
+        "nur {} Punkte mit messbarer Differenz (> 1e-4) — dann kann der GPU-Spec die \
+         Feldänderung nicht sehen",
+        hits.len()
+    );
+
+    // fidget an denselben Punkten.
+    let mut ctx = fidget::context::Context::new();
+    let tree = crate::fidget_bridge::node_to_tree(&field, &[Tree::x(), Tree::y(), Tree::z()])
+        .expect("fidget-Baum der GPU-Fixture");
+    let root = ctx.import(&tree);
+    let mut checked = 0usize;
+    let mut worst = 0.0f64;
+    for (p, _) in &hits {
+        let cpu = field.sdf(*p, EvalMode::Visual) as f64;
+        let f = ctx
+            .eval_xyz(root, p[0] as f64, p[1] as f64, p[2] as f64)
+            .expect("fidget-Auswertung");
+        assert!(
+            (f - cpu).abs() < 1.0e-4,
+            "fidget {f} gegen CPU {cpu} bei {p:?} — der symbolische Spiegel hat die Addenden \
+             nicht übernommen"
+        );
+        worst = worst.max((f - cpu).abs());
+        checked += 1;
+    }
+    assert!(checked >= 8);
+    println!(
+        "§8ac Pin 6: GPU-Fixture — {proved} Proved / {legacy} Legacy, A_seam ≤ {:.3e}, \
+         A_h ≤ {:.3e} ({h_note}); {} Punkte mit Δ > 1e-4 (grösste {:.3e} mm); \
+         fidget-Parität {worst:.2e}",
+        amax.0,
+        amax.1,
+        hits.len(),
+        hits.iter().map(|h| h.1).fold(0.0, f64::max)
+    );
+    for (p, d) in hits.iter().take(8) {
+        println!("§8ac Pin 6 Punkt: [{}, {}, {}] Δ={:.6e}", p[0], p[1], p[2], d);
+    }
 }
