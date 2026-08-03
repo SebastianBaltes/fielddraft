@@ -8136,9 +8136,158 @@ offset-Profil **248** (247), Doctests **1**, Vitest **2082**.
   Richtung *könnte* sie prinzipiell verschlechtern — sie gehören bei jeder
   Vergrösserung der Addenden erneut angesehen.
 
+## 8ad. P5b-2 — die Intervall-Stufe holt die neue Kette ein (#384, 2026-08-03)
+
+P5b-1A hat das Feld geändert und die Intervall-Stufe dafür **verweigert**:
+`enclose_channel_limit` modellierte `fl(δ − min(de, h))`, die Produktion
+rechnete seither `fl(δ − min(fl(de+A), fl(h+A_h)))`. Eine Hülle der alten Kette
+wäre eine Zusage über ein Feld gewesen, das so nicht mehr ausgeliefert wird —
+also `Unknown`, bis die neue Kette op-genau modelliert ist. Am Plattenkern der
+Ecken-Schale kostete das **227 von 512** Zellen.
+
+P5b-2 holt sie ein. **Alle 512 sind wieder zertifiziert**, die Verweigerung ist
+verschwunden, und der Plattenkern-Pin steht wieder in seiner ursprünglichen
+Schärfe (`b2 == n³`, kein Unknown-Ast).
+
+### Der Modus kommt als Argument — kein Dispatch, kein Fallback
+
+`enclose_channel_limit(c, p, ch, mode)` **verlangt** den Modus, genau wie
+`channel_limit` in der Produktion. Aufgelöst wird er EINMAL im
+`ArcChannel`-Arm von `enclose_node`, wo `inner` und `channels` gemeinsam und
+unveränderlich vorliegen — mit demselben `resolve_stop_modes` gegen
+`omega_of(inner)`, das auch die sechs Spiegel nehmen.
+
+Ein `stored_mode_is_proved`-Dispatch wäre eine **zweite Wahrheit**: ein unter
+`Ω₁` bewiesener Kanal gälte auch unter `Ω₂` als bewiesen, die Produktion tut
+das nicht, und die Hülle läge daneben. Ein Hull-Fallback ist unnötig — kann `Ω`
+nicht aufgelöst werden, liefert `resolve_stop_modes` bereits exakt den
+produktiven Legacy-Modus.
+
+**Äquivalenz zur Produktions-Optimierung** `resolve_stop_modes_at` (§8ac):
+bei `dbs < trust` liefert sie denselben Modus; bei `dbs ≥ trust` endet
+`channel_limit` neutral, **bevor** ein Addend gelesen wird; und Zellen, die die
+Grenze überspannen, hüllt der bestehende `dbs`-Schalter ohnehin über beide
+Äste. Die Stufe darf also eager auflösen, ohne von der Produktion abzuweichen.
+
+### Die Sequenz, Schritt für Schritt
+
+```text
+a. dbs ≥ trust                   → neutral      (VOR jedem Addenden)
+b. channel_nearest auf ROHEM de  (§8w-Kandidaten/Prunes unverändert)
+c. None-Ausgang                  → neutral      (ohne Addenden zu lesen)
+d. de ≥ trust                    → neutral      (auf ROHEM de, nicht de_safe)
+e. de_safe = fl(de + A_seam) ; h₀ = fl(s4 + δ) ; h_safe = fl(h₀ + A_h)
+f. m       = min(de_safe, h_safe)               (f32-Auswahl, keine Rundung)
+g. lim     = fl(δ − m)
+```
+
+Beide Fernfeld-Tests laufen auf dem **rohen** `de`. Zöge man einen Addenden
+davor, verschöbe sich die Neutralitätsgrenze gegenüber der Produktion — einer
+der Rückdrehknöpfe, und er reisst (s. u.).
+
+**Eine Implementierung für beide Modi.** Auch im Legacy-Fall laufen beide
+Additionen explizit mit `0.0` durch `Ctx::fadd` — weil die Produktion es
+genauso tut (`de + a_seam` mit `a_seam = 0.0`). Das `fl(−0.0 + 0.0) = +0.0`
+ist hier kein Thema: `de` ist eine Norm (`≥ +0.0`), `h₀ = fl(s4 + δ)` mit
+`δ > 0` kann nicht `−0.0` werden, und die Intervall-Domäne unterscheidet `±0.0`
+ohnehin nicht (beide sind `0.0` in f64).
+
+**Das Limit-Lemma bleibt gültig**: `channel_limit` liest je Bogen weiterhin nur
+`de`; die Addenden sind kanal-konstant, `s4` hängt nur an `p` und den
+Kanalebenen. Die `de`-Projektion der Alternativen genügt unverändert —
+`enc_channel_candidates` und die Prune-Maschinerie sind **nicht angefasst**,
+`de_safe` existiert logisch erst NACH `channel_nearest`.
+
+### Die Pins
+
+* **`interval_encloses_the_new_limit_chain_384`** — die direkte Kettenprobe:
+  `channel_limit(p, ch, mode) ∈ enclose_channel_limit(C, ch, mode)`, **104.160
+  Proben** über 217 bewiesene Kanäle und 11 Fixturen. Lokalisiert, was im vollen
+  Feld hinter `max(lim)` und den Rim-Termen verschwände. Der Modus stammt aus
+  dem ECHTEN Produktionspfad (Ω-Auflösung am Stopp), nicht aus einer lokalen
+  Rekonstruktion.
+* **`interval_encloses_the_delivered_field_384`** (zurückgeschärft) — die volle
+  „ausgeliefert"-Einschliessung gilt wieder **auch** für Stopps mit bewiesenem
+  Laufzeitmodus; der Pin verlangt jetzt ausdrücklich eine Mindestzahl solcher
+  Zellen, statt sie wie in P5b-1A als „verweigert" zu zählen.
+* **`interval_uses_the_omega_resolved_mode_384`** — die Modus-Bindung: derselbe
+  Kanal unter `Ω₂` löst in der Produktion auf Legacy auf, und die Hülle mit dem
+  aufgelösten Modus trägt jeden Produktionswert; die Hülle mit dem `Ω₁`-Modus
+  verfehlt ihn an **4.800 von 4.800** Proben. Ein Spiegel, der auf den
+  gespeicherten Modus dispatchte, würde also reissen.
+* **`interval_tiling_of_the_plate_core_is_gapless_384`** (zurückgeschärft) —
+  `b2 == n³ == 512`, kein Unknown-Ast, keine Text-Assertion mehr auf
+  `Unknown("P5b-1A…")`.
+
+### Die Rückdrehknöpfe — und ein ehrlicher Befund
+
+| Ablation (nur im SPIEGEL) | Familie | Ergebnis |
+|---|---|---|
+| `A_seam` genullt | `de_safe` gewinnt | **3.200 / 3.200** Escapes |
+| `A_h` genullt | `h_safe` gewinnt | **3.200 / 3.200** Escapes |
+| Addend vor dem rohen `de ≥ trust`-Test | gezielt: `trust − A_seam ≤ de < trust` | **517 / 960** Escapes |
+| `min` vor den Addenden | `h_safe` gewinnt | **3.200 / 3.200** Escapes |
+| `fl(fl(s4+δ)+A_h)` reell zusammengefasst | `h_safe` gewinnt | **kein Escape** — s. u. |
+
+Die dritte Zeile brauchte eine **gezielte** Familie: gleichverteiltes Proben
+trifft das Band `trust − A_seam ≤ de < trust` nie (es ist `≈ 10⁻⁴` von `≈ 4 mm`
+breit) — eine Aussage über die Auflösung der Probe, keine über Erreichbarkeit.
+Per Bisektion auf `de = trust` sind es 120 Punkte, und die Ablation reisst an
+mehr als der Hälfte.
+
+Die fünfte Zeile ist ein **ehrlicher Befund, keine Lücke**: die Reassoziation
+unterscheidet sich nur um EIN ulp, und die Intervall-Stufe rundet nach jeder Op
+selbst nach aussen. Ihre eigene Breite deckt den Effekt zu — die falsch
+geklammerte Hülle ist an diesen Punkten **immer noch eine gültige
+Einschliessung**, nur anders hergeleitet. Ein Escape wäre nicht zu erzwingen,
+ohne die Zelle zu verbiegen. Der Pin hält deshalb fest, was messbar ist: die
+Hülle **bewegt sich** an 320 von 400 Zellen (die beiden Additionen sind also
+wirklich beide modelliert), und ein Escape wäre ein NEUER Befund, den der Pin
+ausdrücklich meldet statt ihn wegzurunden. Dass die Kette an dieser Stelle
+gepinnt ist, tragen `A_h genullt` und `min vor den Addenden`.
+
+### Prüfungen
+
+* **Golden**: `915bab98…` **byte-identisch** — die Intervall-Stufe ist nicht
+  das Feld; trotzdem regeneriert und verglichen. `check_interp` 35 Szenen /
+  17.920 Vergleiche / 0 Fehler.
+* **Zellen-Bilanz**: alle **227** vorher verweigerten Kernzellen sind zurück
+  (512 / 512 Zweig 2, 0 verweigert). Keine einzige bleibt aus numerischem
+  Grund offen.
+* `enclose_channel_apply`, die Kandidatenlogik und das Produktionsfeld sind
+  **unverändert**.
+* **`cargo nextest run --workspace`**: **1545** (Baseline 1542).
+* **`cargo test -p fielddraft-kernel --lib`**: **1539** (1536).
+* **`cargo nextest run --workspace --profile offset`**: **251** (248).
+* **Doctests 1**, **Web-Vitest 2082**.
+
+### Was OFFEN bleibt
+
+* **Der unveränderliche Laufzeit-Knoten** (§8ac-Nachlese) — Voraussetzung für
+  einen sicheren Cache der aufgelösten Modi. Die Intervall-Stufe löst jetzt
+  ebenfalls je Zell-Auswertung auf; dort ist es unkritisch (die Stufe rechnet
+  ohnehin schwer), aber es ist dieselbe offene Frage.
+* **P5c** — gekrümmte Kanäle; **`Ω`-Blätter jenseits Box/Sphere/Zylinder**;
+  **`vertex_limit`**. Unverändert.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
+- Produktionscode §8ad (P5b-2): `crates/kernel/src/offset_interval.rs` — die
+  op-genaue Kette in `enclose_channel_limit` (Modus als Argument, drei
+  f32-Additionen, `min`, `fsub`), die Modus-Durchreichung in `enclose_stop`
+  und die Auflösung an der Konsumgrenze im `ArcChannel`-Arm von
+  `enclose_node`; die fünf `Knobs` `drop_seam_addend`, `drop_h_addend`,
+  `addend_before_far_test`, `fuse_h_additions`, `min_before_addends`.
+  `crates/kernel/src/offset_channel.rs` — `stored_limit_mode` (nur für die
+  Gegenprobe). **Kein Evaluator, kein Opcode, kein Spiegel, kein Tape-Wort** —
+  Golden byte-identisch.
+- Pins §8ad in `offset_capability_tests.rs`: `tight_cell`,
+  `proved_channels_with_stop`, `interval_encloses_the_new_limit_chain_384`,
+  `interval_p5b2_ablations_are_load_bearing_384`,
+  `interval_uses_the_omega_resolved_mode_384`, plus die beiden
+  zurückgeschärften Pins `interval_tiling_of_the_plate_core_is_gapless_384`
+  und `interval_encloses_the_delivered_field_384`.
 - Produktionscode §8ac (P5b-1A, **erste Feldänderung**):
   `crates/kernel/src/offset_channel.rs` — `ChannelLimitMode`/`LegacyReason`,
   das private Feld `OffsetChannel::mode`, `limit_mode`/`resolve_limit_mode`/

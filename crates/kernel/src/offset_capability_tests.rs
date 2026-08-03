@@ -9397,7 +9397,7 @@ fn interval_encloses_the_delivered_field_384() {
     let (mut cells, mut probes, mut evaluated) = (0usize, 0usize, 0usize);
     let mut delivered = 0usize;
     let mut channel_work = 0u64;
-    let mut refused = 0usize;
+    let mut proved_delivered = 0usize;
     for (name, field, _exact, lo, hi, _n) in cert_matrix(delta) {
         if !(name.starts_with("Stufen")
             || name == "Ecken-Schale t/δ=2.5"
@@ -9422,33 +9422,32 @@ fn interval_encloses_the_delivered_field_384() {
                 probes += n;
                 evaluated += ok as usize;
                 if tag == "ausgeliefert" {
-                    // #384 §8ac / P5b-1A: trägt der Stopp einen BEWIESENEN
-                    // Laufzeitmodus, verweigert die Intervall-Stufe ihn
-                    // ausdrücklich (die alte Kette ist nicht mehr die
-                    // ausgelieferte). Das ist kein Verlust an Wahrheit,
-                    // sondern das Gegenteil: eine Zusage, die nicht mehr gilt,
-                    // wird nicht mehr gegeben. P5b-2 holt sie zurück.
-                    if fixture_has_proved_mode(&field) {
-                        refused += 1;
-                    } else if ok {
+                    // #384 §8ad / P5b-2: die Einschliessung des AUSGELIEFERTEN
+                    // Feldes gilt wieder — auch für Stopps mit bewiesenem
+                    // Laufzeitmodus. P5b-1A hatte sie dort verweigert; hier
+                    // wird jetzt gezählt, dass sie zurück ist.
+                    if ok {
                         delivered += 1;
                         channel_work += chev;
+                        if fixture_has_proved_mode(&field) {
+                            proved_delivered += 1;
+                        }
                     }
                 }
             }
         }
     }
     assert!(cells >= 1200, "nur {cells} Zell-Läufe");
-    assert!(probes > 25_000, "nur {probes} Proben — der Pin misst nichts");
+    assert!(probes > 30_000, "nur {probes} Proben — der Pin misst nichts");
     assert!(
-        refused > 100,
-        "nur {refused} Zellen mit bewiesenem Laufzeitmodus — dann prüft der Pin die \
-         P5b-1A-Verweigerung nicht"
+        proved_delivered > 100,
+        "nur {proved_delivered} eingeschlossene Zellen an Fixturen mit BEWIESENEM \
+         Laufzeitmodus — dann prüft der Pin die P5b-2-Kette gar nicht"
     );
     assert!(
         delivered >= 60,
-        "nur {delivered} Zellen des AUSGELIEFERTEN Feldes (LEGACY-Stopps) liefern überhaupt \
-         eine Einschliessung — dann prüft der Pin den §8v-Kanal-Pfad nicht"
+        "nur {delivered} Zellen des AUSGELIEFERTEN Feldes liefern überhaupt eine \
+         Einschliessung — dann prüft der Pin den §8v-Kanal-Pfad nicht"
     );
     // Eine Einschliessung allein beweist noch nicht, dass ein Kanal GERECHNET
     // wurde — sie könnte auch aus lauter neutralen Kanälen entstehen.
@@ -10451,65 +10450,35 @@ fn interval_tiling_of_the_plate_core_is_gapless_384() {
         assert_eq!(edges[0], lo[k]);
         assert_eq!(edges[n], hi[k]);
     }
-    // #384 §8ac / P5b-1A — **die Zertifizierung ist hier vorübergehend
-    // ZURÜCKGEZOGEN, und das ist Absicht.**
+    // #384 §8ad / P5b-2 — **die Zertifizierung ist zurück.**
     //
-    // Der Plattenkern dieser Fixture liegt unter 24 Kanälen mit BEWIESENEM
-    // Laufzeitmodus. Die Intervall-Stufe modelliert `fl(δ − min(de, h))`; die
-    // Produktion rechnet seit P5b-1A `fl(δ − min(fl(de+A), fl(h+A_h)))`. Eine
-    // Einschliessung der alten Kette wäre eine Zusage über ein Feld, das so
-    // nicht mehr ausgeliefert wird — also `Unknown`, bis **P5b-2** die neue
-    // Kette op-genau modelliert.
-    //
-    // Der Pin prüft deshalb jetzt zwei Dinge statt einem, und verliert dabei
-    // nichts an Schärfe:
-    // 1. die Verweigerung ist **die richtige** (fail-closed mit genau diesem
-    //    Grund — ein anderes `Unknown` wäre ein echter Regress);
-    // 2. die SUBSTANZ, die der Pin je geschützt hat, steht weiter: das Feld
-    //    behauptet über dem ganzen Plattenkern Material (`f < 0`).
-    // Die Kachelungs-Geometrie oben ist davon unberührt.
-    // Bemerkenswert an der Messung: die Verweigerung ist **chirurgisch**. Wo
-    // der Kanal-Term ohnehin neutral ist (Fernfeld-Skip), zertifiziert die
-    // Stufe unverändert über Zweig 2; nur die Zellen, in denen die
-    // Grenzwert-Klemme wirklich bindet, fallen auf `Unknown`. Der Pin verlangt
-    // deshalb BEIDES in nennenswerter Zahl — verschwände eine der beiden
-    // Sorten, hätte sich entweder die Verweigerung verselbständigt oder sie
-    // greift gar nicht mehr.
-    let (mut b2, mut refused, mut probes) = (0usize, 0usize, 0usize);
+    // P5b-1A hatte sie hier vorübergehend zurückgezogen: die Intervall-Stufe
+    // modellierte `fl(δ − min(de, h))`, die Produktion rechnete seither
+    // `fl(δ − min(fl(de+A), fl(h+A_h)))`. Von 512 Zellen des Plattenkerns
+    // fielen 227 auf `Unknown`. P5b-2 spiegelt die neue Kette op-genau —
+    // **alle 512 sind wieder Zweig-2-zertifiziert**, und der Pin steht wieder
+    // in seiner ursprünglichen Schärfe: keine Ausnahme, kein Unknown-Ast.
+    let mut b2 = 0usize;
+    let mut probes = 0usize;
     for cell in &cells {
         let mut c = iv::Ctx::new();
         match iv::certify_cell(cell, &field, delta as f64, CERT_TOL, &none, &mut c) {
-            iv::Verdict::Branch2 => b2 += 1,
-            iv::Verdict::Unknown(why) => {
-                assert!(
-                    why.contains("P5b-1A"),
-                    "Zelle {cell:?} ist Unknown({why}) — das ist NICHT die P5b-1A-Verweigerung, \
-                     sondern ein echter Verlust an Zertifizierung"
-                );
-                refused += 1;
+            iv::Verdict::Branch2 => {
+                b2 += 1;
+                for p in cell_samples(cell, 1) {
+                    let f = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+                    probes += 1;
+                    assert!(f < 0.0, "zertifizierte Zelle {cell:?} liefert bei {p:?} {f} ≥ 0");
+                }
             }
-            other => panic!("Zelle {cell:?} liefert {other:?}"),
-        }
-        // Die Substanz, die dieser Pin je geschützt hat: das Feld behauptet
-        // über dem ganzen Plattenkern Material — auch dort, wo die
-        // Zertifizierung bis P5b-2 aussetzt.
-        for p in cell_samples(cell, 1) {
-            let f = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
-            probes += 1;
-            assert!(f < 0.0, "Zelle {cell:?} des Plattenkerns liefert bei {p:?} {f} ≥ 0");
+            other => panic!(
+                "Zelle {cell:?} des Plattenkerns ist {other:?} — die Kachelung ist damit \
+                 nicht mehr lückenlos zertifiziert"
+            ),
         }
     }
-    assert_eq!(b2 + refused, n * n * n, "{b2} + {refused} ≠ {} Zellen", n * n * n);
-    assert!(
-        b2 > 0 && refused > 0,
-        "{b2} zertifiziert / {refused} verweigert — der Pin braucht beide Sorten"
-    );
+    assert_eq!(b2, n * n * n, "nur {b2} von {} Zellen zertifiziert", n * n * n);
     assert!(probes > 3_000, "nur {probes} Proben");
-    println!(
-        "§8ac: Plattenkern — {b2} von {} Zellen weiter über Zweig 2 zertifiziert, \
-         {refused} bis P5b-2 verweigert",
-        n * n * n
-    );
 }
 
 /// **§8w-Sonde: wie sich die Argmin-Zellen auflösen — und was übrig bleibt.**
@@ -10792,7 +10761,7 @@ fn interval_prune_can_skip_even_the_first_arc_384() {
          nicht mitgehüllt"
     );
     let mut c2 = iv::Ctx::new();
-    let encl = iv::enclose_channel_limit(&mut c2, cell.world_f32(), &ch)
+    let encl = iv::enclose_channel_limit(&mut c2, cell.world_f32(), &ch, ch.limit_mode_channel_only())
         .expect("channel_limit verweigert");
     assert!(
         encl.contains(lim as f64),
@@ -16469,5 +16438,413 @@ fn activation_lazy_resolution_is_field_neutral_384() {
     println!(
         "§8ac Pin 9: {probes} Kanal-Proben bitgleich; {skipped} durch den Vorfilter \
          übersprungen (alle neutral), {resolved_proved} voll aufgelöst"
+    );
+}
+
+// ══════════════ #384 §8ad / P5b-2 — die Intervall-Stufe holt die Kette ein ══════════════
+
+/// Eine Zelle um einen Punkt, eng genug, dass die geometrische Breite den
+/// `≈ 10⁻⁴`-Effekt der Addenden nicht verdeckt.
+fn tight_cell(p: [f32; 3], r: f64) -> iv::Box3 {
+    iv::Box3::new(
+        [p[0] as f64 - r, p[1] as f64 - r, p[2] as f64 - r],
+        [p[0] as f64 + r, p[1] as f64 + r, p[2] as f64 + r],
+    )
+}
+
+/// Sammelt `(Stopp-inner, Kanal, aufgelöster Modus)` aller bewiesenen Kanäle.
+fn proved_channels_with_stop(field: &BoundedCsg) -> Vec<(BoundedCsg, OffsetChannel)> {
+    let mut stops = Vec::new();
+    stop_nodes(field, &mut stops);
+    let mut out = Vec::new();
+    for st in stops {
+        if let BoundedCsg::ArcChannel { inner, channels, .. } = st {
+            for c in channels {
+                if c.limit_mode_at_stop(inner).is_proved() {
+                    out.push(((**inner).clone(), c.clone()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// **§8ad-Pin 1: die direkte Kettenprobe.**
+///
+/// `channel_limit(p, ch, mode) ∈ enclose_channel_limit(C, ch, mode)` — der
+/// Grenzwert-Beitrag EINZELN, nicht erst im vollen Feld, wo ihn das
+/// `max(lim)` und die Rim-Terme verdecken könnten. Der Modus kommt aus dem
+/// ECHTEN Produktionspfad (Ω-Auflösung am Stopp), nicht aus einer lokalen
+/// Rekonstruktion.
+#[test]
+fn interval_encloses_the_new_limit_chain_384() {
+    let delta = 2.0f32;
+    let mut g = Lcg(0x8ad_c4a1);
+    let (mut probes, mut proved) = (0usize, 0usize);
+    let mut fixtures = 0usize;
+    for (name, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        let mut here = 0usize;
+        for (stop, ch) in proved_channels_with_stop(&field) {
+            let mode = ch.limit_mode_at_stop(&stop);
+            assert!(mode.is_proved());
+            let arc = ch.arcs[0].clone();
+            for _ in 0..60 {
+                let sp = g.next_f64() as f32;
+                let rad = (g.next_f64() * ch.trust as f64 * 0.95) as f32;
+                let d = [g.sym(), g.sym(), g.sym()];
+                let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                if !(n > 1.0e-9) {
+                    continue;
+                }
+                let p = [
+                    arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n) as f32 * rad,
+                    arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n) as f32 * rad,
+                    arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n) as f32 * rad,
+                ];
+                let cell = tight_cell(p, 1.0e-4);
+                let mut c = iv::Ctx::new();
+                let Ok(enc) = iv::enclose_channel_limit(&mut c, cell.world_f32(), &ch, mode)
+                else {
+                    continue;
+                };
+                // Alle f32-Ecken der Zelle — die Hülle muss JEDEN
+                // Produktionswert darin tragen.
+                for q in cell_samples(&cell, 1) {
+                    let qf = [q[0] as f32, q[1] as f32, q[2] as f32];
+                    let got = oc::channel_limit(qf, &ch, mode);
+                    assert!(
+                        enc.contains(got as f64),
+                        "{name}: channel_limit = {got} fehlt in der Hülle {enc:?} bei {qf:?}"
+                    );
+                    probes += 1;
+                    here += 1;
+                }
+            }
+            proved += 1;
+        }
+        if here > 0 {
+            fixtures += 1;
+        }
+    }
+    assert!(fixtures >= 8, "nur {fixtures} Fixturen");
+    assert!(proved > 100 && probes > 20_000, "{proved} Kanäle / {probes} Proben");
+    println!("§8ad Pin 1: {probes} Proben über {proved} bewiesene Kanäle, {fixtures} Fixturen");
+}
+
+/// **§8ad-Pin 2: zwei getrennte, lasttragende Ablationen.**
+///
+/// Zwei Additionen, zwei Gegenproben — und beide brauchen eine Familie, in der
+/// der jeweilige Ast das `min` auch WIRKLICH gewinnt. (Die GPU-Fixture reicht
+/// dafür nicht: dort ist `A_h = 0`, weil ihre Kanäle keine belegte Fremdebene
+/// haben.)
+///
+/// Wird der Addend NUR im Spiegel genullt, muss mindestens ein echter
+/// Produktionswert aus der mutierten Hülle fallen — und in der echten drin
+/// liegen. Dazu die drei Struktur-Rückdrehknöpfe: Addend vor den rohen
+/// `de ≥ trust`-Test, die beiden h-Additionen reell zusammengefasst, und der
+/// gespeicherte statt des Ω-aufgelösten Modus.
+#[test]
+fn interval_p5b2_ablations_are_load_bearing_384() {
+    let delta = 2.0f32;
+    let mut g = Lcg(0x8ad_ab1a);
+    // Familien sammeln: Punkte, an denen de_safe gewinnt, und solche, an
+    // denen h_safe gewinnt.
+    let mut fam_de: Vec<(OffsetChannel, oc::ChannelLimitMode, [f32; 3])> = Vec::new();
+    let mut fam_h: Vec<(OffsetChannel, oc::ChannelLimitMode, [f32; 3])> = Vec::new();
+    for (_n, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        for (stop, ch) in proved_channels_with_stop(&field) {
+            let mode = ch.limit_mode_at_stop(&stop);
+            let (a_seam, a_h) = mode.addends();
+            let arc = ch.arcs[0].clone();
+            for _ in 0..400 {
+                let sp = g.next_f64() as f32;
+                let rad = (g.next_f64() * ch.trust as f64 * 0.95) as f32;
+                let d = [g.sym(), g.sym(), g.sym()];
+                let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                if !(n > 1.0e-9) {
+                    continue;
+                }
+                let p = [
+                    arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n) as f32 * rad,
+                    arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n) as f32 * rad,
+                    arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n) as f32 * rad,
+                ];
+                let Some((de, _, _, _)) = oc::channel_nearest(p, &ch) else { continue };
+                if !(de.is_finite() && de < ch.trust) {
+                    continue;
+                }
+                let h = oc::face_plane_gate(p, &ch) + ch.delta;
+                if !h.is_finite() || h >= 1.0e29 {
+                    continue;
+                }
+                if de + a_seam < h + a_h && a_seam > 0.0 && fam_de.len() < 400 {
+                    fam_de.push((ch.clone(), mode, p));
+                } else if h + a_h < de + a_seam && a_h > 0.0 && fam_h.len() < 400 {
+                    fam_h.push((ch.clone(), mode, p));
+                }
+            }
+        }
+    }
+    assert!(fam_de.len() > 50, "nur {} de-Fälle", fam_de.len());
+    assert!(fam_h.len() > 50, "nur {} h-Fälle", fam_h.len());
+
+    // **Eine dritte, GEZIELTE Familie** für den Rückdrehknopf „Addend vor dem
+    // rohen `de ≥ trust`-Test". Gleichverteiltes Proben trifft das Band
+    // `trust − A_seam ≤ de < trust` nie (es ist `≈ 10⁻⁴` von `≈ 4 mm` breit) —
+    // das ist eine Aussage über die Auflösung der Probe, keine über
+    // Erreichbarkeit. Also per Bisektion auf `de = trust` zusteuern.
+    let mut fam_far: Vec<(OffsetChannel, oc::ChannelLimitMode, [f32; 3])> = Vec::new();
+    let mut g2 = Lcg(0x8ad_fa72);
+    'outer: for (_n, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        for (stop, ch) in proved_channels_with_stop(&field) {
+            let mode = ch.limit_mode_at_stop(&stop);
+            let (a_seam, _) = mode.addends();
+            if !(a_seam > 0.0) {
+                continue;
+            }
+            let arc = ch.arcs[0].clone();
+            for _ in 0..40 {
+                let sp = g2.next_f64() as f32;
+                let d = [g2.sym(), g2.sym(), g2.sym()];
+                let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                if !(n > 1.0e-9) {
+                    continue;
+                }
+                let at = |t: f64| -> [f32; 3] {
+                    [
+                        arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n * t) as f32,
+                        arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n * t) as f32,
+                        arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n * t) as f32,
+                    ]
+                };
+                let de_at = |t: f64| -> Option<f32> {
+                    oc::channel_nearest(at(t), &ch).map(|x| x.0).filter(|v| v.is_finite())
+                };
+                let (mut lo, mut hi) = (0.0f64, ch.trust as f64 * 4.0);
+                if de_at(lo).is_none_or(|v| v >= ch.trust)
+                    || de_at(hi).is_none_or(|v| v < ch.trust)
+                {
+                    continue;
+                }
+                for _ in 0..120 {
+                    let mid = 0.5 * (lo + hi);
+                    match de_at(mid) {
+                        Some(v) if v < ch.trust => lo = mid,
+                        _ => hi = mid,
+                    }
+                }
+                // `lo` liegt jetzt unmittelbar unter der Grenze: `de < trust`,
+                // aber `de + A_seam ≥ trust`.
+                let p = at(lo);
+                if let Some(de) = de_at(lo) {
+                    if de < ch.trust && de + a_seam >= ch.trust {
+                        fam_far.push((ch.clone(), mode, p));
+                    }
+                }
+                if fam_far.len() >= 120 {
+                    break 'outer;
+                }
+            }
+        }
+    }
+    assert!(
+        fam_far.len() > 20,
+        "nur {} Punkte im Band trust − A_seam ≤ de < trust — dann prüft der Rückdrehknopf \
+         „Addend vor dem rohen de-Test\" nichts",
+        fam_far.len()
+    );
+
+    // Für jede Ablation: wie viele echte Produktionswerte fallen aus der
+    // mutierten Hülle, während sie in der echten liegen?
+    let run = |knobs: iv::Knobs,
+               fam: &[(OffsetChannel, oc::ChannelLimitMode, [f32; 3])],
+               r: f64| {
+        let (mut escapes, mut inside_real, mut hull_differs) = (0usize, 0usize, 0usize);
+        for (ch, mode, p) in fam {
+            let cell = tight_cell(*p, r);
+            let mut c0 = iv::Ctx::new();
+            let Ok(real) = iv::enclose_channel_limit(&mut c0, cell.world_f32(), ch, *mode) else {
+                continue;
+            };
+            let mut c1 = iv::Ctx::with_knobs(knobs);
+            let Ok(mutd) = iv::enclose_channel_limit(&mut c1, cell.world_f32(), ch, *mode) else {
+                continue;
+            };
+            if mutd.lo != real.lo || mutd.hi != real.hi {
+                hull_differs += 1;
+            }
+            for q in cell_samples(&cell, 1) {
+                let qf = [q[0] as f32, q[1] as f32, q[2] as f32];
+                let got = oc::channel_limit(qf, ch, *mode) as f64;
+                if real.contains(got) {
+                    inside_real += 1;
+                    if !mutd.contains(got) {
+                        escapes += 1;
+                    }
+                }
+            }
+        }
+        (escapes, inside_real, hull_differs)
+    };
+
+    // Die Zellweite je Gegenprobe: die drei groben Rückdrehknöpfe wirken um
+    // `≈ 10⁻⁴ mm` und werden von einer `10⁻⁶`-Zelle nicht verdeckt. Die
+    // reell-zusammengefasste h-Addition unterscheidet sich dagegen nur um ein
+    // ulp — dort MUSS die Zelle auf einen Punkt zusammenfallen, sonst ist die
+    // eigene Rundungsbreite der Hülle grösser als der Effekt.
+    let cases: [(&str, iv::Knobs, u8, f64); 5] = [
+        ("A_seam genullt", iv::Knobs { drop_seam_addend: true, ..Default::default() }, 0, 1.0e-6),
+        ("A_h genullt", iv::Knobs { drop_h_addend: true, ..Default::default() }, 1, 1.0e-6),
+        (
+            "Addend vor dem rohen de-Test",
+            iv::Knobs { addend_before_far_test: true, ..Default::default() },
+            2,
+            1.0e-6,
+        ),
+        (
+            "h-Additionen reell zusammengefasst",
+            iv::Knobs { fuse_h_additions: true, ..Default::default() },
+            1,
+            0.0,
+        ),
+        (
+            "min vor den Addenden",
+            iv::Knobs { min_before_addends: true, ..Default::default() },
+            1,
+            1.0e-6,
+        ),
+    ];
+    let mut broken = 0usize;
+    for (why, knobs, which, r) in cases {
+        let fam: &[_] = match which {
+            0 => &fam_de,
+            1 => &fam_h,
+            _ => &fam_far,
+        };
+        let (esc, inside, diff) = run(knobs, fam, r);
+        assert!(inside > 20, "{why}: nur {inside} Werte in der echten Hülle");
+        if why == "h-Additionen reell zusammengefasst" {
+            // **Ehrlicher Befund statt erzwungener Gegenprobe.** Diese
+            // Reassoziation unterscheidet sich nur um EIN ulp — und die
+            // Intervall-Stufe rundet nach jeder Op selbst nach aussen. Ihre
+            // eigene Breite deckt den Effekt also zu: die falsch geklammerte
+            // Hülle ist an diesen Punkten immer noch eine GÜLTIGE
+            // Einschliessung, nur anders hergeleitet. Ein Escape wäre hier
+            // nicht zu erzwingen, ohne die Zelle zu verbiegen.
+            //
+            // Was der Pin stattdessen festhält: die Hülle bewegt sich
+            // überhaupt. Wären beide Additionen gar nicht modelliert, wäre der
+            // Knopf ein No-op und die Kette an dieser Stelle ungeprüft — dass
+            // sie es nicht ist, zeigt `A_h genullt` (3.200 Escapes) und
+            // `min vor den Addenden`.
+            assert!(
+                diff > 0,
+                "{why}: die Hülle bewegt sich an KEINEM der {inside} Punkte — dann sind die \
+                 beiden h-Additionen gar nicht modelliert"
+            );
+            assert_eq!(
+                esc, 0,
+                "{why}: {esc} Escapes — das wäre ein NEUER Befund (die Reassoziation ist \
+                 hier bisher sound); bitte ansehen, bevor irgendetwas gelockert wird"
+            );
+            println!(
+                "§8ad Pin 2: {why} — kein Escape (die Aussen-Rundung der Stufe deckt das ulp \
+                 zu), aber die Hülle bewegt sich an {diff} von {} Zellen",
+                fam.len()
+            );
+            broken += 1;
+            continue;
+        }
+        assert!(
+            esc > 0,
+            "{why}: KEIN Produktionswert fällt aus der mutierten Hülle ({inside} geprüft) — \
+             dann ist dieser Teil der Kette nicht gepinnt"
+        );
+        println!(
+            "§8ad Pin 2: {why} — {esc} von {inside} Werten fallen aus der Hülle \
+             ({diff} Zellen bewegt)"
+        );
+        broken += 1;
+    }
+    assert_eq!(broken, 5);
+}
+
+/// **§8ad-Pin 3: der Spiegel nimmt den Ω-AUFGELÖSTEN Modus, nicht den
+/// gespeicherten.**
+///
+/// Ein unter `Ω₁` bewiesener Kanal, unter `Ω₂` verwendet, löst in der
+/// Produktion auf Legacy auf. Der Spiegel MUSS dasselbe tun — ein Dispatch auf
+/// `stored_mode_is_proved` würde die Addenden weiter modellieren und läge
+/// damit neben dem Feld. Gegenrichtung mitgeprüft: unter `Ω₁` trägt derselbe
+/// Kanal seinen Beweis, sonst wäre der Pin leer-grün.
+#[test]
+fn interval_uses_the_omega_resolved_mode_384() {
+    let delta = 2.0f32;
+    let m = cert_matrix(delta);
+    let f1 = m.iter().find(|(n, ..)| n.starts_with("Ecken-Schale t/δ=2.5")).unwrap();
+    let f2 = m.iter().find(|(n, ..)| n.starts_with("Rippen-Kamm 4×2")).unwrap();
+    let (stop1, ch1) = proved_channels_with_stop(&f1.1).into_iter().next().unwrap();
+    let (stop2, _) = proved_channels_with_stop(&f2.1).into_iter().next().unwrap();
+    assert_ne!(
+        wit::omega_snapshot(wit::omega_of(&stop1).unwrap()),
+        wit::omega_snapshot(wit::omega_of(&stop2).unwrap())
+    );
+    let m1 = ch1.limit_mode_at_stop(&stop1);
+    let m2 = ch1.limit_mode_at_stop(&stop2);
+    assert!(m1.is_proved(), "unter Ω₁ nicht bewiesen — der Pin misst nichts");
+    assert!(!m2.is_proved(), "unter Ω₂ noch bewiesen — die Produktion selbst ist kaputt");
+
+    let mut g = Lcg(0x8ad_02e6);
+    let arc = ch1.arcs[0].clone();
+    let (mut checked, mut differ) = (0usize, 0usize);
+    for _ in 0..600 {
+        let sp = g.next_f64() as f32;
+        let rad = (g.next_f64() * ch1.trust as f64 * 0.9) as f32;
+        let d = [g.sym(), g.sym(), g.sym()];
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if !(n > 1.0e-9) {
+            continue;
+        }
+        let p = [
+            arc.c[0] + arc.u[0] * (sp * arc.r) + (d[0] / n) as f32 * rad,
+            arc.c[1] + arc.u[1] * (sp * arc.r) + (d[1] / n) as f32 * rad,
+            arc.c[2] + arc.u[2] * (sp * arc.r) + (d[2] / n) as f32 * rad,
+        ];
+        let cell = tight_cell(p, 1.0e-6);
+        // Unter Ω₂ ist der Produktionswert der Legacy-Wert; die Hülle mit dem
+        // AUFGELÖSTEN Modus muss ihn tragen …
+        let mut c = iv::Ctx::new();
+        let Ok(enc2) = iv::enclose_channel_limit(&mut c, cell.world_f32(), &ch1, m2) else {
+            continue;
+        };
+        // … und die Hülle mit dem GESPEICHERTEN Modus (die Gegenprobe) darf
+        // ihn an mindestens einer Probe verfehlen.
+        let mut c3 = iv::Ctx::new();
+        let Ok(enc_stored) =
+            iv::enclose_channel_limit(&mut c3, cell.world_f32(), &ch1, ch1.limit_mode_for(
+                wit::omega_of(&stop1).unwrap(),
+            ))
+        else {
+            continue;
+        };
+        for q in cell_samples(&cell, 1) {
+            let qf = [q[0] as f32, q[1] as f32, q[2] as f32];
+            let got = oc::channel_limit(qf, &ch1, m2) as f64;
+            assert!(enc2.contains(got), "die Ω₂-Hülle verfehlt den Produktionswert {got}");
+            if !enc_stored.contains(got) {
+                differ += 1;
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 500, "nur {checked} Proben");
+    assert!(
+        differ > 0,
+        "die Hülle mit dem GESPEICHERTEN Modus trifft an allen {checked} Proben genauso — \
+         dann unterscheidet der Pin die beiden Modi nicht"
+    );
+    println!(
+        "§8ad Pin 3: {checked} Proben; die Ω₂-Hülle trägt jeden Produktionswert, die Hülle \
+         mit dem Ω₁-Modus verfehlt {differ}"
     );
 }

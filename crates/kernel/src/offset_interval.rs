@@ -91,7 +91,8 @@
 //! mit ([`Decision::Both`] ⇒ Hülle beider Zweige) statt zu glätten.
 
 use crate::bvh::BoundedCsg;
-use crate::offset_channel::{ChannelArc, OffsetChannel, VertexSphere, END_PLANE_OFF, LB_AVAIL};
+use crate::offset_channel::{
+    ChannelLimitMode,ChannelArc, OffsetChannel, VertexSphere, END_PLANE_OFF, LB_AVAIL};
 use crate::offset_lb::{LbBlock, LbPiece, LB_NONE};
 use fielddraft_protocol::{Primitive, Transform};
 
@@ -379,6 +380,32 @@ pub struct Knobs {
     /// Gewinnerwechsel, ein blind gewählter Kandidat ist also keine
     /// Einschliessung.
     pub first_arc_wins: bool,
+    /// #384 §8ad / P5b-2 — **den Naht-Addenden im SPIEGEL nullen** (nicht in
+    /// der Produktion). Die Hülle modelliert dann `fl(δ − min(de, h_safe))`,
+    /// während die Produktion `de + A_seam` rechnet: an einer Zelle, in der
+    /// `de_safe` das `min` gewinnt, MUSS ein echter Produktionswert aus der
+    /// mutierten Hülle fallen.
+    pub drop_seam_addend: bool,
+    /// #384 §8ad / P5b-2 — dasselbe für den h-Addenden. Zwei getrennte
+    /// Ablationen, weil zwei getrennte Additionen: eine Familie, in der
+    /// `de_safe` gewinnt, und eine, in der `h_safe` gewinnt.
+    pub drop_h_addend: bool,
+    /// #384 §8ad / P5b-2 — **den Addenden VOR den rohen `de ≥ trust`-Test
+    /// ziehen.** Die Produktion prüft auf ROHEM `de`; wer `de_safe` prüft,
+    /// verschiebt die Neutralitätsgrenze.
+    pub addend_before_far_test: bool,
+    /// #384 §8ad / P5b-2 — **`fl(fl(s4+δ)+A_h)` reell zusammenfassen**
+    /// (`fl(s4 + (δ+A_h))`). Über ℝ identisch, über f32 nicht.
+    pub fuse_h_additions: bool,
+    /// #384 §8ad / P5b-2 — **das `min` VOR die Addenden ziehen**:
+    /// `fl(δ − fl(min(de, h₀) + A_seam))` statt
+    /// `fl(δ − min(fl(de+A_seam), fl(h₀+A_h)))`. Wo der `h`-Ast gewinnt, addiert
+    /// die falsche Form den Naht- statt des h-Addenden.
+    pub min_before_addends: bool,
+    /// #384 §8ad / P5b-2 — **den GESPEICHERTEN statt des Ω-aufgelösten Modus
+    /// nehmen.** Ein unter `Ω₁` bewiesener Kanal gälte dann auch unter `Ω₂`
+    /// als bewiesen — die Produktion tut das nicht.
+    pub stored_mode_dispatch: bool,
     /// Genau EINEN Kandidaten aus der Hülle streichen (§8w-Gegenprobe). Milder
     /// als `first_arc_wins` und damit die schärfere Probe: sie trifft nur den
     /// Vereinigungs-Schritt, nicht die ganze Kandidaten-Bestimmung.
@@ -1094,7 +1121,13 @@ fn enclose_stop(
     channels: &[OffsetChannel],
     verts: &[VertexSphere],
     lb: Option<&LbBlock>,
+    modes: &[ChannelLimitMode],
 ) -> Enc {
+    // #384 §8ad / P5b-2: die Modi kommen positionsgleich von der
+    // Konsumgrenze — dieselbe Auflösung, die auch die Produktion nimmt.
+    if modes.len() != channels.len() {
+        return Err(Unknown("Modus-Liste passt nicht zur Kanalliste"));
+    }
     let mut d = d0;
     let mut lim = Iv::f32p(-END_PLANE_OFF);
     // **Zwei Durchgänge** (§8v). Erst der billige Ausschluss: sind ALLE Kanäle
@@ -1128,8 +1161,8 @@ fn enclose_stop(
         _ => Iv::f32p(LB_NONE),
     };
     if !all_neutral {
-        for ch in channels {
-            lim = lim.max(enclose_channel_limit(c, p, ch)?);
+        for (i, ch) in channels.iter().enumerate() {
+            lim = lim.max(enclose_channel_limit(c, p, ch, modes[i])?);
             let extra = c.fsub(lbv, Iv::f32p(ch.delta))?;
             d = enclose_channel_apply(c, p, d0, d, ch, extra)?;
         }
@@ -1639,50 +1672,111 @@ fn enc_channel_candidates(
     Ok(Candidates { arcs: out, none_possible })
 }
 
-/// [`crate::offset_channel::channel_limit`], eingeschlossen.
-pub fn enclose_channel_limit(c: &mut Ctx, p: [Iv; 3], ch: &OffsetChannel) -> Enc {
-    // #384 §8ac / P5b-1A — **fail-closed vor der neuen Feldform.**
-    //
-    // Diese Einschliessung modelliert `fl(δ − min(de, h))`. Trägt der Kanal
-    // einen BEWIESENEN Laufzeitmodus, rechnet die Produktion aber
-    // `fl(δ − min(fl(de+A), fl(h+A_h)))` — eine andere Kette mit zwei
-    // zusätzlichen Rundungen. Die alte zweiseitige Zusage gilt dafür nicht
-    // mehr, und sie hier stillschweigend weiterzuführen wäre genau der
-    // verbotene Doppelschritt: neue Feldform ausliefern UND behaupten, sie sei
-    // eingeschlossen.
-    //
-    // Also `Unknown`, bis **P5b-2** `de_safe`/`h_safe`/`min` op-genau
-    // modelliert. `enclose_channel_apply` bleibt unberührt — der
-    // `channel_apply`-Term hat sich nicht bewegt.
-    // #384 §8ac (19. Review): ohne `Ω` lässt sich der Modus nicht auflösen —
-    // hier zählt aber ohnehin nur, OB der Kanal überhaupt einen bewiesenen
-    // Modus tragen soll. Der gespeicherte Modus ist dafür die konservative
-    // Antwort: er verweigert auch dann, wenn der Beweis zur Laufzeit gar nicht
-    // greifen würde. Verweigern ist hier immer sicher.
-    if ch.stored_mode_is_proved() {
-        return Err(Unknown("P5b-1A: bewiesener Laufzeitmodus, Einschliessung erst in P5b-2"));
-    }
+/// [`crate::offset_channel::channel_limit`], eingeschlossen — **inklusive der
+/// beiden P5b-Addenden** (#384 §8ad / P5b-2).
+///
+/// P5b-1A hat die Produktionskette geändert und diese Einschliessung deshalb
+/// vorübergehend verweigert (`Unknown("P5b-1A…")`): eine Hülle der ALTEN Kette
+/// wäre eine Zusage über ein Feld gewesen, das so nicht mehr ausgeliefert wird.
+/// P5b-2 modelliert die neue Kette op-genau, und die Verweigerung ist weg.
+///
+/// **Der Modus kommt als Argument** — genau wie in der Produktion
+/// ([`crate::offset_channel::channel_limit`]). Kein Dispatch auf
+/// `stored_mode_is_proved`, kein Raten: der Aufrufer hat den Stopp und damit
+/// `Ω` zur Hand und löst EINMAL auf. Ein Spiegel, der den gespeicherten statt
+/// des Ω-aufgelösten Modus nähme, würde einen unter `Ω₁` bewiesenen Kanal auch
+/// unter `Ω₂` als bewiesen einschliessen — die Produktion tut das nicht, und
+/// die Hülle wäre falsch. Gepinnt.
+///
+/// **Die Reihenfolge ist die des Feldes, Schritt für Schritt:**
+///
+/// ```text
+/// a. dbs ≥ trust                      → neutral      (VOR jedem Addenden)
+/// b. channel_nearest auf ROHEM de     (Kandidaten/Prunes unverändert)
+/// c. None-Ausgang                     → neutral      (ohne Addenden zu lesen)
+/// d. de ≥ trust                       → neutral      (auf ROHEM de, nicht de_safe)
+/// e. de_safe = fl(de + A_seam)
+///    h0     = fl(s4 + δ)
+///    h_safe = fl(h0 + A_h)
+/// f. m      = min(de_safe, h_safe)                   (f32-Auswahl, keine Rundung)
+/// g. lim    = fl(δ − m)
+/// ```
+///
+/// Die beiden Fernfeld-Tests (a, d) laufen auf dem **rohen** `de` — zöge man
+/// einen Addenden davor, verschöbe sich die Neutralitätsgrenze gegenüber der
+/// Produktion. Das ist einer der Rückdrehknöpfe, den die Pins fangen.
+///
+/// **Eine Implementierung für beide Modi.** Auch im Legacy-Fall laufen beide
+/// Additionen explizit mit `0.0` durch [`Ctx::fadd`] — weil die Produktion es
+/// genauso tut (`de + a_seam` mit `a_seam = 0.0`). Das `fl(−0.0 + 0.0) = +0.0`
+/// ist hier kein Thema: `de` ist eine Norm (`≥ +0.0`), und `h0 = fl(s4 + δ)`
+/// mit `δ > 0` kann nicht `−0.0` werden; ausserdem unterscheidet die
+/// Intervall-Domäne `±0.0` gar nicht — beide sind `0.0` in f64.
+///
+/// **Limit-Lemma unverändert** (§8v/§8w): `channel_limit` liest je Bogen
+/// weiterhin ausschliesslich `de`. Die Addenden sind kanal-konstant, `s4` hängt
+/// nur an `p` und den Kanalebenen — die `de`-Projektion der Alternativen genügt
+/// also nach wie vor.
+pub fn enclose_channel_limit(
+    c: &mut Ctx,
+    p: [Iv; 3],
+    ch: &OffsetChannel,
+    mode: ChannelLimitMode,
+) -> Enc {
     let neutral = Iv::f32p(-END_PLANE_OFF);
+    let (mut a_seam, mut a_h) = mode.addends();
+    if c.knobs.drop_seam_addend {
+        a_seam = 0.0;
+    }
+    if c.knobs.drop_h_addend {
+        a_h = 0.0;
+    }
+    // (a) — der äussere Fernfeld-Test, komplett vor jedem Addenden.
     let bc = fsub3(c, p, c3(ch.bound_c))?;
     let nb = c.fnorm(bc)?;
     let dbs = c.fsub(nb, Iv::f32p(ch.bound_r))?;
     if decide_ge(dbs, Iv::f32p(ch.trust)) == Decision::True {
         return Ok(neutral);
     }
-    // §8w: über ALLE möglichen Gewinner hüllen.
+    // (b) — §8w: über ALLE möglichen Gewinner hüllen, auf ROHEM `de`.
     let cands = enc_channel_candidates(c, p, ch)?;
     let s4 = enc_gate_planes(c, p, &ch.face_planes)?;
-    // Der `None`-Ausgang von `channel_nearest`: `channel_limit` gibt dann das
-    // neutrale `−1e30` zurück.
+    // (c) — der `None`-Ausgang von `channel_nearest`: neutral, ohne dass ein
+    // Addend gelesen würde.
     let mut inner: Option<Iv> = if cands.none_possible { Some(neutral) } else { None };
     for near in &cands.arcs {
-        // **Limit-Lemma**: `channel_limit` liest ausschliesslich `de`; die
-        // `de`-Projektion der Alternativen genügt.
-        let far = decide_ge(near.de_hull, Iv::f32p(ch.trust));
+        // (d) — der zweite Fernfeld-Test, ebenfalls auf ROHEM `de`.
+        // Gegenprobe `addend_before_far_test`: der Test auf `de_safe` statt
+        // auf dem rohen `de`.
+        let far_ref = if c.knobs.addend_before_far_test {
+            c.fadd(near.de_hull, Iv::f32p(a_seam))?
+        } else {
+            near.de_hull
+        };
+        let far = decide_ge(far_ref, Iv::f32p(ch.trust));
         let de = near.de_hull;
+        let fuse = c.knobs.fuse_h_additions;
         let val = |c: &mut Ctx| -> Enc {
-            let h = c.fadd(s4, Iv::f32p(ch.delta))?;
-            c.fsub(Iv::f32p(ch.delta), de.min(h))
+            // (e) — die drei f32-Additionen, einzeln.
+            let de_safe = c.fadd(de, Iv::f32p(a_seam))?;
+            let h_safe = if fuse {
+                // Gegenprobe: reell zusammengefasst — über ℝ identisch,
+                // über f32 nicht.
+                let dh = c.fadd(Iv::f32p(ch.delta), Iv::f32p(a_h))?;
+                c.fadd(s4, dh)?
+            } else {
+                let h0 = c.fadd(s4, Iv::f32p(ch.delta))?;
+                c.fadd(h0, Iv::f32p(a_h))?
+            };
+            // (f) + (g) — Auswahl ohne Rundung, dann die Subtraktion.
+            if c.knobs.min_before_addends {
+                // Gegenprobe: erst wählen, dann addieren.
+                let h0 = c.fadd(s4, Iv::f32p(ch.delta))?;
+                let m0 = de.min(h0);
+                let m = c.fadd(m0, Iv::f32p(a_seam))?;
+                return c.fsub(Iv::f32p(ch.delta), m);
+            }
+            c.fsub(Iv::f32p(ch.delta), de_safe.min(h_safe))
         };
         let v = sw(c, far, |_| Ok(neutral), val)?;
         inner = Some(match inner {
@@ -2034,7 +2128,24 @@ pub fn enclose_node(c: &mut Ctx, node: &BoundedCsg, p: [Iv; 3]) -> Enc {
                 return Err(Unknown("Rim-Block"));
             }
             let d0 = enclose_node(c, inner, p)?;
-            enclose_stop(c, p, d0, channels, verts, lb.as_ref())
+            // #384 §8ad / P5b-2 — **die Konsumgrenze**: `inner` und `channels`
+            // liegen hier gemeinsam und unveränderlich vor, also EINMAL
+            // auflösen. Das ist derselbe Weg, den die Produktion nimmt
+            // (`resolve_stop_modes` gegen `omega_of(inner)`); ein
+            // `stored_mode_is_proved`-Dispatch wäre eine zweite Wahrheit.
+            //
+            // Zur Produktions-Optimierung `resolve_stop_modes_at` ist das
+            // äquivalent: bei `dbs < trust` liefert sie denselben Modus, bei
+            // `dbs ≥ trust` endet `channel_limit` neutral, BEVOR ein Addend
+            // gelesen wird — und Zellen, die die Grenze überspannen, hüllt der
+            // `dbs`-Schalter ohnehin über beide Äste.
+            let modes = if c.knobs.stored_mode_dispatch {
+                // Gegenprobe: der GESPEICHERTE Modus, ohne Ω-Auflösung.
+                channels.iter().map(|ch| ch.stored_limit_mode()).collect()
+            } else {
+                crate::offset_channel::resolve_stop_modes(inner, channels)
+            };
+            enclose_stop(c, p, d0, channels, verts, lb.as_ref(), &modes)
         }
         _ => Err(Unknown("Operator")),
     }

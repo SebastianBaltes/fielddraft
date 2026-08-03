@@ -537,6 +537,13 @@ impl OffsetChannel {
         self.mode.is_proved()
     }
 
+    /// #384 §8ad — **nur für die P5b-2-Gegenprobe**: der gespeicherte Modus
+    /// ohne jede Nachprüfung. Ein Spiegel, der DIESEN nähme, schlösse einen
+    /// unter `Ω₁` bewiesenen Kanal auch unter `Ω₂` als bewiesen ein.
+    pub(crate) fn stored_limit_mode(&self) -> ChannelLimitMode {
+        self.mode
+    }
+
     /// #384 §8ac — **nur für Pins**: der Modus mit Kanal-, aber OHNE
     /// Ω-Nachprüfung. Das ist genau die Fassung, die das neunzehnte Review als
     /// unzureichend erkannt hat; sie existiert weiter, damit die Pins, die
