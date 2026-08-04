@@ -222,6 +222,12 @@ pub enum LegacyReason {
     /// Zertifiziert, aber der Abruf gegen Kanal + `Ω` schlug fehl. **Nicht**
     /// dasselbe wie „bewiesen mit A = 0".
     ProofInvalidated,
+    /// #384 §8ae Stufe B — `Ω` trägt ein `Extrude`-Blatt, dessen Feature in
+    /// diesem Auswertungslauf GEÖFFNET ist. Der Aussenbeweis gilt nur für den
+    /// geschlossenen Pfad (`sdf_extrude`); der retained Pfad wertet eine andere
+    /// Menge aus, in der ein axialer Aussenzeuge im Material liegt. Siehe
+    /// [`crate::offset_witness::omega_has_open_extrude`].
+    OpenRetainedPath,
 }
 
 /// #384 §8ac / P5b-1A — **der aufgelöste Laufzeitmodus der Grenzwert-Klemme.**
@@ -1064,12 +1070,32 @@ pub(crate) fn resolve_stop_modes_at(
     stop_inner: &crate::bvh::BoundedCsg,
     channels: &[OffsetChannel],
     p: [f32; 3],
+    open: &crate::csg::OpenBranchSet<'_>,
 ) -> Vec<ChannelLimitMode> {
     let legacy = ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated);
     let Some(om) = crate::offset_witness::omega_of(stop_inner) else {
         return vec![legacy; channels.len()];
     };
     let mut om_bytes: Option<Vec<u8>> = None;
+    // #384 §8ae Stufe B — die Auflage aus Befund 2 des sechzehnten Reviews.
+    // Trägt `Ω` ein Extrude-Blatt, dessen Feature GEÖFFNET ist, so wertet
+    // `bvh.rs` dort die retained Menge aus, und der Extrude-Aussenbeweis gilt
+    // für sie NICHT — Rückzug auf Legacy.
+    //
+    // **Nicht im Per-Punkt-Pfad** (Lehre aus be9ecc7b, „2,5x schneller"), in
+    // zwei Stufen:
+    //
+    // * `open.is_empty()` läuft EINMAL je Aufruf, vor der Schleife. Das ist
+    //   eine Ketten-Traversierung über die geöffneten Flächen — im Regelfall
+    //   (kein offenes Shell-Face weit und breit) ein einziger `len()`-Test.
+    //   Ist sie leer, kostet der ganze Rückzug je Kanal genau EINE
+    //   Bool-Abfrage, und der Ω-Lauf wird nie angefasst.
+    // * Der Ω-Lauf selbst ist gemerkt und hängt hinter demselben
+    //   Trust-Vorfilter wie [`crate::offset_witness::omega_snapshot`] — er
+    //   läuft höchstens einmal je Aufruf und ist billiger als der
+    //   Schnappschuss, den derselbe Zweig ohnehin zieht.
+    let open_nonempty = !open.is_empty();
+    let mut open_extrude: Option<bool> = None;
     channels
         .iter()
         .map(|c| {
@@ -1077,6 +1103,13 @@ pub(crate) fn resolve_stop_modes_at(
             // `channel_limit`. Neutral ⇒ der Modus ist gleichgültig.
             if norm(sub(p, c.bound_c)) - c.bound_r >= c.trust {
                 return legacy;
+            }
+            if open_nonempty
+                && *open_extrude.get_or_insert_with(|| {
+                    crate::offset_witness::omega_has_open_extrude(om, open)
+                })
+            {
+                return ChannelLimitMode::LegacyUnproven(LegacyReason::OpenRetainedPath);
             }
             let b = om_bytes.get_or_insert_with(|| crate::offset_witness::omega_snapshot(om));
             c.limit_mode_for_bytes(b)

@@ -8572,18 +8572,232 @@ Beweis nie zugesagt hat.
 * Der §8aa-Shadow-Pin steht unbewegt auf **(217, 2, 19, 0, 0, 0)** — das ist
   die Feldneutralität, gemessen und nicht behauptet.
 
+### Was OFFEN blieb — und in Stufe B erledigt ist
+
+**Stufe B** — die Aktivierung: `EXTRUDE_COVER_STAGE = Active`, mit eigenem
+Shadow-Pin (236 / 2 / 0) und eigenem Review. **Auflage aus Befund 2 des
+sechzehnten Reviews**: Stufe B darf nicht mergen, ohne dass der
+`Open`/retained-Pfad behandelt ist — bei nichtleerem relevantem `OpenSet`
+Rückzug auf Legacy, oder ein eigener Beweis gegen die retained Menge.
+
+## 8af. Der Extrude-Aussenbeweis, Stufe B — feldwirksam geschaltet (#384, 2026-08-04)
+
+Eine Zeile: `EXTRUDE_COVER_STAGE = ExtrudeCoverStage::Active`. Alles andere an
+diesem Schritt ist die Auflage, die davor stand, und die Erklärung dessen, was
+sich dabei bewegt hat — und was nicht.
+
+### Die Auflage: der offene Auswertungspfad
+
+Der Befund aus §8ae wurde **am Code nachgeprüft und bestätigt**, nicht
+übernommen:
+
+* `crates/kernel/src/bvh.rs:636..651` — der `BoundedCsg::Extrude`-Arm von
+  `sdf_open`. Der `else`-Zweig rechnet `sdf_extrude(sketch.sdf(..), z, hh)`,
+  also `{max(d₂, |z| − hh) ≤ 0}` — genau die Menge, über die der Beweis
+  spricht. Bei `open.has_feature(id)` läuft er stattdessen über
+  `sketch.sdf_retained` und `crate::csg::extrude_retained_combine`.
+* `crates/kernel/src/csg.rs:3784..3799` — `extrude_retained_combine`. Der
+  Rumpf ist `let mut d = d2_ret;`, dann `d = d.max(z − hh)` NUR falls
+  `EXTRUDE_CAP_TOP_SUB` nicht offen ist, und `d = d.max(−z − hh)` NUR falls
+  `EXTRUDE_CAP_BOTTOM_SUB` nicht offen ist. Bei beiden offenen Kappen bleibt
+  schlicht `d = d₂` — profil-intern ein unendliches Prisma.
+
+Der axiale Aussenzeuge der geschlossenen Extrusion liegt dort also im
+MATERIAL. Das ist kein theoretisches Risiko, sondern gemessen: Pin
+`stage_b_retreats_to_legacy_on_the_open_path_384` wertet für ein
+Quadrat-Profil `[−2,2]²`, `hh = 1` den Punkt `(0,0,4)` aus. Der Beweis führt
+ihn (`box_outside_omega` ⇒ `true`), geschlossen ist `d = +3`, retained mit
+beiden offenen Kappen ist `d = −2`. **Der Falsifikator ist scharf**: wäre der
+Rückzug nicht da, behauptete das Feld dort einen bewiesenen Naht-Addenden über
+einem Punkt, der in der wirklich ausgewerteten Menge innen liegt.
+
+### Wo der Rückzug sitzt — und warum das nicht pro Punkt ist
+
+`crate::offset_witness::omega_has_open_extrude(Ω, open)` läuft über den
+Ω-Baum und meldet ein `Extrude`-Blatt, dessen Feature im `OpenSet` liegt.
+Konsumiert wird er an **der** Konsumgrenze, `resolve_stop_modes_at`
+(`crates/kernel/src/offset_channel.rs`), die aus `bvh.rs:590` bzw. `:909` das
+`open` jetzt als viertes Argument bekommt. Trifft er zu, ist der Modus
+`LegacyUnproven(OpenRetainedPath)` — eine eigene Variante, damit der Bericht
+diesen Rückzug von „nicht zertifiziert" unterscheiden kann.
+
+Die Platzierung ist die eigentliche Arbeit. `be9ecc7b` („die Modus-Auflösung
+lag im Per-Punkt-Pfad — 2,5x schneller, bit-identisch") hat teuer gelernt, dass
+an genau dieser Stelle ein Ω-Baumlauf je ausgewertetem Punkt Faktor 2,5
+kostet. Der Test ist deshalb **zweistufig**:
+
+1. `let open_nonempty = !open.is_empty();` — EINMAL je Aufruf, vor der
+   Kanal-Schleife. Das ist eine Kette über die geöffneten Flächen; im
+   Regelfall (kein offenes Shell-Face) ein einziger `len()`-Test. Ist sie
+   leer, kostet der ganze Rückzug je Kanal genau eine Bool-Abfrage, und der
+   Ω-Baum wird nie angefasst.
+2. Der Ω-Lauf selbst ist in einem `Option<bool>` gemerkt und hängt hinter
+   demselben Trust-Vorfilter wie `omega_snapshot`. Er läuft also höchstens
+   einmal je Aufruf, und zwar nur dort, wo derselbe Zweig ohnehin den weit
+   teureren Schnappschuss zieht.
+
+Konservativ ist er zusätzlich: er steigt bei `Difference`/`Intersection` in
+BEIDE Äste ab, obwohl der Aussenbeweis nur in einen absteigt. Ein Gate, das die
+Abstiegslogik des Beweises nachbaut, müsste bei jeder Änderung dort mitgezogen
+werden, und ein vergessener Ast wäre still unsound. Zu viel zurückziehen ist
+folgenlos, zu wenig ist ein Loch.
+
+**Gemessen** (`probe_384_resolve_cost`, Release, je acht Läufe pro Seite): die
+beiden Kontroll-Fixturen, deren Beweisstatus sich durch Stufe B NICHT ändert,
+liegen bei `resolve` auf 468 ns → 481 ns (Ecken-Schale t/δ=2) und 531 ns →
+541 ns (Rippen-Kamm 4×2/1). Das sind +2…3 %, und die Streuung einzelner Läufe
+überlappt (der schnellste Branch-Lauf ist schneller als der langsamste
+Baseline-Lauf). Über dem Rauschen ist der Zusatz nicht aufzulösen; von einem
+Faktor 2,5 ist er drei Grössenordnungen entfernt.
+
+Der Rippen-Kamm 4×1.5/0.8 selbst geht von 179 ns auf 686 ns. Das ist **nicht**
+das Gate, sondern Stufe B bei der Arbeit: seine 19 Kanäle tragen jetzt
+Beweis-Token, und die müssen gegen einen 604-Byte-Ω-Schnappschuss verglichen
+werden, statt sofort als „kein Token" durchzufallen. Das ist der Preis des
+Features, und er fällt nur dort an, wo das Feature auch etwas liefert.
+
+### Auflage 2: entziehen die Endlichkeits-Gates irgendwo einen Beweis?
+
+`49dbf373` hat Endlichkeit als ausdrückliche Vorbedingung in die bereits
+feldwirksamen Arme gezogen (`primitive_finite` im `Leaf`, `delta.is_finite()`
+im `Offset` — je in `box_outside_inner` UND `omega_cover_staged` —,
+`transform_finite` in `local_box` und `local_box_to_world`). Solche Gates
+können einen Beweis nur ENTZIEHEN, nie geben. Dass empirisch nichts wackelt,
+war behauptet; hier ist es gemessen.
+
+Methode: die sechs Gates lokal neutralisiert (`if true { return true; }` bzw.
+das Prädikat gestrichen), dann `probe_384_limit_modes` über die ganze
+`cert_matrix` und die `Proved` summiert.
+
+| | Proved über die ganze cert_matrix |
+|---|---|
+| mit den Endlichkeits-Gates | **217** |
+| ohne die Endlichkeits-Gates | **217** |
+
+Fixture für Fixture identisch (0 / 24×8 / 0 / 22 / 1 / 2). **Kein einziger
+Beweis wird entzogen.** Die Gates sind reine Absicherung gegen Eingaben, die
+in der Matrix nicht vorkommen — genau die Rolle, die ihnen zugedacht war. Das
+Experiment war lokal und ist nicht committed.
+
+### Die Golden-Bewegung: es gab keine — und das ist erklärbar
+
+Erwartet war die erste Bewegung des Goldens. **Sie ist ausgeblieben**: der
+Hash steht unverändert auf `915bab98…40eb`, 25.355 Zeilen, null abweichende
+Zeilen, `check_interp` 35 Szenen / 17.920 Vergleiche / 0 Fehler.
+
+Eine unerklärte Nicht-Bewegung ist genauso ein Befund wie eine unerklärte
+Bewegung, also nachgemessen: eine temporäre Sonde in `gen_golden` hat für jeden
+`ArcChannel`-Stopp der 35 Szenen die Kanalzahl, das Vorhandensein eines
+`Extrude` in `Ω` und die aufgelösten Modi ausgegeben.
+
+| Golden-Szene | Kanäle | `Extrude` in `Ω` | Proved |
+|---|---|---|---|
+| `vertex_sphere_corner` | 24 | nein | 24 |
+| `arc_channel_notch` | 1 | nein | 1 |
+| `arc_channel_steinmetz` | 2 | — (`omega_of` = `None`) | 0 |
+| `contact_prism_stack` | **0** | **ja** | 0 |
+| `rim_box_stack` | **0** | **ja** | 0 |
+| `rim_arc_stadium` | **0** | **ja** | 0 |
+| `contact_prism_pocket_dilation`, `rim_flush_pocket` | 0 | nein | 0 |
+
+Der Schnitt aus „hat Kanäle" und „hat `Extrude` in `Ω`" ist im Golden-Korpus
+**leer**. Die drei Szenen mit Extrude-`Ω` tragen an ihrem Stopp null Kanäle
+(nur Vertex-Kugeln und Rim-Blöcke); die beiden Szenen mit Kanälen haben kein
+Extrude in `Ω` und waren schon vor Stufe B vollständig bewiesen. Es gibt im
+Golden also gar keinen Kanal, dessen Modus sich durch diesen Schritt ändern
+KÖNNTE. Die Byte-Identität ist damit kein Beleg für Feldneutralität, sondern
+für eine **Lücke im Golden-Korpus** — die 35 Szenen decken die Kombination
+„Extrude-`Ω` mit Nahtkanälen" nicht ab.
+
+**Das Feld bewegt sich trotzdem**, nur eben auf einer Fixture, die das Golden
+nicht kennt. Gemessen an `Rippen-Kamm 4×1.5/0.8` gegen die punktgleiche
+Alt-Kopie (`field_with_legacy_modes`, dieselbe Konstruktion wie §8ac-Pin 1):
+**28.730 von 200.000** ausgewerteten Feldwerten bewegen sich, grösste Absenkung
+**1.098e-4 mm**, ausnahmslos nach unten (mehr Material — die Richtung, die
+§8ac-Pin 1 fordert). Weil auf dieser Fixture vor Stufe B **null** von 19
+Kanälen bewiesen waren, ist diese Bewegung vollständig Stufe B zuzurechnen.
+Gepinnt in `stage_b_moves_the_delivered_field_384`.
+
+Dass die Absenkung klein ist, obwohl `A_seam` auf dieser Fixture bis
+**3.305e-1 mm** geht, ist kein Widerspruch: die Klemme nimmt
+`min(de + A, h)`, und hier gewinnt fast überall der `h`-Ast.
+
+**Offener Restposten:** eine Golden-Szene mit Extrude-`Ω` UND Nahtkanälen
+fehlt. Sie wäre der end-to-end-Beleg über den Tape-Pfad, den dieser Schritt
+nicht erbringen konnte. Sie ist hier bewusst NICHT nachgezogen worden — eine
+neue Szene bewegt den Golden-Hash aus einem Grund, der mit der Feldsemantik
+nichts zu tun hat, und gehört in einen eigenen Schritt.
+
+### Die bewegten Pins
+
+* **`clamp_shadow_report_matches_the_matrix_384`**: `(217, 2, 19, 0, 0, 0)` →
+  **`(236, 2, 0, 0, 0, 0)`**. Die 19 `no_cover` des Rippen-Kamms wandern
+  geschlossen nach `proved_seam`; die 2 `curved` der Stufen-Nabe bleiben (P5c).
+  Der h-Bericht zieht mit: `(217, 0, …)` → `(236, 0, …)` — ohne den
+  `omega_cover`-Extrude-Arm wären die 19 an `NoHBudget` hängengeblieben.
+  Die `A_max`-Schranke desselben Pins geht von 2.27e-3 auf 3.31e-1 mm: das
+  sind die neu hinzugekommenen Kanäle mit ihrem ehrlich grösseren `η_geo`, die
+  drei f32-Brückenposten (`ε_q`, `ε_d`, `field_round`) stehen unverändert.
+* **`stage_a_holds_the_extrude_channels_in_the_shadow_384`** →
+  **`stage_b_delivers_the_extrude_channels_384`**: dieselben drei Aussagen,
+  umgedreht. Gate auf `Active`, der PRODUKTIONS-Einstieg `box_outside_omega`
+  beweist selbst (und verweigert die Berührung weiterhin), und die 19 kommen
+  über `certify_channel` statt über `certify_for_probe` heraus. Dass die
+  `ShadowOnly`-Stufe weiterhin exakt 0 liefert, bleibt gepinnt — sonst wäre
+  der A/B-Vergleich wertlos.
+* **`clamp_is_fail_closed_384` (e)** und **`h_budget_is_fail_closed_384` (a)**
+  standen auf „der Rippen-Kamm ist ein nicht unterstütztes `Ω`". Das ist jetzt
+  falsch herum, also stehen sie als POSITIVE Fälle da (19 × `Proved`,
+  `omega_cover` = `Some`), und die Fail-closed-Rolle übernimmt ein
+  `Torus`-Blatt, das der Beweis weiterhin gar nicht liest.
+  **Eine Falle dabei**: der naheliegende Ersatz „Extrude mit `Sector`-Profil"
+  taugt NICHT. Der axiale Grund `|z| > hh` trägt unabhängig vom Profil, und
+  der Pin wurde damit still zahnlos — er lief auf `Proved` statt `NoCover`.
+  Nachgemessen und verworfen.
+
+### Belege
+
+* **`cargo nextest run --workspace`**: **1557** (Baseline 1555) — zwei neue
+  Pins: `stage_b_retreats_to_legacy_on_the_open_path_384` (Auflage 1,
+  Falsifikator + Konsumgrenze) und `stage_b_moves_the_delivered_field_384`
+  (die Feldbewegung). Der Stufe-A-Pin ist umbenannt, nicht gelöscht.
+* **Golden**: `915bab98…40eb`, **byte-identisch** — erklärt, s. o.
+  `check_interp` 35 Szenen / 17.920 Vergleiche / 0 Fehler.
+* **Web-Vitest 2082**, unverändert.
+* **Auflage 2**: 217 `Proved` mit und ohne die Endlichkeits-Gates.
+
 ### Was OFFEN bleibt
 
-**Stufe B** — die Aktivierung: `EXTRUDE_COVER_STAGE = Active`, mit eigener
-Golden-Bewegung, eigenem Shadow-Pin (236 / 2 / 0) und eigenem Review. Sie ist
-bewusst NICHT Teil dieses Schritts. **Auflage aus Befund 2 des sechzehnten
-Reviews**: Stufe B darf nicht mergen, ohne dass der `Open`/retained-Pfad
-behandelt ist — bei nichtleerem relevantem `OpenSet` Rückzug auf Legacy, oder
-ein eigener Beweis gegen die retained Menge.
+* Die fehlende Golden-Szene mit Extrude-`Ω` und Nahtkanälen (s. o.).
+* Ein **eigener Beweis gegen die retained Menge** statt des Rückzugs. Der
+  Rückzug ist die konservative Antwort auf Befund 2; ein Beweis, der die
+  offenen Kappen mitführt, würde die Kanäle auch im offenen Pfad halten. Er
+  ist heute nicht nötig — kein Fixture braucht ihn — und gehört zu P5c.
+* `Sector`/`Path`-Profile, nicht-konvexe Polygon-Kerben, positive
+  Profil-Offsets, `Revolve`/`Helix`/`Sweep`/`Loft` — unverändert offen, s.
+  §8ae „Was bewusst `false` bleibt".
 
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
+- Produktionscode §8af (Stufe B, **Feldänderung**):
+  `crates/kernel/src/offset_witness.rs` — `EXTRUDE_COVER_STAGE = Active` und
+  `omega_has_open_extrude`.
+  `crates/kernel/src/offset_channel.rs` — `LegacyReason::OpenRetainedPath` und
+  der zweistufige Rückzug in `resolve_stop_modes_at` (`open` als viertes
+  Argument).
+  `crates/kernel/src/bvh.rs` — die beiden Aufrufstellen (`sdf_open`,
+  `evaluate_open`) reichen ihr `open` durch. **Kein Opcode, kein Spiegel, kein
+  Tape-Wort** — der Rückzug betrifft nur den CPU-Baum, weil nur er überhaupt
+  ein `OpenSet` kennt.
+- Pins §8af in `offset_capability_tests.rs`:
+  `stage_b_delivers_the_extrude_channels_384` (aus
+  `stage_a_holds_the_extrude_channels_in_the_shadow_384` umgedreht),
+  `stage_b_retreats_to_legacy_on_the_open_path_384` (Auflage 1: Falsifikator +
+  Konsumgrenze), `stage_b_moves_the_delivered_field_384` (die Feldbewegung),
+  plus die Helfer `open_face`/`both_caps_open`/`extrude_features` und die
+  nachgezogenen Erwartungen in `clamp_shadow_report_matches_the_matrix_384`,
+  `clamp_is_fail_closed_384` und `h_budget_is_fail_closed_384`.
 - Produktionscode §8ad (P5b-2): `crates/kernel/src/offset_interval.rs` — die
   op-genaue Kette in `enclose_channel_limit` (Modus als Argument, drei
   f32-Additionen, `min`, `fsub`), die Modus-Durchreichung in `enclose_stop`

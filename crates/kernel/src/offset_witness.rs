@@ -44,6 +44,7 @@
 //! `next_down`/`next_up` nach jeder Schranke, aber **kein** f32-Schritt.
 
 use crate::bvh::BoundedCsg;
+use crate::csg::OpenBranchSet;
 use crate::offset_channel::{ChannelArc, OffsetChannel, END_PLANE_OFF};
 #[cfg(test)]
 use crate::offset_channel::{channel_nearest, face_plane_gate, norm as norm32, sub as sub32};
@@ -230,10 +231,68 @@ pub enum ExtrudeCoverStage {
     Active,
 }
 
-/// **Das Stufen-Gate.** Stufe A hält den Extrude-Beweis im Shadow; siehe
-/// [`ExtrudeCoverStage`]. Stufe B ist die Umstellung auf `Active` — und die
-/// gehört in einen eigenen Schritt mit eigener Golden-Bewegung.
-pub const EXTRUDE_COVER_STAGE: ExtrudeCoverStage = ExtrudeCoverStage::ShadowOnly;
+/// **Das Stufen-Gate.** Stufe A hielt den Extrude-Beweis im Shadow; seit
+/// Stufe B (§8ae) steht es auf `Active` und der Beweis ist feldwirksam.
+///
+/// Die Umschaltung war genau diese eine Zeile — zusammen mit der
+/// merge-blockierenden Auflage aus Befund 2 des sechzehnten Reviews, die
+/// [`omega_has_open_extrude`] an der Konsumgrenze erfüllt: im OFFENEN
+/// Auswertungspfad gilt der Beweis nicht, und dort zieht sich der Modus auf
+/// Legacy zurück.
+pub const EXTRUDE_COVER_STAGE: ExtrudeCoverStage = ExtrudeCoverStage::Active;
+
+/// **§8ae Stufe B — trägt `Ω` ein `Extrude`-Blatt, dessen Feature GEÖFFNET
+/// ist?** Wenn ja, gilt der Extrude-Aussenbeweis für diesen Auswertungspunkt
+/// NICHT, und der Aufrufer muss den Modus auf
+/// [`crate::offset_channel::LegacyReason::OpenRetainedPath`] zurückziehen.
+///
+/// ## Warum das nötig ist
+///
+/// [`box_outside_omega`] beweist die Menge `{max(d₂, |z| − hh) ≤ 0}` — das,
+/// was `bvh.rs::sdf_open` im `else`-Zweig über `sdf_extrude` rechnet
+/// (`crates/kernel/src/bvh.rs:636..651`). Bei `open.has_feature(id)` läuft die
+/// Auswertung stattdessen über `sketch.sdf_retained` und
+/// [`crate::csg::extrude_retained_combine`]
+/// (`crates/kernel/src/csg.rs:3784..3799`), und das ist eine ANDERE Menge:
+/// jede nicht angeklammerte Kappe lässt ihren `max`-Term aus, bei BEIDEN
+/// offenen Kappen bleibt `d = d₂` — profil-intern ein UNENDLICHES Prisma. Der
+/// typische Aussenzeuge der geschlossenen Extrusion, der axiale Grund
+/// `|z| > hh`, liegt dort im MATERIAL. Der Zeuge wäre schlicht falsch.
+///
+/// ## Warum konservativ über den GANZEN Baum
+///
+/// Der Aussenbeweis steigt bei `Difference`/`Intersection` nur in EINEN Ast
+/// ab; dieser Test läuft trotzdem durch beide. Ein Soundness-Gate, das die
+/// Abstiegs-Logik des Beweises nachbildet, müsste bei jeder Änderung dort
+/// mitgezogen werden — und ein vergessener Ast wäre still unsound. Die
+/// konservative Fassung kann nur ZU VIEL zurückziehen, nie zu wenig.
+///
+/// ## Kosten
+///
+/// Ein Baumlauf über `Ω`, **nicht** pro Punkt: der einzige Aufrufer
+/// ([`crate::offset_channel::resolve_stop_modes_at`]) merkt das Ergebnis je
+/// Aufruf und rechnet es erst hinter demselben Trust-Vorfilter, hinter dem
+/// ohnehin der weit teurere [`omega_snapshot`] hängt. `open.is_empty()` steht
+/// davor und ist im Regelfall — kein offenes Shell-Face weit und breit — die
+/// ganze Arbeit.
+pub(crate) fn omega_has_open_extrude(node: &BoundedCsg, open: &OpenBranchSet<'_>) -> bool {
+    match node {
+        BoundedCsg::Extrude { id, .. } => open.has_feature(id.as_u32_or_root().unwrap_or(0)),
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. } => {
+            omega_has_open_extrude(left, open) || omega_has_open_extrude(right, open)
+        }
+        BoundedCsg::Offset { inner, .. }
+        | BoundedCsg::InnerWall { inner, .. }
+        | BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::Displace { inner, .. } => omega_has_open_extrude(inner, open),
+        // Jede andere Form kann kein `Extrude`-Blatt tragen, das dieser Beweis
+        // je angefasst hätte — `box_outside_inner` liefert dort `false`, der
+        // Modus ist ohnehin Legacy.
+        _ => false,
+    }
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Beweispflicht 1 — Aussenmitgliedschaft, rein geometrisch

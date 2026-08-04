@@ -13483,21 +13483,49 @@ fn clamp_is_fail_closed_384() {
     assert_eq!(wit::certify_channel(om, &mut tiny, cfg).0, wit::SeamProofStatus::NoCover);
     assert!(tiny.seam_addend(om).is_none());
 
-    // (e) `Ω` mit einem nicht unterstützten Blatt: der Rippen-Kamm 4×1.5/0.8.
+    // (e) `Ω` mit einem nicht unterstützten Blatt. Bis Stufe A stand hier der
+    //     Rippen-Kamm 4×1.5/0.8 — sein `Ω` trägt `Extrude`-Blätter, und die
+    //     fielen in den `_ => false`-Arm. Seit §8ae **Stufe B** ist genau das
+    //     bewiesen; der Kamm ist deshalb aus diesem Pin heraus und steht
+    //     unten als POSITIVER Fall. Unbewiesen bleibt, was der Beweis
+    //     überhaupt nicht liest — ein Torus-Blatt fällt weiterhin in den
+    //     `_ => false`-Arm. (Ein Sektor-PROFIL taugt hier NICHT: der axiale
+    //     Grund `|z| > hh` trägt unabhängig vom Profil und beweist die Box
+    //     dann doch — nachgemessen, der Pin wäre still zahnlos geworden.)
+    let unsupported_om = BoundedCsg::from_csg(&CsgNode::Leaf {
+        id: id(7),
+        primitive: Primitive::Torus { center: [0.0, 0.0, 0.0], major_radius: 4.0, minor_radius: 1.0 },
+    });
+    let mut unsupported = base.clone();
+    assert_eq!(
+        wit::certify_channel(&unsupported_om, &mut unsupported, cfg).0,
+        wit::SeamProofStatus::NoCover
+    );
+    assert!(unsupported.seam_addend(&unsupported_om).is_none());
+
+    // (e2) **Die Stufe-B-Bewegung, gepinnt.** Derselbe Rippen-Kamm, der bis
+    //      Stufe A ausnahmslos `NoCover` lieferte, ist jetzt ausnahmslos
+    //      `Proved` — und trägt einen Addenden. Das ist der ganze Inhalt von
+    //      Stufe B, und er gehört an genau die Stelle, an der die alte
+    //      Erwartung stand.
     let (_n2, field2, _e2, _l2, _h2, _c2) = cert_matrix(delta)
         .into_iter()
         .find(|(n, ..)| n.starts_with("Rippen-Kamm 4×1.5"))
         .unwrap();
-    let mut unsupported = 0usize;
+    let mut extrude_proved = 0usize;
     for (om2, chans2) in omega_and_channels(&field2) {
         for ch in chans2 {
             let mut c = ch.clone();
-            assert_eq!(wit::certify_channel(om2, &mut c, cfg).0, wit::SeamProofStatus::NoCover);
-            assert!(c.seam_addend(om).is_none());
-            unsupported += 1;
+            assert_eq!(
+                wit::certify_channel(om2, &mut c, cfg).0,
+                wit::SeamProofStatus::Proved,
+                "§8ae Stufe B: ein Extrude-Ω blieb ungedeckt"
+            );
+            assert!(c.seam_addend(om2).is_some());
+            extrude_proved += 1;
         }
     }
-    assert!(unsupported >= 10, "nur {unsupported} Kanäle über nicht unterstütztem Ω");
+    assert_eq!(extrude_proved, 19, "die 19 Kanäle des Kamms — die Zahl aus §8ae");
 
     // (f) Ω = Empty ist der Gegen-Extremfall: ALLES ist aussen, der Zeuge
     //     findet sofort einen — der Addend entsteht, und er ist korrekt.
@@ -13817,8 +13845,18 @@ fn clamp_shadow_report_matches_the_matrix_384() {
             total.bad_config,
             total.not_concave
         ),
-        (217, 2, 19, 0, 0, 0),
-        "der Shadow-Bericht hat sich bewegt — §8aa nachziehen, nicht den Pin"
+        // #384 §8ae **Stufe B** — die Zahl DURFTE sich bewegen, genau einmal
+        // und genau um diesen Betrag. `no_cover` war 19: die Kanäle des
+        // Rippen-Kamms 4×1.5/0.8, deren `Ω` `Extrude`-Blätter trägt, die
+        // `box_outside_omega` bis Stufe A gar nicht lesen konnte. Stufe A hat
+        // den Beweis gebaut und im Shadow gemessen — der Gewinn war dort schon
+        // als 19 beziffert (§8ae, „Die gemessene Wirkung"). Stufe B schaltet
+        // ihn feldwirksam, und die 19 wandern geschlossen von `no_cover` nach
+        // `proved_seam`: 217 + 19 = 236. Die 2 `curved` bleiben — das sind die
+        // gekrümmten Nähte der Stufen-Nabe, und die gehören strukturell nach
+        // P5c. Jede ANDERE Bewegung dieser Zahl ist weiterhin ein Befund.
+        (236, 2, 0, 0, 0, 0),
+        "der Shadow-Bericht hat sich bewegt — §8aa/§8ae nachziehen, nicht den Pin"
     );
     // #384 §8ab — das h-Budget, gezählt unter den naht-zertifizierten Kanälen.
     assert_eq!(
@@ -13830,12 +13868,22 @@ fn clamp_shadow_report_matches_the_matrix_384() {
             total.h_degenerate,
             total.h_no_budget
         ),
-        (217, 0, 0, 0, 0, 0),
-        "der h-Bericht hat sich bewegt — §8ab nachziehen, nicht den Pin"
+        // §8ae Stufe B: dieselben 19 — `omega_cover` hat denselben Extrude-Arm
+        // bekommen, sonst wären die neuen Naht-Addenden an `NoHBudget`
+        // hängengeblieben. 217 + 19 = 236.
+        (236, 0, 0, 0, 0, 0),
+        "der h-Bericht hat sich bewegt — §8ab/§8ae nachziehen, nicht den Pin"
     );
     assert_eq!(total.h_total(), total.proved_seam, "h-Zählung und Naht-Zählung sind auseinander");
-    assert!(worst[0] <= 2.3e-3 && worst[1] <= 2.2e-5 && worst[2] <= 1.1e-6 && worst[3] <= 7.3e-7);
-    assert!(a_max <= 2.27e-3, "A_max = {a_max:e}");
+    // §8ae Stufe B: `η_geo` und damit `A_max` springen von 2.3e-3 auf 3.31e-1
+    // mm. Das ist KEINE Verschlechterung der alten Kanäle — es sind die 19 NEU
+    // hinzugekommenen des Rippen-Kamms 4×1.5/0.8. Ihre Zeugen-Suche läuft über
+    // ein `Ω` mit Extrude-Prismen und findet den nächsten Aussenpunkt erst in
+    // grösserem Abstand als in den Box-Fixturen; `η_geo` ist der EHRLICHE
+    // Abstand dorthin, kein Fudge. Die drei f32-Brückenposten (`ε_q`, `ε_d`,
+    // `field_round`) sind davon unberührt und stehen auf ihren alten Schranken.
+    assert!(worst[0] <= 3.31e-1 && worst[1] <= 2.2e-5 && worst[2] <= 1.1e-6 && worst[3] <= 7.3e-7);
+    assert!(a_max <= 3.31e-1, "A_max = {a_max:e}");
 }
 
 /// **§8aa-Pin 10 (R1): der `h`-Ast ist erreichbar — gemessen, nicht vermutet.**
@@ -14594,17 +14642,28 @@ fn h_budget_is_fail_closed_384() {
     let cover = wit::omega_cover(om).unwrap();
     let base = chans[0].clone();
 
-    // (a) nicht unterstütztes Ω-Blatt ⇒ keine Überdeckung.
+    // (a) nicht unterstütztes Ω-Blatt ⇒ keine Überdeckung. Bis Stufe A war das
+    //     der Rippen-Kamm; seit §8ae Stufe B ist sein Extrude-Ω überdeckt (s.
+    //     unten). Ungelesen bleibt ein Torus-Blatt.
+    let unsupported_om = BoundedCsg::from_csg(&CsgNode::Leaf {
+        id: id(7),
+        primitive: Primitive::Torus { center: [0.0, 0.0, 0.0], major_radius: 4.0, minor_radius: 1.0 },
+    });
+    assert!(wit::omega_cover(&unsupported_om).is_none(), "ein Torus-Ω lieferte eine Überdeckung");
+
+    // (a2) **Die Stufe-B-Bewegung.** Ohne diese Überdeckung wären die 19 neuen
+    //      Naht-Addenden wirkungslos geblieben (`LegacyUnproven(NoHBudget)`) —
+    //      der Nebenbefund aus §8ae, hier gepinnt.
     let (_n2, field2, _e2, _l2, _h2, _c2) = cert_matrix(delta)
         .into_iter()
         .find(|(n, ..)| n.starts_with("Rippen-Kamm 4×1.5"))
         .unwrap();
-    let mut nocover = 0usize;
+    let mut covered = 0usize;
     for (om2, _c) in omega_and_channels(&field2) {
-        assert!(wit::omega_cover(om2).is_none(), "ein Extrude-Ω lieferte eine Überdeckung");
-        nocover += 1;
+        assert!(wit::omega_cover(om2).is_some(), "§8ae Stufe B: ein Extrude-Ω ohne Überdeckung");
+        covered += 1;
     }
-    assert!(nocover > 0);
+    assert!(covered > 0);
 
     // (b) entartete Ebene: n = 0, aber KEIN Sentinel.
     let mut degen = base.clone();
@@ -16357,7 +16416,7 @@ fn probe_384_resolve_cost() {
         let t1 = Instant::now();
         let mut n_ok = 0usize;
         for _p in &pts {
-            let m = crate::offset_channel::resolve_stop_modes_at(inner, channels, *_p);
+            let m = crate::offset_channel::resolve_stop_modes_at(inner, channels, *_p, &crate::csg::OpenBranchSet::EMPTY);
             n_ok += m.iter().filter(|x| x.is_proved()).count();
         }
         let t_res = t1.elapsed();
@@ -16403,7 +16462,7 @@ fn activation_lazy_resolution_is_field_neutral_384() {
                     (lo[2] + g.next_f64() * (hi[2] - lo[2])) as f32,
                 ];
                 let eager = crate::offset_channel::resolve_stop_modes(inner, channels);
-                let lazy = crate::offset_channel::resolve_stop_modes_at(inner, channels, p);
+                let lazy = crate::offset_channel::resolve_stop_modes_at(inner, channels, p, &crate::csg::OpenBranchSet::EMPTY);
                 assert_eq!(eager.len(), lazy.len());
                 for (i, ch) in channels.iter().enumerate() {
                     let ve = oc::channel_limit(p, ch, eager[i]);
@@ -17274,6 +17333,47 @@ fn sk_poly(v: &[[f32; 2]]) -> Sketch2d {
     Sketch2d::Prim(Sketch2dPrimitive::Polygon { vertices: v.to_vec() })
 }
 
+/// Eine geöffnete Fläche. Die analytische Geometrie ist für die
+/// §8ae-Stufe-B-Pins gleichgültig — gelesen wird ausschliesslich `branch`
+/// (über `has_feature`/`contains_sub`).
+fn open_face(feature: &FeatureId, sub: u32) -> crate::csg::OpenSurface {
+    crate::csg::OpenSurface {
+        branch: crate::csg::BranchId::from_feature_sub(feature, sub).as_u64(),
+        surface: fielddraft_protocol::HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: 0.0 },
+        placement: Transform::IDENTITY,
+    }
+}
+
+/// BEIDE Kappen eines Extrude-Features geöffnet — der Fall, in dem
+/// `extrude_retained_combine` gar keinen `max`-Term mehr behält und ein
+/// profil-intern unendliches Prisma übrig bleibt.
+fn both_caps_open(feature: &FeatureId) -> Vec<crate::csg::OpenSurface> {
+    vec![
+        open_face(feature, crate::csg::BranchId::EXTRUDE_CAP_TOP_SUB),
+        open_face(feature, crate::csg::BranchId::EXTRUDE_CAP_BOTTOM_SUB),
+    ]
+}
+
+/// Die Feature-Ids aller `Extrude`-Blätter eines `Ω`.
+fn extrude_features(node: &BoundedCsg) -> Vec<FeatureId> {
+    let mut out = Vec::new();
+    fn go(n: &BoundedCsg, out: &mut Vec<FeatureId>) {
+        match n {
+            BoundedCsg::Extrude { id, .. } => out.push(id.clone()),
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. } => {
+                go(left, out);
+                go(right, out);
+            }
+            BoundedCsg::Offset { inner, .. } | BoundedCsg::InnerWall { inner, .. } => go(inner, out),
+            _ => {}
+        }
+    }
+    go(node, &mut out);
+    out
+}
+
 /// Die Stufe-B-Antwort — Stufe A liefert an derselben Stelle konstruktionsgemäß
 /// `false` (das pinnt [`stage_a_holds_the_extrude_channels_in_the_shadow_384`]).
 fn ext_outside(om: &BoundedCsg, p: [f64; 3]) -> bool {
@@ -17468,63 +17568,180 @@ fn extrude_outside_proof_needs_both_reasons_384() {
     }
 }
 
-/// **§8ae-Pin 5: Stufe A ist feldneutral — der Beweis bleibt im Shadow.**
+/// **§8ae-Pin 5: Stufe B ist feldwirksam — der Gewinn ist eingelöst.**
 ///
-/// Die Auflage aus P5b-1A: ausliefern und erstmals beweisen sind NIE derselbe
-/// Schritt. Gepinnt wird beides — dass das Gate steht, und dass der Gewinn
-/// dahinter wirklich wartet.
+/// Bis Stufe A war das der Feldneutralitäts-Pin (Gate auf `ShadowOnly`,
+/// Produktions-Einstieg beweist an einem Extrude-Ω nichts, gemessener Gewinn
+/// wartet dahinter). Stufe B dreht genau diese drei Aussagen um und misst
+/// dieselben Zahlen am selben Fixture: die 19, die Stufe A im Shadow beziffert
+/// hat, kommen jetzt über den PRODUKTIONS-Weg heraus.
 #[test]
-fn stage_a_holds_the_extrude_channels_in_the_shadow_384() {
+fn stage_b_delivers_the_extrude_channels_384() {
     assert_eq!(
         wit::EXTRUDE_COVER_STAGE,
-        wit::ExtrudeCoverStage::ShadowOnly,
-        "das Stufen-Gate steht auf Active — dann ist das hier Stufe B, und der Shadow-Pin \
-         darunter gehört nachgezogen, nicht dieser Assert gelöscht"
+        wit::ExtrudeCoverStage::Active,
+        "das Stufen-Gate steht wieder auf ShadowOnly — dann ist der Shadow-Pin \
+         (236/2/0) falsch und gehört zurückgezogen, nicht dieser Assert gelöscht"
     );
-    // Der Produktions-Einstieg beweist an einem Extrude-Ω NICHTS …
+    // Der PRODUKTIONS-Einstieg beweist an einem Extrude-Ω jetzt selbst …
     let om = ext_omega(sk_rect([0.0, 0.0], [2.0, 2.0]), 3.0);
     for y in [[5.0f64, 0.0, 0.0], [0.0, 0.0, 4.0]] {
         assert!(
-            !wit::box_outside_omega(&om, ivp(y), 1.0e-9),
-            "{y:?} wird schon in Stufe A als aussen bewiesen — das Gate trägt nicht"
+            wit::box_outside_omega(&om, ivp(y), 1.0e-9),
+            "{y:?} wird vom Produktions-Einstieg nicht bewiesen — Stufe B trägt nicht"
         );
-        // … obwohl der Beweis ihn führen KÖNNTE.
-        assert!(ext_outside(&om, y), "{y:?}: Stufe B beweist hier nicht — dann misst Pin 5 nichts");
     }
-    // Und am echten Fixture: die 19 Kanäle des Rippen-Kamms sind heute
-    // ungedeckt und wären es unter Stufe B nicht mehr.
+    // … und verweigert weiterhin, was er verweigern muss (die Berührung).
+    for y in [[2.0f64, 0.0, 0.0], [0.0, 0.0, 3.0]] {
+        assert!(
+            !wit::box_outside_omega(&om, ivp(y), 1.0e-9),
+            "{y:?}: eine Berührung gilt als aussen — Stufe B hat die Strenge verloren"
+        );
+    }
+    // Und am echten Fixture: dieselben 19 Kanäle, jetzt über den
+    // Produktions-Weg (`certify_channel`, nicht `certify_for_probe`).
     let delta = 2.0f32;
     let cfg = wit::WitnessCfg::default();
     let (_n, field, _e, _l, _h, _c) = cert_matrix(delta)
         .into_iter()
         .find(|(n, ..)| n == "Rippen-Kamm 4×1.5/0.8")
         .expect("das Extrude-Fixture fehlt");
-    let (mut n, mut a_cov, mut b_cov, mut a_proved, mut b_proved, mut b_h) =
-        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    let (mut n, mut a_cov, mut b_cov, mut proved, mut h_ok) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
     for (om, chans) in omega_and_channels(&field) {
         for ch in chans {
             n += 1;
             a_cov += wit::cover_shadow_probe(om, ch, cfg, false) as usize;
             b_cov += wit::cover_shadow_probe(om, ch, cfg, true) as usize;
             let mut c1 = ch.clone();
-            a_proved +=
+            proved +=
                 (wit::certify_channel(om, &mut c1, cfg).0 == wit::SeamProofStatus::Proved) as usize;
-            let mut c2 = ch.clone();
-            let ((st, _), hst) = wit::certify_for_probe(om, &mut c2, cfg, true);
-            b_proved += (st == wit::SeamProofStatus::Proved) as usize;
-            b_h += matches!(hst, Some(wit::HStatus::Proved)) as usize;
+            h_ok += wit::omega_cover(om).is_some() as usize;
         }
     }
     println!(
-        "§8ae Stufe A: Rippen-Kamm 4×1.5/0.8 — {n} Kanäle, gedeckt {a_cov} (Stufe A) → {b_cov} \
-         (Stufe B), Naht-Addenden {a_proved} → {b_proved}, h-Budgets → {b_h}"
+        "§8ae Stufe B: Rippen-Kamm 4×1.5/0.8 — {n} Kanäle, gedeckt {a_cov} (ShadowOnly) → \
+         {b_cov} (Active), Naht-Addenden über die PRODUKTION {proved}, h-Überdeckungen {h_ok}"
     );
-    assert_eq!((n, a_cov, a_proved), (19, 0, 0), "Stufe A hat sich bewegt — das Feld auch");
+    // Die Shadow-Stufe muss weiterhin GENAU das alte Verhalten zeigen — sonst
+    // wäre die Stufen-Schaltung selbst kaputt und der A/B-Vergleich wertlos.
+    assert_eq!((n, a_cov), (19, 0), "die ShadowOnly-Stufe beweist plötzlich mit");
     assert_eq!(
-        (b_cov, b_proved, b_h),
+        (b_cov, proved, h_ok),
         (19, 19, 19),
-        "der gemessene Gewinn von Stufe B hat sich bewegt — §8ae nachziehen, nicht den Pin"
+        "der ausgelieferte Gewinn von Stufe B hat sich bewegt — §8ae nachziehen, nicht den Pin"
     );
+}
+
+/// **§8ae-Pin 9 (Stufe B, Auflage aus Befund 2): im OFFENEN Pfad zieht sich
+/// der Modus auf Legacy zurück.**
+///
+/// Der Aussenbeweis gilt für die GESCHLOSSENE Extrusion
+/// `{max(d₂, |z| − hh) ≤ 0}`. Bei `open.has_feature(id)` wertet `bvh.rs` über
+/// `sketch.sdf_retained` + `extrude_retained_combine` eine ANDERE Menge aus —
+/// bei beiden offenen Kappen ein profil-intern unendliches Prisma. Gepinnt
+/// wird beides:
+///
+/// 1. **Der Falsifikator.** Der axiale Aussenzeuge `|z| > hh`, den der Beweis
+///    führt, liegt in der retained Menge im MATERIAL. Wäre das nicht so, wäre
+///    die ganze Auflage gegenstandslos — dieser Assert ist der Grund, warum
+///    der Rückzug existiert.
+/// 2. **Die Konsumgrenze.** Derselbe Kanal, dasselbe `Ω`: mit leerem `OpenSet`
+///    `Proved`, mit offenem Feature `LegacyUnproven(OpenRetainedPath)`.
+#[test]
+fn stage_b_retreats_to_legacy_on_the_open_path_384() {
+    use crate::offset_channel::{ChannelLimitMode, LegacyReason};
+
+    // ── 1. Der Falsifikator: der axiale Zeuge liegt retained im Material ──
+    //
+    // Ein Extrude mit Quadrat-Profil [−2,2]², Höhe ±1. Der Punkt (0,0,4) ist
+    // axial klar ausserhalb der geschlossenen Extrusion — und der Beweis führt
+    // ihn auch.
+    let sk = sk_rect([0.0, 0.0], [2.0, 2.0]);
+    let om = ext_omega(sk.clone(), 1.0);
+    let witness = [0.0f64, 0.0, 4.0];
+    assert!(
+        wit::box_outside_omega(&om, ivp(witness), 1.0e-9),
+        "der axiale Zeuge wird gar nicht bewiesen — dann misst dieser Pin nichts"
+    );
+    // Dieselbe Stelle, retained ausgewertet mit BEIDEN offenen Kappen: der
+    // `max`-Term fällt weg, es bleibt `d = d₂`, und `d₂(0,0) = −2 < 0`.
+    let d2 = sk.sdf([witness[0] as f32, witness[1] as f32]);
+    let d_ret = crate::csg::extrude_retained_combine(
+        &id(1),
+        d2,
+        witness[2] as f32,
+        1.0,
+        &crate::csg::OpenBranchSet::push(
+            &crate::csg::OpenBranchSet::EMPTY,
+            &both_caps_open(&id(1)),
+        ),
+    );
+    assert!(
+        d_ret < 0.0,
+        "der axiale Aussenzeuge liegt retained NICHT im Material ({d_ret}) — dann wäre die \
+         Auflage aus Befund 2 gegenstandslos, und dieser Pin gehört überdacht"
+    );
+    // Der Kontrast: geschlossen ist derselbe Punkt aussen.
+    let d_closed = crate::csg::extrude_retained_combine(
+        &id(1),
+        d2,
+        witness[2] as f32,
+        1.0,
+        &crate::csg::OpenBranchSet::EMPTY,
+    );
+    assert!(d_closed > 0.0, "geschlossen ist der Zeuge nicht aussen — die Fixture taugt nicht");
+
+    // ── 2. Die Konsumgrenze: derselbe Kanal, zwei OpenSets ──
+    let delta = 2.0f32;
+    let (_n, field, _e, _l, _h, _c) = cert_matrix(delta)
+        .into_iter()
+        .find(|(n, ..)| n == "Rippen-Kamm 4×1.5/0.8")
+        .expect("das Extrude-Fixture fehlt");
+    let mut stops = Vec::new();
+    stop_nodes(&field, &mut stops);
+    let (mut closed_proved, mut open_legacy, mut seen) = (0usize, 0usize, 0usize);
+    for st in &stops {
+        let BoundedCsg::ArcChannel { inner, channels, .. } = st else { continue };
+        let Some(omg) = wit::omega_of(inner) else { continue };
+        // Die Vorbedingung des Pins: dieses Ω trägt überhaupt Extrude-Blätter.
+        let feats = extrude_features(omg);
+        assert!(!feats.is_empty(), "das Rippen-Kamm-Ω trägt kein Extrude — Pin 9 misst nichts");
+        for (ci, ch) in channels.iter().enumerate() {
+            // Ein Punkt IM Trust-Radius, sonst greift der Vorfilter und der
+            // Modus ist so oder so Legacy.
+            let p = ch.arcs[0].c;
+            let closed = crate::offset_channel::resolve_stop_modes_at(
+                inner,
+                channels,
+                p,
+                &crate::csg::OpenBranchSet::EMPTY,
+            );
+            if !closed[ci].is_proved() {
+                continue;
+            }
+            seen += 1;
+            closed_proved += 1;
+            // Dasselbe, aber mit GEÖFFNETEM Extrude-Feature.
+            let faces: Vec<crate::csg::OpenSurface> =
+                feats.iter().flat_map(both_caps_open).collect();
+            let opened = crate::csg::OpenBranchSet::push(&crate::csg::OpenBranchSet::EMPTY, &faces);
+            let om_open =
+                crate::offset_channel::resolve_stop_modes_at(inner, channels, p, &opened);
+            assert_eq!(
+                om_open[ci],
+                ChannelLimitMode::LegacyUnproven(LegacyReason::OpenRetainedPath),
+                "Kanal {ci}: im offenen Pfad bleibt der Beweis stehen — genau das ist unsound"
+            );
+            open_legacy += 1;
+        }
+    }
+    println!(
+        "§8ae Pin 9: {seen} Kanäle mit Extrude-Ω — geschlossen {closed_proved} Proved, \
+         offen {open_legacy} LegacyUnproven(OpenRetainedPath)"
+    );
+    assert!(seen > 0, "kein einziger Kanal war geschlossen bewiesen — der Pin misst nichts");
+    assert_eq!(closed_proved, open_legacy);
 }
 
 /// Ein Quadrat `[−2,2]²` plus EINE vergiftete fünfte Ecke.
@@ -17635,4 +17852,64 @@ fn nonfinite_profile_numbers_are_refused_384() {
             "distance={d}: nicht-endlicher Profil-Offset lief in den Aussenbeweis"
         );
     }
+}
+
+/// **§8ae-Pin 10 (Stufe B): das Feld hat sich wirklich bewegt — und zwar dort,
+/// wo es sich bewegen sollte.**
+///
+/// Stufe B ist eine FELDÄNDERUNG. Behauptet ist das schnell; hier wird es
+/// gemessen, gegen dieselbe punktgleiche Alt-Kopie
+/// ([`field_with_legacy_modes`]), die schon §8ac-Pin 1 benutzt.
+///
+/// Der Rippen-Kamm 4×1.5/0.8 ist die einzige Fixture, deren Kanäle VOR Stufe B
+/// ausnahmslos `LegacyUnproven` waren (`Ω` mit `Extrude`-Blättern, 0 von 19
+/// gedeckt). Jede Bewegung, die dort gegen die Alt-Kopie messbar ist, ist
+/// deshalb **vollständig** Stufe B zuzuschreiben — kein anderer Beweis war
+/// dort je aktiv.
+///
+/// Die Grössenordnung ist klein (≈ 1e-4 mm), und das ist kein Widerspruch zum
+/// grossen `A_seam` (≈ 0.33 mm): die Klemme nimmt `min(de + A, h)`, und auf
+/// dieser Fixture gewinnt fast überall der `h`-Ast. Der Naht-Addend hebt die
+/// Klemme nur dort, wo er der kleinere der beiden ist.
+#[test]
+fn stage_b_moves_the_delivered_field_384() {
+    let delta = 2.0f32;
+    let mut g = Lcg(0x8ae_b001);
+    let (_n, field, _e, lo, hi, _c) = cert_matrix(delta)
+        .into_iter()
+        .find(|(n, ..)| n == "Rippen-Kamm 4×1.5/0.8")
+        .expect("das Extrude-Fixture fehlt");
+    let old = field_with_legacy_modes(&field);
+    let (mut n, mut moved) = (0usize, 0usize);
+    let mut worst = 0.0f64;
+    for _ in 0..50_000 {
+        let p = [
+            (lo[0] + g.next_f64() * (hi[0] - lo[0])) as f32,
+            (lo[1] + g.next_f64() * (hi[1] - lo[1])) as f32,
+            (lo[2] + g.next_f64() * (hi[2] - lo[2])) as f32,
+        ];
+        let a = field.sdf(p, EvalMode::Visual);
+        let b = old.sdf(p, EvalMode::Visual);
+        if !(a.is_finite() && b.is_finite()) {
+            continue;
+        }
+        n += 1;
+        if a.to_bits() != b.to_bits() {
+            moved += 1;
+            // Richtung: die Aktivierung darf nur Material HINZUFÜGEN.
+            assert!(a < b, "die Stufe-B-Aktivierung nimmt bei {p:?} Material weg");
+            worst = worst.max((b - a) as f64);
+        }
+    }
+    println!(
+        "§8ae Pin 10: Rippen-Kamm 4×1.5/0.8 — {moved} von {n} Feldwerten bewegt,          grösste Absenkung {worst:.4e} mm"
+    );
+    // Das Gegenteil wäre der Befund: Stufe B ist geschaltet und das Feld
+    // rührt sich nicht — dann wäre die Aktivierung wirkungslos.
+    assert!(
+        moved > n / 20,
+        "nur {moved} von {n} Feldwerten bewegt — Stufe B ist wirkungslos geschaltet"
+    );
+    assert!(worst > 1.0e-6, "die Bewegung liegt im Rundungsrauschen ({worst:e})");
+    assert!(worst < 1.0e-3, "die Bewegung ist grösser als erwartet ({worst:e}) — §8ae prüfen");
 }
