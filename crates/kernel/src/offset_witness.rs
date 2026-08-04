@@ -893,6 +893,20 @@ fn directions(arc: &ChannelArc, tm: f64) -> Vec<[f64; 3]> {
 ///
 /// Gekrümmte Bögen sind nicht unterstützt (P4); der Kanal wird dann als
 /// vollständig ungedeckt gemeldet, nicht als gedeckt.
+///
+/// **Was `t` NICHT ist** (§8ae Stufe B, 24. Review). Gefunden wird der erste
+/// zertifizierte Kandidat aus einem FESTEN Vorrat: den 26 Richtungen aus
+/// [`directions`] und den `cfg.steps` Stufen der geometrischen Leiter
+/// `t_s = min_offset · (max_offset/min_offset)^(s/(steps−1))`. Das ist NICHT
+/// der geometrisch kleinste taugliche Versatz — die Leiter springt mit
+/// Quotient ≈ 1,865, der wahre erste Erfolg derselben Richtung kann zwischen
+/// zwei Stufen liegen, eine andere Richtung sogar darunter. Ein grosses `η`
+/// ist deshalb eine Eigenschaft der SUCHE, nicht der Geometrie: es schwächt
+/// die Korrektur, macht den Beweis aber nicht falsch (die verschobene Box ist
+/// wirklich bewiesen aussen). Wer `η_geo` als geometrische Grösse liest,
+/// liest es falsch — z. B. steht das Maximum der heutigen Matrix,
+/// 0,3305387… mm, exakt auf der 14. Leiterstufe und nicht auf einer
+/// Eigenschaft des Rippen-Kamms.
 pub fn cover_channel(omega: &BoundedCsg, ch: &OffsetChannel, cfg: WitnessCfg) -> WitnessCover {
     cover_channel_staged(omega, ch, cfg, EXTRUDE_COVER_STAGE)
 }
