@@ -9268,6 +9268,13 @@ Verfeinerung den ganzen Sprung erklärte. Wer P5c-C angeht, muss den
 Redundanz-Verlust also inhaltlich entscheiden und nicht auf eine bessere Suche
 hoffen.
 
+> **Nachtrag (#468, §8al):** der erste Satz stimmt, der letzte nicht. Diese
+> Tabelle verfeinert nur die LEITER, bei fest 24 Stücken je Bogen. Verfeinert
+> man die STÜCKZAHL, fällt `η` linear (0,813 → 0,392 → 0,192 → 0,095 mm bei
+> 24 → 48 → 96 → 192 Stücken) und die 41 Über-Punkte fallen mit (bei 768
+> Stücken: 0). „Der Rest ist Geometrie" ist damit widerlegt — die Naht liegt
+> auf `∂Ω`, ihr wahres `dist(q, ∁Ω)` ist `≤ 4,8·10⁻⁷ mm`. Details in §8al.
+
 ### Was daraus NICHT folgt
 
 - **Nicht**, dass gekrümmte Nähte jetzt feldwirksam bewiesen sind. Sie sind
@@ -9393,6 +9400,190 @@ reissen, wenn man den radialen Posten aus dem Budget nimmt (gegengeprüft:
   `curved_point_bridge_pays_the_unnormalised_end_384`.
 - **Nicht**, dass damit die ganze Feldkette bewiesen wäre. Der `h`-Ast und
   Restposten R1 stehen unverändert (§8aa/§8ab).
+
+## 8al. P5c-C Vorentscheid — der Redundanz-Verlust der Bogen-Klemme, beziffert (#468 zu #384, 2026-08-05)
+
+§8aj hat den Preis der Aktivierung mit zwei Zahlen benannt — `η_geo ≈ 0,81 mm`
+und **41 Punkte Phantom-Material** in der Ablation ohne `L`-Block — und daraus
+gefolgert, eine feinere Suche kaufe die 41 Punkte nicht zurück. Die erste Zahl
+stimmt, die Folgerung nicht: sie ruht auf einer Verfeinerung, die **nur die
+Leiter** verfeinert hat. Verfeinert man stattdessen die **Stückzahl**, fällt `η`
+linear und die 41 Punkte fallen mit.
+
+Dieses Kapitel ist ein Vorentscheid, keine Aktivierung. `CURVED_COVER_STAGE`
+steht unverändert auf `ShadowOnly`; das ausgelieferte Feld ist unberührt.
+
+### Wie gemessen wird, ohne die Konstante anzufassen
+
+Neu ist `certify_and_resolve_curved_probe` (`#[cfg(test)]`, `offset_witness.rs`):
+derselbe Weg wie `certify_and_resolve_final_channel` — zertifizieren und
+Laufzeitmodus in EINEM Schritt, dasselbe Siegel —, nur mit ausdrücklich
+gewählter Stufe. `field_with_curved_stage` baut damit ein Messfeld, in dem die
+Bogen-Klemme feldwirksam ist. Dass der Messaufbau selbst neutral ist, ist
+gepinnt: mit `active = false` re-zertifiziert, ist das Feld an allen 10 648
+Gitterpunkten **bitgleich** zum Produktionsfeld
+(`curved_clamp_phantom_comes_from_one_seam_468`).
+
+Ablation und Gitter sind dieselben wie in §8n/§8o: `strip_lb` an der
+Stufen-Nabe, 22³ Punkte, Referenz `dist_hub_complement_exact`. Deren
+BASIS-Befund `0 über / 59 unter` nagelt `stop_lb_absent_reproduces_the_g_cap_384`
+fest.
+
+### Frage 1 — die 41 Punkte sind EINE Naht
+
+Reproduziert: BASIS 0 über, mit aktiver Bogen-Klemme **41** über. Die Nabe trägt
+genau zwei Kanäle, beide gekrümmt, beide in Produktion `Curved ⇒ NotCertified`:
+
+| Kanal | Radius | `A_seam` (aktiv) | Über-Punkte |
+|---|---|---|---|
+| Kreisnaht oben | 6,000 mm | 0,616524 mm | **0** |
+| Kreisnaht unten | 4,000 mm | 1,149868 mm | **41** |
+
+Alle 41 hängen am selben Kanal, verteilt über **alle drei** seiner Minor-Bögen
+(41 Abtastpunkte einer Ursache, nicht 41 Stellen). Sie liegen in drei
+Gitter-Ebenen `z ∈ {−0,003; −0,230; −0,457}` als Schale um die konkave
+Kreisnaht bei `r = 4 mm`, mit `de ≈ 1,30 … 1,95 mm`. Die Überschreitung reicht
+von **0,0020 mm** bis **0,6737 mm**. Es ist der
+Kanal mit dem GRÖSSEREN Addenden — genau die erwartete Richtung von
+`lim = δ − min(de + A_seam, h + A_h)`.
+
+Gepinnt in `curved_clamp_phantom_comes_from_one_seam_468` (Aufschlüsselung nach
+Kanal, Bogen und Grössenordnung, mit Anti-Leer-Gates auf beiden Modus-Tallies).
+
+### Frage 2 — `η ≈ 0,81 mm` ist Diskretisierung, nicht Geometrie
+
+Zwei Messungen, die zusammen entscheiden.
+
+**(a) Die wahre Schranke ist ≈ 0.** `η` schrankt `dist(q, ∁Ω)` für Punkte `q`
+der Naht. Die Naht einer KONKAVEN Kante liegt aber auf `∂Ω`. Gemessen an 201
+Punkten je Bogen: `|SDF_Ω| ≤ 4,8·10⁻⁷ mm` (Kanal `r = 6 mm`) bzw.
+`3,6·10⁻⁷ mm` (`r = 4 mm`) auf der modellierten Naht
+(`curved_eta_is_piece_discretisation_not_geometry_468`). Der wahre Wert von
+`dist(q, ∁Ω)` ist also rund **sechs Grössenordnungen** kleiner als das gefundene
+`η`. Jedes positive `η` ist Schlupf der Zeugen-SUCHE, nicht der Geometrie.
+
+**(b) `η` fällt linear mit der Stückzahl.** `cover_channel` sucht je Naht-STÜCK
+einen Versatz, der die ganze Stück-Box aus `Ω` schiebt; die Box ist so lang wie
+das Stück. Die Sonde `probe_468_eta_decomposition` fährt beide Achsen der Suche
+(Kanal `r = 4 mm`, der schuldige, `η` in mm):
+
+| `steps` \ Stücke/Bogen | 24 | 48 | 96 | 192 |
+|---|---|---|---|---|
+| 18 (Produktion) | 1,149850 | 0,616498 | 0,330539 | 0,095017 |
+| 65 | 0,901354 | 0,393876 | 0,203110 | 0,104737 |
+| 257 | 0,829739 | 0,393876 | 0,194874 | 0,096416 |
+| 1025 | 0,812743 | 0,393876 | 0,192868 | 0,095423 |
+| 4097 | 0,812743 | 0,391843 | 0,191872 | 0,094685 |
+
+Die §8aj-Spalte ist die ERSTE (24 Stücke): dort konvergiert `η` wirklich gegen
+0,813 mm, und genau daraus stammt der Schluss „der Rest ist Geometrie". Die
+ZEILE daneben widerlegt ihn: bei fester Leiter halbiert sich `η` mit jeder
+Verdopplung der Stückzahl — 0,813 → 0,392 → 0,192 → 0,0947 mm. Über drei
+Verdopplungen ist kein Boden zu sehen: die Stück-Box ist so lang wie das Stück,
+und der Versatz, der sie herausschiebt, skaliert mit. Für den Kanal `r = 6 mm` dieselbe Struktur (0,616 → 0,331 →
+0,177 → 0,095 bei `steps = 18`).
+
+**Die f32-Posten sind demgegenüber bedeutungslos.** Aus dem Beweis der
+Produktions-Konfiguration (`r = 4 mm`):
+
+    A_seam = 1,149868 mm = η 1,149850 + ε_q 1,63·10⁻⁵ + ε_d 8,15·10⁻⁷ + Rundung 7,22·10⁻⁷
+
+`η` macht **99,998 %** des Addenden aus. Wer `A_seam` senken will, muss an der
+Suche ansetzen; an `ε_q`, `ε_d` oder dem Rundungsbudget ist nichts zu holen.
+
+**Und die 41 Punkte hängen daran.** Dieselbe Ablation, nur mit feinerer
+Stückung zertifiziert (`probe_468_ablation_origin`):
+
+| Konfiguration | Über-Punkte | grösste Überschreitung |
+|---|---|---|
+| Produktion (24 Stücke, 18 Sprossen) | 41 | 0,6737 mm |
+| 48 Stücke | 39 | 0,5753 mm |
+| 96 Stücke | 19 | 0,2793 mm |
+| 192 Stücke | **5** | 0,0208 mm |
+| 24 Stücke, 1025 Sprossen | 41 | 0,6737 mm |
+
+Die Leiter-Verfeinerung allein ändert die Zahl **nicht** (41 → 41) — insofern
+war §8aj richtig. Die Stück-Verfeinerung dagegen führt sie bis auf null
+(`probe_468_piece_refinement`, `A_seam_max` = grösster Addend der beiden
+Kanäle, Zeit = Zertifizierung der GANZEN Nabe, einmalig bei der Synthese):
+
+| Stücke/Bogen | `A_seam_max` | Über-Punkte | grösste Überschreitung | Zertifizierung |
+|---|---|---|---|---|
+| 24 (Produktion) | 1,149868 mm | 41 | 0,6737 mm | 62 ms |
+| 96 | 0,330557 mm | 19 | 0,2793 mm | 202 ms |
+| 192 | 0,095043 mm | 5 | 0,0208 mm | 357 ms |
+| 384 | 0,050970 mm | 1 | 0,0020 mm | 629 ms |
+| 768 | 0,027340 mm | **0** | — | 1096 ms |
+
+Bei 768 Stücken je Bogen ist die Ablation **leer** — derselbe Befund wie ohne
+Bogen-Klemme, jetzt aber bewiesen. Der Preis ist Rechenzeit bei der Synthese
+und wächst linear: `62 ms → 1096 ms` für die ganze Nabe, einmalig, nicht pro
+Auswertung.
+
+### Frage 3 — eine gemischte Klemme gibt es nicht
+
+`channel_limit` rechnet `lim = δ − min(de + A_seam, h + A_h)` mit `A ≥ 0`. Die
+bewiesene Klemme liegt damit punktweise **nie über** der Legacy-Klemme; die
+beiden sind total geordnet. Gemessen (`proved_and_legacy_clamp_are_ordered_468`,
+beide Kanäle, 10 648 Gitterpunkte): **0** Punkte mit `lim_proved > lim_legacy`,
+10 802 Kanal-Punkt-Paare mit echtem Abstand, grösste Differenz **1,149868 mm** —
+also genau `A_seam`. Im Feld unterscheiden sich die beiden Fassungen an **543**
+Gitterpunkten, und an **allen 543** ist das Maximum **bitgleich** das
+Legacy-Feld (`probe_468_mixed_clamp`). Die gemischte Ablation schliesst
+dementsprechend mit `über — aktiv 41, shadow 0, gemischt(max) 0`.
+
+Daraus folgt die Antwort, und sie ist keine Laufzeitfrage: ein `min`/`max` der
+beiden Klemmen ist **kein dritter Wert**. Das Minimum ist der bewiesene Wert
+(mit seinen 41 Punkten), das Maximum ist bitgenau das heutige Feld. Wer die 41
+Punkte über ein Maximum loswird, liefert an genau diesen Punkten den
+UNBEWIESENEN Wert — der Beweis trägt dort dann nichts mehr bei, und die Aussage
+„die Nabe ruht doppelt" wäre wieder falsch, nur mit mehr Code. Die Redundanz,
+um die es §8aj ging, lässt sich durch Mischen nicht herstellen; sie muss aus
+einem SCHÄRFEREN Beweis kommen.
+
+### Empfehlung für #464
+
+**Nicht aktivieren — aber die Blockade ist lösbar und sie liegt nicht in der
+Geometrie.** Die Reihenfolge:
+
+1. **Die Stückung der Zeugen-Suche schärfen**, bevor über die Stufe entschieden
+   wird. Sinnvoll ist keine grössere Konstante, sondern eine Stückung nach
+   BOGENLÄNGE (`pieces_per_arc` ist heute stückzahl-, nicht längenbasiert — ein
+   `r = 4 mm`-Bogen und ein 40 mm langes Segment bekommen dieselben 24 Stücke).
+   Zielgrösse aus der Messung: die Ablation der Nabe ist bei 768 Stücken je
+   Bogen leer, `A_seam` liegt dort bei 0,027 mm.
+2. **Danach die Ablation erneut fahren.** Gemessen ist sie bei 768 Stücken je
+   Bogen leer (0 Über-Punkte); 384 lässt einen Punkt mit 0,0020 mm stehen. Die
+   Zielgrösse ist damit beziffert und nicht geraten.
+3. **Erst dann #464 entscheiden.** Ist die Ablation leer, ist der
+   Redundanz-Verlust weg und die Aktivierung eine reine Feldverbesserung — die
+   Nabe ruhte dann doppelt, wie vorher.
+4. **Achtung, eigener Scope**: `WitnessCfg::default()` gilt auch für die
+   GERADEN Nähte, die seit §8ac feldwirksam sind. Eine feinere Stückung senkt
+   deren Addenden ebenfalls — das ist eine Feldänderung mit Golden-Bewegung und
+   gehört in ein eigenes Ticket mit Versions-Bump, nicht in #464.
+
+### Was daraus NICHT folgt
+
+- **Nicht**, dass die Bogen-Klemme jetzt aktiviert wäre. `CURVED_COVER_STAGE`
+  steht auf `ShadowOnly`, das ausgelieferte Feld ist bitgleich; die Messfelder
+  entstehen ausschliesslich über `#[cfg(test)]`-Pfade.
+- **Nicht**, dass §8aj falsch gemessen hätte. Die dortige Leiter-Tabelle ist
+  reproduziert (18/65/257/1025 → 1,1499/0,9014/0,8297/0,8127 mm) und die Aussage
+  „eine feinere LEITER kauft die 41 Punkte nicht zurück" ist bestätigt (41 → 41).
+  Falsch ist nur der Schluss von dort auf „also Geometrie".
+- **Nicht**, dass `η → 0` bewiesen wäre. Gemessen ist ein linearer Abfall über
+  drei Verdopplungen ohne sichtbaren Boden; ein Grenzwertsatz ist das nicht. Der
+  Boden liegt spätestens bei den f32-Posten (`ε_q ≈ 1,6·10⁻⁵ mm`).
+- **Nicht**, dass die 41 Punkte je im ausgelieferten Feld auftreten. Sie treten
+  in der Ablation OHNE `L`-Block auf; mit `L` fängt das Feld sie ab (§8o/§8p).
+  Der Streitgegenstand ist die REDUNDANZ, nicht ein Fehler.
+- **Nicht**, dass eine feinere Stückung gratis ist. Die Zertifizierung skaliert
+  linear in der Stückzahl (62 ms → 1096 ms für die Nabe, Faktor 32 bei Faktor 32
+  Stücken); sie fällt einmalig bei der Synthese an, nicht pro Auswertung.
+- **Nicht**, dass die Nabe repräsentativ für alle Fixturen ist. Gemessen sind
+  die beiden Kreisnähte der Stufen-Nabe — die einzigen gekrümmten Kanäle der
+  Matrix.
 
 ## 9. Geschriebene Dateien
 

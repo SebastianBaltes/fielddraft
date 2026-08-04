@@ -262,10 +262,21 @@ pub const EXTRUDE_COVER_STAGE: ExtrudeCoverStage = ExtrudeCoverStage::Active;
 /// nur noch auf ihm. Dieser Redundanz-Verlust ist eine eigene Entscheidung
 /// und gehört nicht in ein Ticket, dessen Gegenstand der Cover-Beweis ist.
 ///
-/// **Und es ist keine Leiter-Frage** (anders als #466): `η` konvergiert unter
-/// Verfeinerung gegen `≈ 0,81 mm` (steps 18/65/257/1025 → 1,150/0,901/0,830/
-/// 0,813). Die Sprosse erklärt nur den Faktor 1,4, der Rest ist Geometrie —
-/// eine feinere Leiter kauft die 41 Punkte also NICHT zurück.
+/// **Es ist keine Leiter-Frage** (anders als #466): `η` konvergiert unter
+/// Verfeinerung der LEITER gegen `≈ 0,81 mm` (steps 18/65/257/1025 →
+/// 1,150/0,901/0,830/0,813), und die 41 Punkte bleiben dabei 41.
+///
+/// **Es ist aber eine Stückungs-Frage** (#468, §8al): dieselbe Messung mit mehr
+/// Stücken je Bogen senkt `η` linear (24/48/96/192 Stücke → 1,150/0,616/0,331/
+/// 0,095 mm) und die Über-Punkte mit (41/39/19/5; bei 768 Stücken **0**). Die
+/// Naht liegt auf `∂Ω` — ihr wahres `dist(q, ∁Ω)` ist `≤ 4,8·10⁻⁷ mm` —, jedes
+/// positive `η` ist also Schlupf der SUCHE, nicht Geometrie. Der Preis ist
+/// Synthese-Rechenzeit (62 ms → 1096 ms für die ganze Nabe, einmalig).
+///
+/// **Und eine gemischte Klemme gibt es nicht**: wegen `A ≥ 0` sind die beiden
+/// Klemmen total geordnet (gemessen: 0 Ausnahmen auf 10 648 Punkten), das
+/// Maximum ist bitgleich das Legacy-Feld. Wer die 41 Punkte über ein Maximum
+/// tilgt, liefert dort den unbewiesenen Wert.
 pub const CURVED_COVER_STAGE: ExtrudeCoverStage = ExtrudeCoverStage::ShadowOnly;
 
 /// **§8ae Stufe B — trägt `Ω` ein `Extrude`-Blatt, dessen Feature GEÖFFNET
@@ -3290,6 +3301,39 @@ pub(crate) fn certify_for_probe(
         cfg,
         SeamProofKnobs { extrude_stage: Some(stage), ..SeamProofKnobs::default() },
     )
+}
+
+/// #384 P5c-C-Vorentscheid (#468) — **nur für die Messung**: derselbe Weg wie
+/// [`certify_and_resolve_final_channel`] (zertifizieren UND Laufzeitmodus
+/// auflösen, in EINEM Schritt), aber mit ausdrücklich gewählter Stufe der
+/// GEKRÜMMTEN Nähte.
+///
+/// Damit lässt sich ein Feld bauen, in dem die Bogen-Klemme feldwirksam wäre,
+/// OHNE [`CURVED_COVER_STAGE`] anzufassen — die Konstante bleibt
+/// `ShadowOnly`, und in Produktions-Builds existiert diese Funktion gar nicht
+/// (`#[cfg(test)]`, dieselbe Auflage wie bei [`certify_for_probe`]).
+///
+/// Der einzige Unterschied zum Produktionsweg ist der Knopf: sonst dieselbe
+/// Reihenfolge, dasselbe Siegel, dieselbe Modus-Auflösung. Ein Messfeld, das
+/// anders entsteht als das echte, misst nicht das echte.
+#[cfg(test)]
+pub(crate) fn certify_and_resolve_curved_probe(
+    omega: &BoundedCsg,
+    ch: &mut OffsetChannel,
+    cfg: WitnessCfg,
+    active: bool,
+) -> crate::offset_channel::ChannelLimitMode {
+    let stage =
+        if active { ExtrudeCoverStage::Active } else { ExtrudeCoverStage::ShadowOnly };
+    let certified = certify_channel_with(
+        omega,
+        ch,
+        cfg,
+        SeamProofKnobs { curved_stage: Some(stage), ..SeamProofKnobs::default() },
+    )
+    .0
+     .0 == SeamProofStatus::Proved;
+    ch.resolve_limit_mode(SeamProofToken::mint(), omega, certified)
 }
 
 /// **NUR für die Gegenproben.** Schiebt den Beweis von `src` über den

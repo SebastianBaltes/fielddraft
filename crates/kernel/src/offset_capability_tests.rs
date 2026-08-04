@@ -18566,7 +18566,9 @@ fn the_dual_mirror_resolves_channel_modes_like_the_cpu_tree_467() {
 /// **Warum die Aktivierung hier nicht passiert**, steht an
 /// [`wit::CURVED_COVER_STAGE`]: der Beweis ist gültig, aber schwächer als die
 /// unbewiesene Klemme, die er ersetzen würde (`η ≈ 0,81 mm`), und kostet
-/// feldwirksam 41 Punkte Phantom-Material in der Ablation ohne `L`-Block.
+/// feldwirksam 41 Punkte Phantom-Material in der Ablation ohne `L`-Block. Woher
+/// die 41 kommen und was sie kosten, ist seit #468 aufgeschlüsselt — s.
+/// [`curved_clamp_phantom_comes_from_one_seam_468`] und §8al.
 #[test]
 fn curved_seams_are_proved_in_shadow_only_384() {
     let cfg = wit::WitnessCfg::default();
@@ -18984,4 +18986,615 @@ fn curved_point_bridge_pays_the_unnormalised_end_384() {
         "die Brücke gibt für einen Bogen unterhalb der Sektor-Auflösung ein Budget aus — \
          die ferne Lösungsmenge des Sektor-Tests ist dort nicht ausgeschlossen"
     );
+}
+
+// ═══════ #384 P5c-C Vorentscheid (#468) — der Preis der Bogen-Klemme ═══════
+
+/// Dasselbe Feld, aber alle Kanäle mit AUSDRÜCKLICH gewählter Stufe der
+/// gekrümmten Nähte neu zertifiziert und neu aufgelöst — über
+/// [`wit::certify_and_resolve_curved_probe`], also über denselben Weg wie die
+/// Produktion, nur mit dem Knopf. `CURVED_COVER_STAGE` bleibt unberührt.
+fn field_with_curved_stage(
+    field: &BoundedCsg,
+    active: bool,
+    cfg: wit::WitnessCfg,
+) -> BoundedCsg {
+    fn go(n: &BoundedCsg, active: bool, cfg: wit::WitnessCfg) -> BoundedCsg {
+        match n {
+            BoundedCsg::ArcChannel { inner, channels, verts, rims, lb, aabb } => {
+                let mut cs = channels.clone();
+                if let Some(om) = wit::omega_of(inner) {
+                    for c in cs.iter_mut() {
+                        wit::certify_and_resolve_curved_probe(om, c, cfg, active);
+                    }
+                }
+                BoundedCsg::ArcChannel {
+                    inner: Box::new(go(inner, active, cfg)),
+                    channels: cs,
+                    verts: verts.clone(),
+                    rims: rims.clone(),
+                    lb: lb.clone(),
+                    aabb: *aabb,
+                }
+            }
+            BoundedCsg::Union { left, right, aabb } => BoundedCsg::Union {
+                left: Box::new(go(left, active, cfg)),
+                right: Box::new(go(right, active, cfg)),
+                aabb: *aabb,
+            },
+            BoundedCsg::Difference { left, right, aabb } => BoundedCsg::Difference {
+                left: Box::new(go(left, active, cfg)),
+                right: Box::new(go(right, active, cfg)),
+                aabb: *aabb,
+            },
+            BoundedCsg::Intersection { left, right, aabb } => BoundedCsg::Intersection {
+                left: Box::new(go(left, active, cfg)),
+                right: Box::new(go(right, active, cfg)),
+                aabb: *aabb,
+            },
+            BoundedCsg::Offset { inner, delta, aabb } => BoundedCsg::Offset {
+                inner: Box::new(go(inner, active, cfg)),
+                delta: *delta,
+                aabb: *aabb,
+            },
+            other => other.clone(),
+        }
+    }
+    go(field, active, cfg)
+}
+
+/// Das Nabe-Fixture von `stop_lb_absent_reproduces_the_g_cap_384`, samt
+/// Referenzen und Gitter — damit die Messung wirklich DIESELBE Ablation
+/// benutzt, deren BASIS-Zahl (0 über / 59 unter) dort gepinnt ist.
+fn hub_468() -> (BoundedCsg, [(f64, f64, f64); 2], [f64; 3], [f64; 3], f64) {
+    let delta = 2.0f32;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+    let cyls = [(r1 as f64, -(e1 as f64), zh1 as f64), (r2 as f64, -(e2 as f64), 6.0f64)];
+    (field, cyls, [-9.0, -9.0, -(t as f64) - 1.5], [9.0, 9.0, 0.5], t as f64)
+}
+
+/// Die Gitterpunkte der Ablation — bitgleich zu `scan_mut`.
+fn grid_468(lo: [f64; 3], hi: [f64; 3], n: usize) -> Vec<[f64; 3]> {
+    let mut out = Vec::with_capacity(n * n * n);
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let f = [
+                    (ix as f64 + 0.2113248654) / n as f64,
+                    (iy as f64 + 0.5773502692) / n as f64,
+                    (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                out.push([
+                    lo[0] + (hi[0] - lo[0]) * f[0],
+                    lo[1] + (hi[1] - lo[1]) * f[1],
+                    lo[2] + (hi[2] - lo[2]) * f[2],
+                ]);
+            }
+        }
+    }
+    out
+}
+
+/// **#468-Sonde 1: woher kommen die 41 Punkte?**
+#[test]
+#[ignore]
+fn probe_468_ablation_origin() {
+    let delta = 2.0f32;
+    let (field, cyls, lo, hi, t) = hub_468();
+    let dflt = wit::WitnessCfg::default();
+    let base = strip_lb(&field);
+    let act = strip_lb(&field_with_curved_stage(&field, true, dflt));
+    let shadow = strip_lb(&field_with_curved_stage(&field, false, dflt));
+    // Dieselbe Ablation mit FEINEREN Suchparametern — dieselbe Geometrie,
+    // dieselbe Stufe, nur mehr Stücke je Bogen bzw. eine feinere Leiter.
+    for (tag, cfg) in [
+        ("Stücke 48", wit::WitnessCfg { pieces_per_arc: 48, ..dflt }),
+        ("Stücke 96", wit::WitnessCfg { pieces_per_arc: 96, ..dflt }),
+        ("Stücke 192", wit::WitnessCfg { pieces_per_arc: 192, ..dflt }),
+        ("steps 1025", wit::WitnessCfg { steps: 1025, ..dflt }),
+    ] {
+        let f = strip_lb(&field_with_curved_stage(&field, true, cfg));
+        let (mut o, mut worst) = (0usize, 0.0f64);
+        for p in grid_468(lo, hi, 22) {
+            let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+            let err = delta as f64 - dist_hub_complement(t, &cyls, p, 160);
+            if f.sdf(pf, EvalMode::Visual) < 0.0 && err > 1e-3 {
+                o += 1;
+                worst = worst.max(err);
+            }
+        }
+        let (pr, lg, _) = mode_tally(&f);
+        println!("#468 Ablation mit {tag}: {o} Über-Punkte (max {worst:.4} mm), proved {pr}/legacy {lg}");
+    }
+    for (name, f) in [("prod", &base), ("shadow-recert", &shadow), ("curved-aktiv", &act)] {
+        let (p, l, why) = mode_tally(f);
+        println!("| {name} | proved {p} | legacy {l} | {why:?} |");
+    }
+    let pts = grid_468(lo, hi, 22);
+    let mut rows: Vec<(f64, [f64; 3], f32, f32)> = Vec::new();
+    let (mut ob, mut oa) = (0usize, 0usize);
+    for p in &pts {
+        let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+        let u = dist_hub_complement(t, &cyls, *p, 160);
+        let (vb, va) = (base.sdf(pf, EvalMode::Visual), act.sdf(pf, EvalMode::Visual));
+        let err = delta as f64 - u;
+        if vb < 0.0 && err > 1e-3 {
+            ob += 1;
+        }
+        if va < 0.0 && err > 1e-3 {
+            oa += 1;
+            rows.push((err, *p, vb, va));
+        }
+    }
+    println!("#468: Ablation ohne L — BASIS {ob} über, curved-aktiv {oa} über");
+    rows.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    // Jeden Über-Punkt dem nächsten Kanal/Bogen zuordnen.
+    let mut stops = Vec::new();
+    stop_nodes(&act, &mut stops);
+    let mut chans: Vec<(usize, OffsetChannel)> = Vec::new();
+    for st in &stops {
+        if let BoundedCsg::ArcChannel { channels, .. } = st {
+            for c in channels {
+                chans.push((chans.len(), c.clone()));
+            }
+        }
+    }
+    println!("#468: {} Kanäle im Ablations-Feld", chans.len());
+    for (i, c) in &chans {
+        let curved = c.arcs.iter().filter(|a| !(a.sweep < 0.0)).count();
+        println!(
+            "  Kanal {i}: {} Bögen ({curved} gekrümmt), concave {}, δ {}, trust {}, proved {}",
+            c.arcs.len(),
+            c.concave,
+            c.delta,
+            c.trust,
+            c.limit_mode_channel_only().is_proved()
+        );
+    }
+    let mut per_ch: std::collections::BTreeMap<usize, (usize, f64, f64)> = Default::default();
+    for (err, p, vb, va) in rows.iter().take(1000) {
+        let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+        let mut best = (f32::INFINITY, usize::MAX, 0usize);
+        for (i, c) in &chans {
+            for (ai, a) in c.arcs.iter().enumerate() {
+                let (de, _, _) = crate::offset_channel::arc_closest(a, pf);
+                if de < best.0 {
+                    best = (de, *i, ai);
+                }
+            }
+        }
+        let e = per_ch.entry(best.1).or_insert((0, f64::INFINITY, 0.0));
+        e.0 += 1;
+        e.1 = e.1.min(*err);
+        e.2 = e.2.max(*err);
+        if rows.len() <= 60 {
+            let curved = chans[best.1].1.arcs[best.2].sweep >= 0.0;
+            println!(
+                "  über {err:.4} mm bei [{:.3},{:.3},{:.3}] — Kanal {} Bogen {} (gekrümmt {curved}), \
+                 de {:.4}, f_basis {vb:.4}, f_curved {va:.4}",
+                p[0], p[1], p[2], best.1, best.2, best.0
+            );
+        }
+    }
+    for (k, v) in &per_ch {
+        println!("  Kanal {k}: {} Über-Punkte, Überschreitung {:.4} … {:.4} mm", v.0, v.1, v.2);
+    }
+}
+
+/// **#468-Sonde 2: die Posten von `A_seam` und die Verfeinerung von `η`.**
+#[test]
+#[ignore]
+fn probe_468_eta_decomposition() {
+    let (field, ..) = hub_468();
+    let mut nch = 0usize;
+    for (om, chans) in omega_and_channels(&field) {
+        for ch in chans {
+            let curved = ch.arcs.iter().filter(|a| !(a.sweep < 0.0)).count();
+            if curved == 0 {
+                continue;
+            }
+            nch += 1;
+            println!(
+                "== Kanal {nch}: {} Bögen ({curved} gekrümmt), r {:?}, δ {}, trust {}",
+                ch.arcs.len(),
+                ch.arcs.iter().map(|a| a.r).collect::<Vec<_>>(),
+                ch.delta,
+                ch.trust
+            );
+            for steps in [18usize, 65, 257, 1025, 4097] {
+                for ppa in [24usize, 48, 96, 192] {
+                    let cfg = wit::WitnessCfg {
+                        pieces_per_arc: ppa,
+                        steps,
+                        ..wit::WitnessCfg::default()
+                    };
+                    let cov = wit::cover_channel(om, ch, cfg);
+                    let eta = cov.eta.map(|e| e.mm()).unwrap_or(f64::NAN);
+                    println!("   steps {steps:5} | Stücke/Bogen {ppa:4} | η {eta:.6} mm");
+                }
+            }
+            // Die f32-Posten daneben.
+            let eps_q = ch
+                .arcs
+                .iter()
+                .filter_map(wit::point_bridge_mm)
+                .fold(0.0f64, f64::max);
+            println!("   ε_q {eps_q:e} mm");
+            let mut c = ch.clone();
+            let m = wit::certify_and_resolve_curved_probe(om, &mut c, wit::WitnessCfg::default(), true);
+            println!("   Modus aktiv: {m:?}");
+            if let Some(p) = c.seam_proof() {
+                println!(
+                    "   A_seam {:.6} mm = η {:.6} + ε_q {:e} + ε_d {:e} + Rundung {:e}",
+                    m.addends().0,
+                    p.geometric_mm(),
+                    p.q_bridge_mm(),
+                    p.norm_bridge_mm(),
+                    p.field_round_mm()
+                );
+            }
+        }
+    }
+}
+
+/// **#468-Sonde 3: was eine GEMISCHTE Klemme kostet.**
+///
+/// `lim = δ − min(de + A_seam, h + A_h)`, beide Addenden `≥ 0` — die beiden
+/// Klemmen sind also GEORDNET. Die Sonde misst das (statt es zu glauben) und
+/// zeigt, was ein `min`/`max` der beiden Felder daraus macht.
+#[test]
+#[ignore]
+fn probe_468_mixed_clamp() {
+    let delta = 2.0f32;
+    let (field, cyls, lo, hi, t) = hub_468();
+    let dflt = wit::WitnessCfg::default();
+    let act = strip_lb(&field_with_curved_stage(&field, true, dflt));
+    let sh = strip_lb(&field_with_curved_stage(&field, false, dflt));
+    // 1. Ordnung der Klemmwerte, kanalweise.
+    let mut stops = Vec::new();
+    stop_nodes(&act, &mut stops);
+    let mut chans: Vec<OffsetChannel> = Vec::new();
+    for st in &stops {
+        if let BoundedCsg::ArcChannel { channels, .. } = st {
+            chans.extend(channels.iter().cloned());
+        }
+    }
+    let pts = grid_468(lo, hi, 22);
+    let (mut viol, mut diff_pts, mut worst_diff) = (0usize, 0usize, 0.0f32);
+    for (i, ch) in chans.iter().enumerate() {
+        let m = ch.limit_mode_channel_only();
+        if !m.is_proved() {
+            continue;
+        }
+        let leg = crate::offset_channel::ChannelLimitMode::LegacyUnproven(
+            crate::offset_channel::LegacyReason::NotCertified,
+        );
+        let (mut n, mut wd) = (0usize, 0.0f32);
+        for p in &pts {
+            let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+            let lp = crate::offset_channel::channel_limit(pf, ch, m);
+            let ll = crate::offset_channel::channel_limit(pf, ch, leg);
+            if lp > ll {
+                viol += 1;
+            }
+            if ll > lp {
+                n += 1;
+                wd = wd.max(ll - lp);
+            }
+        }
+        diff_pts += n;
+        worst_diff = worst_diff.max(wd);
+        println!(
+            "  Kanal {i}: A_seam {:.6}, A_h {:.6} — {n} Gitterpunkte mit lim_legacy > lim_proved, \
+             grösste Differenz {wd:.6} mm",
+            m.addends().0,
+            m.addends().1
+        );
+    }
+    println!(
+        "#468 Ordnung: {viol} Punkte mit lim_proved > lim_legacy (erwartet 0), {diff_pts} mit echtem Abstand, max {worst_diff:.6} mm"
+    );
+    // 2. Die drei Felder auf der Ablation.
+    let (mut o_act, mut o_sh, mut o_mix, mut mix_is_sh) = (0usize, 0usize, 0usize, 0usize);
+    let mut mix_ne_sh = 0usize;
+    for p in &pts {
+        let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+        let u = dist_hub_complement(t, &cyls, *p, 160);
+        let err = delta as f64 - u;
+        let (fa, fs) = (act.sdf(pf, EvalMode::Visual), sh.sdf(pf, EvalMode::Visual));
+        let fm = fa.max(fs);
+        if err > 1e-3 {
+            o_act += (fa < 0.0) as usize;
+            o_sh += (fs < 0.0) as usize;
+            o_mix += (fm < 0.0) as usize;
+        }
+        if fa != fs {
+            mix_ne_sh += 1;
+            if fm.to_bits() == fs.to_bits() {
+                mix_is_sh += 1;
+            }
+        }
+    }
+    println!(
+        "#468 Ablation: über — aktiv {o_act}, shadow {o_sh}, gemischt(max) {o_mix}; \
+         {mix_ne_sh} Punkte mit f_aktiv != f_shadow, davon {mix_is_sh} mit f_gemischt == f_shadow (bitgleich)"
+    );
+}
+
+/// **#468-Pin 1: die 41 Punkte sind EINE Naht, nicht 41 Stellen.**
+///
+/// Reproduziert die Zahl aus §8aj — und schlüsselt sie auf. Gemessen wird die
+/// Ablation ohne `L`-Block (`strip_lb`), dasselbe Fixture und dasselbe Gitter,
+/// dessen BASIS-Befund `stop_lb_absent_reproduces_the_g_cap_384` mit
+/// `0 über / 59 unter` festnagelt.
+///
+/// **Anti-Leer-Gates**: ohne die umgelegte Stufe wäre kein Kanal der Nabe
+/// bewiesen (in Produktion sind es 0 von 2, beide `Curved` ⇒ `NotCertified`),
+/// und dann würde der Pin zwei identische Felder vergleichen.
+#[test]
+fn curved_clamp_phantom_comes_from_one_seam_468() {
+    let delta = 2.0f32;
+    let (field, cyls, lo, hi, t) = hub_468();
+    let cfg = wit::WitnessCfg::default();
+    let base = strip_lb(&field);
+    let act = strip_lb(&field_with_curved_stage(&field, true, cfg));
+    let sh = strip_lb(&field_with_curved_stage(&field, false, cfg));
+    assert_eq!(
+        (mode_tally(&base).0, mode_tally(&base).1),
+        (0, 2),
+        "die Nabe hat in Produktion nicht mehr 0 bewiesene und 2 Legacy-Kanäle — \
+         dann misst der Pin eine andere Geometrie"
+    );
+    assert_eq!(
+        (mode_tally(&act).0, mode_tally(&act).1),
+        (2, 0),
+        "die umgelegte Stufe beweist nicht beide Kanäle — dann vergleicht der Pin \
+         zwei identische Felder"
+    );
+
+    let mut stops = Vec::new();
+    stop_nodes(&act, &mut stops);
+    let mut chans: Vec<OffsetChannel> = Vec::new();
+    for st in &stops {
+        if let BoundedCsg::ArcChannel { channels, .. } = st {
+            chans.extend(channels.iter().cloned());
+        }
+    }
+    assert_eq!(chans.len(), 2, "die Nabe trägt nicht mehr genau zwei Kanäle");
+
+    let pts = grid_468(lo, hi, 22);
+    let (mut ob, mut oa) = (0usize, 0usize);
+    let mut per_ch: std::collections::BTreeMap<usize, (usize, f64, f64)> = Default::default();
+    let mut arcs_hit: std::collections::BTreeSet<(usize, usize)> = Default::default();
+    let mut shadow_differs = 0usize;
+    for p in &pts {
+        let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+        let err = delta as f64 - dist_hub_complement(t, &cyls, *p, 160);
+        let (vb, va) = (base.sdf(pf, EvalMode::Visual), act.sdf(pf, EvalMode::Visual));
+        if vb.to_bits() != sh.sdf(pf, EvalMode::Visual).to_bits() {
+            shadow_differs += 1;
+        }
+        if !(err > 1e-3) {
+            continue;
+        }
+        ob += (vb < 0.0) as usize;
+        if va < 0.0 {
+            oa += 1;
+            let mut best = (f32::INFINITY, usize::MAX, usize::MAX);
+            for (i, c) in chans.iter().enumerate() {
+                for (ai, a) in c.arcs.iter().enumerate() {
+                    let (de, _, _) = crate::offset_channel::arc_closest(a, pf);
+                    if de < best.0 {
+                        best = (de, i, ai);
+                    }
+                }
+            }
+            arcs_hit.insert((best.1, best.2));
+            let e = per_ch.entry(best.1).or_insert((0, f64::INFINITY, 0.0));
+            e.0 += 1;
+            e.1 = e.1.min(err);
+            e.2 = e.2.max(err);
+        }
+    }
+    // Die Re-Zertifizierung im SHADOW ist feldneutral — sonst misst der
+    // Vergleich den Messaufbau statt die Stufe.
+    assert_eq!(
+        shadow_differs, 0,
+        "die Shadow-Re-Zertifizierung bewegt das Feld an {shadow_differs} Punkten"
+    );
+    assert_eq!(ob, 0, "die BASIS-Ablation hat {ob} Über-Punkte statt 0 (§8n/§8o)");
+    assert_eq!(oa, 41, "die aktive Bogen-Klemme kostet {oa} Über-Punkte statt 41");
+    assert_eq!(
+        per_ch.len(),
+        1,
+        "die Über-Punkte verteilen sich auf {} Kanäle — §8al beschreibt EINE Ursache",
+        per_ch.len()
+    );
+    let (&ch_i, &(n, lo_e, hi_e)) = per_ch.iter().next().unwrap();
+    let a_seam = chans[ch_i].limit_mode_channel_only().addends().0;
+    println!(
+        "#468: alle {n} Über-Punkte an Kanal {ch_i} (r ≈ {:.1} mm, A_seam {a_seam:.6} mm), \
+         {} von 3 Bögen getroffen, Überschreitung {lo_e:.4} … {hi_e:.4} mm",
+        chans[ch_i].arcs[0].r,
+        arcs_hit.len()
+    );
+    assert_eq!(arcs_hit.len(), 3, "nur {} Bögen getroffen — die Naht ist nicht die Ursache", arcs_hit.len());
+    // Der schuldige Kanal ist der mit dem GRÖSSEREN Addenden; das ist die
+    // inhaltliche Aussage („eine Ursache", nicht „41 Stellen").
+    let other = chans[1 - ch_i].limit_mode_channel_only().addends().0;
+    assert!(
+        a_seam > other,
+        "der Kanal ohne Über-Punkte trägt den grösseren Addenden ({other} > {a_seam})"
+    );
+    assert!(
+        (hi_e - 0.6737).abs() < 1e-3 && lo_e < 0.01,
+        "die Überschreitungen liegen bei {lo_e:.4} … {hi_e:.4} statt 0,002 … 0,674 mm"
+    );
+}
+
+/// **#468-Pin 2: `η ≈ 0,81 mm` ist Stück-Diskretisierung, keine Geometrie.**
+///
+/// Zwei Messungen, die nur zusammen etwas heissen:
+///
+/// 1. Die Naht liegt AUF `∂Ω`. Der wahre Wert von `dist(q, ∁Ω)` — die Grösse,
+///    die `η` nach oben schrankt — ist also ≈ 0, und jedes positive `η` ist
+///    Schlupf der Zeugen-SUCHE, nicht der Geometrie.
+/// 2. `η` fällt mit der Stückzahl. Die Leiter-Verfeinerung (§8aj: 18 → 1025)
+///    konvergiert bei FESTEN 24 Stücken je Bogen gegen ≈ 0,81 mm; verachtfacht
+///    man die Stücke, fällt derselbe Wert unter 0,10 mm.
+#[test]
+fn curved_eta_is_piece_discretisation_not_geometry_468() {
+    let (field, ..) = hub_468();
+    let mut seen = 0usize;
+    for (om, chans) in omega_and_channels(&field) {
+        for ch in chans {
+            if !ch.arcs.iter().any(|a| !(a.sweep < 0.0)) {
+                continue;
+            }
+            seen += 1;
+            // (1) Die modellierte Naht gegen `Ω` selbst.
+            let mut worst_on_boundary = 0.0f64;
+            for a in ch.arcs.iter().filter(|a| !(a.sweep < 0.0)) {
+                for i in 0..=200 {
+                    let q = curved_seam_point_f64(a, i as f64 / 200.0);
+                    let v = om.sdf([q[0] as f32, q[1] as f32, q[2] as f32], EvalMode::Visual);
+                    worst_on_boundary = worst_on_boundary.max(v.abs() as f64);
+                }
+            }
+            // (2) `η` bei Produktions-Leiter, grob und fein gestückelt.
+            let coarse = wit::WitnessCfg::default();
+            let fine = wit::WitnessCfg { pieces_per_arc: 192, ..coarse };
+            let e24 = wit::cover_channel(om, ch, coarse).eta.expect("η grob fehlt").mm();
+            let e192 = wit::cover_channel(om, ch, fine).eta.expect("η fein fehlt").mm();
+            println!(
+                "#468 Kanal r ≈ {:.1} mm: |SDF_Ω| auf der Naht ≤ {worst_on_boundary:.2e} mm, \
+                 η(24 Stücke) = {e24:.6} mm, η(192 Stücke) = {e192:.6} mm",
+                ch.arcs[0].r
+            );
+            assert!(
+                worst_on_boundary < 5.0e-3,
+                "die modellierte Naht liegt {worst_on_boundary:e} mm von ∂Ω — dann ist die \
+                 Aussage „das wahre η ist ≈ 0\" nicht gemessen"
+            );
+            assert!(
+                e192 * 5.0 < e24,
+                "η fällt mit der Stückzahl nur von {e24:e} auf {e192:e} — dann ist der \
+                 Wert doch geometrisch und §8al ist falsch"
+            );
+            assert!(e192 < 0.1, "η(192 Stücke) = {e192:e} mm, erwartet < 0,1 mm");
+        }
+    }
+    assert_eq!(seen, 2, "die Nabe trägt nicht mehr zwei gekrümmte Kanäle ({seen})");
+}
+
+/// **#468-Pin 3: die bewiesene und die Legacy-Klemme sind GEORDNET.**
+///
+/// `lim = δ − min(de + A_seam, h + A_h)` mit `A ≥ 0` — die bewiesene Klemme
+/// liegt also punktweise NIE über der Legacy-Klemme. Damit ist eine
+/// „gemischte" Klemme kein dritter Wert: das Minimum der beiden Felder ist
+/// das bewiesene, das Maximum ist bitgenau das Legacy-Feld. Wer die 41 Punkte
+/// über ein `max` loswerden will, liefert an ihnen den unbewiesenen Wert —
+/// der Beweis trägt dort nichts mehr bei.
+#[test]
+fn proved_and_legacy_clamp_are_ordered_468() {
+    let (field, _c, lo, hi, _t) = hub_468();
+    let cfg = wit::WitnessCfg::default();
+    let act = strip_lb(&field_with_curved_stage(&field, true, cfg));
+    let sh = strip_lb(&field_with_curved_stage(&field, false, cfg));
+    let mut stops = Vec::new();
+    stop_nodes(&act, &mut stops);
+    let mut chans: Vec<OffsetChannel> = Vec::new();
+    for st in &stops {
+        if let BoundedCsg::ArcChannel { channels, .. } = st {
+            chans.extend(channels.iter().cloned());
+        }
+    }
+    let leg = crate::offset_channel::ChannelLimitMode::LegacyUnproven(
+        crate::offset_channel::LegacyReason::NotCertified,
+    );
+    let pts = grid_468(lo, hi, 22);
+    let (mut viol, mut gap_pts, mut worst_gap) = (0usize, 0usize, 0.0f32);
+    for ch in &chans {
+        let m = ch.limit_mode_channel_only();
+        assert!(m.is_proved(), "der Messkanal ist nicht bewiesen — der Pin misst nichts");
+        for p in &pts {
+            let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+            let lp = crate::offset_channel::channel_limit(pf, ch, m);
+            let ll = crate::offset_channel::channel_limit(pf, ch, leg);
+            if lp > ll {
+                viol += 1;
+            }
+            if ll > lp {
+                gap_pts += 1;
+                worst_gap = worst_gap.max(ll - lp);
+            }
+        }
+    }
+    assert_eq!(viol, 0, "an {viol} Punkten liegt die bewiesene Klemme ÜBER der Legacy-Klemme");
+    assert!(gap_pts > 1000, "nur {gap_pts} Punkte mit echtem Abstand — der Pin misst nichts");
+    // Und dieselbe Ordnung im FELD: das Maximum der beiden Felder ist überall
+    // bitgenau das Legacy-Feld.
+    let (mut differ, mut max_is_legacy) = (0usize, 0usize);
+    for p in &pts {
+        let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+        let (fa, fs) = (act.sdf(pf, EvalMode::Visual), sh.sdf(pf, EvalMode::Visual));
+        if fa.to_bits() != fs.to_bits() {
+            differ += 1;
+            if fa.max(fs).to_bits() == fs.to_bits() {
+                max_is_legacy += 1;
+            }
+        }
+    }
+    println!(
+        "#468 Ordnung: {gap_pts} Punkte mit lim_legacy > lim_proved (max {worst_gap:.6} mm), \
+         {differ} Feldpunkte verschieden, davon {max_is_legacy} mit max == Legacy"
+    );
+    assert!(differ > 100, "die Felder unterscheiden sich nur an {differ} Punkten");
+    assert_eq!(
+        differ, max_is_legacy,
+        "an {} Punkten ist das Maximum NICHT das Legacy-Feld — dann wäre die Ordnung \
+         der Klemmen nicht die behauptete",
+        differ - max_is_legacy
+    );
+}
+
+/// **#468-Sonde 4: wie fein müssen die Stücke sein, bis die Ablation wieder
+/// leer ist — und was kostet das an Rechenzeit?**
+#[test]
+#[ignore]
+fn probe_468_piece_refinement() {
+    let delta = 2.0f32;
+    let (field, cyls, lo, hi, t) = hub_468();
+    let dflt = wit::WitnessCfg::default();
+    let pts = grid_468(lo, hi, 22);
+    for ppa in [24usize, 96, 192, 384, 768] {
+        let cfg = wit::WitnessCfg { pieces_per_arc: ppa, ..dflt };
+        let t0 = std::time::Instant::now();
+        let f = strip_lb(&field_with_curved_stage(&field, true, cfg));
+        let cert_ms = t0.elapsed().as_secs_f64() * 1e3;
+        let mut a_seam = 0.0f32;
+        let mut stops = Vec::new();
+        stop_nodes(&f, &mut stops);
+        for st in &stops {
+            if let BoundedCsg::ArcChannel { channels, .. } = st {
+                for c in channels {
+                    a_seam = a_seam.max(c.limit_mode_channel_only().addends().0);
+                }
+            }
+        }
+        let (mut o, mut worst) = (0usize, 0.0f64);
+        for p in &pts {
+            let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+            let err = delta as f64 - dist_hub_complement(t, &cyls, *p, 160);
+            if f.sdf(pf, EvalMode::Visual) < 0.0 && err > 1e-3 {
+                o += 1;
+                worst = worst.max(err);
+            }
+        }
+        println!(
+            "#468 Stücke/Bogen {ppa:4}: A_seam_max {a_seam:.6} mm | {o} Über-Punkte \
+             (max {worst:.4} mm) | Zertifizierung der ganzen Nabe {cert_ms:.0} ms"
+        );
+    }
 }
