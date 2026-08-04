@@ -207,52 +207,79 @@ export function buildVmSdfEvalFn(
     Loop(int(VM_MAX_OPCODES), () => {
       const rawTag = opBuf.element(pc).toVar();
       pc.addAssign(1);
-      const tag = bitcastTagFn({ v: rawTag });
+      const tag = bitcastTagFn({ v: rawTag }).toVar();
 
-      If(tag.equal(int(OP_PRIM_BOX)), () => {
+      // Opcode-Dispatch: ein FLACHER Block gleichrangiger `if`s, KEINE
+      // If/ElseIf-Kette (#460). TSL setzt jedes `.ElseIf` als echtes
+      // `} else { if (…) { … } }` ab — 50 Fälle sind damit 50 verschachtelte
+      // Blöcke, also ~100 Statement-Ebenen, und Tint (Dawn/Chrome) bricht die
+      // WGSL-Übersetzung ab „statement nesting depth / chaining length exceeds
+      // limit of 127". Der Fragment-Shader riss die Grenze (der zusätzliche
+      // Raymarch-/Material-Rahmen kommt obendrauf), der Compute-Probe blieb
+      // knapp darunter — der sdf-vm-Viewport blieb schwarz. `tag` ist eine
+      // Variable und wird in keinem Arm verändert, die Opcodes sind paarweise
+      // verschieden: höchstens ein Arm feuert, die flache Form ist exakt
+      // äquivalent. Die Bedingungen aller Arme werden ausgewertet — 50
+      // Integer-Vergleiche gegen die Rümpfe sind kostenlos.
+      const op = (opcode: number, body: () => void) => {
+        If(tag.equal(int(opcode)), body);
+      };
+
+      op(OP_PRIM_BOX, () => {
         const { local, scale: s } = emitTransformAndLocal();
         const hx = rd(), hy = rd(), hz = rd();
         pushV(sdfBoxFn({ p: local, h: vec3(hx, hy, hz) }).mul(s));
-      }).ElseIf(tag.equal(int(OP_PRIM_SPHERE)), () => {
+      });
+      op(OP_PRIM_SPHERE, () => {
         const { local, scale: s } = emitTransformAndLocal();
         const r = rd();
         pushV(sdfSphereFn({ p: local, r }).mul(s));
-      }).ElseIf(tag.equal(int(OP_PRIM_CYLINDER)), () => {
+      });
+      op(OP_PRIM_CYLINDER, () => {
         const { local, scale: s } = emitTransformAndLocal();
         const r = rd(), hh = rd();
         pushV(sdfCylinderFn({ p: local, r, hh }).mul(s));
-      }).ElseIf(tag.equal(int(OP_PRIM_TORUS)), () => {
+      });
+      op(OP_PRIM_TORUS, () => {
         const { local, scale: s } = emitTransformAndLocal();
         const major = rd(), minor = rd();
         pushV(sdfTorusFn({ p: local, major, minor }).mul(s));
-      }).ElseIf(tag.equal(int(OP_PRIM_CONE)), () => {
+      });
+      op(OP_PRIM_CONE, () => {
         const { local, scale: s } = emitTransformAndLocal();
         const rb = rd(), rt = rd(), hh = rd();
         pushV(sdfConeFn({ p: local, rb, rt, hh }).mul(s));
-      }).ElseIf(tag.equal(int(OP_PRIM_CAPSULE)), () => {
+      });
+      op(OP_PRIM_CAPSULE, () => {
         const { local, scale: s } = emitTransformAndLocal();
         const r = rd(), hh = rd();
         pushV(sdfCapsuleFn({ p: local, r, hh }).mul(s));
-      }).ElseIf(tag.equal(int(OP_PRIM_HEX_PRISM)), () => {
+      });
+      op(OP_PRIM_HEX_PRISM, () => {
         const { local, scale: s } = emitTransformAndLocal();
         const apothem = rd(), hh = rd();
         pushV(sdfHexPrismFn({ p: local, apothem, hh }).mul(s));
-      }).ElseIf(tag.equal(int(OP_PRIM_ELLIPSOID)), () => {
+      });
+      op(OP_PRIM_ELLIPSOID, () => {
         const { local, scale: s } = emitTransformAndLocal();
         const rx = rd(), ry = rd(), rz = rd();
         pushV(sdfEllipsoidFn({ p: local, radii: vec3(rx, ry, rz) }).mul(s));
-      }).ElseIf(tag.equal(int(OP_PRIM_CONST)), () => {
+      });
+      op(OP_PRIM_CONST, () => {
         pushV(rd());
-      }).ElseIf(tag.equal(int(OP_PRIM_GYROID)), () => {
+      });
+      op(OP_PRIM_GYROID, () => {
         const { local, scale: s } = emitTransformAndLocal();
         const cell_size = rd(), thickness = rd();
         pushV(sdfGyroidFn({ p: local, cell_size, thickness }).mul(s));
-      }).ElseIf(tag.equal(int(OP_PRIM_THREAD)), () => {
+      });
+      op(OP_PRIM_THREAD, () => {
         const { local, scale: s } = emitTransformAndLocal();
         const nom_r = rd(), pitch = rd(), depth = rd(), hh = rd();
         pushV(sdfThreadFn({ p: local, nom_r, pitch, depth, hh }).mul(s));
 
-      }).ElseIf(tag.equal(int(OP_PRIM_CUSTOM)), () => {
+      });
+      op(OP_PRIM_CUSTOM, () => {
         // User expression tape (mirror of `sdf_compiler::eval_expr_records`):
         // header = transform(10) + inv_lipschitz + half_extents(3) +
         // op_count, then op_count × (code, payload) fixed-width records.
@@ -358,7 +385,8 @@ export function buildVmSdfEvalFn(
         const boxD = sdfBoxFn({ p: local, h: vec3(hx, hy, hz) });
         pushV(max(expr.mul(invL), boxD).mul(s));
 
-      }).ElseIf(tag.equal(int(OP_PRIM_TEX3D)), () => {
+      });
+      op(OP_PRIM_TEX3D, () => {
         const texIdxRaw = rd();
         const { local, scale: s } = emitTransformAndLocal();
         const aminx = rd(), aminy = rd(), aminz = rd();
@@ -379,13 +407,16 @@ export function buildVmSdfEvalFn(
         }
         pushV(dist.mul(s));
 
-      }).ElseIf(tag.equal(int(OP_PRIM2D_CIRCLE)), () => {
+      });
+      op(OP_PRIM2D_CIRCLE, () => {
         const cx = rd(), cy = rd(), r = rd();
         pushV(sdfCircle2dFn({ p: vec2(ptx, pty), center: vec2(cx, cy), r }));
-      }).ElseIf(tag.equal(int(OP_PRIM2D_RECT)), () => {
+      });
+      op(OP_PRIM2D_RECT, () => {
         const cx = rd(), cy = rd(), hx = rd(), hy = rd();
         pushV(sdfRect2dFn({ p: vec2(ptx, pty), center: vec2(cx, cy), half: vec2(hx, hy) }));
-      }).ElseIf(tag.equal(int(OP_PRIM2D_POLY)), () => {
+      });
+      op(OP_PRIM2D_POLY, () => {
         const nRaw = rd();
         const nInt = floatToIntFn({ v: nRaw });
         const vertStart = pc.toVar();
@@ -421,11 +452,13 @@ export function buildVmSdfEvalFn(
           ii.addAssign(1);
         });
         pushV(wSign.mul(sqrt(dSq)));
-      }).ElseIf(tag.equal(int(OP_PRIM2D_SECTOR)), () => {
+      });
+      op(OP_PRIM2D_SECTOR, () => {
         const cx = rd(), cy = rd(), r = rd();
         const start_angle = rd(), sweep_angle = rd();
         pushV(sdfSector2dFn({ p: vec2(ptx, pty), cx, cy, r, start_angle, sweep_angle }));
-      }).ElseIf(tag.equal(int(OP_PRIM2D_PATH)), () => {
+      });
+      op(OP_PRIM2D_PATH, () => {
         // Analytic path records — exact distance + exact even-odd parity,
         // mirroring `fielddraft_protocol::sketch2d::{sdf_path,
         // path_is_inside}`. Each record is a fixed 7-float, y-MONOTONE
@@ -475,25 +508,31 @@ export function buildVmSdfEvalFn(
         });
         pushV(dist);
 
-      }).ElseIf(tag.equal(int(OP_UNION)), () => {
+      });
+      op(OP_UNION, () => {
         const b = popV(), a = popV();
         pushV(min(a, b));
-      }).ElseIf(tag.equal(int(OP_DIFFERENCE)), () => {
+      });
+      op(OP_DIFFERENCE, () => {
         const b = popV(), a = popV();
         pushV(max(a, b.negate()));
-      }).ElseIf(tag.equal(int(OP_INTERSECT)), () => {
+      });
+      op(OP_INTERSECT, () => {
         const b = popV(), a = popV();
         pushV(max(a, b));
-      }).ElseIf(tag.equal(int(OP_SMOOTH_UNION)), () => {
+      });
+      op(OP_SMOOTH_UNION, () => {
         const r = rd(), mode = rd();
         const b = popV(), a = popV();
         pushV(blendMinFn({ a, b, r, mode }));
-      }).ElseIf(tag.equal(int(OP_SMOOTH_DIFF)), () => {
+      });
+      op(OP_SMOOTH_DIFF, () => {
         const r = rd(), mode = rd();
         const b = popV(), a = popV();
         pushV(blendMinFn({ a: a.negate(), b, r, mode }).negate());
 
-      }).ElseIf(tag.equal(int(OP_SHELL)), () => {
+      });
+      op(OP_SHELL, () => {
         // CLOSED inward shell: wall = max(d, −(d + t)). Opened shells compile
         // to two subtrees + OFFSET(−t) + DIFFERENCE instead (retained-boundary
         // erosion, mirrors `csg::shell_wall_sdf`), so this op carries only the
@@ -501,11 +540,13 @@ export function buildVmSdfEvalFn(
         const thickness = rd();
         const d = popV();
         pushV(max(d, d.add(thickness).negate()));
-      }).ElseIf(tag.equal(int(OP_MORPH)), () => {
+      });
+      op(OP_MORPH, () => {
         const t = rd();
         const b = popV(), a = popV();
         pushV(float(1).sub(t).mul(a).add(t.mul(b)));
-      }).ElseIf(tag.equal(int(OP_LOFT_MORPH)), () => {
+      });
+      op(OP_LOFT_MORPH, () => {
         // #385 P2: pop this section's 2D field d_j and the running accumulator,
         // push acc + hat_j(pt.z)·d_j (centred z). loft_hat: rise 0→1 over
         // [zPrev,zSelf], fall 1→0 over [zSelf,zNext]; first/last (zPrev==zSelf /
@@ -522,14 +563,16 @@ export function buildVmSdfEvalFn(
           fall.assign(clamp(zNext.sub(ptz).div(zNext.sub(zSelf)), 0, 1));
         });
         pushV(acc.add(min(rise, fall).mul(dj)));
-      }).ElseIf(tag.equal(int(OP_DISPLACE_VAL)), () => {
+      });
+      op(OP_DISPLACE_VAL, () => {
         const dpth = rd(), freq = rd();
         const d = popV();
         const disp = ptx.mul(freq).sin()
           .mul(pty.mul(freq).mul(1.3).sin())
           .mul(ptz.mul(freq).mul(0.7).sin());
         pushV(d.sub(dpth.mul(disp)));
-      }).ElseIf(tag.equal(int(OP_EXTRUDE)), () => {
+      });
+      op(OP_EXTRUDE, () => {
         const half_h = rd(), s = rd();
         const capMask = floatToIntFn({ v: rd() });
         const d2d = popV();
@@ -547,10 +590,12 @@ export function buildVmSdfEvalFn(
           res.assign(d2d);
         });
         pushV(res.mul(s));
-      }).ElseIf(tag.equal(int(OP_REVOLVE_SCALE)), () => {
+      });
+      op(OP_REVOLVE_SCALE, () => {
         const s = rd();
         pushV(popV().mul(s));
-      }).ElseIf(tag.equal(int(OP_HELIX_SCALE)), () => {
+      });
+      op(OP_HELIX_SCALE, () => {
         // pt.z carries the signed end-overshoot chord stashed by
         // OP_WARP_HELIX; compose like the kernel's `helix_compose`
         // (IQ extrude box), then apply the baked world·Lipschitz scale.
@@ -562,12 +607,15 @@ export function buildVmSdfEvalFn(
         const outside = dPos.mul(dPos).add(ellPos.mul(ellPos)).sqrt();
         const inside = min(max(d2, ell), 0);
         pushV(outside.add(inside).mul(s));
-      }).ElseIf(tag.equal(int(OP_OFFSET_2D)), () => {
+      });
+      op(OP_OFFSET_2D, () => {
         const dist = rd();
         pushV(popV().sub(dist));
-      }).ElseIf(tag.equal(int(OP_NEG)), () => {
+      });
+      op(OP_NEG, () => {
         pushV(popV().negate());
-      }).ElseIf(tag.equal(int(OP_PRIM_HALFSPACE)), () => {
+      });
+      op(OP_PRIM_HALFSPACE, () => {
         // One analytic half-space face (retained-boundary shell): kind +
         // transform(10) + params(4); raw local SDF × min-scale, like every
         // other primitive opcode.
@@ -576,25 +624,30 @@ export function buildVmSdfEvalFn(
         const p0 = rd(), p1 = rd(), p2 = rd(), p3 = rd();
         pushV(halfspaceLocalFn({ local, kind, p: vec4(p0, p1, p2, p3) }).mul(s));
 
-      }).ElseIf(tag.equal(int(OP_WARP_PUSH)), () => {
+      });
+      op(OP_WARP_PUSH, () => {
         pushP(ptx, pty, ptz);
-      }).ElseIf(tag.equal(int(OP_WARP_POP)), () => {
+      });
+      op(OP_WARP_POP, () => {
         popP();
-      }).ElseIf(tag.equal(int(OP_WARP_TWIST)), () => {
+      });
+      op(OP_WARP_TWIST, () => {
         const rate = rd();
         const angle = rate.mul(pty);
         const sn = angle.sin(), cs = angle.cos();
         const oldX = ptx.toVar();
         ptx.assign(cs.mul(oldX).sub(sn.mul(ptz)));
         ptz.assign(sn.mul(oldX).add(cs.mul(ptz)));
-      }).ElseIf(tag.equal(int(OP_WARP_BEND)), () => {
+      });
+      op(OP_WARP_BEND, () => {
         const rate = rd();
         const angle = rate.mul(ptx);
         const sn = angle.sin(), cs = angle.cos();
         const oldX = ptx.toVar();
         ptx.assign(cs.mul(oldX).sub(sn.mul(pty)));
         pty.assign(sn.mul(oldX).add(cs.mul(pty)));
-      }).ElseIf(tag.equal(int(OP_WARP_TRANSFORM)), () => {
+      });
+      op(OP_WARP_TRANSFORM, () => {
         const tx = rd(), ty = rd(), tz = rd();
         const qx = rd(), qy = rd(), qz = rd(), qw = rd();
         const sx = rd(), sy = rd(), sz = rd();
@@ -607,12 +660,14 @@ export function buildVmSdfEvalFn(
         ptx.assign(local.x);
         pty.assign(local.y);
         ptz.assign(local.z);
-      }).ElseIf(tag.equal(int(OP_WARP_REVOLVE)), () => {
+      });
+      op(OP_WARP_REVOLVE, () => {
         const r = ptx.mul(ptx).add(ptz.mul(ptz)).sqrt();
         ptx.assign(r);
         ptz.assign(0);
 
-      }).ElseIf(tag.equal(int(OP_WARP_HELIX)), () => {
+      });
+      op(OP_WARP_HELIX, () => {
         // Helical unwrap into the profile's (r', w) frame — the GPU
         // mirror of the kernel's `helix_profile_point`. The nearest
         // pass is found by rounding, then its CONTINUOUS sweep
@@ -649,7 +704,8 @@ export function buildVmSdfEvalFn(
         pty.assign(w);
         ptz.assign(ell);
 
-      }).ElseIf(tag.equal(int(OP_WARP_SWEEP)), () => {
+      });
+      op(OP_WARP_SWEEP, () => {
         // Nearest spine point → project into the interpolated (n, b) frame =
         // (u, v); the cap coordinate w rides in pt.z until OP_HELIX_SCALE.
         // GPU mirror of `SweepPath::cross_section` (verified in Rust against
@@ -731,7 +787,8 @@ export function buildVmSdfEvalFn(
         pty.assign(v);
         ptz.assign(w);
 
-      }).ElseIf(tag.equal(int(OP_MASKED_BLEND)), () => {
+      });
+      op(OP_MASKED_BLEND, () => {
         // DL-61: count-prefixed polyline tube. Read `n` points, then the
         // mask SDF is the min over capsules along consecutive segments
         // (a 2-point polyline reduces to the single-capsule case; a
@@ -803,7 +860,8 @@ export function buildVmSdfEvalFn(
         const dResult = dSmooth.mix(dSharp, hardW);
         pushV(uResult.mix(dResult, isDiff));
 
-      }).ElseIf(tag.equal(int(OP_STOP_BASE)), () => {
+      });
+      op(OP_STOP_BASE, () => {
         // offset_tree §8i (#384): base ← top of stack (pop + push desselben
         // Werts, netto stack-neutral). Spiegel von `eval_opcodes`
         // OP_STOP_BASE / `offset_channel::stop_apply`.
@@ -815,7 +873,8 @@ export function buildVmSdfEvalFn(
         stopLb.assign(float(-1e30));
         pushV(d);
 
-      }).ElseIf(tag.equal(int(OP_STOP_LIMIT)), () => {
+      });
+      op(OP_STOP_LIMIT, () => {
         // offset_tree §8j (#384): d ← max(d, lim) konkav bzw. min(d, −lim)
         // konvex. Spiegel von `eval_opcodes` OP_STOP_LIMIT /
         // `offset_channel::stop_apply`.
@@ -823,7 +882,8 @@ export function buildVmSdfEvalFn(
         const d = popV().toVar();
         pushV(concave.greaterThan(0.5).select(max(d, stopLim), min(d, stopLim.negate())));
 
-      }).ElseIf(tag.equal(int(OP_STOP_LB)), () => {
+      });
+      op(OP_STOP_LB, () => {
         // offset_tree §8o (#384): untere Distanzschranke des Stopps —
         // 1:1-Spiegel von `kernel offset_lb::lb_value` / `eval_opcodes`
         // OP_STOP_LB. Header 7: n(1) delta(1) slack(1) center(3) skip_r(1);
@@ -916,7 +976,8 @@ export function buildVmSdfEvalFn(
         );
         pushV(d);
 
-      }).ElseIf(tag.equal(int(OP_ARC_CHANNEL)), () => {
+      });
+      op(OP_ARC_CHANNEL, () => {
         // offset_tree Phase B (#384): Kanal-Korrekturkörper an einem dualen
         // Offset-Stopp — 1:1-Spiegel der CPU-Referenz
         // (`kernel offset_channel::channel_apply` / `eval_opcodes`
@@ -1096,7 +1157,8 @@ export function buildVmSdfEvalFn(
         });
         pushV(result);
 
-      }).ElseIf(tag.equal(int(OP_VERTEX_SPHERE)), () => {
+      });
+      op(OP_VERTEX_SPHERE, () => {
         // offset_tree Phase C4 (#384): Rossignac–Requicha-Vertex-Kugel an
         // einer Triple-Junction — 1:1-Spiegel der CPU-Referenz
         // (`kernel offset_channel::vertex_apply` / `eval_opcodes`
@@ -1148,7 +1210,8 @@ export function buildVmSdfEvalFn(
         });
         pushV(result);
 
-      }).ElseIf(tag.equal(int(OP_RIM_FILLET)), () => {
+      });
+      op(OP_RIM_FILLET, () => {
         // offset_tree Phase 3 (#398): Rand-Fillet an ∂P-Kanten — 1:1-Spiegel
         // der CPU-Referenz (`kernel offset_rim::apply_rims_f32` /
         // `eval_opcodes` OP_RIM_FILLET-Arm). Nearest-Feature-Komposition:
@@ -1239,7 +1302,8 @@ export function buildVmSdfEvalFn(
         );
         pushV(rimResult);
 
-      }).ElseIf(tag.equal(int(OP_RIM_FILLET_ARC)), () => {
+      });
+      op(OP_RIM_FILLET_ARC, () => {
         // offset_tree FC Phase 4 (#398): GEMISCHTER Rand-Fillet mit BOGEN-Spines
         // — 1:1-Spiegel von `kernel offset_rim::apply_rims_arc_f32` /
         // `eval_opcodes` OP_RIM_FILLET_ARC-Arm. Nearest-Feature über Segment-
@@ -1335,7 +1399,8 @@ export function buildVmSdfEvalFn(
         );
         pushV(arcResult);
 
-      }).ElseIf(tag.equal(int(OP_END)), () => {
+      });
+      op(OP_END, () => {
         Break();
       });
     });
