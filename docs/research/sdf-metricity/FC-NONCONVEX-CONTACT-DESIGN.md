@@ -9210,10 +9210,34 @@ gültig — sie beschriebe dann eben eine Ellipse. Vorausgesetzt wird
 ausschliesslich `D_e ≤ 2` (Minor-Bogen), denn nur dort ist die Sehne die des
 kleineren Bogens; `arc_usable` prüft das, statt es zu glauben.
 
-### Was gemessen wurde
+### Was gemessen wurde — und was die Zahl NICHT sagt
 
-Unter `curved_stage = Active` schliesst der Shadow-Bericht über die ganze
-Matrix: **238 von 238 Naht-Addenden bewiesen, 0 `curved`** (vorher 236/2).
+Unter `curved_stage = Active` verschwindet `curved` ganz, und es entsteht
+**kein** `no_cover`: der geometrische Cover-Beweis trägt die beiden Kreisnähte
+wirklich. Sie landen stattdessen in `no_bridge`, die Matrix schliesst mit
+**236 proved / 0 curved / 0 no_cover / 2 no_bridge** (vorher 236/2/0/0).
+
+Der erste Anlauf hat hier `238/238 bewiesen` behauptet, und das war zu stark.
+`point_bridge_mm` ist ausschliesslich das Segmentlemma `q(t) = c + u·(t·r)`:
+es liest weder `v` noch `e`/`D_e`, kennt die Sektor-Zweige von `arc_closest`
+nicht und budgetiert vor allem nicht, dass der Produktions-Endpunkt aus dem
+gespeicherten, NICHT exakt normierten `e` kommt, während `piece_box` dort
+`normalize(diamond_dir(D_e))` benutzt. Weil P5c-A `arc_usable` öffnete, hätte
+die Brücke für gekrümmte Bögen stillschweigend ein Budget zurückgegeben, das
+für sie nie hergeleitet wurde — ein `Proved`, das den f32-Schritt nicht
+abdeckt. Sie verweigert gekrümmte Bögen jetzt ausdrücklich; die gekrümmte
+Punktbrücke ist **P5c-B (#463)**.
+
+Damit stehen die drei Lemmata sauber getrennt, wie es die Paketteilung
+vorsieht: **geometrischer Cover** (A, hier), **Kanal-Datenbindung** (über
+`arc_data_valid`, hier mit erledigt) und **f32-Punktbrücke** (B).
+
+Zur Datenbindung: `arc_usable` prüfte zunächst nur Endlichkeit, und die bindet
+`e` und `D_e` nicht aneinander. Ein Klon mit `e = [10,0]`, `D_e = 0.5` wäre
+durchgekommen — `piece_box` hätte die brave D-Kurve eingeschlossen, während
+`arc_closest` seinen Endpunkt aus `e` bildet und weit ausserhalb landet. Für
+gekrümmte Bögen verlangt das Gate deshalb `arc_data_valid` (bitgenaues
+`D_e == diamond(e)`, `e[1] ≥ 0`, `sweep ∈ (0,π]`).
 
 ### Warum die Stufe trotzdem auf `ShadowOnly` steht
 

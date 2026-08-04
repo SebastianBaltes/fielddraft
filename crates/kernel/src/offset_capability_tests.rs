@@ -15708,14 +15708,19 @@ fn channel_tape_header_stride_384() {
                     mode == 0.0 || mode == 1.0,
                     "{name}: Modus-Wort {mode} — der Kopf ist verschoben"
                 );
-                // Die Schranke ist die Zeugen-Leiter selbst: `η_geo` kann ihre
-                // oberste Sprosse `max_offset` nie überschreiten, die
-                // ε-Terme liegen um Grössenordnungen darunter. Vorher stand
-                // hier eine willkürliche 1,0 — sie hat gehalten, bis P5c-A
-                // die gekrümmten Nabe-Nähte hinzunahm, deren η auf Sprosse 15
-                // sitzt (1,15 mm). Ein verschobenes Kopfwort trifft diese
-                // Schranke weiterhin, weil dort Bogen-Koordinaten stehen.
-                let cap = wit::WitnessCfg::default().max_offset as f32;
+                // **Ein Sanity-Gate gegen ein verschobenes Kopfwort, KEIN
+                // Lemma über den Addenden.** `η_geo` ist durch die oberste
+                // Leitersprosse `max_offset` gedeckelt, der kodierte Addend
+                // trägt aber zusätzlich `ε_q`, `ε_d` und das Rundungsbudget
+                // und darf sie deshalb überschreiten — eine Schranke exakt
+                // auf `max_offset` wäre eine Herleitung, die niemand geführt
+                // hat (Nebenstelle des Bogen-Reviews). Der Faktor 2 ist
+                // ausdrücklich grosszügig: der Pin soll ein VERSCHOBENES Wort
+                // fangen (dort stehen Bogen-Koordinaten und Zählwerte, die um
+                // Grössenordnungen danebenliegen), nicht den Addenden
+                // beziffern. Vorher stand hier eine willkürliche 1,0 — sie
+                // hat gehalten, bis P5c-A die gekrümmten Nabe-Nähte hinzunahm.
+                let cap = 2.0 * wit::WitnessCfg::default().max_offset as f32;
                 assert!(
                     a_seam >= 0.0 && a_h >= 0.0 && a_seam <= cap && a_h <= cap,
                     "{name}: Addenden {a_seam}/{a_h} an der Kopf-Position — verschoben?"
@@ -18547,10 +18552,11 @@ fn the_dual_mirror_resolves_channel_modes_like_the_cpu_tree_467() {
 ///
 /// Zwei Aussagen in einem Test, weil sie nur zusammen etwas heissen:
 ///
-/// 1. **Wirkung.** Mit `curved_stage = Active` schliesst der Shadow-Bericht
-///    über die ganze Matrix: `238/238` bewiesen, `0 curved`. Das sind die
-///    beiden Kreisnähte der Stufen-Nabe (je 3 Minor-Bögen), die
-///    `arc_usable` bis P5c-A pauschal abgewiesen hat.
+/// 1. **Wirkung.** Mit `curved_stage = Active` verschwindet `curved` ganz und
+///    es entsteht KEIN `no_cover`: der geometrische Cover-Beweis trägt die
+///    beiden Kreisnähte der Stufen-Nabe (je 3 Minor-Bögen), die `arc_usable`
+///    bis P5c-A pauschal abgewiesen hat. Sie landen stattdessen in
+///    `no_bridge` — die f32-Punktbrücke ist P5c-B (#463) und fehlt noch.
 /// 2. **Folgenlosigkeit.** Unter dem Produktions-Gate
 ///    [`wit::CURVED_COVER_STAGE`] (`ShadowOnly`) steht weiterhin `236/2`.
 ///    Ohne diese zweite Hälfte wäre der Pin die Behauptung, P5c-A sei
@@ -18579,11 +18585,18 @@ fn curved_seams_are_proved_in_shadow_only_384() {
             }
         }
     }
+    // Die ehrliche Zahl von P5c-A — und `no_bridge` ist hier das ERGEBNIS,
+    // nicht ein Rest: `0 no_cover` heisst, der geometrische Cover-Beweis
+    // trägt die gekrümmten Nähte wirklich; `2 no_bridge` heisst, die
+    // f32-Punktbrücke tut es noch nicht. `point_bridge_mm` ist ausschliesslich
+    // das Segmentlemma und verweigert gekrümmte Bögen ausdrücklich (P5c-B,
+    // #463). Eine 238/238 hier wäre die Behauptung, auch der f32-Schritt sei
+    // bewiesen — er ist es nicht.
     assert_eq!(
         (act.proved_seam, act.curved, act.no_cover, act.no_bridge),
-        (238, 0, 0, 0),
-        "P5c-A trägt die gekrümmten Nähte nicht mehr — die Konstruktion in `piece_box` ist \
-         zurückgefallen"
+        (236, 0, 0, 2),
+        "P5c-A trägt die gekrümmten Nähte nicht mehr — `curved`/`no_cover` statt `no_bridge` \
+         heisst, die Konstruktion in `piece_box` ist zurückgefallen"
     );
     assert_eq!(
         (prod.proved_seam, prod.curved),
@@ -18611,9 +18624,12 @@ fn curved_seams_are_proved_in_shadow_only_384() {
 /// die reine Sehnen-Hülle das VERFEHLT — sonst wäre der Aufschlag unnötig
 /// und der Test würde nichts prüfen.
 ///
-/// Die Bogenpunkte kommen dabei NICHT aus der Prüflings-Formel, sondern aus
-/// [`crate::offset_channel::arc_closest`]: dessen Fusspunkt-Zweig ist die
-/// unabhängige Quelle, gegen die die Einschliessung antritt.
+/// **Grenze dieses Pins** (Blocker 2 des Bogen-Reviews): die Bogenpunkte
+/// stammen aus derselben `diamond_dir`/`(u,v)`-Formel wie der Prüfling, NICHT
+/// aus `arc_closest`. Er falsifiziert damit sauber die Bauch-Schranke, ist
+/// aber KEIN unabhängiges Orakel gegen die Produktionskurve — dafür fehlt der
+/// Vergleich gegen den gespeicherten, nicht exakt normierten Endpunkt `e`,
+/// und genau der ist Gegenstand von P5c-B (#463).
 #[test]
 fn curved_piece_box_contains_the_bulge_384() {
     let (_, field, ..) = cert_matrix(2.0f32)
@@ -18691,4 +18707,45 @@ fn curved_piece_box_contains_the_bulge_384() {
         "die blosse Sehnen-Hülle enthielt ALLE {checked} Bogenpunkte — dann prüft der \
          Falsifikator den Bauch-Aufschlag gar nicht"
     );
+}
+
+/// **P5c-A-Gegenprobe: die Datenbindung weist konstruierte Verstösse ab.**
+///
+/// Blocker 2 des Bogen-Reviews in Reinform. Endlichkeit allein bindet `e` und
+/// `D_e` nicht aneinander; jeder Fall hier ist ein Bogen, den `piece_box`
+/// brav einschliessen WÜRDE, während `arc_closest` woanders landet.
+#[test]
+fn curved_arc_data_binding_is_enforced_384() {
+    let (_, field, ..) = cert_matrix(2.0f32)
+        .into_iter()
+        .find(|(n, ..)| n == "Stufen-Nabe")
+        .unwrap();
+    let good = omega_and_channels(&field)
+        .into_iter()
+        .flat_map(|(_, chans)| chans)
+        .flat_map(|ch| ch.arcs.clone())
+        .find(|a| !(a.sweep < 0.0))
+        .expect("kein gekrümmter Bogen in der Nabe");
+    assert!(
+        wit::arc_usable_for_test(&good),
+        "der unveränderte Bogen wird abgewiesen — dann prüft die Gegenprobe nichts"
+    );
+    // Jeder Fall: `e` und `D_e` entkoppelt, Sektor-Vorzeichen verletzt, oder
+    // die Minor-Bogen-Invariante gerissen.
+    let cases: [(&str, Box<dyn Fn(&mut ChannelArc)>); 5] = [
+        ("e nicht normiert, D_e unverändert", Box::new(|a: &mut ChannelArc| a.e = [10.0, 0.0])),
+        ("D_e passt nicht zu e", Box::new(|a: &mut ChannelArc| a.d_e = 0.5)),
+        ("e[1] < 0 (ausserhalb des Sektors)", Box::new(|a: &mut ChannelArc| a.e[1] = -a.e[1].abs())),
+        ("D_e > 2 (Major-Bogen)", Box::new(|a: &mut ChannelArc| a.d_e = 2.5)),
+        ("sweep = NaN", Box::new(|a: &mut ChannelArc| a.sweep = f32::NAN)),
+    ];
+    for (what, mutate) in cases {
+        let mut bad = good.clone();
+        mutate(&mut bad);
+        assert!(
+            !wit::arc_usable_for_test(&bad),
+            "{what}: das Gate hat den Bogen angenommen — die Datenbindung in `arc_usable` \
+             greift nicht"
+        );
+    }
 }

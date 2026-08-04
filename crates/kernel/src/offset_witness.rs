@@ -852,8 +852,15 @@ fn arc_usable(arc: &ChannelArc) -> bool {
     if arc.sweep < 0.0 {
         return base;
     }
-    base && arc.v.iter().all(|v| v.is_finite())
-        && arc.e.iter().all(|v| v.is_finite())
+    // Blocker 2 des Bogen-Reviews: Endlichkeit allein bindet `e` und `D_e`
+    // NICHT aneinander. Ein Klon mit `e = [10,0]`, `D_e = 0.5` käme sonst
+    // durch — `piece_box` schlösse die brave D-Kurve ein, während
+    // `arc_closest` seinen Endpunkt aus dem gespeicherten `e` bildet und weit
+    // ausserhalb landet. `arc_data_valid` ist die Stelle, an der diese Bindung
+    // (`D_e == diamond(e)` bitgenau, `e[1] >= 0`, `sweep ∈ (0,π]`,
+    // kontrollierte Endrichtungsnorm) schon steht — sie zu wiederholen hiesse,
+    // sie ein zweites Mal falsch zu machen.
+    base && crate::offset_channel::arc_data_valid(arc)
         && arc.d_e.is_finite()
         && arc.d_e > 0.0
         && arc.d_e <= 2.0
@@ -869,6 +876,15 @@ impl Default for WitnessCfg {
             margin: 1.0e-9,
         }
     }
+}
+
+/// Test-Zugang zum Gate [`arc_usable`] (#384 P5c-A). `piece_box` ist die reine
+/// KONSTRUKTION und fragt das Gate nicht selbst — das tut der Aufrufer
+/// [`cover_channel_staged`]. Die Gegenprobe zur Datenbindung muss deshalb
+/// hier ansetzen und nicht an der Box.
+#[cfg(test)]
+pub fn arc_usable_for_test(arc: &ChannelArc) -> bool {
+    arc_usable(arc)
 }
 
 /// Test-Zugang zu [`piece_box`] (#384 P5c-A-Falsifikator). Kein
@@ -1282,6 +1298,19 @@ pub(crate) fn f32_ceil(v: f64) -> Option<f32> {
 /// `|t·r| ≤ r` — die einzige Stelle, an der die Klemmung eingeht.
 pub(crate) fn point_bridge_mm(arc: &ChannelArc) -> Option<f64> {
     if !arc_usable(arc) {
+        return None;
+    }
+    // #384 P5c-A, Blocker 1 des Bogen-Reviews: die Herleitung UND die Rechnung
+    // unten sind ausschliesslich das Segmentlemma `q(t) = c + u·(t·r)` — sie
+    // lesen weder `v` noch `e`/`D_e`, kennen die Sektor-Zweige von
+    // `arc_closest` nicht und budgetieren insbesondere nicht, dass der
+    // Produktions-Endpunkt aus dem gespeicherten, NICHT exakt normierten `e`
+    // kommt, während `piece_box` dort `normalize(diamond_dir(D_e))` benutzt.
+    // Seit P5c-A lässt `arc_usable` gekrümmte Bögen durch; ohne diese Sperre
+    // gäbe die Brücke für sie stillschweigend ein Budget zurück, das für sie
+    // nie hergeleitet wurde — und der Kanal trüge ein `Proved`, das den
+    // f32-Schritt gar nicht abdeckt. Die gekrümmte Brücke ist P5c-B (#463).
+    if !(arc.sweep < 0.0) {
         return None;
     }
     let r = arc.r as f64;
