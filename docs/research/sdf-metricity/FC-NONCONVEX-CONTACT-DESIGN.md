@@ -9103,35 +9103,59 @@ erste Fassung behauptete `t1 = 1`, weil das kritische Stück unter der FEINEN
 Leiter am Nahtende liegt. Grob gemessen ist es das erste Stück. Die Erwartung
 war falsch, nicht die Messung.)
 
-**Die Zerlegung des Faktors 145** — beide Anteile sind Asserts, keine Prosa:
+**Was gemessen ist — und was daraus NICHT folgt.** Die Versuchung ist, den
+Faktor 145 sauber in Anteile zu zerlegen. Das gibt die Messung nicht her, und
+der 27. Review hat die erste Fassung dieses Abschnitts genau dafür kassiert.
+Tragfähig sind drei Sätze, alle als Assert:
 
-| Anteil | Messung | Faktor |
-|---|---|---|
-| Leiter-Auflösung | 257 Sprossen statt 18 ⇒ 0,2117 statt 0,3305 mm | ≈ 1,6 |
-| Stückung | `offset/plen ≈ 1,03 / 1,02 / 1,01` für `ppa` 24 / 48 / 96 | linear in `plen` |
-| Geometrie des Kamms | — | Rest, nicht isoliert |
+| Was | Messung |
+|---|---|
+| Leiter-Auflösung | 257 statt 18 Sprossen ⇒ 0,2117 statt 0,3305 mm (Sprosse 185), Quotient 0,6404 |
+| Stückung, `ppa` 24…96 | `offset/plen` = 1,031 / 1,021 / 1,010 — bei feiner Leiter folgt der Versatz der Stücklänge |
+| Gültigkeitsgrenze | `ppa = 12`: 1,979 mm, kritisches Stück in der Bogenmitte (`t1 = 2/3`) |
 
-Die Stückungs-Aussage ist eine **Skalierung**, keine Deutung: halbiert man die
-Stücklänge, halbiert sich der nötige Versatz mit. Das kritische Stück liegt
-dabei stets am Nahtende. Naheliegend, aber **nicht bewiesen** und deshalb auch
-nicht gepinnt: Ω öffnet sich dort keilförmig, weshalb der Querversatz linear
-mit der Stücklänge wächst. Bei `ppa = 12` springt der Versatz auf 1,92 mm und
-das kritische Stück wandert in die Bogenmitte — gröber ist also nicht bloss
-linear schlechter, sondern qualitativ anders.
+Die korrekte Schlussform lautet deshalb: **0,33 mm ist im untersuchten Regime
+stark diskretisierungsgetrieben.** Faktor ≈ 1,56 stammt nachweislich aus der
+Leiterauflösung; bei feiner Leiter skaliert der verbleibende Wert für
+`ppa = 24…96` empirisch annähernd linear mit der Stücklänge. **Nicht**
+hergeleitet ist, dass „der Rest" vollständig von der Stückung stammt, dass die
+Geometrie keinen eigenen positiven Beitrag hat, oder dass der endliche
+Richtungsvorrat (26 Gitterrichtungen + Naht-Normalen) unbeteiligt ist —
+Geometrie und Richtungsvorrat sind hier **nicht getrennt**. Eine multiplikative
+Zerlegung des Faktors 145 gibt es schon deshalb nicht, weil dessen Nenner aus
+einer anderen Fixture stammt. „Eigenschaft der Diskretisierung, nicht des
+Bauteils" wäre zu absolut: die Geometrie entscheidet, welche Verschiebungen
+tragen — die Diskretisierung bestimmt die beobachtete Grobheit.
 
-**Der Sprung stammt allein aus dieser Fixture.** Ohne den Rippen-Kamm bleibt
-die ganze Matrix bei 2,257e-3 mm. Der Falsifikator zeigt dasselbe von der
-anderen Seite: dreht man `EXTRUDE_COVER_STAGE` auf `ShadowOnly` zurück, wird
-der Pin rot und das schlechteste Stück ist die *Ecken-Schale t/δ=3* mit exakt
+Der Vergleich läuft auch nicht buchstäblich „über genau dasselbe Stück": grob
+ist `pc` das erste Plateau-Stück, fein das Endstück. Der Vergleich ist
+legitim, weil das Endstück im groben Plateau bereits enthalten ist (das
+Plateau umfasst alle 24) — es ist derselbe Kanal, derselbe Bogen.
+
+Die Keil-Deutung — Ω öffne sich am Nahtende keilförmig, weshalb ein
+AABB-Stück dort einen Versatz proportional zu seiner Länge braucht — ist mit
+den Daten **konsistent**, mehr nicht: weder Keilwinkel noch optimale
+Zeugenrichtung sind bewiesen, und sie trägt keine der obigen Aussagen.
+
+**Der Sprung stammt aus genau einer Fixture.** Ohne `Rippen-Kamm 4×1.5/0.8`
+bleibt die ganze Matrix bei 2,257e-3 mm — der Schwester-Kamm `4×2/1` ist
+ausdrücklich **nicht** ausgenommen, sonst dürfte er unbemerkt mitregressieren.
+Der Falsifikator zeigt dasselbe von der anderen Seite: dreht man
+`EXTRUDE_COVER_STAGE` auf `ShadowOnly` zurück, wird der Pin rot und das
+schlechteste Stück ist die *Ecken-Schale t/δ=3* mit exakt
 2,257080539346033e-3 mm — der alte Wert IST das Nicht-Kamm-Maximum.
 
-**Damit ist der algorithmische Sprung falsifizierbar erklärt:** `η_geo` ist
-hier eine Eigenschaft der **Diskretisierung** (Leiter × Stückung), nicht des
-Bauteils. Der Pin schraubt die Leiter-Aussage bewusst nach BEIDEN Seiten fest
-(`0,30 < fine/grob < 0,75`): die bequeme Lesart „alles nur eine Sprosse" ist
-ebenso falsifiziert wie „alles echte Geometrie". Wird 0,33 mm fachlich zu
-teuer, ist der Hebel `pieces_per_arc` bzw. `steps` — **nicht** eine kleinere
-Zahl im Pin, die wie eine Soundness-Schranke aussähe.
+Wird 0,33 mm fachlich zu teuer, ist der Hebel damit `pieces_per_arc` bzw.
+`steps` — **nicht** eine kleinere Zahl im Pin, die wie eine Soundness-Schranke
+aussähe.
+
+**Zwei Anti-Leer-Bedingungen** (27. Review, beide Blocker): `worst_at` verlangt
+die **vollständige** Abdeckung (`eta.is_some()`, `covered == pieces`,
+`uncovered_len == 0`, Maximum `==` `eta.offset_mm()`). Ohne sie zeigte der
+Vergleich in die falsche Richtung: verlöre gerade das schwierigste Stück
+seinen Zeugen, fiele es aus `covered_pieces` heraus, das Maximum der übrigen
+wäre kleiner — und der Pin bliebe grün, während die Abdeckung zerfällt. Und
+ausgeschlossen wird in (4) genau die eine Fixture, nicht die Familie.
 
 **Was der Pin bewusst nicht prüft.** Der Ticket-Vorschlag, zusätzlich zu
 zeigen, dass bei `t₁₂` keine Kandidatenrichtung einen Beweis liefert, wäre
