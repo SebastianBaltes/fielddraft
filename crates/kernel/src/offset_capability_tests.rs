@@ -13951,6 +13951,18 @@ fn worst_geometric_witness_is_a_search_artefact_384() {
     for (name, field, _e, _l, _h, _c) in cert_matrix(2.0f32) {
         for (om, chans) in omega_and_channels(&field) {
             for (ci, ch) in chans.iter().enumerate() {
+                // #384 P5c-A: nur die FELDWIRKSAMEN Kanäle. `piece_box` deckt
+                // seither auch gekrümmte Minor-Bögen, aber
+                // `CURVED_COVER_STAGE` steht auf `ShadowOnly` — die Kreisnähte
+                // der Stufen-Nabe liefern zwar ein `η` (1,15 mm, das grösste
+                // der Matrix), nur konsumiert es niemand. Sie hier
+                // mitzuzählen hiesse, den #466-Befund über eine Grösse zu
+                // führen, die in keinem Feldwert steht. Fällt die Stufe
+                // (P5c-C), gehört dieser Filter weg und der Pin auf die Nabe
+                // umgeschrieben.
+                if ch.arcs.iter().any(|a| !(a.sweep < 0.0)) {
+                    continue;
+                }
                 let cov = wit::cover_channel(om, ch, cfg);
                 let Some(eta) = cov.eta else { continue };
                 for pc in &cov.covered_pieces {
@@ -14105,6 +14117,10 @@ fn worst_geometric_witness_is_a_search_artefact_384() {
         }
         for (om, chans) in omega_and_channels(&field) {
             for ch in chans {
+                // Gleicher Grund wie oben: nur feldwirksame Kanäle (P5c-A).
+                if ch.arcs.iter().any(|a| !(a.sweep < 0.0)) {
+                    continue;
+                }
                 if let Some(e) = wit::cover_channel(om, ch, cfg).eta {
                     wo_comb = wo_comb.max(e.mm());
                 }
@@ -15692,8 +15708,16 @@ fn channel_tape_header_stride_384() {
                     mode == 0.0 || mode == 1.0,
                     "{name}: Modus-Wort {mode} — der Kopf ist verschoben"
                 );
+                // Die Schranke ist die Zeugen-Leiter selbst: `η_geo` kann ihre
+                // oberste Sprosse `max_offset` nie überschreiten, die
+                // ε-Terme liegen um Grössenordnungen darunter. Vorher stand
+                // hier eine willkürliche 1,0 — sie hat gehalten, bis P5c-A
+                // die gekrümmten Nabe-Nähte hinzunahm, deren η auf Sprosse 15
+                // sitzt (1,15 mm). Ein verschobenes Kopfwort trifft diese
+                // Schranke weiterhin, weil dort Bogen-Koordinaten stehen.
+                let cap = wit::WitnessCfg::default().max_offset as f32;
                 assert!(
-                    a_seam >= 0.0 && a_h >= 0.0 && a_seam < 1.0 && a_h < 1.0,
+                    a_seam >= 0.0 && a_h >= 0.0 && a_seam <= cap && a_h <= cap,
                     "{name}: Addenden {a_seam}/{a_h} an der Kopf-Position — verschoben?"
                 );
                 if mode == 0.0 {
@@ -18512,5 +18536,159 @@ fn the_dual_mirror_resolves_channel_modes_like_the_cpu_tree_467() {
         worst < 2.0e-5,
         "der duale Spiegel weicht bei {worst_p:?} um {worst:e} mm vom CPU-Baum ab — \
          er löst die Kanal-Modi anders auf"
+    );
+}
+
+
+// ══════════════ #384 P5c-A — die gekrümmten Nähte, im Shadow ══════════════
+
+/// **P5c-A-Pin: der Cover-Beweis trägt gekrümmte Minor-Bögen — und das Feld
+/// merkt davon nichts.**
+///
+/// Zwei Aussagen in einem Test, weil sie nur zusammen etwas heissen:
+///
+/// 1. **Wirkung.** Mit `curved_stage = Active` schliesst der Shadow-Bericht
+///    über die ganze Matrix: `238/238` bewiesen, `0 curved`. Das sind die
+///    beiden Kreisnähte der Stufen-Nabe (je 3 Minor-Bögen), die
+///    `arc_usable` bis P5c-A pauschal abgewiesen hat.
+/// 2. **Folgenlosigkeit.** Unter dem Produktions-Gate
+///    [`wit::CURVED_COVER_STAGE`] (`ShadowOnly`) steht weiterhin `236/2`.
+///    Ohne diese zweite Hälfte wäre der Pin die Behauptung, P5c-A sei
+///    feldwirksam — und genau das ist es NICHT (das ist P5c-C, #464).
+///
+/// **Warum die Aktivierung hier nicht passiert**, steht an
+/// [`wit::CURVED_COVER_STAGE`]: der Beweis ist gültig, aber schwächer als die
+/// unbewiesene Klemme, die er ersetzen würde (`η ≈ 0,81 mm`), und kostet
+/// feldwirksam 41 Punkte Phantom-Material in der Ablation ohne `L`-Block.
+#[test]
+fn curved_seams_are_proved_in_shadow_only_384() {
+    let cfg = wit::WitnessCfg::default();
+    let mut act = wit::SeamProofTally::default();
+    let mut prod = wit::SeamProofTally::default();
+    for (_n, field, _e, _l, _h, _c) in cert_matrix(2.0f32) {
+        for (om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                for (tally, stage) in [
+                    (&mut act, Some(wit::ExtrudeCoverStage::Active)),
+                    (&mut prod, None),
+                ] {
+                    let mut c = ch.clone();
+                    let knobs = wit::SeamProofKnobs { curved_stage: stage, ..Default::default() };
+                    tally.add(wit::certify_channel_with(om, &mut c, cfg, knobs).0 .0);
+                }
+            }
+        }
+    }
+    assert_eq!(
+        (act.proved_seam, act.curved, act.no_cover, act.no_bridge),
+        (238, 0, 0, 0),
+        "P5c-A trägt die gekrümmten Nähte nicht mehr — die Konstruktion in `piece_box` ist \
+         zurückgefallen"
+    );
+    assert_eq!(
+        (prod.proved_seam, prod.curved),
+        (236, 2),
+        "das Produktions-Gate ist gefallen — das wäre P5c-C (#464) und gehört NICHT hierher"
+    );
+    assert_eq!(
+        wit::CURVED_COVER_STAGE,
+        wit::ExtrudeCoverStage::ShadowOnly,
+        "CURVED_COVER_STAGE steht auf Active — s. #464, der Preis ist dort beziffert"
+    );
+}
+
+/// **P5c-A-Falsifikator: die Bauchigkeit trägt den Beweis wirklich.**
+///
+/// `piece_box` schliesst ein gekrümmtes Stück als Sehnen-Hülle PLUS
+/// Bauch-Aufschlag `r·σ·(|u_k|+|v_k|)` ein. Der Aufschlag ist der einzige
+/// Grund, warum die Einschliessung nicht bloss die Sehne beschreibt — ohne
+/// ihn läge der Bogen selbst ausserhalb seiner eigenen Box, und der
+/// „Beweis" würde eine Aussage über eine Menge treffen, die die Naht gar
+/// nicht enthält.
+///
+/// Der Test rechnet die Box nach, indem er echte Bogenpunkte einsetzt: jeder
+/// Punkt eines Stücks muss IN der Box liegen. Zusätzlich wird gezeigt, dass
+/// die reine Sehnen-Hülle das VERFEHLT — sonst wäre der Aufschlag unnötig
+/// und der Test würde nichts prüfen.
+///
+/// Die Bogenpunkte kommen dabei NICHT aus der Prüflings-Formel, sondern aus
+/// [`crate::offset_channel::arc_closest`]: dessen Fusspunkt-Zweig ist die
+/// unabhängige Quelle, gegen die die Einschliessung antritt.
+#[test]
+fn curved_piece_box_contains_the_bulge_384() {
+    let (_, field, ..) = cert_matrix(2.0f32)
+        .into_iter()
+        .find(|(n, ..)| n == "Stufen-Nabe")
+        .unwrap();
+    let mut checked = 0usize;
+    let mut chord_misses = 0usize;
+    for (_om, chans) in omega_and_channels(&field) {
+        for ch in chans {
+            for arc in ch.arcs.iter().filter(|a| !(a.sweep < 0.0)) {
+                for k in 0..8usize {
+                    let (t0, t1) = (k as f64 / 8.0, (k + 1) as f64 / 8.0);
+                    let bx = wit::piece_box_for_test(arc, t0, t1)
+                        .expect("die Box eines gültigen Minor-Bogen-Stücks fehlt");
+                    // Ein Punkt MITTEN im Stück — dort ist die Bauchigkeit
+                    // maximal, und genau dort trägt der Aufschlag.
+                    let dm = arc.d_e as f64 * (t0 + t1) * 0.5;
+                    let w = crate::offset_channel::diamond_dir(dm as f32);
+                    let n = ((w[0] * w[0] + w[1] * w[1]) as f64).sqrt();
+                    let p: Vec<f64> = (0..3)
+                        .map(|j| {
+                            arc.c[j] as f64
+                                + arc.r as f64
+                                    * (arc.u[j] as f64 * (w[0] as f64 / n)
+                                        + arc.v[j] as f64 * (w[1] as f64 / n))
+                        })
+                        .collect();
+                    for j in 0..3 {
+                        assert!(
+                            p[j] >= bx[j].lo && p[j] <= bx[j].hi,
+                            "Bogenpunkt {p:?} liegt ausserhalb seiner eigenen Stück-Box — die \
+                             Bauch-Schranke in `piece_box` ist zu klein"
+                        );
+                    }
+                    // Gegenprobe: die REINE Sehnen-Hülle (ohne Aufschlag)
+                    // verfehlt denselben Punkt.
+                    let ends: Vec<[f64; 3]> = [t0, t1]
+                        .iter()
+                        .map(|&t| {
+                            let d = arc.d_e as f64 * t;
+                            let w = crate::offset_channel::diamond_dir(d as f32);
+                            let n = ((w[0] * w[0] + w[1] * w[1]) as f64).sqrt();
+                            let mut q = [0.0f64; 3];
+                            for j in 0..3 {
+                                q[j] = arc.c[j] as f64
+                                    + arc.r as f64
+                                        * (arc.u[j] as f64 * (w[0] as f64 / n)
+                                            + arc.v[j] as f64 * (w[1] as f64 / n));
+                            }
+                            q
+                        })
+                        .collect();
+                    if (0..3).any(|j| {
+                        p[j] < ends[0][j].min(ends[1][j]) || p[j] > ends[0][j].max(ends[1][j])
+                    }) {
+                        chord_misses += 1;
+                    }
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked >= 48, "zu wenige gekrümmte Stücke geprüft ({checked})");
+    // Gemessen: 2 von 48. Die Schranke ist bewusst `>= 1` und nicht `== 48`:
+    // der Prüfling ist eine ACHSPARALLELE Box, und die enthält den Bauch
+    // meistens schon von selbst — nur bei fast achsparalleler Sehne nicht.
+    // Ein einziges Gegenbeispiel genügt aber für die Aussage, um die es geht:
+    // die Sehnen-Hülle allein ist KEINE gültige Einschliessung, der Aufschlag
+    // ist nicht redundant. Eine 48 zu fordern hiesse, dem Test eine Schärfe
+    // anzudichten, die die Geometrie nicht hergibt.
+    println!("#462 Sehnen-Hülle verfehlt {chord_misses} von {checked} Bogenpunkten");
+    assert!(
+        chord_misses >= 1,
+        "die blosse Sehnen-Hülle enthielt ALLE {checked} Bogenpunkte — dann prüft der \
+         Falsifikator den Bauch-Aufschlag gar nicht"
     );
 }

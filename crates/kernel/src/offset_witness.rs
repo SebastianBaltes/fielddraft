@@ -241,6 +241,33 @@ pub enum ExtrudeCoverStage {
 /// Legacy zurück.
 pub const EXTRUDE_COVER_STAGE: ExtrudeCoverStage = ExtrudeCoverStage::Active;
 
+/// **Das Stufen-Gate der gekrümmten Nähte** (#384 P5c). Dasselbe Muster wie
+/// [`EXTRUDE_COVER_STAGE`], für denselben Grund — und hier mit einem
+/// **gemessenen** Preis.
+///
+/// * `ShadowOnly` (**P5c-A**, heute) — [`piece_box`] trägt gekrümmte
+///   Minor-Bögen, `arc_usable` lässt sie durch, der Shadow-Bericht misst
+///   `238/238` statt `236/2`. Das FELD sieht exakt das Verhalten von vorher:
+///   [`certify_channel_with`] meldet die beiden Kreisnähte der Stufen-Nabe
+///   weiter als `Curved`, und ihre Klemme bleibt das heutige `channel_limit`.
+/// * `Active` (**P5c-C**, eigenes Ticket) — feldwirksam.
+///
+/// **Warum die Aktivierung NICHT hierher gehört.** Der Beweis ist gültig, aber
+/// er ist SCHWÄCHER als die unbewiesene Klemme, die er ersetzen würde: die
+/// Kreisnähte brauchen `η_geo ≈ 0,81 mm`, und über
+/// `lim = δ − (best + A_seam).min(…)` lockert das das Gate. Feldwirksam
+/// geschaltet entstehen an der Nabe **41 Punkte Phantom-Material** in der
+/// Ablation ohne `L`-Block (vorher 0); im Produktionsfeld fängt der `L`-Block
+/// sie ab, aber die Sicherheit der Nabe ruhte vorher doppelt und ruhte danach
+/// nur noch auf ihm. Dieser Redundanz-Verlust ist eine eigene Entscheidung
+/// und gehört nicht in ein Ticket, dessen Gegenstand der Cover-Beweis ist.
+///
+/// **Und es ist keine Leiter-Frage** (anders als #466): `η` konvergiert unter
+/// Verfeinerung gegen `≈ 0,81 mm` (steps 18/65/257/1025 → 1,150/0,901/0,830/
+/// 0,813). Die Sprosse erklärt nur den Faktor 1,4, der Rest ist Geometrie —
+/// eine feinere Leiter kauft die 41 Punkte also NICHT zurück.
+pub const CURVED_COVER_STAGE: ExtrudeCoverStage = ExtrudeCoverStage::ShadowOnly;
+
 /// **§8ae Stufe B — trägt `Ω` ein `Extrude`-Blatt, dessen Feature GEÖFFNET
 /// ist?** Wenn ja, gilt der Extrude-Aussenbeweis für diesen Auswertungspunkt
 /// NICHT, und der Aufrufer muss den Modus auf
@@ -801,16 +828,35 @@ impl WitnessCfg {
     }
 }
 
-/// Ein Bogen, den die Konstruktion überhaupt anfassen darf: gerades Segment,
-/// endliche Koeffizienten, nicht entartet.
+/// Ein Bogen, den die Konstruktion überhaupt anfassen darf: endliche
+/// Koeffizienten, nicht entartet — **Segment ODER gekrümmter Minor-Bogen**
+/// (#384 P5c-A).
+///
+/// Für den gekrümmten Fall kommen drei Forderungen dazu, und alle drei sind
+/// **Voraussetzungen des Beweises in [`piece_box`]**, keine Hygiene:
+/// * `v` endlich — der Bogen spannt in `(u,v)` auf, das Segment liest `v` nie.
+/// * `e` endlich — Provenienz der Endrichtung.
+/// * `0 < D_e ≤ 2`. Das ist die **Minor-Bogen-Invariante**: `D` ist streng
+///   monoton in `φ ∈ [0,π]` (s. [`diamond`]), `D_e ≤ 2` heisst also
+///   `α ≤ π`. Genau darauf ruht die Sagitta-Schranke — für einen Major-Bogen
+///   ist die Sehne die des GEGENbogens und die Schranke schlicht falsch.
+///   `arc_through` kappt bei π, die Invariante wird hier trotzdem geprüft
+///   statt geglaubt.
 fn arc_usable(arc: &ChannelArc) -> bool {
-    arc.sweep < 0.0
-        && arc.r.is_finite()
+    let base = arc.r.is_finite()
         && arc.r as f64 >= 1.0e-9
         && arc.c.iter().all(|v| v.is_finite())
         && arc.u.iter().all(|v| v.is_finite())
         && arc.bc.iter().all(|v| v.is_finite())
-        && arc.br.is_finite()
+        && arc.br.is_finite();
+    if arc.sweep < 0.0 {
+        return base;
+    }
+    base && arc.v.iter().all(|v| v.is_finite())
+        && arc.e.iter().all(|v| v.is_finite())
+        && arc.d_e.is_finite()
+        && arc.d_e > 0.0
+        && arc.d_e <= 2.0
 }
 
 impl Default for WitnessCfg {
@@ -825,14 +871,119 @@ impl Default for WitnessCfg {
     }
 }
 
-/// Die Box eines Naht-Stücks `{c + û·(s·r) : s ∈ [t0,t1]}`, reell
-/// eingeschlossen.
+/// Test-Zugang zu [`piece_box`] (#384 P5c-A-Falsifikator). Kein
+/// Produktionspfad ruft das.
+#[cfg(test)]
+pub fn piece_box_for_test(arc: &ChannelArc, t0: f64, t1: f64) -> Option<[Iv; 3]> {
+    piece_box(arc, t0, t1)
+}
+
+/// Die achsparallele Hülle zweier Intervalle.
+#[inline]
+fn rhull(a: Iv, b: Iv) -> Option<Iv> {
+    Iv::new(a.lo.min(b.lo), a.hi.max(b.hi))
+}
+
+/// Der **normierte Richtungsvektor** `(cos φ, sin φ)` zum Diamant-Parameter
+/// `D`, reell eingeschlossen — die Intervall-Fassung von
+/// [`crate::offset_channel::diamond_dir`] plus Normierung.
+///
+/// Der Zweig-Schalter bei `D = 1` ist stetig (beide Zweige liefern dort
+/// `(0,1)`, s. Lemma an `diamond_dir`); ein Intervall, das die Naht
+/// überspannt, nimmt deshalb schlicht die Hülle beider Zweige und schliesst
+/// den wahren Wert weiterhin ein.
+fn diamond_dir_box(d: Iv) -> Option<[Iv; 2]> {
+    let lo_branch = || -> Option<[Iv; 2]> { Some([rsub(pt(1.0), d)?, d]) };
+    let hi_branch =
+        || -> Option<[Iv; 2]> { Some([rneg(rsub(d, pt(1.0))?)?, rsub(pt(2.0), d)?]) };
+    let w = if d.hi <= 1.0 {
+        lo_branch()?
+    } else if d.lo >= 1.0 {
+        hi_branch()?
+    } else {
+        let (a, b) = (lo_branch()?, hi_branch()?);
+        [rhull(a[0], b[0])?, rhull(a[1], b[1])?]
+    };
+    let n = rnorm2(w)?;
+    Some([rdiv(w[0], n)?, rdiv(w[1], n)?])
+}
+
+/// Die Box eines Naht-Stücks, reell eingeschlossen.
+///
+/// **Segment** (`sweep < 0`): `{c + û·(s·r) : s ∈ [t0,t1]}`, unverändert.
+///
+/// **Gekrümmter Bogen** (#384 P5c-A): `{c + r·(u·cos φ + v·sin φ)}` über dem
+/// Parameter-Fenster `[t0,t1]`. Die Parametrisierung ist **nicht frei
+/// gewählt** — [`arc_closest`](crate::offset_channel::arc_closest) definiert
+/// `t = D(z)/D_e`, also ist `t` bereits der normierte Diamant-Parameter, und
+/// die Stück-Zerlegung muss genau dieselbe Skala benutzen, gegen die die
+/// Fusspunkte geprüft werden. Eine gleichmässige Winkelteilung wäre hier
+/// nicht schöner, sondern inkonsistent.
+///
+/// **Die Einschliessung.** Endpunkte `A = P(t0)`, `B = P(t1)` exakt aus den
+/// Diamant-Richtungen (kein `sin`/`cos` — §8y). Dazwischen bauchen die
+/// Bogenpunkte über die Sehne hinaus; diese Bauchigkeit wird **im
+/// Einheitskreis** geschrankt und erst danach mit `r` aufgeblasen:
+///
+/// > Mit `L(λ)` als der Sehne und `λ(φ)` als der Orthogonalprojektion gilt
+/// > `P(φ) − L(λ) = r·(u·Δc + v·Δs)`, wobei `(Δc, Δs)` **allein von den
+/// > Winkeln abhängt** — `u` und `v` kommen darin nicht vor. `|(Δc,Δs)|` ist
+/// > die Sagitta des Einheitskreises, `σ = 1 − √(1−h²) = h²/(1+√(1−h²)) ≤ h²`
+/// > mit `h = |ŵ(t0) − ŵ(t1)|/2`. Komponentenweise folgt
+/// > `|P_k − L_k| ≤ r·σ·(|u_k| + |v_k|)`.
+///
+/// Das ist der Grund, warum hier **nichts über `(u,v)` vorausgesetzt** wird —
+/// keine Orthonormalität, keine Toleranz, kein Fudge-Faktor. Wären `u` und
+/// `v` nicht orthonormal, wäre die Kurve eine Ellipse und eine
+/// Sehnen-Sagitta-Schranke falsch; die Schranke oben bliebe gültig, weil sie
+/// die Bauchigkeit im Parameterraum misst und die Achsenlängen erst danach
+/// einrechnet. Vorausgesetzt wird ausschliesslich `D_e ≤ 2` (Minor-Bogen),
+/// und das prüft [`arc_usable`].
 fn piece_box(arc: &ChannelArc, t0: f64, t1: f64) -> Option<[Iv; 3]> {
     let r = arc.r as f64;
-    let s = Iv::new(next_down(t0 * r), next_up(t1 * r))?;
+    if arc.sweep < 0.0 {
+        let s = Iv::new(next_down(t0 * r), next_up(t1 * r))?;
+        let mut out = [pt(0.0); 3];
+        for k in 0..3 {
+            out[k] = radd(pt(arc.c[k] as f64), rmul(pt(arc.u[k] as f64), s)?)?;
+        }
+        return Some(out);
+    }
+    let de = pt(arc.d_e as f64);
+    let w0 = diamond_dir_box(rmul(pt(t0), de)?)?;
+    let w1 = diamond_dir_box(rmul(pt(t1), de)?)?;
+    let ri = pt(r);
+
+    // Die beiden Endpunkte `c + r·(u·ŵ₀ + v·ŵ₁)`.
+    let endpoint = |w: [Iv; 2]| -> Option<[Iv; 3]> {
+        let mut q = [pt(0.0); 3];
+        for k in 0..3 {
+            let t = radd(
+                rmul(pt(arc.u[k] as f64), w[0])?,
+                rmul(pt(arc.v[k] as f64), w[1])?,
+            )?;
+            q[k] = radd(pt(arc.c[k] as f64), rmul(ri, t)?)?;
+        }
+        Some(q)
+    };
+    let a = endpoint(w0)?;
+    let b = endpoint(w1)?;
+
+    // Die Sagitta des EINHEITSKREISES: `σ ≤ h²` mit `h = |ŵ₀ − ŵ₁|/2`.
+    let mut chord2 = pt(0.0);
+    for k in 0..2 {
+        let d = rsub(w1[k], w0[k])?;
+        chord2 = radd(chord2, rmul(d, d)?)?;
+    }
+    let sigma = rmul(chord2, pt(0.25))?;
+
     let mut out = [pt(0.0); 3];
     for k in 0..3 {
-        out[k] = radd(pt(arc.c[k] as f64), rmul(pt(arc.u[k] as f64), s)?)?;
+        // `r·σ·(|u_k| + |v_k|)` — die Bauchigkeit in DIESER Koordinate.
+        let axes = radd(pt((arc.u[k] as f64).abs()), pt((arc.v[k] as f64).abs()))?;
+        let bulge = rmul(rmul(ri, sigma)?, axes)?;
+        let hull = rhull(a[k], b[k])?;
+        out[k] = rseal(hull.lo - bulge.hi, hull.hi + bulge.hi)?;
     }
     Some(out)
 }
@@ -2684,6 +2835,10 @@ pub(crate) struct SeamProofKnobs {
     /// Produktions-Gate [`EXTRUDE_COVER_STAGE`]. Nur die Shadow-Messung setzt
     /// das; kein Produktionspfad kommt an diese Knöpfe.
     pub extrude_stage: Option<ExtrudeCoverStage>,
+    /// #384 P5c-A — die Stufe der GEKRÜMMTEN Nähte überstimmen. `None` = das
+    /// Produktions-Gate [`CURVED_COVER_STAGE`]. Nur die Shadow-Messung setzt
+    /// das; kein Produktionspfad kommt an diese Knöpfe.
+    pub curved_stage: Option<ExtrudeCoverStage>,
 }
 
 /// **Die Zertifizierung EINES Kanals — die einzige Entstehungsstelle eines
@@ -2754,8 +2909,21 @@ pub(crate) fn certify_channel_with(
             cover_channel_staged(omega, ch, cfg, knobs.extrude_stage.unwrap_or(EXTRUDE_COVER_STAGE)),
         ), None);
     }
-    // Gekrümmt zuerst — ein struktureller Ausschluss, kein Zeugen-Fehlschlag.
-    if ch.arcs.iter().any(|a| !(a.sweep < 0.0)) {
+    // Gekrümmt UND unbeweisbar zuerst — ein struktureller Ausschluss, kein
+    // Zeugen-Fehlschlag. Seit P5c-A trägt die Konstruktion gekrümmte
+    // Minor-Bögen (s. `piece_box`); `Curved` meldet nur noch, was ausserhalb
+    // ihres Geltungsbereichs liegt — vor allem ein gerissenes `0 < D_e ≤ 2`.
+    // Die Bedingung bleibt bewusst auf `sweep >= 0` beschränkt: ein ENTARTETES
+    // SEGMENT ist ein Zeugen-Fehlschlag und gehört nach `NoCover`, nicht hier
+    // hinein — sonst vermengt die Zählung genau die beiden Ausgänge, die sie
+    // trennen soll.
+    let curved_active =
+        knobs.curved_stage.unwrap_or(CURVED_COVER_STAGE) == ExtrudeCoverStage::Active;
+    if ch
+        .arcs
+        .iter()
+        .any(|a| !(a.sweep < 0.0) && (!curved_active || !arc_usable(a)))
+    {
         return ((
             SeamProofStatus::Curved,
             cover_channel_staged(omega, ch, cfg, knobs.extrude_stage.unwrap_or(EXTRUDE_COVER_STAGE)),

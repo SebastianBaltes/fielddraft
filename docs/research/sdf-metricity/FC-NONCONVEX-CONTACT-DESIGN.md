@@ -9169,6 +9169,93 @@ Frage.
   `clamp_shadow_report_matches_the_matrix_384` steht der Querverweis, damit die
   nackte Schranke nicht länger allein dasteht.
 
+## 8aj. P5c-A — der Cover-Beweis lernt gekrümmte Nähte (#462 zu #384, 2026-08-04)
+
+Bis hierher hat `arc_usable` jeden Bogen mit `sweep >= 0` pauschal abgewiesen;
+die beiden Kreisnähte der Stufen-Nabe standen deshalb als `curved` im
+Shadow-Bericht. P5c-A schliesst genau diese Lücke — **nur den Cover-Beweis**,
+nicht seine Auslieferung.
+
+### Die Parametrisierung ist keine Wahl
+
+Naheliegend wäre, ein Bogenstück über eine gleichmässige Winkelteilung zu
+zerlegen. Das wäre falsch: `arc_closest` definiert den Fusspunkt-Parameter als
+`t = D(z)/D_e`, also ist `t` **bereits** der normierte Diamant-Parameter. Die
+Stückgrenzen müssen dieselbe Skala benutzen, gegen die die Überdeckung geprüft
+wird — eine Winkelteilung wäre nicht gleichmässiger, sondern inkonsistent.
+Nebenbei bleibt die Auswertung damit weiter trigonometriefrei (§8y).
+
+### Die Bauch-Schranke kommt ohne Annahme über `(u,v)` aus
+
+Ein Bogenstück ist mehr als seine Sehne. Der naheliegende Aufschlag wäre die
+Sagitta `r − √(r²−h²)` — aber der setzt voraus, dass `(u,v)` orthonormal ist,
+also dass die Kurve wirklich ein Kreis und keine Ellipse ist. Diese Annahme
+liesse sich nur über eine Toleranz prüfen, und eine Toleranz wäre hier genau
+der verbotene Fudge-Faktor.
+
+Der Ausweg ist eine Zerlegung, in der `u` und `v` gar nicht vorkommen. Mit
+`L(λ)` als Sehne und `λ(φ)` als Orthogonalprojektion gilt
+
+    P(φ) − L(λ) = r · (u·Δc + v·Δs),
+
+und `(Δc, Δs)` hängt **allein von den Winkeln** ab. Sein Betrag ist die Sagitta
+des EINHEITSKREISES, `σ = 1 − √(1−h²) = h²/(1+√(1−h²)) ≤ h²` mit
+`h = |ŵ(t0) − ŵ(t1)|/2`. Komponentenweise folgt
+
+    |P_k − L_k| ≤ r · σ · (|u_k| + |v_k|).
+
+Damit wird die Bauchigkeit im Parameterraum gemessen und die Achsenlängen erst
+danach eingerechnet. Wären `u` und `v` nicht orthonormal, bliebe die Schranke
+gültig — sie beschriebe dann eben eine Ellipse. Vorausgesetzt wird
+ausschliesslich `D_e ≤ 2` (Minor-Bogen), denn nur dort ist die Sehne die des
+kleineren Bogens; `arc_usable` prüft das, statt es zu glauben.
+
+### Was gemessen wurde
+
+Unter `curved_stage = Active` schliesst der Shadow-Bericht über die ganze
+Matrix: **238 von 238 Naht-Addenden bewiesen, 0 `curved`** (vorher 236/2).
+
+### Warum die Stufe trotzdem auf `ShadowOnly` steht
+
+Der Beweis ist gültig — und **schwächer als die unbewiesene Klemme, die er
+ersetzen würde.** Die Kreisnähte brauchen `η_geo ≈ 0,81 mm`, und über
+`lim = δ − (best + A_seam).min(…)` lockert das das Gate. Feldwirksam
+geschaltet entstehen an der Nabe **41 Punkte Phantom-Material** in der Ablation
+ohne `L`-Block (vorher 0). Im Produktionsfeld fängt der `L`-Block sie ab, aber
+die Sicherheit der Nabe ruhte vorher **doppelt** und ruhte danach nur noch auf
+ihm. Dieser Redundanz-Verlust ist eine eigene Entscheidung und gehört zu P5c-C
+(#464), nicht in ein Ticket, dessen Gegenstand der Cover-Beweis ist.
+
+### Und es ist NICHT dieselbe Geschichte wie #466
+
+Der Reflex nach §8ai wäre, die 1,15 mm als Leiter-Artefakt abzutun. Die Messung
+widerlegt das: `η` konvergiert unter Verfeinerung gegen ≈ 0,81 mm.
+
+| `steps` | Quotient | `η_max` |
+|---|---|---|
+| 18 | 1,8651 | 1,149850 mm |
+| 65 | 1,1801 | 0,901354 mm |
+| 257 | 1,0423 | 0,829739 mm |
+| 1025 | 1,0104 | 0,812743 mm |
+
+Die Sprosse erklärt den Faktor 1,4, der Rest ist Geometrie. Eine feinere Leiter
+kauft die 41 Punkte also **nicht** zurück — anders als bei #466, wo die
+Verfeinerung den ganzen Sprung erklärte. Wer P5c-C angeht, muss den
+Redundanz-Verlust also inhaltlich entscheiden und nicht auf eine bessere Suche
+hoffen.
+
+### Was daraus NICHT folgt
+
+- **Nicht**, dass gekrümmte Nähte jetzt feldwirksam bewiesen sind. Sie sind
+  bewiesen und gemessen; konsumiert wird der Beweis nicht.
+- **Nicht**, dass `η ≈ 0,81 mm` die kleinstmögliche Konstante ist. Es ist der
+  beste Wert des vorhandenen Richtungs-Vorrats unter feiner Leiter, nicht das
+  Infimum über alle Zeugen-Abbildungen.
+- **Nicht**, dass Major-Bögen mit abgedeckt wären. `D_e ≤ 2` schliesst sie aus,
+  und die Bauch-Schranke wäre für sie falsch.
+- **Nicht**, dass die 41 Punkte ein Fehler im Feld sind. Sie treten in einer
+  ABLATION auf; das ausgelieferte Feld hat an der Nabe weiterhin 0 Über-Claims.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
