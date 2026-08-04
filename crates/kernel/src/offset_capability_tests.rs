@@ -13884,6 +13884,189 @@ fn clamp_shadow_report_matches_the_matrix_384() {
     // `field_round`) sind davon unberührt und stehen auf ihren alten Schranken.
     assert!(worst[0] <= 3.31e-1 && worst[1] <= 2.2e-5 && worst[2] <= 1.1e-6 && worst[3] <= 7.3e-7);
     assert!(a_max <= 3.31e-1, "A_max = {a_max:e}");
+    // #466: diese Schranke ist eine Zahl, keine Erklärung. Woher die 3.31e-1
+    // kommen — welches Stück, welcher Kanal, welche Fixture, und welcher Anteil
+    // auf Leiter bzw. Stückung entfällt — steht in
+    // `worst_geometric_witness_is_a_search_artefact_384`.
+}
+
+/// #466 — **das schlechteste `CoveredPiece` ist benannt und erklärt.**
+///
+/// Pin 9 sichert nur `A_max ≤ 3.31e-1`. Diese Schranke erklärt nichts: sie
+/// unterschiede eine echte Verschlechterung nicht von einer Leitersprosse, und
+/// wer sie liest, hält `η_geo` für eine Eigenschaft des Rippen-Kamms. Hier
+/// steht stattdessen die **Diagnose** — welches Stück, welcher Kanal, welche
+/// Fixture, und woher die Zahl kommt.
+///
+/// **Was gemessen ist** (#466, alle vier Zeilen sind Asserts, keine Prosa):
+///
+/// 1. Das schlechteste Stück der ganzen Matrix sitzt auf Bogen 0, Kanal 0 des
+///    **Rippen-Kamms 4×1.5/0.8**, sein Versatz liegt **exakt auf Leitersprosse
+///    13** (`t₁₃ = 0,3305387…` mm), und `cover_mm` wie `coord_mm` sind **exakt
+///    null** — die η dieses Kanals IST dieses eine Stück. „Das" schlechteste
+///    Stück ist unter der groben Leiter allerdings **nicht eindeutig**: die
+///    Sprosse ist ein Plateau, auf dem mehrere Stücke gemeinsam sitzen. Erst
+///    die feine Leiter (2.) löst es auf, und dort liegt das kritische Stück am
+///    **Nahtende** (`t1 = 1`).
+/// 2. Eine **feinere Leiter** über genau dieses Stück drückt den Versatz auf
+///    ≈ 0,21 mm. Faktor ≈ 1,6 der 145 gehen also auf das Suchgitter — und
+///    **nur** dieser Faktor. Der Pin sichert die Schranke nach BEIDEN Seiten:
+///    die bequeme Lesart „alles nur Sprosse" ist damit ebenso falsifiziert
+///    wie „alles echte Geometrie".
+/// 3. Der Rest ist die **Stückung**, und das ist eine Skalierungs-Aussage,
+///    keine Deutung: halbiert man die Stücklänge, halbiert sich der nötige
+///    Versatz mit (`offset/plen ≈ 1` für `ppa` 24 → 48 → 96). Das kritische
+///    Stück liegt dabei stets am **Nahtende**. Naheliegend, aber hier NICHT
+///    bewiesen: Ω öffnet sich dort keilförmig, weshalb der Querversatz linear
+///    mit der Stücklänge wächst.
+/// 4. **Ohne** den Rippen-Kamm bleibt die ganze Matrix bei `2,26e-3` mm. Der
+///    Sprung stammt vollständig aus dieser einen Fixture.
+///
+/// Damit ist der algorithmische Sprung falsifizierbar erklärt: `η_geo` ist
+/// hier eine Eigenschaft der **Diskretisierung** (Leiter × Stückung), nicht
+/// des Bauteils. Wird 0,33 mm fachlich zu teuer, ist der Hebel `pieces_per_arc`
+/// bzw. `steps` — NICHT eine kleinere Zahl im Pin, die wie eine
+/// Soundness-Schranke aussähe.
+///
+/// **Was der Pin bewusst NICHT prüft** (#466, Ticket-Vorschlag): dass bei
+/// `t₁₂` keine Kandidatenrichtung einen Beweis liefert. Das wäre leer-grün —
+/// die Leiter läuft aufsteigend und bricht beim ersten Erfolg ab (`break
+/// 'ladder`), also folgt „t₁₂ scheitert" tautologisch daraus, dass t₁₃
+/// gefunden wurde. Die feine Leiter oben ist die nicht-triviale Fassung
+/// derselben Frage.
+#[test]
+fn worst_geometric_witness_is_a_search_artefact_384() {
+    let cfg = wit::WitnessCfg::default();
+    let ladder = |c: &wit::WitnessCfg, s: usize| {
+        c.min_offset * (c.max_offset / c.min_offset).powf(s as f64 / (c.steps - 1).max(1) as f64)
+    };
+    // (1) Das schlechteste Stück der ganzen Matrix.
+    let mut best: Option<(String, usize, wit::CoveredPiece, wit::GeometricEta)> = None;
+    for (name, field, _e, _l, _h, _c) in cert_matrix(2.0f32) {
+        for (om, chans) in omega_and_channels(&field) {
+            for (ci, ch) in chans.iter().enumerate() {
+                let cov = wit::cover_channel(om, ch, cfg);
+                let Some(eta) = cov.eta else { continue };
+                for pc in &cov.covered_pieces {
+                    if best.as_ref().is_none_or(|b| pc.offset > b.2.offset) {
+                        best = Some((name.clone(), ci, *pc, eta));
+                    }
+                }
+            }
+        }
+    }
+    let (name, ci, pc, eta) = best.expect("kein einziges gedecktes Stück in der Matrix");
+    println!(
+        "#466 schlechtestes Stück: {name} / Kanal {ci} / Bogen {} / t∈[{},{}] / shift {:?} / \
+         offset {:e} mm",
+        pc.arc, pc.t0, pc.t1, pc.shift, pc.offset
+    );
+    assert_eq!(
+        (name.as_str(), ci, pc.arc),
+        ("Rippen-Kamm 4×1.5/0.8", 0, 0),
+        "der schlechteste Zeuge sitzt woanders als dokumentiert — §8ae nachziehen, nicht den Pin"
+    );
+    let rung = (0..cfg.steps).find(|&s| {
+        let t = ladder(&cfg, s);
+        (t - pc.offset).abs() <= 1e-9 * t.max(1.0)
+    });
+    assert_eq!(rung, Some(13), "der Versatz sitzt nicht mehr auf Leitersprosse 13 ({:e})", pc.offset);
+    assert_eq!((eta.cover_mm(), eta.coord_mm()), (0.0, 0.0), "die Zeugen sind keine Punkte mehr");
+    assert_eq!(
+        eta.offset_mm(),
+        pc.offset,
+        "die η des Kanals ist nicht mehr genau dieses eine Stück"
+    );
+    // `η = next_up(next_up(offset + 0) + 0)`: der ausgelieferte Wert ist der
+    // Stück-Versatz plus die zwei ULP der Aussenrundung — mehr nicht.
+    let slack = eta.mm() - pc.offset;
+    assert!(
+        slack > 0.0 && slack <= 4.0 * f64::EPSILON * pc.offset,
+        "zwischen Stück-Versatz und ausgelieferter η liegen {slack:e} mm — das sind nicht mehr \
+         bloss die zwei ULP der Aussenrundung"
+    );
+
+    let fx = cert_matrix(2.0f32).into_iter().find(|f| f.0 == name).unwrap();
+    let plen_of = |ppa: usize| {
+        let (_, chans) = omega_and_channels(&fx.1).into_iter().next().unwrap();
+        chans[ci].arcs[pc.arc].r as f64 / ppa as f64
+    };
+    // Der schlechteste Versatz von Bogen 0 unter frei gewählter Diskretisierung
+    // — mitsamt dem Stück, das ihn trägt, und der Grösse seines Plateaus.
+    let worst_at = |ppa: usize, steps: usize| -> (f64, f64, usize) {
+        let c2 = wit::WitnessCfg { pieces_per_arc: ppa, steps, ..cfg };
+        let stops = omega_and_channels(&fx.1);
+        assert_eq!(stops.len(), 1, "der Rippen-Kamm hat nicht mehr genau einen Kanal-Stopp");
+        let (om, chans) = stops[0];
+        let cov = wit::cover_channel(om, &chans[ci], c2);
+        let q = cov
+            .covered_pieces
+            .iter()
+            .filter(|q| q.arc == pc.arc)
+            .max_by(|a, b| a.offset.total_cmp(&b.offset))
+            .expect("Bogen 0 hat kein gedecktes Stück mehr");
+        let plateau = cov.covered_pieces.iter().filter(|r| r.offset == q.offset).count();
+        (q.offset, q.t1, plateau)
+    };
+    // Bei der GROBEN Leiter ist „das schlechteste Stück" nicht eindeutig: die
+    // Sprosse ist ein Plateau, auf dem mehrere Stücke gemeinsam sitzen. Erst
+    // die feine Leiter löst sie auf — und dort liegt das kritische Stück am
+    // Nahtende. Beides ist Messung, nicht Deutung.
+    let (_, _, plateau_coarse) = worst_at(cfg.pieces_per_arc, cfg.steps);
+    assert!(
+        plateau_coarse > 1,
+        "die grobe Sprosse trägt nur noch ein Stück — dann ist die Plateau-Aussage überholt"
+    );
+    // (2) Der Anteil der Leiter — nach oben UND nach unten geschraubt.
+    let (fine, fine_t1, _) = worst_at(cfg.pieces_per_arc, 257);
+    println!(
+        "#466 feine Leiter (257 Sprossen): {fine:.6} mm bei t1={fine_t1} gegen grob {:.6} mm \
+         (Plateau {plateau_coarse})",
+        pc.offset
+    );
+    assert_eq!(fine_t1, 1.0, "das kritische Stück liegt nicht mehr am Nahtende (t1={fine_t1})");
+    assert!(
+        fine < 0.75 * pc.offset,
+        "die feine Leiter drückt den Versatz nicht mehr — dann ist das Suchgitter nicht der Grund \
+         für den Sprung ({fine:e} gegen {:e})",
+        pc.offset
+    );
+    assert!(
+        fine > 0.30 * pc.offset,
+        "die feine Leiter erklärt plötzlich fast den ganzen Sprung ({fine:e} gegen {:e}) — dann \
+         stimmt die Erzählung in §8ae nicht mehr",
+        pc.offset
+    );
+    // (3) Die Stückung ist der Rest — Skalierung, nicht Deutung.
+    for ppa in [24usize, 48, 96] {
+        let (w, _, _) = worst_at(ppa, 257);
+        let q = w / plen_of(ppa);
+        println!("#466 ppa={ppa}: Stücklänge {:.6}, Versatz {w:.6}, Quotient {q:.3}", plen_of(ppa));
+        assert!(
+            (0.85..=1.25).contains(&q),
+            "bei ppa={ppa} ist der Versatz nicht mehr proportional zur Stücklänge (Quotient {q}) \
+             — dann trägt die Stückung den Sprung nicht"
+        );
+    }
+    // (4) Der Sprung stammt allein aus dieser Fixture.
+    let mut wo_comb = 0.0f64;
+    for (n2, field, _e, _l, _h, _c) in cert_matrix(2.0f32) {
+        if n2.starts_with("Rippen-Kamm") {
+            continue;
+        }
+        for (om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                if let Some(e) = wit::cover_channel(om, ch, cfg).eta {
+                    wo_comb = wo_comb.max(e.mm());
+                }
+            }
+        }
+    }
+    println!("#466 η_geo max ohne Rippen-Kamm: {wo_comb:e} mm");
+    assert!(
+        wo_comb <= 2.26e-3,
+        "auch ohne den Rippen-Kamm ist η_geo gewachsen ({wo_comb:e}) — das wäre ein echter Befund"
+    );
 }
 
 /// **§8aa-Pin 10 (R1): der `h`-Ast ist erreichbar — gemessen, nicht vermutet.**

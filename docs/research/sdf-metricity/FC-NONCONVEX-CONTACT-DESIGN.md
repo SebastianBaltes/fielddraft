@@ -9080,6 +9080,71 @@ weit und breit — kostet je Stopp genau einen `open.is_empty()`-Test.
   am Tape) und `the_dual_mirror_resolves_channel_modes_like_the_cpu_tree_467`
   (Ergebnis, am Spiegel).
 
+## 8ai. Woher die 0,33 mm kommen — η_geo diagnostiziert (#466 zu #384, 2026-08-04)
+
+Stufe B (§8af) hat `A_max` von 2,27e-3 auf 3,31e-1 mm gezogen, Faktor 145. Der
+Pin dazu lautete `a_max <= 3.31e-1` — eine Zahl, die nichts erklärt und die
+eine echte Verschlechterung nicht von einer Leitersprosse unterschieden hätte.
+#466 ersetzt sie nicht (die Schranke bleibt), sondern stellt die **Diagnose**
+daneben: `worst_geometric_witness_is_a_search_artefact_384`.
+
+**Das schlechteste Stück, benannt.** Es sitzt auf Bogen 0, Kanal 0 des
+**Rippen-Kamms 4×1.5/0.8**; sein Versatz ist `shift = (0,3305387…, 0, 0)` und
+liegt **exakt auf Leitersprosse 13** von `t_s = min·(max/min)^(s/(steps−1))`.
+`cover_mm` und `coord_mm` sind exakt null — die η dieses Kanals IST dieses eine
+Stück, plus die zwei ULP der Aussenrundung, und der Pin prüft genau das.
+
+**Eindeutig ist es nicht, und das ist selbst der Befund.** Unter der groben
+Leiter sitzen **alle 24 Stücke** des Kanals auf derselben Sprosse — das
+Maximum ist ein Plateau, die Sprosse kollabiert den ganzen Kanal auf einen
+Wert. Wer „das schlechteste Stück" sagt, ohne das zu wissen, pinnt einen
+willkürlichen Index. (Das ist beim Schreiben dieses Pins genau passiert: die
+erste Fassung behauptete `t1 = 1`, weil das kritische Stück unter der FEINEN
+Leiter am Nahtende liegt. Grob gemessen ist es das erste Stück. Die Erwartung
+war falsch, nicht die Messung.)
+
+**Die Zerlegung des Faktors 145** — beide Anteile sind Asserts, keine Prosa:
+
+| Anteil | Messung | Faktor |
+|---|---|---|
+| Leiter-Auflösung | 257 Sprossen statt 18 ⇒ 0,2117 statt 0,3305 mm | ≈ 1,6 |
+| Stückung | `offset/plen ≈ 1,03 / 1,02 / 1,01` für `ppa` 24 / 48 / 96 | linear in `plen` |
+| Geometrie des Kamms | — | Rest, nicht isoliert |
+
+Die Stückungs-Aussage ist eine **Skalierung**, keine Deutung: halbiert man die
+Stücklänge, halbiert sich der nötige Versatz mit. Das kritische Stück liegt
+dabei stets am Nahtende. Naheliegend, aber **nicht bewiesen** und deshalb auch
+nicht gepinnt: Ω öffnet sich dort keilförmig, weshalb der Querversatz linear
+mit der Stücklänge wächst. Bei `ppa = 12` springt der Versatz auf 1,92 mm und
+das kritische Stück wandert in die Bogenmitte — gröber ist also nicht bloss
+linear schlechter, sondern qualitativ anders.
+
+**Der Sprung stammt allein aus dieser Fixture.** Ohne den Rippen-Kamm bleibt
+die ganze Matrix bei 2,257e-3 mm. Der Falsifikator zeigt dasselbe von der
+anderen Seite: dreht man `EXTRUDE_COVER_STAGE` auf `ShadowOnly` zurück, wird
+der Pin rot und das schlechteste Stück ist die *Ecken-Schale t/δ=3* mit exakt
+2,257080539346033e-3 mm — der alte Wert IST das Nicht-Kamm-Maximum.
+
+**Damit ist der algorithmische Sprung falsifizierbar erklärt:** `η_geo` ist
+hier eine Eigenschaft der **Diskretisierung** (Leiter × Stückung), nicht des
+Bauteils. Der Pin schraubt die Leiter-Aussage bewusst nach BEIDEN Seiten fest
+(`0,30 < fine/grob < 0,75`): die bequeme Lesart „alles nur eine Sprosse" ist
+ebenso falsifiziert wie „alles echte Geometrie". Wird 0,33 mm fachlich zu
+teuer, ist der Hebel `pieces_per_arc` bzw. `steps` — **nicht** eine kleinere
+Zahl im Pin, die wie eine Soundness-Schranke aussähe.
+
+**Was der Pin bewusst nicht prüft.** Der Ticket-Vorschlag, zusätzlich zu
+zeigen, dass bei `t₁₂` keine Kandidatenrichtung einen Beweis liefert, wäre
+**leer-grün**: die Leiter läuft aufsteigend und bricht beim ersten Erfolg ab
+(`break 'ladder`), also folgt „t₁₂ scheitert" tautologisch daraus, dass t₁₃
+gefunden wurde. Die feine Leiter ist die nicht-triviale Fassung derselben
+Frage.
+
+- `crates/kernel/src/offset_capability_tests.rs` §8ai — der Pin
+  `worst_geometric_witness_is_a_search_artefact_384`; in
+  `clamp_shadow_report_matches_the_matrix_384` steht der Querverweis, damit die
+  nackte Schranke nicht länger allein dasteht.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
