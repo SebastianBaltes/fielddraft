@@ -452,7 +452,17 @@ fn eval_bounded_d3_open(
                 }
                 None => D3::from(crate::offset_lb::LB_NONE as f64),
             };
-            let modes = crate::offset_channel::resolve_stop_modes(inner, channels);
+            // #467, dritte Fundstelle: der duale Pfad ist der differenzierbare
+            // Spiegel von `bvh.rs::sdf_open` und MUSS dessen Modus-Auflösung
+            // teilen. Sein eigener `Shell`-Arm (s. u.) mischt `open` genauso
+            // wie der Tape-Emitter, hier ist also ebenfalls die retained Menge
+            // erreichbar — mit `resolve_stop_modes` (das intern `EMPTY`
+            // einsetzt) trüge der Spiegel den Beweis des GESCHLOSSENEN `Ω` in
+            // den retained Pfad. Es ist bewusst die PUNKTWEISE Fassung wie in
+            // `bvh.rs`: ihr `trust`-Vorfilter entscheidet mit `p`, und ein
+            // Spiegel, der an fernen Punkten anders klassifiziert als das
+            // Original, spiegelt nicht mehr.
+            let modes = crate::offset_channel::resolve_stop_modes_at(inner, channels, p_re, open);
             for (ci, ch) in channels.iter().enumerate() {
                 if crate::offset_channel::channel_skip(d.re as f32, p_re, ch) {
                     continue;

@@ -18201,3 +18201,79 @@ fn open_shell_retained_duplicate_must_not_carry_the_closed_proof_467() {
     }
     println!("#467: offene Shell — {n_ch} Kanäle je Duplikat, {} Köpfe gesamt", heads.len());
 }
+
+/// **#467, dritte Fundstelle — der duale Spiegel trug denselben Bruch.**
+///
+/// Der Fix am Tape-Emitter hatte eine Begründung mitgeliefert, die zu prüfen
+/// war und nicht stimmte: die übrigen Verbraucher von `resolve_stop_modes`
+/// seien „rein geschlossen" und hätten an ihrer Stelle gar kein `OpenSet`.
+/// Für `sdf_dual` ist das falsch. `eval_bounded_d3_open` FÜHRT ein `open`
+/// (`sdf_dual.rs:289`), und sein eigener `Shell`-Arm mischt es genauso wie
+/// der Emitter (`OpenBranchSet::push`, `sdf_dual.rs:635`) — die retained
+/// Menge ist dort also erreichbar. Mit der `EMPTY`-Fassung trug der
+/// differenzierbare Spiegel den Beweis des GESCHLOSSENEN `Ω` in den retained
+/// Pfad.
+///
+/// Gemessen wird nicht am Kopfwort (das Tape ist hier nicht beteiligt),
+/// sondern am Ergebnis: `sdf_gradient_mode` ist der Realteil der dualen
+/// Auswertung, `BoundedCsg::sdf` das Original. Ein Spiegel, der anders
+/// klassifiziert als das Original, liefert an den Punkten, wo die Klemme
+/// bindet, einen anderen Wert — und genau dort ist der Gradient das, woraus
+/// Meshing und Marching ihre Schritte ziehen.
+#[test]
+fn the_dual_mirror_resolves_channel_modes_like_the_cpu_tree_467() {
+    let delta = 2.0f32;
+    let (_name, field, _e, lo, hi, _c) = cert_matrix(delta)
+        .into_iter()
+        .find(|(n, ..)| n == "Rippen-Kamm 4×1.5/0.8")
+        .expect("das Extrude-Fixture fehlt");
+
+    let mut stops = Vec::new();
+    stop_nodes(&field, &mut stops);
+    let mut feats: Vec<FeatureId> = Vec::new();
+    for st in &stops {
+        let BoundedCsg::ArcChannel { inner, .. } = st else { continue };
+        if let Some(om) = wit::omega_of(inner) {
+            feats.extend(extrude_features(om));
+        }
+    }
+    assert!(!feats.is_empty(), "das Ω trägt kein Extrude-Blatt — der Pin misst nichts");
+
+    let faces: Vec<crate::csg::OpenSurface> = feats.iter().flat_map(both_caps_open).collect();
+    let aabb = field.aabb();
+    let shell = BoundedCsg::Shell {
+        inner: Box::new(field.clone()),
+        thickness: 0.4,
+        open_faces: faces,
+        aabb,
+    };
+
+    let mut g = Lcg(0x467_0002);
+    let (mut n, mut worst) = (0usize, 0.0f64);
+    let mut worst_p = [0.0f32; 3];
+    for _ in 0..40_000 {
+        let p = [
+            (lo[0] + g.next_f64() * (hi[0] - lo[0])) as f32,
+            (lo[1] + g.next_f64() * (hi[1] - lo[1])) as f32,
+            (lo[2] + g.next_f64() * (hi[2] - lo[2])) as f32,
+        ];
+        let cpu = shell.sdf(p, EvalMode::Visual);
+        let (dual, _grad) = crate::sdf_dual::sdf_gradient_mode(&shell, p, EvalMode::Visual);
+        if !(cpu.is_finite() && dual.is_finite()) {
+            continue;
+        }
+        n += 1;
+        let e = (cpu - dual).abs() as f64;
+        if e > worst {
+            worst = e;
+            worst_p = p;
+        }
+    }
+    assert!(n > 1000, "zu wenige auswertbare Punkte ({n})");
+    println!("#467 dual: {n} Punkte, grösste Abweichung Spiegel↔Original {worst:.3e} mm");
+    assert!(
+        worst < 1.0e-4,
+        "der duale Spiegel weicht bei {worst_p:?} um {worst:e} mm vom CPU-Baum ab — \
+         er löst die Kanal-Modi anders auf"
+    );
+}

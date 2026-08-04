@@ -8967,12 +8967,45 @@ gilt — im `Shell`-Duplikat also mit dem gemischten Set.
 
 `resolve_stop_modes` bleibt als **Ein-Zeilen-Wrapper** auf
 `resolve_stop_modes_open(…, EMPTY)` bestehen, statt als zweite Kopie der
-Auflösungslogik. Das ist die Variante mit **weniger** Duplikat: die drei rein
-geschlossenen Verbraucher (`fidget_bridge`, `sdf_dual`, `offset_interval`)
-haben an ihrer Stelle gar kein `OpenSet` und müssen nicht angefasst werden,
-und die Ω-Serialisierung existiert weiterhin nur einmal. Zwei getrennte
+Auflösungslogik. Das ist die Variante mit **weniger** Duplikat, und die
+Ω-Serialisierung existiert weiterhin nur einmal. Zwei getrennte
 Funktionskörper hätten dieselbe Falle wie heute aufgemacht: eine Änderung an
 der einen, die an der anderen vergessen wird.
+
+### Die dritte Fundstelle: der duale Spiegel
+
+Die Begründung für den Wrapper lautete zuerst, die übrigen Verbraucher
+(`fidget_bridge`, `sdf_dual`, `offset_interval`) seien „rein geschlossen" und
+hätten an ihrer Stelle gar kein `OpenSet`. Das ist bei der Nachprüfung für
+**`sdf_dual` gefallen**, und zwar an genau derselben Stelle wie im Emitter:
+
+* `eval_bounded_d3_open` FÜHRT ein `open` (`sdf_dual.rs:289`),
+* sein eigener `Shell`-Arm mischt es mit `OpenBranchSet::push`
+  (`sdf_dual.rs:635`) und ruft sich rekursiv damit auf,
+* der `ArcChannel`-Arm dazwischen löste die Modi mit der `EMPTY`-Fassung auf.
+
+Die retained Menge war dort also erreichbar, und der differenzierbare Spiegel
+trug den Beweis des geschlossenen `Ω` in den retained Pfad — derselbe
+Vertragsbruch, nur ohne Tape. `fidget_bridge` und `offset_interval` führen an
+ihrer Stelle tatsächlich kein `OpenSet`; für sie trägt die ursprüngliche
+Begründung.
+
+Der duale Pfad bekommt die **punktweise** Fassung `resolve_stop_modes_at`, und
+zwar bewusst nicht die Emissions-Fassung: er ist der Spiegel von
+`bvh.rs::sdf_open` und wird punktweise ausgewertet wie diese. Ihr
+`trust`-Vorfilter entscheidet mit `p`; ein Spiegel, der an fernen Punkten
+anders klassifiziert als das Original, spiegelt nicht mehr. Die Regel dahinter
+ist allgemeiner als dieser Fix: **wer punktweise auswertet, nimmt die
+punktweise Fassung; wer einmal je Stopp emittiert, die Emissions-Fassung.**
+
+Gemessen wird hier nicht am Kopfwort — das Tape ist nicht beteiligt —, sondern
+am Ergebnis: `sdf_gradient_mode` gegen `BoundedCsg::sdf` über der offenen
+Shell. Ohne den Fix weicht der Spiegel um **1,0997e-4 mm** ab (bei
+`[-6.724, -2.909, -1.349]`), mit ihm um **1,252e-6 mm**. Die Grössenordnung
+der Abweichung ist dieselbe wie die der Stufe-B-Feldbewegung (1,0979e-4 mm) —
+es ist derselbe Addend, der hier am falschen Ort landete. Das wiegt schwerer
+als eine blosse Wertabweichung: aus dem dualen Pfad kommt der **Gradient**,
+aus dem Meshing und Marching ihre Schritte ziehen.
 
 **Warum nicht pro Punkt.** Der Rückzug hängt ausschliesslich an `Ω` und
 `open` — beide liegen zur Emissionszeit fest, keiner hängt am
