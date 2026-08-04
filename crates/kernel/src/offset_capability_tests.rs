@@ -18078,3 +18078,126 @@ fn extrude_omega_channels_bind_in_the_tape_384() {
     );
     assert!(worst_move > 1.0e-6, "die Bewegung im Tape liegt im Rundungsrauschen ({worst_move:e})");
 }
+
+/// **#467 / §8ah — der Emitter darf den GESCHLOSSENEN Beweis nicht ins
+/// RETAINED Duplikat schreiben.**
+///
+/// Eine geöffnete `Shell` kompiliert ihr Kind ZWEIMAL (`sdf_compiler.rs`,
+/// `BoundedCsg::Shell`-Arm): einmal geschlossen und einmal unter dem
+/// gemischten `open`, dessen Blätter das retained Feld emittieren. Der
+/// Extrude-Aussenbeweis, der die Nahtkanal-Addenden trägt, gilt für die
+/// retained Menge NICHT (§8ae Stufe B, `omega_has_open_extrude`): bei beiden
+/// offenen Kappen bleibt profil-intern ein unendliches Prisma, und der axiale
+/// Aussenzeuge liegt dort im Material.
+///
+/// Der Pin liest beide Duplikate aus EINEM Tape:
+///
+/// * die ersten `n` `OP_ARC_CHANNEL`-Köpfe gehören zum geschlossenen Duplikat
+///   und müssen `Proved` mit beiden Addenden tragen;
+/// * die zweiten `n` gehören zum retained Duplikat und müssen Legacy sein
+///   (Modus 0, beide Addenden 0).
+///
+/// Vor dem Fix trug das retained Duplikat denselben `Proved`-Kopf: der
+/// Emitter löste die Modi mit `resolve_stop_modes` auf, einer Funktion ohne
+/// `open`-Parameter, die den Stufe-B-Rückzug gar nicht kennen kann.
+#[test]
+fn open_shell_retained_duplicate_must_not_carry_the_closed_proof_467() {
+    use crate::sdf_compiler::{compile_body, ARC_STRIDE, CHANNEL_HEADER, OP_ARC_CHANNEL};
+
+    /// Alle `OP_ARC_CHANNEL`-Kopfpositionen eines Opcode-Stroms, in
+    /// Emissionsreihenfolge.
+    fn channel_heads(ops: &[f32]) -> Vec<usize> {
+        let mut heads = Vec::new();
+        let mut i = 0usize;
+        while i < ops.len() {
+            if ops[i].to_bits() == OP_ARC_CHANNEL {
+                let n = ops[i + 1] as usize;
+                heads.push(i);
+                i += 1 + CHANNEL_HEADER + n * ARC_STRIDE;
+                continue;
+            }
+            i += 1;
+        }
+        heads
+    }
+
+    let delta = 2.0f32;
+    let (_name, field, _e, _lo, _hi, _c) = cert_matrix(delta)
+        .into_iter()
+        .find(|(n, ..)| n == "Rippen-Kamm 4×1.5/0.8")
+        .expect("das Extrude-Fixture fehlt");
+
+    // ── 1. Die Voraussetzung: Kanäle über einem Extrude-Ω, geschlossen bewiesen ──
+    let mut stops = Vec::new();
+    stop_nodes(&field, &mut stops);
+    let mut feats: Vec<FeatureId> = Vec::new();
+    let mut n_ch = 0usize;
+    for st in &stops {
+        let BoundedCsg::ArcChannel { inner, channels, .. } = st else { continue };
+        n_ch += channels.len();
+        if let Some(om) = wit::omega_of(inner) {
+            feats.extend(extrude_features(om));
+        }
+    }
+    assert!(n_ch > 0, "das Fixture trägt keine Nahtkanäle mehr");
+    assert!(!feats.is_empty(), "das Ω trägt kein Extrude-Blatt — der Pin misst nichts");
+
+    // Das geschlossene Referenz-Tape: so viele Köpfe wie Kanäle, alle bewiesen.
+    let closed_tape = compile_body(&field);
+    let closed_heads = channel_heads(&closed_tape.opcodes);
+    assert_eq!(closed_heads.len(), n_ch, "das geschlossene Tape trägt nicht je Kanal einen Kopf");
+    for &h in &closed_heads {
+        assert_eq!(
+            closed_tape.opcodes[h + 1 + CHANNEL_HEADER - 3],
+            1.0,
+            "der geschlossene Kanal @{h} ist gar nicht bewiesen — dann misst der Pin nichts"
+        );
+    }
+
+    // ── 2. Dieselbe Geometrie als Kind einer Shell mit BEIDEN offenen Kappen ──
+    let faces: Vec<crate::csg::OpenSurface> = feats.iter().flat_map(both_caps_open).collect();
+    let aabb = field.aabb();
+    let shell = BoundedCsg::Shell {
+        inner: Box::new(field.clone()),
+        thickness: 0.4,
+        open_faces: faces,
+        aabb,
+    };
+    let ops = compile_body(&shell).opcodes;
+    let heads = channel_heads(&ops);
+    // Der Shell-Arm emittiert das Kind zweimal — erst geschlossen, dann retained.
+    assert_eq!(
+        heads.len(),
+        2 * n_ch,
+        "die offene Shell trägt {} Kanalköpfe statt {}, das Duplikat fehlt",
+        heads.len(),
+        2 * n_ch
+    );
+
+    let head_words = |h: usize| {
+        (
+            ops[h + 1 + CHANNEL_HEADER - 3],
+            ops[h + 1 + CHANNEL_HEADER - 2],
+            ops[h + 1 + CHANNEL_HEADER - 1],
+        )
+    };
+    // Erstes Duplikat: geschlossen, der Beweis gehört hierher.
+    for (k, &h) in heads[..n_ch].iter().enumerate() {
+        let (mode, a_seam, a_h) = head_words(h);
+        assert_eq!(mode, 1.0, "geschlossenes Duplikat, Kanal {k} @{h}: Modus {mode} statt Proved");
+        assert!(a_seam > 0.0, "geschlossenes Duplikat, Kanal {k} @{h}: A_seam = {a_seam}");
+        assert!(a_h > 0.0, "geschlossenes Duplikat, Kanal {k} @{h}: A_h = {a_h}");
+    }
+    // Zweites Duplikat: retained — hier gilt der Beweis NICHT.
+    for (k, &h) in heads[n_ch..].iter().enumerate() {
+        let (mode, a_seam, a_h) = head_words(h);
+        assert_eq!(
+            (mode, a_seam, a_h),
+            (0.0, 0.0, 0.0),
+            "retained Duplikat, Kanal {k} @{h}: das Tape trägt den Beweis des GESCHLOSSENEN Ω \
+             (Modus {mode}, A_seam {a_seam}, A_h {a_h}) in den retained Pfad — der Naht-\
+             Aussenzeuge liegt dort im Material, die Voraussetzung des Addenden entfällt"
+        );
+    }
+    println!("#467: offene Shell — {n_ch} Kanäle je Duplikat, {} Köpfe gesamt", heads.len());
+}

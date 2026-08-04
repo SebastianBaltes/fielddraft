@@ -8921,6 +8921,116 @@ sollte, und hat diese hier überhaupt erst sichtbar gemacht. Sie läuft als
 eigenes Ticket **#467** und ist ein Blocker gegen jede weitere Feldfreigabe und
 gegen den Abschluss von #384.
 
+→ Aufgelöst in **§8ah**.
+
+## 8ah. Der Beweisvertrag im Emitter — geschlossen (#467 zu #384, 2026-08-04)
+
+Der Nebenbefund aus §8ag, erledigt. Er steht bewusst als **eigener Abschnitt**
+und nicht als Nachtrag in §8ag: §8ag ist das Protokoll von #465 mit seinen
+eigenen gemessenen Zahlen (36 Szenen, 18576 Checks, die Golden-Signatur), #467
+ist ein anderes Ticket mit anderen Belegen. Sie in einen Abschnitt zu falten
+hiesse, hinterher nicht mehr auseinanderhalten zu können, welche Zahl zu
+welcher Aussage gehört — genau die Verwechslung, die §8ae/§8ag teuer gemacht
+hat.
+
+### Der Falsifikator, zuerst und rot
+
+`open_shell_retained_duplicate_must_not_carry_the_closed_proof_467` in
+`offset_capability_tests.rs`. Er nimmt den zertifizierten Rippen-Kamm
+4×1.5/0.8 aus `cert_matrix`, hängt ihn als Kind in eine `Shell`, deren
+`open_faces` **beide Kappen** jedes Extrude-Features in `Ω` öffnen, kompiliert
+und liest die `OP_ARC_CHANNEL`-Kopfworte **beider** Duplikate. Erwartet:
+erstes Duplikat `Proved` mit beiden Addenden, zweites (retained) Legacy —
+Modus 0, beide Addenden 0.
+
+Vor dem Fix, wörtlich:
+
+    assertion `left == right` failed: retained Duplikat, Kanal 0 @10053: das
+    Tape trägt den Beweis des GESCHLOSSENEN Ω (Modus 1, A_seam 0.33054167,
+    A_h 0.00001670515) in den retained Pfad
+      left: (1.0, 0.33054167, 1.670515e-5)
+      right: (0.0, 0.0, 0.0)
+
+Damit ist §8ag empirisch bestätigt: die Konstellation ist konstruierbar, es
+gibt keine ausschliessende Invariante, und das Tape trug den geschlossenen
+Beweis samt beider Addenden in den retained Pfad. Das Fixture ist mit 19
+Kanälen je Duplikat (38 Köpfe gesamt) nicht randständig.
+
+### Der Fix
+
+`resolve_stop_modes_open(inner, channels, open)` in `offset_channel.rs`.
+Sobald `!open.is_empty() && omega_has_open_extrude(Ω, open)` gilt, sind ALLE
+Modi dieses Stopps `LegacyUnproven(OpenRetainedPath)`; sonst läuft die
+bisherige Schnappschuss-Auflösung unverändert. Der `ArcChannel`-Arm des
+Emitters (`sdf_compiler.rs`) ruft sie mit dem `open`, das an seiner Stelle
+gilt — im `Shell`-Duplikat also mit dem gemischten Set.
+
+`resolve_stop_modes` bleibt als **Ein-Zeilen-Wrapper** auf
+`resolve_stop_modes_open(…, EMPTY)` bestehen, statt als zweite Kopie der
+Auflösungslogik. Das ist die Variante mit **weniger** Duplikat: die drei rein
+geschlossenen Verbraucher (`fidget_bridge`, `sdf_dual`, `offset_interval`)
+haben an ihrer Stelle gar kein `OpenSet` und müssen nicht angefasst werden,
+und die Ω-Serialisierung existiert weiterhin nur einmal. Zwei getrennte
+Funktionskörper hätten dieselbe Falle wie heute aufgemacht: eine Änderung an
+der einen, die an der anderen vergessen wird.
+
+**Warum nicht pro Punkt.** Der Rückzug hängt ausschliesslich an `Ω` und
+`open` — beide liegen zur Emissionszeit fest, keiner hängt am
+Auswertungspunkt. Er gehört deshalb einmal je Stopp ins Tape und nicht in den
+Auswertungspfad; die punktweise Fassung `resolve_stop_modes_at` bleibt dem
+CPU-Baum vorbehalten, der `open` erst zur Laufzeit kennt. Der Gegenbeleg
+steht in `be9ecc7b`: eine Modus-Auflösung im Per-Punkt-Pfad kostete Faktor
+2,5.
+
+### Die Nachweise
+
+- `cargo nextest run --workspace`: **1559 passed, 139 skipped** (1558 vorher,
+  plus der neue Pin).
+- `cd web && npm test -- --run`: **167 Dateien, 2082 Tests**, alle grün.
+- `check_interp` auf dem frischen Golden: **36 Szenen, 18576 Checks,
+  worst_err 0.000002 (sweep_open_twist), 0 failures** — identisch zum Stand
+  vor dem Fix.
+- Golden-Signatur: **unverändert**
+  `1f832dde01fbdbdaee64b16c61abacf7be32f8fd6db0a7531c9483f94d3cc067`
+  bei 28579 Zeilen / 36 Szenen.
+
+**Die unbewegte Signatur ist hier eine Lücke, kein Beleg** — dieselbe
+Unterscheidung, an der #465 hing. Nachgesehen in `gen_golden.rs`: die drei
+offenen Shells (`shell_open_box`, `shell_open_cylinder`, `shell_open_cone`)
+stehen über Box-, Zylinder- und Kegel-Primitiven ohne jeden Kanal-Stopp, und
+die einzige Szene mit Nahtkanälen über einem Extrude-`Ω`
+(`rib_comb_extrude_omega`, §8ag) trägt keine Shell. Der Schnitt aus „offene
+Shell" und „ArcChannel über Extrude-`Ω`" ist im Korpus **leer**; der Fix kann
+dort per Konstruktion nichts bewegen. Der Beleg für die Feldwirkung ist der
+Struktur-Pin, nicht der Golden.
+
+Bewegte sich die Signatur, wäre die Richtung übrigens vorhersagbar: der
+Rückzug auf Legacy nullt beide Addenden, `lim = δ − min(de + A_seam, h + A_h)`
+wird damit GRÖSSER, die Klemme stärker, die Feldwerte höher.
+
+### Laufzeit
+
+Der Auswertungspfad ist nicht angefasst; gemessen wurde es trotzdem, je drei
+Läufe:
+
+- `gen_golden` (release, 36 Szenen): vorher 0.29 / 0.29 / 0.29 s, nachher
+  0.29 / 0.29 / 0.28 s.
+- `extrude_omega_channels_bind_in_the_tape_384` (200 000 Punkte auf dem
+  Rippen-Kamm, Tape + CPU): vorher 3.12 / 3.10 / 3.09 s, nachher
+  3.13 / 3.12 / 3.11 s.
+
+Beides innerhalb des Rauschens (≤ 1 %). Der Regelfall — kein offenes Face
+weit und breit — kostet je Stopp genau einen `open.is_empty()`-Test.
+
+### Geschriebene Dateien
+
+- `crates/kernel/src/offset_channel.rs` — `resolve_stop_modes_open`;
+  `resolve_stop_modes` als Wrapper darauf.
+- `crates/kernel/src/sdf_compiler.rs` — der `ArcChannel`-Arm reicht sein
+  `open` durch.
+- `crates/kernel/src/offset_capability_tests.rs` — der Pin
+  `open_shell_retained_duplicate_must_not_carry_the_closed_proof_467`.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.

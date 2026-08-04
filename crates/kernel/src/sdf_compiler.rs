@@ -751,7 +751,11 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             // hier liegt `inner` und damit `Ω` vor. Die Tape-Interpreter
             // brauchen danach keine Ω-Daten: der Emitter hat fail-closed
             // entschieden, die drei Kopf-Worte tragen das Ergebnis.
-            let modes = crate::offset_channel::resolve_stop_modes(inner, channels);
+            // #467: mit dem `open`, das AN DIESER STELLE gilt. Der `Shell`-Arm
+            // emittiert sein Kind zweimal — geschlossen und retained; nur die
+            // `open`-bewusste Auflösung zieht im retained Duplikat den
+            // Extrude-Beweis zurück, für den es dort keine Voraussetzung gibt.
+            let modes = crate::offset_channel::resolve_stop_modes_open(inner, channels, open);
             for (ci, ch) in channels.iter().enumerate() {
                 out.push(op(OP_ARC_CHANNEL));
                 out.push(ch.arcs.len() as f32);

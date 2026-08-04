@@ -1038,14 +1038,55 @@ pub fn concave_gate(gate_w: f32, base: f32, extra: f32) -> f32 {
 /// Jeder Verbraucher (CPU-Baum, Tape-Emitter, fidget, Dual, Diagnose) hat
 /// `inner` und `channels` zur Hand und ruft genau das hier — die Ω-Prüfung
 /// läuft damit einmal pro Baum-Walk, nicht pro Punkt.
+///
+/// **Für rein geschlossene Verbraucher.** Wer in einem Kontext emittiert, in
+/// dem Blätter das RETAINED Feld liefern können (der `Shell`-Arm des Tape-
+/// Emitters), muss [`resolve_stop_modes_open`] mit dem dort geltenden `open`
+/// rufen — sonst wandert der Beweis des geschlossenen `Ω` in einen Pfad, für
+/// den er nicht geführt wurde (#467).
 pub(crate) fn resolve_stop_modes(
     stop_inner: &crate::bvh::BoundedCsg,
     channels: &[OffsetChannel],
+) -> Vec<ChannelLimitMode> {
+    resolve_stop_modes_open(stop_inner, channels, &crate::csg::OpenBranchSet::EMPTY)
+}
+
+/// #467 — **dieselbe Konsumgrenze, aber mit dem `open`, das an der
+/// Emissionsstelle gilt.**
+///
+/// `compile_body` startet mit `OpenBranchSet::EMPTY`, aber der `Shell`-Arm
+/// emittiert sein Kind ZWEIMAL: einmal geschlossen und einmal unter einem
+/// gemischten `open`, dessen Blätter das retained Feld schreiben. Der
+/// Extrude-Aussenbeweis, der die Nahtkanal-Addenden trägt, gilt für die
+/// retained Menge NICHT (§8ae Stufe B) — bei beiden offenen Kappen bleibt
+/// profil-intern ein unendliches Prisma, und der axiale Aussenzeuge liegt
+/// dort im MATERIAL. Ein Tape, das den geschlossenen Beweis ins retained
+/// Duplikat schreibt, konsumiert ihn ausserhalb seines Vertrags.
+///
+/// **Einmal je Stopp, nicht je Punkt.** Der Rückzug ist eine reine
+/// Emissions-Entscheidung: er hängt nur an `Ω` und `open`, nicht am
+/// Auswertungspunkt. Die punktweise Fassung [`resolve_stop_modes_at`] bleibt
+/// dem CPU-Baum vorbehalten, der `open` erst zur Laufzeit kennt; sie hier
+/// nachzubauen wäre genau der Fehler aus `be9ecc7b` (Faktor 2,5 Laufzeit).
+///
+/// Der Regelfall — kein offenes Face weit und breit — kostet EINEN
+/// `open.is_empty()`-Test für den ganzen Stopp.
+pub(crate) fn resolve_stop_modes_open(
+    stop_inner: &crate::bvh::BoundedCsg,
+    channels: &[OffsetChannel],
+    open: &crate::csg::OpenBranchSet<'_>,
 ) -> Vec<ChannelLimitMode> {
     let legacy = ChannelLimitMode::LegacyUnproven(LegacyReason::ProofInvalidated);
     match crate::offset_witness::omega_of(stop_inner) {
         // §8ac (Review 20, Sollte 6): `Ω` EINMAL serialisieren, nicht je Kanal.
         Some(om) => {
+            // #467: der Stufe-B-Rückzug, EINMAL je Stopp ausgewertet.
+            if !open.is_empty() && crate::offset_witness::omega_has_open_extrude(om, open) {
+                return vec![
+                    ChannelLimitMode::LegacyUnproven(LegacyReason::OpenRetainedPath);
+                    channels.len()
+                ];
+            }
             let om_bytes = crate::offset_witness::omega_snapshot(om);
             channels.iter().map(|c| c.limit_mode_for_bytes(&om_bytes)).collect()
         }
