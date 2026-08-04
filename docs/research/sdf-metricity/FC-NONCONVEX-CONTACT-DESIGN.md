@@ -9017,8 +9017,9 @@ steht in `be9ecc7b`: eine Modus-Auflösung im Per-Punkt-Pfad kostete Faktor
 
 ### Die Nachweise
 
-- `cargo nextest run --workspace`: **1559 passed, 139 skipped** (1558 vorher,
-  plus der neue Pin).
+- `cargo nextest run --workspace`: **1560 passed, 139 skipped** (1558 vorher,
+  plus die ZWEI neuen Pins — der Struktur-Pin am Tape und der Ergebnis-Pin am
+  dualen Spiegel).
 - `cd web && npm test -- --run`: **167 Dateien, 2082 Tests**, alle grün.
 - `check_interp` auf dem frischen Golden: **36 Szenen, 18576 Checks,
   worst_err 0.000002 (sweep_open_twist), 0 failures** — identisch zum Stand
@@ -9043,7 +9044,13 @@ wird damit GRÖSSER, die Klemme stärker, die Feldwerte höher.
 
 ### Laufzeit
 
-Der Auswertungspfad ist nicht angefasst; gemessen wurde es trotzdem, je drei
+Die Zahlen unten belegen den **Emitter**-Fix; der duale Fix kam später dazu
+und ist von ihnen NICHT gedeckt (er fasst den Auswertungspfad an — die
+ursprüngliche Behauptung „der Auswertungspfad ist nicht angefasst" gilt seit
+der dritten Fundstelle nicht mehr). Für den dualen Pfad ist die Wahl von
+`resolve_stop_modes_at` aber gerade die billigere: sie löst hinter dem
+`trust`-Early-Out nur die Kanäle auf, die an diesem Punkt binden können,
+während die vorherige Fassung an jedem Punkt eifrig alle auflöste. Je drei
 Läufe:
 
 - `gen_golden` (release, 36 Szenen): vorher 0.29 / 0.29 / 0.29 s, nachher
@@ -9058,11 +9065,20 @@ weit und breit — kostet je Stopp genau einen `open.is_empty()`-Test.
 ### Geschriebene Dateien
 
 - `crates/kernel/src/offset_channel.rs` — `resolve_stop_modes_open`;
-  `resolve_stop_modes` als Wrapper darauf.
+  `resolve_stop_modes_closed` als Wrapper darauf. Der alte, mehrdeutige Name
+  `resolve_stop_modes` ist **gelöscht**: seine unsichtbare `EMPTY`-Vorgabe hat
+  denselben Fehler zweimal ermöglicht (Emitter, dualer Spiegel), und ein
+  Kommentar schützt davor nicht strukturell. Die drei Fassungen heißen jetzt
+  `_closed` / `_open` / `_at` und zwingen jeden Aufrufer zur Aussage, in
+  welchem Kontext er steht.
 - `crates/kernel/src/sdf_compiler.rs` — der `ArcChannel`-Arm reicht sein
   `open` durch.
-- `crates/kernel/src/offset_capability_tests.rs` — der Pin
-  `open_shell_retained_duplicate_must_not_carry_the_closed_proof_467`.
+- `crates/kernel/src/sdf_dual.rs` — der `ArcChannel`-Arm nimmt die punktweise
+  Fassung `resolve_stop_modes_at` mit `p_re` und `open` (dritte Fundstelle).
+- `crates/kernel/src/offset_capability_tests.rs` — die Pins
+  `open_shell_retained_duplicate_must_not_carry_the_closed_proof_467` (Struktur,
+  am Tape) und `the_dual_mirror_resolves_channel_modes_like_the_cpu_tree_467`
+  (Ergebnis, am Spiegel).
 
 ## 9. Geschriebene Dateien
 

@@ -297,7 +297,7 @@ pub(crate) fn node_to_tree(node: &BoundedCsg, p: &[Tree; 3]) -> Result<Tree, Str
                     None => l,
                 });
             };
-            let modes = crate::offset_channel::resolve_stop_modes(inner, channels);
+            let modes = crate::offset_channel::resolve_stop_modes_closed(inner, channels);
             for (ci, ch) in channels.iter().enumerate() {
                 let (nd, l) = channel_to_tree(&d0, &lbt, &d, p, ch, modes[ci]);
                 d = nd;

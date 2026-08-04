@@ -2215,7 +2215,7 @@ pub fn enclose_node(c: &mut Ctx, node: &BoundedCsg, p: [Iv; 3]) -> Enc {
             // #384 §8ad / P5b-2 — **die Konsumgrenze**: `inner` und `channels`
             // liegen hier gemeinsam und unveränderlich vor, also EINMAL
             // auflösen. Das ist derselbe Weg, den die Produktion nimmt
-            // (`resolve_stop_modes` gegen `omega_of(inner)`); ein
+            // (`resolve_stop_modes_closed` gegen `omega_of(inner)`); ein
             // `stored_mode_is_proved`-Dispatch wäre eine zweite Wahrheit.
             //
             // Zur Produktions-Optimierung `resolve_stop_modes_at` ist das
@@ -2227,7 +2227,7 @@ pub fn enclose_node(c: &mut Ctx, node: &BoundedCsg, p: [Iv; 3]) -> Enc {
                 // Gegenprobe: der GESPEICHERTE Modus, ohne Ω-Auflösung.
                 channels.iter().map(|ch| ch.stored_limit_mode()).collect()
             } else {
-                crate::offset_channel::resolve_stop_modes(inner, channels)
+                crate::offset_channel::resolve_stop_modes_closed(inner, channels)
             };
             enclose_stop(c, p, d0, channels, verts, lb.as_ref(), &modes)
         }

@@ -2559,7 +2559,7 @@ impl CertifiedSeamAddend {
     /// Wie [`Self::matches_omega`], aber gegen eine **bereits serialisierte**
     /// `Ω`-Byte-Folge.
     ///
-    /// §8ac-Korrektur (Review 20, Sollte 6): `resolve_stop_modes` serialisierte
+    /// §8ac-Korrektur (Review 20, Sollte 6): `resolve_stop_modes_closed` serialisierte
     /// `Ω` EINMAL JE KANAL — bei 24 Kanälen also 24-mal denselben Baum. Der
     /// Vergleich ist derselbe (bitweise, exakt), nur die Erzeugung passiert
     /// jetzt einmal je Stopp-Besuch und wird per `memcmp` gegen jeden Kanal

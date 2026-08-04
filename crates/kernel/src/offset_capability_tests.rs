@@ -16461,7 +16461,7 @@ fn activation_lazy_resolution_is_field_neutral_384() {
                     (lo[1] + g.next_f64() * (hi[1] - lo[1])) as f32,
                     (lo[2] + g.next_f64() * (hi[2] - lo[2])) as f32,
                 ];
-                let eager = crate::offset_channel::resolve_stop_modes(inner, channels);
+                let eager = crate::offset_channel::resolve_stop_modes_closed(inner, channels);
                 let lazy = crate::offset_channel::resolve_stop_modes_at(inner, channels, p, &crate::csg::OpenBranchSet::EMPTY);
                 assert_eq!(eager.len(), lazy.len());
                 for (i, ch) in channels.iter().enumerate() {
@@ -16948,7 +16948,7 @@ fn interval_stored_mode_dispatch_escapes_through_enclose_node_384() {
             };
             // Produktionsseitig fällt der Modus auf Legacy — sonst misst der
             // Knopf keinen Unterschied.
-            let prod = crate::offset_channel::resolve_stop_modes(inner, &[ch1.clone()]);
+            let prod = crate::offset_channel::resolve_stop_modes_closed(inner, &[ch1.clone()]);
             assert!(
                 !prod[0].is_proved(),
                 "{name}: der verpflanzte Kanal gilt unter dem fremden Ω weiter als bewiesen"
@@ -18271,8 +18271,13 @@ fn the_dual_mirror_resolves_channel_modes_like_the_cpu_tree_467() {
     }
     assert!(n > 1000, "zu wenige auswertbare Punkte ({n})");
     println!("#467 dual: {n} Punkte, grösste Abweichung Spiegel↔Original {worst:.3e} mm");
+    // Schwelle 2e-5, nicht 1e-4: der gebrochene Zustand lag bei 1,0997e-4 und
+    // der reparierte liegt bei 1,252e-6. Eine Schranke knapp unter dem Bruch
+    // hätte eine schwächere Drift durchgelassen; so bleibt der normale
+    // f32/f64-Spiegelunterschied erlaubt und die Addenden-Drift eine ganze
+    // Grössenordnung entfernt (25. Review).
     assert!(
-        worst < 1.0e-4,
+        worst < 2.0e-5,
         "der duale Spiegel weicht bei {worst_p:?} um {worst:e} mm vom CPU-Baum ab — \
          er löst die Kanal-Modi anders auf"
     );

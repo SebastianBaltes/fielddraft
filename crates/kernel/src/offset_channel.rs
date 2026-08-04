@@ -172,7 +172,7 @@ pub struct ChannelArc {
 /// #384 §8ac — die aufgelösten Laufzeitmodi aller Kanäle eines Baumes, für die
 /// **Diagnose** (`offsetChannelDiagnostics`). `(proved, A_seam, A_h)` je Kanal.
 ///
-/// Läuft über [`resolve_stop_modes`], also über den **exakten
+/// Läuft über [`resolve_stop_modes_closed`], also über den **exakten
 /// Stromvergleich von Kanal UND `Ω`** — dieselbe Auflösung, die auch die sechs
 /// Spiegel benutzen. Die Diagnose zeigt damit, was die Produktion wirklich
 /// verbraucht, nicht was einmal aufgelöst wurde. (Bis v0.65.2 stand hier eine
@@ -182,7 +182,7 @@ pub fn collect_limit_modes(node: &BoundedCsg) -> Vec<(bool, f32, f32)> {
     fn go(n: &BoundedCsg, out: &mut Vec<(bool, f32, f32)>) {
         match n {
             BoundedCsg::ArcChannel { inner, channels, .. } => {
-                for m in resolve_stop_modes(inner, channels) {
+                for m in resolve_stop_modes_closed(inner, channels) {
                     let (s, h) = m.addends();
                     out.push((m.is_proved(), s, h));
                 }
@@ -555,7 +555,7 @@ impl OffsetChannel {
     /// unzureichend erkannt hat; sie existiert weiter, damit die Pins, die
     /// ausschliesslich den KANAL-Freeze messen, kein `Ω` mitschleppen müssen.
     /// Kein Produktionspfad ruft sie — die sechs Spiegel gehen über
-    /// [`Self::limit_mode_for`] bzw. [`resolve_stop_modes`].
+    /// [`Self::limit_mode_for`] bzw. [`resolve_stop_modes_closed`].
     #[cfg(test)]
     pub(crate) fn limit_mode_channel_only(&self) -> ChannelLimitMode {
         match self.mode {
@@ -1044,7 +1044,7 @@ pub fn concave_gate(gate_w: f32, base: f32, extra: f32) -> f32 {
 /// Emitters), muss [`resolve_stop_modes_open`] mit dem dort geltenden `open`
 /// rufen — sonst wandert der Beweis des geschlossenen `Ω` in einen Pfad, für
 /// den er nicht geführt wurde (#467).
-pub(crate) fn resolve_stop_modes(
+pub(crate) fn resolve_stop_modes_closed(
     stop_inner: &crate::bvh::BoundedCsg,
     channels: &[OffsetChannel],
 ) -> Vec<ChannelLimitMode> {
@@ -1063,11 +1063,24 @@ pub(crate) fn resolve_stop_modes(
 /// dort im MATERIAL. Ein Tape, das den geschlossenen Beweis ins retained
 /// Duplikat schreibt, konsumiert ihn ausserhalb seines Vertrags.
 ///
-/// **Einmal je Stopp, nicht je Punkt.** Der Rückzug ist eine reine
-/// Emissions-Entscheidung: er hängt nur an `Ω` und `open`, nicht am
-/// Auswertungspunkt. Die punktweise Fassung [`resolve_stop_modes_at`] bleibt
-/// dem CPU-Baum vorbehalten, der `open` erst zur Laufzeit kennt; sie hier
-/// nachzubauen wäre genau der Fehler aus `be9ecc7b` (Faktor 2,5 Laufzeit).
+/// **Die Wahl der Fassung richtet sich danach, WIE ausgewertet wird**, nicht
+/// danach, welche als „schnell" gilt:
+///
+/// * Wer **einmal je Stopp emittiert** (der Tape-Emitter), nimmt diese hier.
+///   Der Rückzug hängt nur an `Ω` und `open`, beide liegen zur Emissionszeit
+///   fest — ein Auswertungspunkt existiert an der Stelle gar nicht.
+/// * Wer **punktweise auswertet** (CPU-Baum, dualer Spiegel), nimmt
+///   [`resolve_stop_modes_at`].
+///
+/// Eine frühere Fassung dieses Kommentars stellte `be9ecc7b` so dar, als sei
+/// die punktweise Auflösung dort als Fehler erkannt worden. Das ist verkehrt
+/// herum: teuer war die EIFRIGE Auflösung (Ω je Punkt UND je Kanal
+/// serialisiert, 74–76 % der Laufzeit), und `resolve_stop_modes_at` war
+/// genau die Reparatur — sie löst hinter dem `trust`-Early-Out nur noch die
+/// Kanäle auf, die an diesem Punkt binden können. Daher die 2,5x.
+///
+/// Der Regelfall — kein offenes Face weit und breit — kostet EINEN
+/// `open.is_empty()`-Test für den ganzen Stopp.
 ///
 /// Der Regelfall — kein offenes Face weit und breit — kostet EINEN
 /// `open.is_empty()`-Test für den ganzen Stopp.
@@ -1123,8 +1136,10 @@ pub(crate) fn resolve_stop_modes_at(
     // `bvh.rs` dort die retained Menge aus, und der Extrude-Aussenbeweis gilt
     // für sie NICHT — Rückzug auf Legacy.
     //
-    // **Nicht im Per-Punkt-Pfad** (Lehre aus be9ecc7b, „2,5x schneller"), in
-    // zwei Stufen:
+    // Die Lehre aus be9ecc7b ist NICHT „raus aus dem Per-Punkt-Pfad" — diese
+    // Funktion IST der Per-Punkt-Pfad und war dort die 2,5x-Reparatur. Sie
+    // lautet: nichts eifrig auflösen, was der Early-Out ohnehin neutralisiert.
+    // Der Rückzug hält sich daran und läuft in zwei Stufen:
     //
     // * `open.is_empty()` läuft EINMAL je Aufruf, vor der Schleife. Das ist
     //   eine Ketten-Traversierung über die geöffneten Flächen — im Regelfall
