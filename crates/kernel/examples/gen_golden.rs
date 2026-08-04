@@ -958,9 +958,12 @@ fn main() {
         let om = fielddraft_kernel::offset_witness::omega_of(inner)
             .expect("golden rib_comb_extrude_omega: der Stopp hat kein Ω");
         assert!(has_extrude(om), "golden rib_comb_extrude_omega: kein Extrude-Blatt in Ω");
-        assert!(
-            channels.iter().any(|c| c.limit_mode_for(om).is_proved()),
-            "golden rib_comb_extrude_omega: kein einziger Kanal im Modus Proved"
+        let n_proved = channels.iter().filter(|c| c.limit_mode_for(om).is_proved()).count();
+        assert_eq!(
+            n_proved,
+            channels.len(),
+            "golden rib_comb_extrude_omega: nur {n_proved} von {} Kanälen im Modus Proved",
+            channels.len()
         );
     }
     // Eigene Auswertungspunkte: das Standard-Gitter liegt fast ganz im
@@ -976,6 +979,44 @@ fn main() {
                 rib_pts.push([x, y, z]);
             }
         }
+    }
+    // Und der vierte Nachweis (25. Review, Punkt D): die eigenen Punkte müssen
+    // wirklich BINDEN. Eine Szene, deren Zusatzpunkte alle im Fernfeld liegen,
+    // wäre exakt der blinde Fleck mit mehr Zeilen — der Spiegel verglich dann
+    // Distanzen, die der Beweis gar nicht bestimmt. Gemessen wie im Pin
+    // `extrude_omega_channels_bind_in_the_tape_384`: gegen ein zweites Tape,
+    // das sich NUR in den drei Kopf-Worten (Modus, A_seam, A_h → 0)
+    // unterscheidet und damit bitgenau das Legacy-Feld ist.
+    {
+        use fielddraft_kernel::sdf_compiler::{
+            compile_body, eval_opcodes, ARC_STRIDE, CHANNEL_HEADER, OP_ARC_CHANNEL,
+        };
+        let ops = compile_body(&rib_comb).opcodes;
+        let mut legacy = ops.clone();
+        let mut i = 0usize;
+        while i < ops.len() {
+            if ops[i].to_bits() == OP_ARC_CHANNEL {
+                let n = ops[i + 1] as usize;
+                for k in 1..=3 {
+                    legacy[i + 1 + CHANNEL_HEADER - k] = 0.0;
+                }
+                i += 1 + CHANNEL_HEADER + n * ARC_STRIDE;
+                continue;
+            }
+            i += 1;
+        }
+        let n_bind = rib_pts
+            .iter()
+            .filter(|&&p| {
+                let (a, b) = (eval_opcodes(&ops, p), eval_opcodes(&legacy, p));
+                a.is_finite() && b.is_finite() && a.to_bits() != b.to_bits()
+            })
+            .count();
+        assert!(
+            n_bind > 0,
+            "golden rib_comb_extrude_omega: kein einziger Auswertungspunkt hängt vom Addenden ab"
+        );
+        eprintln!("golden rib_comb_extrude_omega: {n_bind} von {} Punkten bindend", rib_pts.len());
     }
     emit("rib_comb_extrude_omega", &rib_comb, &rib_pts);
 }

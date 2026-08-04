@@ -17983,8 +17983,16 @@ fn extrude_omega_channels_bind_in_the_tape_384() {
         }
         n_proved += chans.iter().filter(|c| c.limit_mode_for(om).is_proved()).count();
     }
-    assert!(n_ext_stops > 0, "Ω trägt kein Extrude-Blatt — das Fixture ist nicht mehr der Fall, den #465 meint");
-    assert_eq!((n_stops, n_ch, n_proved), (1, 19, 19), "die Kanal-/Beweis-Lage des Rippen-Kamms hat sich bewegt");
+    // Die Aussage ist RELATIONAL, nicht numerisch (25. Review, Punkt C): „jeder
+    // Kanal über einem Extrude-Ω ist bewiesen und erreicht das Tape". Eine
+    // fixierte 19 würde bei einer legitimen Topologie-Änderung reflexartig
+    // hochgezählt statt verstanden — und genau dann schwiege der Pin über das,
+    // was er sichern soll. Die konkrete Kanalzahl des Fixtures ist Sache des
+    // Zertifizierungs-Pins, nicht dieses Beweis-Pins.
+    assert!(n_stops > 0, "das Fixture hat gar keinen Kanal-Stopp mehr");
+    assert_eq!(n_ext_stops, n_stops, "nicht jeder Stopp trägt ein Extrude-Blatt in Ω — das Fixture ist nicht mehr der Fall, den #465 meint");
+    assert!(n_ch > 0, "der Stopp trägt keine Nahtkanäle");
+    assert_eq!(n_proved, n_ch, "nur {n_proved} von {n_ch} Kanälen sind bewiesen");
 
     // ── 2. Beide Addenden im Tape ─────────────────────────────────────
     let tape = compile_body(&field);
@@ -18000,7 +18008,7 @@ fn extrude_omega_channels_bind_in_the_tape_384() {
         }
         i += 1;
     }
-    assert_eq!(heads.len(), 19, "das Tape trägt {} Kanalköpfe statt 19", heads.len());
+    assert_eq!(heads.len(), n_ch, "das Tape trägt {} Kanalköpfe statt {n_ch}", heads.len());
     let (mut n_tape_proved, mut min_seam, mut max_seam, mut min_h, mut max_h) =
         (0usize, f32::INFINITY, 0.0f32, f32::INFINITY, 0.0f32);
     for &h in &heads {
@@ -18017,7 +18025,7 @@ fn extrude_omega_channels_bind_in_the_tape_384() {
             max_h = max_h.max(a_h);
         }
     }
-    assert_eq!(n_tape_proved, 19, "nur {n_tape_proved} von 19 Köpfen tragen den Beweis ins Tape");
+    assert_eq!(n_tape_proved, n_ch, "nur {n_tape_proved} von {n_ch} Köpfen tragen den Beweis ins Tape");
 
     // ── 3. Das Legacy-Tape: NUR die drei Kopf-Worte genullt ───────────
     let mut legacy_ops = ops.clone();

@@ -8567,7 +8567,10 @@ Beweis nie zugesagt hat.
   `nonfinite_profile_numbers_are_refused_384` (war ROT am
   `half_extents`-`NaN` im Aussenbeweis).
 * **Golden byte-identisch**: `915bab98…40eb`, `check_interp` 35 Szenen /
-  17.920 Vergleiche / 0 Fehler.
+  17.920 Vergleiche / 0 Fehler. — *Historischer Stand von Stufe A.* §8ag zeigt,
+  dass der Korpus die Klasse „Nahtkanäle über Extrude-`Ω`" damals überhaupt
+  nicht enthielt: diese Byte-Identität ist ein Beleg dafür, dass nichts
+  Bestehendes brach, und **keine** Abdeckungszusage für die geänderte Semantik.
 * **Web-Vitest 2082**, unverändert.
 * Der §8aa-Shadow-Pin steht unbewegt auf **(217, 2, 19, 0, 0, 0)** — das ist
   die Feldneutralität, gemessen und nicht behauptet.
@@ -8877,20 +8880,46 @@ und seine bindenden Punkte selbst sucht.
   `1e-6`. Der C++-Spiegel brauchte **keine Änderung**.
 * **Web-Vitest 2082**, unverändert.
 
-### Ein Nebenbefund, am Code GELESEN und NICHT gemessen
+### Ein Nebenbefund: ein Bruch des Beweisvertrags im Emitter (#467)
+
+Gefunden wurde er am Code, **nicht** gemessen; die Einordnung stammt aus dem
+25. Review, der ihn unabhängig nachvollzogen und schärfer eingestuft hat, als
+er hier zuerst notiert war.
 
 `compile_body` ruft `emit_node` mit `OpenBranchSet::EMPTY` — aus dieser Tür
 kann der Stufe-B-Rückzug (`LegacyReason::OpenRetainedPath`) also nie fehlen.
-Der `Shell`-Arm von `emit_node` reicht jedoch ein **gemischtes** `open` nach
-innen (`sdf_compiler.rs:862`), während die Emitter-seitige Modus-Auflösung
-`resolve_stop_modes` gar keinen `open`-Parameter hat — nur die CPU-Variante
-`resolve_stop_modes_at` kennt den Rückzug. Ein `ArcChannel` über einem
-Extrude-`Ω` UNTERHALB einer `Shell` mit geöffnetem Extrude-Feature würde damit
-im Tape `Proved` tragen und im CPU-Baum `Legacy`. Die Formulierung in §8af
-(„nur der CPU-Baum kennt überhaupt ein `OpenSet`") ist insofern ungenau. Ob
-diese Konstellation konstruierbar ist und ob sie wirklich divergiert, ist
-**nicht nachgemessen** — hier steht nur, was am Code zu lesen ist. Es gehört
-in einen eigenen Schritt, nicht in diesen.
+Der `Shell`-Arm emittiert sein Kind aber **zweimal**: einmal geschlossen
+(`sdf_compiler.rs:855`) und einmal retained mit einem gemischten `open`
+(`sdf_compiler.rs:861`). Der innere Extrude-Emitter bekommt dieses `open`
+korrekt und emittiert das retained Profil samt Kappenmaske. Die
+**Kanal-Modi** dagegen löst der Emitter mit `resolve_stop_modes`
+(`sdf_compiler.rs:754`) auf — einer Funktion, die gar keinen `open`-Parameter
+hat und den Rückzug nicht kennt. Nur die CPU-Variante `resolve_stop_modes_at`
+(`bvh.rs:590`, `:909`) kennt ihn.
+
+Das Tape kombiniert damit **retained `Ω`** mit dem **Addenden-Beweis für
+geschlossenes `Ω`**, der CPU-Baum korrekt retained `Ω` mit
+`LegacyUnproven(OpenRetainedPath)`. Das ist deshalb **nicht bloss eine
+Tape↔CPU-Divergenz**: der Naht-Aussenzeuge kann in der retained Menge im
+Material liegen, womit die Voraussetzung des Addenden ganz entfällt. Das Tape
+konsumiert einen Beweis ausserhalb seines Vertrags und kann Phantom-Material
+behaupten. Die Formulierung in §8af („nur der CPU-Baum kennt überhaupt ein
+`OpenSet`") ist damit nicht nur ungenau, sondern in dieser Konstellation
+falsch.
+
+Eine ausschliessende Invariante gibt es nach dem 25. Review nicht — die
+Konstellation ist konstruierbar. Der saubere Fix ist eine **nicht-punktweise**
+Auflösung `resolve_stop_modes_open(inner, channels, open)` für den Emitter:
+sobald `omega_has_open_extrude(Ω, open)` gilt, werden die betroffenen Modi
+konservativ Legacy. Rein geschlossene Verbraucher behalten die heutige
+Funktion. Die Gegenprobe gehört als Struktur-Pin auf die Kopf-Worte der
+**beiden** Shell-Duplikate (geschlossen `Proved`, retained Legacy) — sie ist
+schärfer als jede Punktsuche.
+
+Das ist **nicht** in #465 erledigt: #465 schliesst die Lücke, die es schliessen
+sollte, und hat diese hier überhaupt erst sichtbar gemacht. Sie läuft als
+eigenes Ticket **#467** und ist ein Blocker gegen jede weitere Feldfreigabe und
+gegen den Abschluss von #384.
 
 ## 9. Geschriebene Dateien
 
