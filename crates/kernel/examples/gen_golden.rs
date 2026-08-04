@@ -888,4 +888,94 @@ fn main() {
         "golden rim_arc_stadium: kein OP_RIM_FILLET_ARC emittiert"
     );
     emit("rim_arc_stadium", &rim_arc_stadium, &pts);
+
+    // ── #465 / §8ag: Nahtkanäle ÜBER einem Extrude-Ω ───────────────────
+    // Der blinde Fleck des Korpus: bis hierher trägt KEINE der 35 Szenen
+    // beides. Die drei Szenen mit `Extrude` in `Ω` (contact_prism_stack,
+    // rim_box_stack, rim_arc_stadium) haben null Kanäle; die beiden mit
+    // Kanälen (vertex_sphere_corner, arc_channel_notch) haben kein Extrude.
+    // Ein Modus-Wechsel am Extrude-Aussenbeweis (§8ae/§8af) konnte das Tape
+    // deshalb gar nicht erreichen — die Byte-Identität des Goldens belegte
+    // in dieser Klasse keine Feldneutralität, sondern nur die Lücke.
+    //
+    // Diese Szene schliesst sie: ein kleiner Rippen-Kamm (Platte + zwei
+    // eingelassene Rippen, Erosion −δ) in denselben Proportionen wie das
+    // Zertifizierungs-Fixture `Rippen-Kamm 4×1.5/0.8`, nur mit zwei Rippen.
+    // Die FC-Kontakt-Prismen der Synthese sitzen als `Extrude`-Blätter IN
+    // `Ω`, und die Rippenflanken tragen bewiesene Nahtkanäle.
+    let rib_comb = {
+        let (nribs, w, g) = (2u32, 1.5f32, 0.8f32);
+        let (plate, ylen, h, embed, l) = (12.0f32, 22.0f32, 8.0f32, 5.0f32, 20.0f32);
+        let pitch = w + g;
+        let x0 = -0.5 * (nribs as f32 * pitch - g);
+        let mut node = CsgNode::Transform(
+            xform([0.0, 0.0, -0.5 * plate], id, s1),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(1),
+                primitive: Primitive::Box { center: [0.0; 3], half_extents: [l, l, 0.5 * plate] },
+            }),
+        );
+        for i in 0..nribs {
+            let cx = x0 + 0.5 * w + i as f32 * pitch;
+            node = CsgNode::Union(
+                Box::new(node),
+                Box::new(CsgNode::Transform(
+                    xform([cx, 0.0, 0.5 * (h - embed)], id, s1),
+                    Box::new(CsgNode::Leaf {
+                        id: FeatureId::from_u32(2 + i),
+                        primitive: Primitive::Box {
+                            center: [0.0; 3],
+                            half_extents: [0.5 * w, ylen, 0.5 * (h + embed)],
+                        },
+                    }),
+                )),
+            );
+        }
+        real_offset_bvh(&CsgNode::Offset(Box::new(node), -2.0))
+    };
+    // Die DREI Nachweise, gemessen statt angenommen (#465). Eine Szene, die
+    // nur so aussieht, als schlösse sie den blinden Fleck, wäre exakt
+    // derselbe Fleck mit mehr Zeilen.
+    {
+        fn has_extrude(n: &BoundedCsg) -> bool {
+            match n {
+                BoundedCsg::Extrude { .. } => true,
+                BoundedCsg::Union { left, right, .. }
+                | BoundedCsg::Difference { left, right, .. }
+                | BoundedCsg::Intersection { left, right, .. } => {
+                    has_extrude(left) || has_extrude(right)
+                }
+                BoundedCsg::Offset { inner, .. } | BoundedCsg::ArcChannel { inner, .. } => {
+                    has_extrude(inner)
+                }
+                _ => false,
+            }
+        }
+        let BoundedCsg::ArcChannel { inner, channels, .. } = &rib_comb else {
+            panic!("golden rib_comb_extrude_omega: kein ArcChannel-Stopp");
+        };
+        assert!(!channels.is_empty(), "golden rib_comb_extrude_omega: keine Nahtkanäle");
+        let om = fielddraft_kernel::offset_witness::omega_of(inner)
+            .expect("golden rib_comb_extrude_omega: der Stopp hat kein Ω");
+        assert!(has_extrude(om), "golden rib_comb_extrude_omega: kein Extrude-Blatt in Ω");
+        assert!(
+            channels.iter().any(|c| c.limit_mode_for(om).is_proved()),
+            "golden rib_comb_extrude_omega: kein einziger Kanal im Modus Proved"
+        );
+    }
+    // Eigene Auswertungspunkte: das Standard-Gitter liegt fast ganz im
+    // Fernfeld dieser kleinen Szene. Dazu kommt ein festes Gitter über dem
+    // Fenster, das die Zertifizierungs-Matrix für dieses Fixture benutzt
+    // (x ∈ ±4.9, y ∈ ±1, z ∈ [−6, 0.5]) — dort BINDET die Kanal-Klemme, der
+    // C++-Spiegel vergleicht also Werte, die der Beweis bestimmt, und nicht
+    // nur Fernfeld-Distanzen.
+    let mut rib_pts = pts.clone();
+    for &x in &[-4.9f32, -3.5, -2.4, -1.6, -0.9, -0.3, 0.3, 0.9, 1.6, 2.4, 3.5, 4.9] {
+        for &y in &[-1.0f32, 1.0] {
+            for &z in &[-6.0f32, -4.0, -2.5, -1.2, -0.4, 0.5] {
+                rib_pts.push([x, y, z]);
+            }
+        }
+    }
+    emit("rib_comb_extrude_omega", &rib_comb, &rib_pts);
 }

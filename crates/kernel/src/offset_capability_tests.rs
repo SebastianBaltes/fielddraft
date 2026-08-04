@@ -17913,3 +17913,160 @@ fn stage_b_moves_the_delivered_field_384() {
     assert!(worst > 1.0e-6, "die Bewegung liegt im Rundungsrauschen ({worst:e})");
     assert!(worst < 1.0e-3, "die Bewegung ist grösser als erwartet ({worst:e}) — §8ae prüfen");
 }
+
+/// **#465 / §8ag — der kausale Tape-Pin für Extrude-`Ω` mit Nahtkanälen.**
+///
+/// Stufe B (§8af) hat das Feld bewegt und den Golden NICHT bewegt. Der Grund
+/// war kein Beleg, sondern eine Lücke: der Schnitt aus „Szene hat Nahtkanäle"
+/// und „Szene hat ein `Extrude`-Blatt in `Ω`" ist im Golden-Korpus leer
+/// (nachgemessen über alle 35 Szenen, s. §8ag). Eine unbewegte
+/// Golden-Signatur ist damit in dieser Klasse KEIN Beleg für Feldneutralität.
+///
+/// Dieser Pin schliesst die Lücke kausal — über das Tape, nicht über den
+/// Korpus:
+///
+/// 1. Der Rippen-Kamm 4×1.5/0.8 wird kompiliert. Sein `Ω` trägt Extrude-
+///    Blätter (die FC-Kontakt-Prismen), und seine 19 Kanäle sind seit Stufe B
+///    bewiesen — beides wird hier gemessen, nicht angenommen.
+/// 2. Die 19 `OP_ARC_CHANNEL`-Köpfe (je `CHANNEL_HEADER` Worte) werden aus dem
+///    Strom gelesen; **beide** Addenden (`A_seam`, `A_h`) müssen die Reise
+///    ins Tape überlebt haben.
+/// 3. **Bindende Punkte** werden GESUCHT, nicht gehofft: ein zweites Tape,
+///    das sich vom ersten NUR durch genullte Kopf-Worte (Modus + beide
+///    Addenden) unterscheidet, ist genau das Legacy-Feld. Wo die beiden Tapes
+///    verschiedene Werte liefern, bestimmt die Kanal-Klemme mit ihrem
+///    bewiesenen Addenden den Wert — das ist die Definition von „bindend".
+/// 4. An genau diesen Punkten wird der Tape-Interpreter gegen die
+///    CPU-Auswertung (`BoundedCsg::sdf`) gestellt. Driftet einer der beiden,
+///    fällt der Pin — und zwar dort, wo der Beweis wirkt, nicht irgendwo.
+#[test]
+fn extrude_omega_channels_bind_in_the_tape_384() {
+    use crate::sdf_compiler::{
+        compile_body, eval_opcodes, ARC_STRIDE, CHANNEL_HEADER, OP_ARC_CHANNEL,
+    };
+
+    /// `true`, wenn irgendwo im Baum ein `Extrude`-Blatt sitzt.
+    fn has_extrude(n: &BoundedCsg) -> bool {
+        match n {
+            BoundedCsg::Extrude { .. } => true,
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. }
+            | BoundedCsg::SmoothUnion { left, right, .. }
+            | BoundedCsg::SmoothDifference { left, right, .. }
+            | BoundedCsg::MaskedBlend { left, right, .. }
+            | BoundedCsg::Morph { left, right, .. } => has_extrude(left) || has_extrude(right),
+            BoundedCsg::Twist { inner, .. }
+            | BoundedCsg::Bend { inner, .. }
+            | BoundedCsg::Displace { inner, .. }
+            | BoundedCsg::Shell { inner, .. }
+            | BoundedCsg::Offset { inner, .. }
+            | BoundedCsg::InnerWall { inner, .. }
+            | BoundedCsg::ArcChannel { inner, .. } => has_extrude(inner),
+            _ => false,
+        }
+    }
+
+    let delta = 2.0f32;
+    let (_name, field, _e, lo, hi, _c) = cert_matrix(delta)
+        .into_iter()
+        .find(|(n, ..)| n == "Rippen-Kamm 4×1.5/0.8")
+        .expect("das Extrude-Fixture fehlt");
+
+    // ── 1. Die Voraussetzung, gemessen ────────────────────────────────
+    let (mut n_stops, mut n_ch, mut n_ext_stops, mut n_proved) = (0usize, 0usize, 0usize, 0usize);
+    for (om, chans) in omega_and_channels(&field) {
+        n_stops += 1;
+        n_ch += chans.len();
+        if has_extrude(om) {
+            n_ext_stops += 1;
+        }
+        n_proved += chans.iter().filter(|c| c.limit_mode_for(om).is_proved()).count();
+    }
+    assert!(n_ext_stops > 0, "Ω trägt kein Extrude-Blatt — das Fixture ist nicht mehr der Fall, den #465 meint");
+    assert_eq!((n_stops, n_ch, n_proved), (1, 19, 19), "die Kanal-/Beweis-Lage des Rippen-Kamms hat sich bewegt");
+
+    // ── 2. Beide Addenden im Tape ─────────────────────────────────────
+    let tape = compile_body(&field);
+    let ops = tape.opcodes.clone();
+    let mut heads: Vec<usize> = Vec::new();
+    let mut i = 0usize;
+    while i < ops.len() {
+        if ops[i].to_bits() == OP_ARC_CHANNEL {
+            let n = ops[i + 1] as usize;
+            heads.push(i);
+            i += 1 + CHANNEL_HEADER + n * ARC_STRIDE;
+            continue;
+        }
+        i += 1;
+    }
+    assert_eq!(heads.len(), 19, "das Tape trägt {} Kanalköpfe statt 19", heads.len());
+    let (mut n_tape_proved, mut min_seam, mut max_seam, mut min_h, mut max_h) =
+        (0usize, f32::INFINITY, 0.0f32, f32::INFINITY, 0.0f32);
+    for &h in &heads {
+        let mode = ops[h + 1 + CHANNEL_HEADER - 3];
+        let a_seam = ops[h + 1 + CHANNEL_HEADER - 2];
+        let a_h = ops[h + 1 + CHANNEL_HEADER - 1];
+        if mode == 1.0 {
+            n_tape_proved += 1;
+            assert!(a_seam > 0.0, "Kopf @{h}: Proved mit A_seam = {a_seam}");
+            assert!(a_h > 0.0, "Kopf @{h}: Proved mit A_h = {a_h}");
+            min_seam = min_seam.min(a_seam);
+            max_seam = max_seam.max(a_seam);
+            min_h = min_h.min(a_h);
+            max_h = max_h.max(a_h);
+        }
+    }
+    assert_eq!(n_tape_proved, 19, "nur {n_tape_proved} von 19 Köpfen tragen den Beweis ins Tape");
+
+    // ── 3. Das Legacy-Tape: NUR die drei Kopf-Worte genullt ───────────
+    let mut legacy_ops = ops.clone();
+    for &h in &heads {
+        legacy_ops[h + 1 + CHANNEL_HEADER - 3] = 0.0;
+        legacy_ops[h + 1 + CHANNEL_HEADER - 2] = 0.0;
+        legacy_ops[h + 1 + CHANNEL_HEADER - 1] = 0.0;
+    }
+
+    // ── 4. Bindende Punkte suchen, dort Tape gegen CPU ────────────────
+    let mut g = Lcg(0x465_0001);
+    let (mut n_pts, mut n_bind) = (0usize, 0usize);
+    let (mut worst_move, mut worst_par) = (0.0f64, 0.0f64);
+    for _ in 0..200_000 {
+        let p = [
+            (lo[0] + g.next_f64() * (hi[0] - lo[0])) as f32,
+            (lo[1] + g.next_f64() * (hi[1] - lo[1])) as f32,
+            (lo[2] + g.next_f64() * (hi[2] - lo[2])) as f32,
+        ];
+        let d_tape = eval_opcodes(&ops, p);
+        let d_leg = eval_opcodes(&legacy_ops, p);
+        if !(d_tape.is_finite() && d_leg.is_finite()) {
+            continue;
+        }
+        n_pts += 1;
+        if d_tape.to_bits() == d_leg.to_bits() {
+            continue;
+        }
+        // BINDEND: hier bestimmt der bewiesene Addend den Wert.
+        n_bind += 1;
+        assert!(d_tape < d_leg, "bei {p:?} nimmt der Beweis im Tape Material weg");
+        worst_move = worst_move.max((d_leg - d_tape) as f64);
+        let d_cpu = field.sdf(p, EvalMode::Visual);
+        let e = (d_tape - d_cpu).abs() as f64;
+        worst_par = worst_par.max(e);
+        assert!(
+            e < 2.0e-5,
+            "Tape ↔ CPU driften am BINDENDEN Punkt {p:?}: Tape {d_tape}, CPU {d_cpu}"
+        );
+    }
+    println!(
+        "#465: Rippen-Kamm 4×1.5/0.8 — {n_ch} Kanäle, {n_proved} bewiesen, {n_tape_proved} Köpfe im Tape; \
+         A_seam ∈ [{min_seam:e}, {max_seam:e}], A_h ∈ [{min_h:e}, {max_h:e}]; \
+         {n_bind} von {n_pts} Punkten bindend, grösste Absenkung {worst_move:.4e} mm, \
+         grösste Tape↔CPU-Abweichung {worst_par:.3e} mm"
+    );
+    assert!(
+        n_bind > n_pts / 20,
+        "nur {n_bind} von {n_pts} Punkten bindend — der Pin pinnt nichts"
+    );
+    assert!(worst_move > 1.0e-6, "die Bewegung im Tape liegt im Rundungsrauschen ({worst_move:e})");
+}

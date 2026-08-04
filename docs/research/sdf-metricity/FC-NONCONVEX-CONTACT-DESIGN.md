@@ -8768,7 +8768,9 @@ nichts zu tun hat, und gehört in einen eigenen Schritt.
 
 ### Was OFFEN bleibt
 
-* Die fehlende Golden-Szene mit Extrude-`Ω` und Nahtkanälen (s. o.).
+* ~~Die fehlende Golden-Szene mit Extrude-`Ω` und Nahtkanälen (s. o.).~~ —
+  erledigt in **§8ag** (#465), zusammen mit dem kausalen Tape-Pin, der die
+  Lücke schärfer schliesst als die Szene.
 * Ein **eigener Beweis gegen die retained Menge** statt des Rückzugs. Der
   Rückzug ist die konservative Antwort auf Befund 2; ein Beweis, der die
   offenen Kappen mitführt, würde die Kanäle auch im offenen Pfad halten. Er
@@ -8777,9 +8779,127 @@ nichts zu tun hat, und gehört in einen eigenen Schritt.
   Profil-Offsets, `Revolve`/`Helix`/`Sweep`/`Loft` — unverändert offen, s.
   §8ae „Was bewusst `false` bleibt".
 
+## 8ag. Der blinde Fleck des Golden-Korpus — geschlossen (#465 zu #384, 2026-08-04)
+
+§8af hat eine Feldbewegung gemessen und einen unbewegten Golden-Hash gemeldet.
+Beides stimmte, und genau deshalb war die Byte-Identität **kein Beleg**.
+
+### Die Erhebung: der Schnitt ist wirklich leer
+
+Der Befund aus §8af wurde nicht übernommen, sondern nachgemessen — eine Sonde
+in `gen_golden` über **alle 35** Szenen, die je `ArcChannel`-Stopp Kanalzahl,
+`Extrude`-Blatt in `Ω` und die aufgelösten Modi ausgibt:
+
+| Golden-Szene | Kanäle | `Extrude` in `Ω` | Proved |
+|---|---|---|---|
+| `vertex_sphere_corner` | 24 | nein | 24 |
+| `arc_channel_steinmetz` | 2 | — (`omega_of` = `None`) | 0 |
+| `arc_channel_notch` | 1 | nein | 1 |
+| `contact_prism_stack` | 0 | **ja** | 0 |
+| `rim_box_stack` | 0 | **ja** | 0 |
+| `rim_arc_stadium` | 0 | **ja** | 0 |
+| `contact_prism_pocket_dilation`, `rim_flush_pocket` | 0 | nein | 0 |
+| die übrigen 27 Szenen | 0 (kein `ArcChannel`-Stopp) | — | 0 |
+
+**Bestätigt.** 27 Kanäle im ganzen Korpus, keiner davon über einem
+Extrude-`Ω`; drei Szenen mit Extrude-`Ω`, keine davon mit einem Kanal. Der
+Schnitt ist leer, und ein Modus-Wechsel am Extrude-Aussenbeweis konnte das Tape
+gar nicht erreichen.
+
+### Der kausale Pin zuerst — er ist die eigentliche Absicherung
+
+Eine Golden-Szene beweist Rust-↔-C++-Parität. Sie beweist nicht, dass der
+Beweis das Tape überhaupt erreicht. Deshalb steht der End-to-End-Pin
+**vor** der Szene: `extrude_omega_channels_bind_in_the_tape_384`.
+
+Er kompiliert das Zertifizierungs-Fixture `Rippen-Kamm 4×1.5/0.8`, misst
+(nicht: nimmt an), dass `Ω` Extrude-Blätter trägt und alle **19** Kanäle
+bewiesen sind, liest die 19 `OP_ARC_CHANNEL`-Köpfe zu je `CHANNEL_HEADER` = 44
+Worten aus dem Strom und verlangt **beide** Addenden echt positiv:
+`A_seam ∈ [1.028e-4, 3.305e-1]`, `A_h ∈ [1.579e-5, 1.702e-5]`.
+
+**Bindende Punkte werden gesucht, nicht gehofft.** Zufälliges Sampeln pinnt
+hier nichts: der weitaus grösste Teil des Fensters liegt im Fernfeld, wo die
+Klemme neutral ist und Tape wie CPU trivial übereinstimmen. Der Pin baut
+stattdessen ein **zweites Tape, das sich vom ersten NUR in den drei Kopf-Worten
+unterscheidet** (Modus, `A_seam`, `A_h` auf null) — das ist bitgenau das
+Legacy-Feld. Wo die beiden Tapes verschiedene Werte liefern, bestimmt der
+bewiesene Addend den Wert; das ist die operative Definition von „bindend", und
+sie kommt ohne Kenntnis der Geometrie aus.
+
+Gemessen über 200.000 Punkte im cert-Fenster: **28.902 bindende Punkte**,
+grösste Absenkung **1.0979e-4 mm** (ausnahmslos nach unten — die Richtung, die
+§8ac-Pin 1 fordert), und an jedem einzelnen dieser Punkte stimmt
+`eval_opcodes` mit `BoundedCsg::sdf` überein — grösste Abweichung **0.000e0**,
+also bit-identisch. Die Zahlen decken sich mit der CPU-seitigen Messung aus
+§8af (28.730 / 1.098e-4; der Unterschied ist der andere RNG-Startwert).
+
+### Danach die Szene: `rib_comb_extrude_omega`
+
+Ein kleiner Rippen-Kamm in denselben Proportionen wie das Fixture, nur mit
+**zwei** Rippen (Platte 20×20×12, zwei Rippen 1.5 breit, Lücke 0.8, 5 mm
+eingelassen, Erosion −2). Nachgemessen, nicht angenommen — die drei Nachweise
+stehen als `assert!` IM Generator, damit die Szene nicht still zu genau dem
+blinden Fleck mit mehr Zeilen verkommen kann:
+
+* **11 Nahtkanäle** (> 0),
+* **`Extrude` in `Ω`** (die FC-Kontakt-Prismen der Synthese),
+* **11 von 11 im Modus `Proved`** (≥ 1 gefordert).
+
+Die Szene bekommt **eigene Auswertungspunkte**: das Standard-Gitter liegt fast
+ganz im Fernfeld dieser kleinen Geometrie (dort binden nur 29 von 512 Punkten).
+Dazu kommt ein festes 12×2×6-Gitter über dem cert-Fenster (x ∈ ±4.9, y ∈ ±1,
+z ∈ [−6, 0.5]), von dem **38 von 144** binden — zusammen **67 der 656** Punkte
+der Szene. Der C++-Spiegel vergleicht damit Werte, die der Beweis bestimmt, und
+nicht bloss Fernfeld-Distanzen.
+
+### Die allgemeine Lehre
+
+**Eine unbewegte Golden-Signatur ist nur so viel wert wie die Abdeckung des
+Korpus.** Byte-Identität ist eine Aussage über die Szenen, die drinstehen — nie
+über die Klasse, die man gerade geändert hat. Wer eine Feldänderung mit „das
+Golden hat sich nicht bewegt" belegt, schuldet zuerst den Nachweis, dass der
+Korpus die geänderte Klasse überhaupt enthält; sonst misst er seine eigene
+Lücke. Und wenn der Nachweis fehlt, ist der billigere und schärfere Ersatz
+nicht eine weitere Szene, sondern ein Pin, der den Wirkpfad kausal durchläuft
+und seine bindenden Punkte selbst sucht.
+
+### Belege
+
+* **`cargo nextest run --workspace`**: **1558** (Baseline 1557) — ein neuer
+  Pin, `extrude_omega_channels_bind_in_the_tape_384`.
+* **Golden**: `1f832dde…c067` (vorher `915bab98…40eb`), 28.579 statt 25.355
+  Zeilen. Die Bewegung ist **vollständig die neue Szene**: die ersten 25.355
+  Zeilen sind byte-identisch mit dem alten Korpus, die neue Szene ist reines
+  Anhängen.
+* **`check_interp`**: **36 Szenen**, 18.576 Vergleiche, **0 Fehler**,
+  `worst_err = 2e-6` (unverändert `sweep_open_twist`); die neue Szene liegt bei
+  `1e-6`. Der C++-Spiegel brauchte **keine Änderung**.
+* **Web-Vitest 2082**, unverändert.
+
+### Ein Nebenbefund, am Code GELESEN und NICHT gemessen
+
+`compile_body` ruft `emit_node` mit `OpenBranchSet::EMPTY` — aus dieser Tür
+kann der Stufe-B-Rückzug (`LegacyReason::OpenRetainedPath`) also nie fehlen.
+Der `Shell`-Arm von `emit_node` reicht jedoch ein **gemischtes** `open` nach
+innen (`sdf_compiler.rs:862`), während die Emitter-seitige Modus-Auflösung
+`resolve_stop_modes` gar keinen `open`-Parameter hat — nur die CPU-Variante
+`resolve_stop_modes_at` kennt den Rückzug. Ein `ArcChannel` über einem
+Extrude-`Ω` UNTERHALB einer `Shell` mit geöffnetem Extrude-Feature würde damit
+im Tape `Proved` tragen und im CPU-Baum `Legacy`. Die Formulierung in §8af
+(„nur der CPU-Baum kennt überhaupt ein `OpenSet`") ist insofern ungenau. Ob
+diese Konstellation konstruierbar ist und ob sie wirklich divergiert, ist
+**nicht nachgemessen** — hier steht nur, was am Code zu lesen ist. Es gehört
+in einen eigenen Schritt, nicht in diesen.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
+- `crates/kernel/examples/gen_golden.rs` §8ag — die Golden-Szene
+  `rib_comb_extrude_omega` (Nahtkanäle über einem Extrude-`Ω`) samt der drei
+  gemessenen Nachweise und ihrer eigenen Auswertungspunkte.
+- `crates/kernel/src/offset_capability_tests.rs` §8ag — der kausale Pin
+  `extrude_omega_channels_bind_in_the_tape_384`.
 - Produktionscode §8af (Stufe B, **Feldänderung**):
   `crates/kernel/src/offset_witness.rs` — `EXTRUDE_COVER_STAGE = Active` und
   `omega_has_open_extrude`.
