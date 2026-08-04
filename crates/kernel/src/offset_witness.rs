@@ -1300,18 +1300,13 @@ pub(crate) fn point_bridge_mm(arc: &ChannelArc) -> Option<f64> {
     if !arc_usable(arc) {
         return None;
     }
-    // #384 P5c-A, Blocker 1 des Bogen-Reviews: die Herleitung UND die Rechnung
-    // unten sind ausschliesslich das Segmentlemma `q(t) = c + u·(t·r)` — sie
-    // lesen weder `v` noch `e`/`D_e`, kennen die Sektor-Zweige von
-    // `arc_closest` nicht und budgetieren insbesondere nicht, dass der
-    // Produktions-Endpunkt aus dem gespeicherten, NICHT exakt normierten `e`
-    // kommt, während `piece_box` dort `normalize(diamond_dir(D_e))` benutzt.
-    // Seit P5c-A lässt `arc_usable` gekrümmte Bögen durch; ohne diese Sperre
-    // gäbe die Brücke für sie stillschweigend ein Budget zurück, das für sie
-    // nie hergeleitet wurde — und der Kanal trüge ein `Proved`, das den
-    // f32-Schritt gar nicht abdeckt. Die gekrümmte Brücke ist P5c-B (#463).
+    // #384 P5c-B: der gekrümmte Bogen hat eine EIGENE Herleitung
+    // ([`curved_point_bridge_mm`]) — das Segmentlemma unten liest weder `v`
+    // noch `e`/`D_e` und kennt die drei Zweige von `arc_closest` nicht. Bis
+    // P5c-A stand hier `return None`; ein stilles Weiterreichen an das
+    // Segmentlemma wäre ein Budget, das für Bögen nie hergeleitet war.
     if !(arc.sweep < 0.0) {
-        return None;
+        return curved_point_bridge_mm(arc);
     }
     let r = arc.r as f64;
     if !(r >= 1.0e-9) {
@@ -1333,6 +1328,237 @@ pub(crate) fn point_bridge_mm(arc: &ChannelArc) -> Option<f64> {
     }
     let v = next_up(sum.sqrt());
     (v.is_finite() && v >= 0.0).then_some(v)
+}
+
+/// Der Rundungsposten EINER f32-Operation, deren Ergebnis betragsmässig durch
+/// `hi` beschränkt ist: `|fl(z) − z| ≤ u·|z| + 2⁻¹⁵⁰`, nach oben gerundet.
+///
+/// Der Unterlauf-Posten steht auch dort, wo Hauser ihn erlässt (Subtraktion
+/// zweier f32) — er kostet nichts und erspart eine Fallunterscheidung, die
+/// beim nächsten Umbau schiefgehen könnte.
+#[inline]
+fn rnd_step(hi: f64) -> f64 {
+    next_up(next_up(F32_U * hi) + F32_SUB)
+}
+
+/// **Lemma 2c (Punkt-Brücke für den gekrümmten Bogen, #384 P5c-B).**
+///
+/// Wie Lemma 2, aber für `sweep ≥ 0`: der von
+/// [`arc_closest`](crate::offset_channel::arc_closest) gelieferte Fusspunkt
+/// liegt höchstens `ε_q` von einem **wirklichen** Punkt der modellierten Naht
+///
+/// ```text
+/// Q = { c + r·(u·Ŵ₀(t·D_e) + v·Ŵ₁(t·D_e)) : t ∈ [0,1] },
+/// Ŵ(D) = normalize(diamond_dir(D))   (reell, nicht f32)
+/// ```
+///
+/// entfernt — **derselben** Menge, die [`piece_box`] kachelt. Nichts anderes
+/// verlangt die Brücke; ob `arc_closest` den exakten Nächstpunkt trifft, ist
+/// für sie wie im geraden Fall egal.
+///
+/// `arc_closest` hat für `sweep ≥ 0` genau drei Ausgänge, und jeder bekommt
+/// hier sein eigenes Lemma. Das Maximum der drei ist die Schranke; eine
+/// Fallunterscheidung nach Auswertungspunkt gäbe es nicht, weil `ε_q` VOR
+/// jeder Auswertung feststehen muss.
+///
+/// **(1) Achse** (`ρ < 10⁻⁹`). Rückgabe ist `q₀`, komponentenweise
+/// `fl(c_k + fl(r·u_k))`. Das Ziel ist `Q` bei `t = 0`: `Ŵ(0) = (1,0)` ist
+/// **exakt**, also `P(0) = c + r·u` — dieselbe reelle Formel, nur ungerundet.
+/// Der Posten ist reine Arithmetik: `|q̃_k − (c_k + r·u_k)| ≤ e_b + e_q`.
+///
+/// **(2) Innerer Sektor.** Rückgabe ist `q_k = fl(c_k + fl(r·fl(fl(u_k·g₀) +
+/// fl(v_k·g₁))))` mit `g = (fl(x/ρ), fl(y/ρ))` — **nicht** über `diamond_dir`.
+/// Drei Posten:
+/// * die Rundung der Kette oben;
+/// * `g` ist nicht exakt normiert: `|g − ĝ| ≤ ||g| − 1| =: ν`, und `ν` folgt
+///   aus den Schranken für `ρ = fl(√(fl(fl(x²)+fl(y²))))` und die beiden
+///   Divisionen;
+/// * `ĝ` liegt nicht sicher IM Parameterfenster. Der Sektor-Test ist
+///   `a = y ≥ 0` (exakt, keine Rundung) und `b = fl(fl(x·e₁) − fl(y·e₀)) ≥ 0`.
+///   Exakt gilt `b = ρ·|e|·sin(α − φ)`, also schneidet `b ≥ 0` genau
+///   `φ ≤ α` heraus; in f32 bleibt ein Schlupf `β = u(|x·e₁| + |y·e₀|) +
+///   2·2⁻¹⁵⁰`. Der Punkt darf deshalb um bis zu `arcsin(β/(ρ|e|))` über `α`
+///   hinausstehen, dazu kommen die Winkelfehler `g ↦ ĝ` und `α ↦ φ(D_e)`.
+///   Die Überschreitung wird als Kreisbogen bezahlt: `r·(|u_k|+|v_k|)·Δφ`.
+///
+///   **Der Sektortest hat eine zweite, ferne Lösungsmenge**: `sin(α−φ) ≥ −β'`
+///   ist auch für `φ ≥ α + π − arcsin β'` erfüllt — ein Punkt am GEGENÜBER-
+///   liegenden Ende des Kreises. Sie ist nur bewohnbar, wenn `α ≤ arcsin β'`,
+///   der Bogen also unterhalb der Rundungs-Auflösung liegt. Genau das wird
+///   geprüft (`α_lo > θ_sek`); ist es nicht erfüllt, gibt es **kein** Budget
+///   (`None`) statt eines Budgets, das den halben Kreis unterschlägt.
+///
+/// **(3) Endpunkt.** Rückgabe ist `q₁ = fl(c_k + fl(r·fl(fl(u_k·e₀) +
+/// fl(v_k·e₁))))` — aus dem **gespeicherten** `e`. `Q` endet dagegen bei
+/// `c + r·Ŵ(D_e)`, und die beiden sind NICHT derselbe Punkt:
+/// * `e` ist nur bis `| |e|² − 1 | ≤ 10⁻³` normiert
+/// ([`arc_data_valid`](crate::offset_channel::arc_data_valid)), also liegt
+///   `q₁` radial um bis zu `r·| |e| − 1 |` neben dem Kreis. Das ist der
+///   **grösste Posten des ganzen Pakets** — er wird budgetiert, nicht
+///   wegdefiniert, und er wird aus den TATSÄCHLICHEN `e`-Bits gerechnet, nicht
+///   aus der Toleranz `10⁻³`.
+/// * `Ŵ(D_e)` ist die Richtung zum GERUNDETEN `D_e = fl(diamond(e))`, nicht zu
+///   `ê`. Mit `dφ/dD = 1/((1−D)² + D²) ∈ [1,2]` kostet das `≤ 2·|ΔD|`.
+///
+/// Zusammen: `|e − Ŵ(D_e)| ≤ | |e|−1 | + 2·|ΔD|`, komponentenweise mit
+/// `r·(|u_k|+|v_k|)` gewichtet — dieselbe Gewichtung wie in [`piece_box`],
+/// und aus demselben Grund: über `(u,v)` wird **nichts** vorausgesetzt, keine
+/// Orthonormalität, keine Einheitslänge.
+fn curved_point_bridge_mm(arc: &ChannelArc) -> Option<f64> {
+    let r = arc.r as f64;
+    if !(r.is_finite() && r >= 1.0e-9) {
+        return None;
+    }
+    let e0 = arc.e[0] as f64;
+    let e1 = arc.e[1] as f64;
+    let d_e = arc.d_e as f64;
+    if !(e0.is_finite() && e1.is_finite() && d_e.is_finite()) {
+        return None;
+    }
+    // `(1+u)` und `(1−u)` als gerichtete Faktoren.
+    let up = next_up(1.0 + F32_U);
+    let dn = next_down(1.0 - F32_U);
+    let sub2 = next_up(2.0 * F32_SUB);
+    if !(dn > 0.0) {
+        return None;
+    }
+
+    // ── `|e|` und der radiale Fehlbetrag `| |e| − 1 |` ──────────────────────
+    let s2_lo = next_down(next_down(e0 * e0) + next_down(e1 * e1));
+    let s2_hi = next_up(next_up(e0 * e0) + next_up(e1 * e1));
+    if !(s2_lo > 0.0) {
+        return None;
+    }
+    let ne_lo = next_down(s2_lo.sqrt());
+    let ne_hi = next_up(s2_hi.sqrt());
+    // `arc_data_valid` garantiert `|‖e‖²−1| ≤ 1e-3`; die Schranke wird hier
+    // trotzdem geprüft, nicht geglaubt (fail-closed).
+    if !(ne_lo >= 0.9 && ne_hi <= 1.1) {
+        return None;
+    }
+    let e_rad = next_up(next_up(1.0 - ne_lo).max(next_up(ne_hi - 1.0)));
+
+    // ── `|ΔD|` und daraus `|α − φ(D_e)|` ────────────────────────────────────
+    // `diamond` ist in beiden Zweigen eine Kette aus höchstens drei f32-Ops
+    // (`+`/`−`, `/`, `+`) auf einem Wert in `[0,2]`; die relative Verzerrung
+    // ist damit durch `(1+u)³/(1−u)³ − 1` beschränkt, die absolute durch
+    // `3·2⁻¹⁵⁰`. `diamond` ist homogen vom Grad 0, `D_exakt(e) = D_exakt(ê)` —
+    // die fehlende Normierung von `e` geht hier NICHT ein.
+    let mut fac = 1.0f64;
+    for _ in 0..3 {
+        fac = next_up(next_up(fac * up) / dn);
+    }
+    let d_err = next_up(next_up(2.0 * next_up(fac - 1.0)) + next_up(3.0 * F32_SUB));
+    let phi_e_err = next_up(2.0 * d_err);
+    let dir_e = next_up(e_rad + phi_e_err);
+
+    // ── Die `ρ`-Kette: Untergrenze und relative Schranken ───────────────────
+    // Der Zweig wird nur betreten, wenn der f32-Wert `ρ ≥ 10⁻⁹` ist. Daraus
+    // folgt `S ≥ (10⁻⁹/(1+u))²` für den Radikanden und daraus eine
+    // Untergrenze für `x²+y²` — nicht umgekehrt, sonst wäre das Argument
+    // zirkulär.
+    let s_lo = {
+        let v = next_down(1.0e-9 / up);
+        next_down(v * v)
+    };
+    let rho2_lo = next_down(next_down(next_down(s_lo / up) - sub2) / up);
+    if !(rho2_lo > 0.0) {
+        return None;
+    }
+    let rho_lo = next_down(rho2_lo.sqrt());
+    if !(rho_lo > 0.0) {
+        return None;
+    }
+    // `S/(x²+y²) ∈ [(1−u−sub_rel)(1−u), (1+u+sub_rel)(1+u)]`, danach die
+    // korrekt gerundete Wurzel: `ρ/ρ_ex ∈ [kl, kh]`.
+    let sub_rel = next_up(sub2 / rho2_lo);
+    let s_rel_lo = next_down(next_down(dn - sub_rel) * dn);
+    let s_rel_hi = next_up(next_up(up + sub_rel) * up);
+    if !(s_rel_lo > 0.0) {
+        return None;
+    }
+    let kl = next_down(next_down(s_rel_lo.sqrt()) * dn);
+    let kh = next_up(next_up(s_rel_hi.sqrt()) * up);
+    if !(kl > 0.0 && kh.is_finite()) {
+        return None;
+    }
+    // `|g| ∈ [ng_lo, ng_hi]` — `g = (fl(x/ρ), fl(y/ρ))`.
+    let ng_hi = next_up(next_up(up / kl) + sub2);
+    let ng_lo = next_down(next_down(dn / kh) - sub2);
+    if !(ng_lo > 0.5 && ng_hi < 2.0) {
+        return None;
+    }
+    let n_err = next_up(next_up(ng_hi - 1.0).max(next_up(1.0 - ng_lo)));
+
+    // ── Die drei Winkel-Posten des Sektor-Zweigs ────────────────────────────
+    // `arcsin s ≤ (π/2)·s` auf `[0,1]` (Sehne über der konvexen Funktion).
+    let half_pi = next_up(std::f64::consts::FRAC_PI_2);
+    // (a) `∠(g, (x,y))`: `|sin θ| = |x·g₁ − y·g₀|/(ρ_ex·|g|)`, und
+    //     `|x·y|/ρ ≤ ρ_ex/(2·kl)`.
+    let sin_div = next_up(next_up(next_up(F32_U / kl) + sub2) / ng_lo);
+    let th_div = next_up(half_pi * sin_div);
+    // (b) der Schlupf des Sektor-Tests, `β/(ρ_ex·|e|)`.
+    let eabs = next_up(e0.abs() + e1.abs());
+    let sin_sec =
+        next_up(next_up(next_up(F32_U * eabs) + next_up(sub2 / rho_lo)) / ne_lo);
+    let th_sec = next_up(half_pi * sin_sec);
+    // Die ferne Lösungsmenge des Sektor-Tests ausschliessen: sie ist leer,
+    // sobald `α > arcsin β'`. `α ≥ D_exakt ≥ D_e − |ΔD|` (denn `dφ/dD ≥ 1`).
+    let alpha_lo = next_down(d_e - d_err);
+    if !(alpha_lo > th_sec) {
+        return None;
+    }
+    // (c) `α ↦ φ(D_e)` — derselbe Posten wie im Endpunkt-Zweig.
+    let dir_b = next_up(n_err + next_up(next_up(th_div + th_sec) + phi_e_err));
+
+    // ── Die Rundungsketten, komponentenweise ────────────────────────────────
+    // `q = fl(c + fl(r·fl(fl(u·g₀) + fl(v·g₁))))` mit `|g₀|,|g₁| ≤ gh`.
+    let chain2 = |uk: f64, vk: f64, ck: f64, gh: f64| -> f64 {
+        let p1_hi = next_up(uk * gh);
+        let ep1 = rnd_step(p1_hi);
+        let p2_hi = next_up(vk * gh);
+        let ep2 = rnd_step(p2_hi);
+        let s_hi = next_up(next_up(p1_hi + ep1) + next_up(p2_hi + ep2));
+        let es = next_up(rnd_step(s_hi) + next_up(ep1 + ep2));
+        let m_hi = next_up(r * next_up(s_hi + es));
+        let em = next_up(rnd_step(m_hi) + next_up(r * es));
+        let q_hi = next_up(next_up(ck + m_hi) + em);
+        next_up(rnd_step(q_hi) + em)
+    };
+    // `q₀ = fl(c + fl(r·u))` — der Achsen-Zweig.
+    let chain1 = |uk: f64, ck: f64| -> f64 {
+        let b_hi = next_up(r * uk);
+        let eb = rnd_step(b_hi);
+        let q_hi = next_up(next_up(ck + b_hi) + eb);
+        next_up(rnd_step(q_hi) + eb)
+    };
+
+    let (mut sa, mut sb, mut sc) = (0.0f64, 0.0f64, 0.0f64);
+    for k in 0..3 {
+        let uk = (arc.u[k] as f64).abs();
+        let vk = (arc.v[k] as f64).abs();
+        let ck = (arc.c[k] as f64).abs();
+        if !(uk.is_finite() && vk.is_finite() && ck.is_finite()) {
+            return None;
+        }
+        let axes = next_up(next_up(r * next_up(uk + vk)));
+        let ea = chain1(uk, ck);
+        let eb = next_up(chain2(uk, vk, ck, ng_hi) + next_up(axes * dir_b));
+        let ec = next_up(chain2(uk, vk, ck, ne_hi) + next_up(axes * dir_e));
+        sa = next_up(sa + next_up(ea * ea));
+        sb = next_up(sb + next_up(eb * eb));
+        sc = next_up(sc + next_up(ec * ec));
+    }
+    let v = next_up(next_up(sa.sqrt()).max(next_up(sb.sqrt())).max(next_up(sc.sqrt())));
+    (v.is_finite() && v >= 0.0).then_some(v)
+}
+
+/// Test-Zugang zur gekrümmten Punkt-Brücke (#384 P5c-B). Kein
+/// Produktionspfad ruft das; `point_bridge_mm` selbst ist `pub(crate)` und
+/// wählt den Zweig nach `sweep`.
+#[cfg(test)]
+pub fn curved_point_bridge_for_test(arc: &ChannelArc) -> Option<f64> {
+    curved_point_bridge_mm(arc)
 }
 
 // ─── Lemma 3 — die Norm-Brücke `ε_d` ────────────────────────────────────────

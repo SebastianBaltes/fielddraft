@@ -9280,6 +9280,120 @@ hoffen.
 - **Nicht**, dass die 41 Punkte ein Fehler im Feld sind. Sie treten in einer
   ABLATION auf; das ausgelieferte Feld hat an der Nabe weiterhin 0 Über-Claims.
 
+## 8ak. P5c-B — die f32-Punktbrücke des Bogens (#463 zu #384, 2026-08-05)
+
+P5c-A hat den geometrischen Cover für gekrümmte Nähte geschlossen und die
+f32-Brücke ausdrücklich offen gelassen: `point_bridge_mm` verweigerte Bögen,
+die beiden Kreisnähte der Stufen-Nabe standen auf `no_bridge`. P5c-B holt
+diese Brücke nach — **strikt im Shadow**, die Stufe bleibt `ShadowOnly`.
+
+Die Aufgabe ist eine andere als bei P5c-A. Der Cover spricht über die
+MODELLIERTE Naht
+
+    Q = { c + r·(u·Ŵ₀(t·D_e) + v·Ŵ₁(t·D_e)) : t ∈ [0,1] },  Ŵ(D) = normalize(diamond_dir(D)),
+
+die Brücke über den Punkt, den `arc_closest` in f32 wirklich zurückgibt. Sie
+muss `|q_f32 − Q| ≤ ε_q` zeigen, und zwar über die tatsächliche Op-Folge —
+nicht über eine idealisierte Projektion. Ob `q_f32` der exakte Nächstpunkt
+ist, bleibt wie im geraden Fall irrelevant.
+
+### Drei Zweige, drei Lemmata
+
+`arc_closest` hat für `sweep ≥ 0` genau drei Ausgänge, und keiner davon ist
+eine Spiegelung des Segmentlemmas.
+
+**(1) Achse** (`ρ < 1e-9`). Zurück kommt `q₀ = fl(c + fl(r·u))`. Das Ziel ist
+`Q` bei `t = 0`, und dort ist `Ŵ(0) = (1,0)` **exakt** — die reelle Zielformel
+ist buchstäblich `c + r·u`. Der Posten ist reine Arithmetik, zwei
+Rundungsschritte je Koordinate.
+
+**(2) Innerer Sektor.** Der Fusspunkt kommt aus `(x/ρ, y/ρ)`, **nicht** über
+`diamond_dir`. Eine naive Spiegelung der `piece_box`-Formel griffe hier
+daneben. Drei Posten:
+
+- die Rundung der Kette `fl(c + fl(r·fl(fl(u·g₀) + fl(v·g₁))))`;
+- `g = (fl(x/ρ), fl(y/ρ))` ist **nicht** exakt normiert. Aus den Schranken für
+  `ρ = fl(√(fl(fl(x²)+fl(y²))))` und die beiden Divisionen folgt
+  `| |g| − 1 | ≤ ν`, und der Zielpunkt ist der zu `ĝ = g/|g|`;
+- `ĝ` liegt nicht sicher IM Parameterfenster. Der Sektor-Test ist `a = y ≥ 0`
+  (rundungsfrei — `a` ist `y` selbst) und `b = fl(fl(x·e₁) − fl(y·e₀)) ≥ 0`.
+  Exakt gilt `b = ρ·|e|·sin(α − φ)`, `b ≥ 0` schneidet also genau `φ ≤ α`
+  heraus; in f32 bleibt der Schlupf `β = u(|x·e₁| + |y·e₀|) + 2·2⁻¹⁵⁰`. Die
+  mögliche Überschreitung `arcsin(β/(ρ|e|))` plus die Winkelfehler `g ↦ ĝ` und
+  `α ↦ φ(D_e)` werden als Kreisbogen bezahlt: `r·(|u_k|+|v_k|)·Δφ`.
+
+Der Sektor-Test hat eine **zweite, ferne Lösungsmenge**: `sin(α−φ) ≥ −β'` ist
+auch für `φ ≥ α + π − arcsin β'` erfüllt — ein Punkt am gegenüberliegenden
+Kreisende. Sie ist genau dann bewohnbar, wenn `α ≤ arcsin β'`, der Bogen also
+unterhalb der Rundungsauflösung liegt. Das wird geprüft (`α_lo > θ_sek`, mit
+`α ≥ D_exakt ≥ D_e − |ΔD|` aus `dφ/dD ≥ 1`); ist es verletzt, gibt es **kein**
+Budget statt eines Budgets, das den halben Kreis unterschlägt.
+
+**(3) Endpunkt — der Kern des Pakets.** Autoritativ ist das gespeicherte `e`:
+`q₁ = fl(c + fl(r·fl(fl(u·e₀) + fl(v·e₁))))`. `Q` endet dagegen bei
+`c + r·Ŵ(D_e)`. Die beiden sind nicht derselbe Punkt, und die `1e-3`-Reserve
+von `arc_data_valid` darf nicht als „`e` ist unit“ gelesen werden:
+
+- radial liegt `q₁` um bis zu `r·| |e| − 1 |` neben dem Kreis. Bei `r = 6 mm`
+  und dem von `arc_data_valid` gerade noch erlaubten `| ‖e‖²−1 | = 1e-3` sind
+  das `≈ 3·10⁻³ mm` — mehr als das Hundertfache aller Rundungsposten zusammen.
+  Budgetiert wird aus den TATSÄCHLICHEN `e`-Bits, nicht aus der Toleranz;
+- `Ŵ(D_e)` zeigt zum gerundeten `D_e = fl(diamond(e))`, nicht zu `ê`. Mit
+  `dφ/dD = 1/((1−D)²+D²) ∈ [1,2]` kostet das `≤ 2·|ΔD|`. `diamond` ist homogen
+  vom Grad 0, `D_exakt(e) = D_exakt(ê)` — die fehlende Normierung geht hier
+  **nicht** ein, sie steckt vollständig im radialen Posten.
+
+Zusammen `|e − Ŵ(D_e)| ≤ | |e|−1 | + 2·|ΔD|`, komponentenweise mit
+`r·(|u_k| + |v_k|)` gewichtet — dieselbe Gewichtung wie in `piece_box`, und
+aus demselben Grund: über `(u,v)` wird nichts vorausgesetzt.
+
+`ε_q` ist das **Maximum** der drei Zweige. Eine Fallunterscheidung nach
+Auswertungspunkt gäbe es nicht: `ε_q` muss vor jeder Auswertung feststehen.
+
+### Was gemessen wurde
+
+Die Shadow-Matrix (`curved_stage = Active`) schliesst jetzt mit
+**238 proved / 0 curved / 0 no_cover / 0 no_bridge** (P5c-A: 236/0/0/2,
+davor 236/2/0/0). Unter dem Produktions-Gate `CURVED_COVER_STAGE =
+ShadowOnly` steht unverändert **236 proved / 2 curved**; am ausgelieferten
+Feld ändert sich nichts, `just test` bleibt vollständig grün.
+
+Für die Bögen der Stufen-Nabe (`r = 6,000007 mm`, `| |e| − 1 | = 4,1·10⁻⁹`)
+ist `ε_q = 1,758·10⁻⁵ mm`. Der grösste Posten darin ist **nicht** der radiale
+Fehlbetrag, sondern `2·|ΔD|` aus der Rundung von `diamond` — die Nabe liefert
+ein fast exakt normiertes `e`. Neben `η_geo ≈ 0,81 mm` ist `ε_q` in jedem Fall
+bedeutungslos klein; hergeleitet werden muss es trotzdem, sonst trägt das
+`Proved` den f32-Schritt nicht.
+
+Der Pin `curved_point_bridge_carries_arc_closest_384` misst, was er behauptet:
+10 818 Sonden über 18 Bögen, jeder Produktions-Fusspunkt aus `arc_closest`
+gegen die modellierte Naht `Q` gehalten, grösster Abstand `2,400·10⁻³ mm`,
+**Ausschöpfung des Budgets 0,704**. Damit der Endpunkt-Posten überhaupt
+sichtbar wird, laufen die Sonden zusätzlich auf Klonen mit absichtlich
+gestrecktem `e` (`‖e‖²−1 ≈ ±8·10⁻⁴`, `D_e` bit-exakt nachgezogen) — auf den
+echten Nabenbögen wäre er unter den Rundungsposten begraben. Beide neuen Pins
+reissen, wenn man den radialen Posten aus dem Budget nimmt (gegengeprüft:
+`2,400·10⁻³ mm` gemessen gegen `1,758·10⁻⁵ mm` Budget).
+
+### Was daraus NICHT folgt
+
+- **Nicht**, dass gekrümmte Nähte jetzt feldwirksam bewiesen sind.
+  `CURVED_COVER_STAGE` steht weiter auf `ShadowOnly`; die Aktivierung ist
+  P5c-C (#464) und dort inhaltlich zu entscheiden (41 Punkte Phantom-Material
+  in der Ablation, s. §8aj).
+- **Nicht**, dass `ε_q` scharf ist. `|ΔD|` benutzt `D ≤ 2` und drei Op-Schritte
+  statt der tatsächlichen `D_e` und zwei — für die Grössenordnung irrelevant,
+  aber es ist eine Schranke, kein Wert.
+- **Nicht**, dass der empirische Pin alle drei Zweige gleich scharf prüft.
+  Falsifizierbar gemessen ist der Endpunkt-Posten; die Sektor- und
+  Divisions-Posten liegen bei `≈ u` und sind gegen die Messauflösung nicht
+  einzeln auflösbar. Sie stehen aus der Herleitung da, nicht aus der Messung.
+- **Nicht**, dass Bögen unterhalb der Sektor-Auflösung mitversorgt sind. Für
+  `α ≤ arcsin β'` gibt es **kein** Budget (`None`) — fail-closed, gepinnt in
+  `curved_point_bridge_pays_the_unnormalised_end_384`.
+- **Nicht**, dass damit die ganze Feldkette bewiesen wäre. Der `h`-Ast und
+  Restposten R1 stehen unverändert (§8aa/§8ab).
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.

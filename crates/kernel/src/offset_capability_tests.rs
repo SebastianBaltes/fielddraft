@@ -18553,10 +18553,11 @@ fn the_dual_mirror_resolves_channel_modes_like_the_cpu_tree_467() {
 /// Zwei Aussagen in einem Test, weil sie nur zusammen etwas heissen:
 ///
 /// 1. **Wirkung.** Mit `curved_stage = Active` verschwindet `curved` ganz und
-///    es entsteht KEIN `no_cover`: der geometrische Cover-Beweis trägt die
-///    beiden Kreisnähte der Stufen-Nabe (je 3 Minor-Bögen), die `arc_usable`
-///    bis P5c-A pauschal abgewiesen hat. Sie landen stattdessen in
-///    `no_bridge` — die f32-Punktbrücke ist P5c-B (#463) und fehlt noch.
+///    es entsteht weder `no_cover` noch `no_bridge`: der geometrische
+///    Cover-Beweis trägt die beiden Kreisnähte der Stufen-Nabe (je 3
+///    Minor-Bögen), die `arc_usable` bis P5c-A pauschal abgewiesen hat
+///    (P5c-A), und seit P5c-B (#463) trägt auch die f32-Punktbrücke sie
+///    (`curved_point_bridge_mm`, drei Zweige von `arc_closest`).
 /// 2. **Folgenlosigkeit.** Unter dem Produktions-Gate
 ///    [`wit::CURVED_COVER_STAGE`] (`ShadowOnly`) steht weiterhin `236/2`.
 ///    Ohne diese zweite Hälfte wäre der Pin die Behauptung, P5c-A sei
@@ -18585,18 +18586,16 @@ fn curved_seams_are_proved_in_shadow_only_384() {
             }
         }
     }
-    // Die ehrliche Zahl von P5c-A — und `no_bridge` ist hier das ERGEBNIS,
-    // nicht ein Rest: `0 no_cover` heisst, der geometrische Cover-Beweis
-    // trägt die gekrümmten Nähte wirklich; `2 no_bridge` heisst, die
-    // f32-Punktbrücke tut es noch nicht. `point_bridge_mm` ist ausschliesslich
-    // das Segmentlemma und verweigert gekrümmte Bögen ausdrücklich (P5c-B,
-    // #463). Eine 238/238 hier wäre die Behauptung, auch der f32-Schritt sei
-    // bewiesen — er ist es nicht.
+    // Die gemessene Zahl NACH P5c-B: `0 curved` (die Konstruktion in
+    // `piece_box` trägt die Minor-Bögen), `0 no_cover` (die Zeugen-Suche
+    // findet sie), `0 no_bridge` (die f32-Punktbrücke ist für alle drei
+    // Zweige von `arc_closest` hergeleitet). Bis P5c-A stand hier `236/2`;
+    // die 2 waren genau die beiden Kreisnähte der Stufen-Nabe.
     assert_eq!(
         (act.proved_seam, act.curved, act.no_cover, act.no_bridge),
-        (236, 0, 0, 2),
-        "P5c-A trägt die gekrümmten Nähte nicht mehr — `curved`/`no_cover` statt `no_bridge` \
-         heisst, die Konstruktion in `piece_box` ist zurückgefallen"
+        (238, 0, 0, 0),
+        "die gekrümmten Nähte fallen wieder aus — `curved` heisst, `piece_box`/`arc_usable` \
+         ist zurückgefallen, `no_bridge` heisst, `curved_point_bridge_mm` verweigert"
     );
     assert_eq!(
         (prod.proved_seam, prod.curved),
@@ -18628,8 +18627,10 @@ fn curved_seams_are_proved_in_shadow_only_384() {
 /// stammen aus derselben `diamond_dir`/`(u,v)`-Formel wie der Prüfling, NICHT
 /// aus `arc_closest`. Er falsifiziert damit sauber die Bauch-Schranke, ist
 /// aber KEIN unabhängiges Orakel gegen die Produktionskurve — dafür fehlt der
-/// Vergleich gegen den gespeicherten, nicht exakt normierten Endpunkt `e`,
-/// und genau der ist Gegenstand von P5c-B (#463).
+/// Vergleich gegen den gespeicherten, nicht exakt normierten Endpunkt `e`.
+/// Der steht seit P5c-B (#463) in
+/// [`curved_point_bridge_carries_arc_closest_384`], das `arc_closest`
+/// wirklich aufruft.
 #[test]
 fn curved_piece_box_contains_the_bulge_384() {
     let (_, field, ..) = cert_matrix(2.0f32)
@@ -18748,4 +18749,239 @@ fn curved_arc_data_binding_is_enforced_384() {
              greift nicht"
         );
     }
+}
+
+// ═════════ #384 P5c-B — die f32-Punktbrücke des Bogens, im Shadow ═════════
+
+/// Ein Punkt der MODELLIERTEN gekrümmten Naht `Q` bei Parameter `t ∈ [0,1]`,
+/// in f64 und **exakt der Formel von `piece_box`** folgend: `Ŵ(D) =
+/// normalize(diamond_dir(D))`, `D = t·D_e`, `q = c + r·(u·Ŵ₀ + v·Ŵ₁)`.
+fn curved_seam_point_f64(arc: &ChannelArc, t: f64) -> [f64; 3] {
+    let d = arc.d_e as f64 * t;
+    let w = if d <= 1.0 { [1.0 - d, d] } else { [-(d - 1.0), 2.0 - d] };
+    let n = (w[0] * w[0] + w[1] * w[1]).sqrt();
+    let mut q = [0.0f64; 3];
+    for k in 0..3 {
+        q[k] = arc.c[k] as f64
+            + arc.r as f64 * (arc.u[k] as f64 * (w[0] / n) + arc.v[k] as f64 * (w[1] / n));
+    }
+    q
+}
+
+/// Abstand eines Punktes zur gekrümmten Naht `Q`, gemessen an einem
+/// Sehnenzug mit `n` Stützstellen. Die Stützpunkte liegen AUF der Kurve, der
+/// gemessene Wert ist deshalb eine OBERE Schranke des wahren Abstands (der
+/// Sehnenzug liegt innerhalb der Konvexhülle, aber die Messung gegen Segmente
+/// unterschätzt nie um mehr als die Sagitta ≈ `r·θ²/8`, hier `< 10⁻⁷ mm`).
+/// Für einen Test der Form „gemessen ≤ ε_q" ist das die richtige Richtung.
+fn curved_seam_dist_f64(arc: &ChannelArc, p: [f64; 3], n: usize) -> f64 {
+    let mut best = f64::INFINITY;
+    let mut prev = curved_seam_point_f64(arc, 0.0);
+    for i in 1..=n {
+        let cur = curved_seam_point_f64(arc, i as f64 / n as f64);
+        // Punkt-Segment-Abstand.
+        let ab = [cur[0] - prev[0], cur[1] - prev[1], cur[2] - prev[2]];
+        let ap = [p[0] - prev[0], p[1] - prev[1], p[2] - prev[2]];
+        let l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+        let s = if l2 > 0.0 {
+            ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / l2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let f = [prev[0] + ab[0] * s, prev[1] + ab[1] * s, prev[2] + ab[2] * s];
+        best = best.min(dist_f64_up(p, f));
+        prev = cur;
+    }
+    best
+}
+
+/// Auswertungspunkte rund um einen gekrümmten Bogen — bewusst so gestreut,
+/// dass ALLE DREI Zweige von `arc_closest` erreicht werden: die Achse
+/// (`p = c`), der innere Sektor und beide Endpunkt-Ausgänge.
+fn curved_arc_probes(arc: &ChannelArc) -> Vec<[f32; 3]> {
+    let mut out = vec![arc.c];
+    let mut g = Lcg(0x463_0001);
+    let r = arc.r;
+    for i in 0..600 {
+        // Ein Winkel, der absichtlich über beide Bogenenden hinausläuft.
+        let f = -0.3 + 1.6 * (i as f64 / 599.0);
+        let d = (arc.d_e as f64 * f) as f32;
+        let w = crate::offset_channel::diamond_dir(d.clamp(0.0, 2.0));
+        let n = (w[0] * w[0] + w[1] * w[1]).sqrt().max(1e-30);
+        let scale = r * (0.2 + 2.0 * g.next_f64() as f32);
+        let mut p = [0.0f32; 3];
+        for k in 0..3 {
+            p[k] = arc.c[k]
+                + scale * (arc.u[k] * (w[0] / n) + arc.v[k] * (w[1] / n))
+                + (0.02 * r) * g.sym() as f32;
+        }
+        out.push(p);
+    }
+    out
+}
+
+/// **P5c-B-Pin: die f32-Punktbrücke des Bogens trägt, was `arc_closest`
+/// wirklich zurückgibt.**
+///
+/// Der Pin misst, was er behauptet: für jeden Auswertungspunkt wird der
+/// PRODUKTIONS-Fusspunkt `q_f32` aus [`crate::offset_channel::arc_closest`]
+/// gegen die modellierte Naht `Q` gehalten — dieselbe Menge, die `piece_box`
+/// kachelt. Anders als der P5c-A-Falsifikator holt er die Referenz NICHT aus
+/// derselben Formel wie den Prüfling: `arc_closest` bildet seinen Endpunkt
+/// aus dem gespeicherten `e`, `Q` aus `normalize(diamond_dir(D_e))`, und
+/// genau diese Differenz soll das Budget tragen.
+///
+/// **Der harte Fall ist konstruiert, nicht gefunden.** Die Bögen der
+/// Stufen-Nabe tragen ein fast exakt normiertes `e`; der Endpunkt-Posten wäre
+/// dort unsichtbar. Deshalb läuft derselbe Test zusätzlich auf Klonen mit
+/// absichtlich gestrecktem `e` (`‖e‖² − 1 ≈ ±8·10⁻⁴`, innerhalb der von
+/// `arc_data_valid` erlaubten `10⁻³`) und **bit-exakt nachgezogenem `D_e`** —
+/// dort ist der radiale Fehlbetrag `r·| |e|−1 |` der dominierende Posten, und
+/// der Test würde ohne ihn reissen.
+#[test]
+fn curved_point_bridge_carries_arc_closest_384() {
+    let (_, field, ..) = cert_matrix(2.0f32)
+        .into_iter()
+        .find(|(n, ..)| n == "Stufen-Nabe")
+        .unwrap();
+    let base: Vec<ChannelArc> = omega_and_channels(&field)
+        .into_iter()
+        .flat_map(|(_, chans)| chans)
+        .flat_map(|ch| ch.arcs.clone())
+        .filter(|a| !(a.sweep < 0.0))
+        .collect();
+    assert!(base.len() >= 6, "zu wenige gekrümmte Bögen ({})", base.len());
+
+    let mut cases: Vec<(String, ChannelArc)> = Vec::new();
+    for (i, a) in base.iter().enumerate() {
+        cases.push((format!("Nabe #{i}"), a.clone()));
+        for (tag, s) in [("e gestreckt", 1.0004f32), ("e gestaucht", 0.9996f32)] {
+            let mut m = a.clone();
+            m.e = [a.e[0] * s, a.e[1] * s];
+            m.d_e = crate::offset_channel::diamond(m.e[0], m.e[1]);
+            if wit::arc_usable_for_test(&m) {
+                cases.push((format!("Nabe #{i} / {tag}"), m));
+            }
+        }
+    }
+    assert!(
+        cases.len() >= base.len() * 2,
+        "die gestreckten Klone wurden alle abgewiesen — der harte Fall wird nicht geprüft"
+    );
+
+    let (mut probes, mut endpoint_hits) = (0usize, 0usize);
+    let (mut worst_ratio, mut worst_abs) = (0.0f64, 0.0f64);
+    for (name, arc) in &cases {
+        let eps_q = wit::curved_point_bridge_for_test(arc)
+            .unwrap_or_else(|| panic!("{name}: keine gekrümmte Punkt-Brücke"));
+        assert!(eps_q > 0.0 && eps_q.is_finite(), "{name}: ε_q = {eps_q:e}");
+        assert_eq!(
+            wit::point_bridge_mm(arc),
+            Some(eps_q),
+            "{name}: `point_bridge_mm` wählt für `sweep ≥ 0` einen anderen Zweig"
+        );
+        for p in curved_arc_probes(arc) {
+            let (de, q, t) = crate::offset_channel::arc_closest(arc, p);
+            if !de.is_finite() || !q.iter().all(|v| v.is_finite()) {
+                continue;
+            }
+            probes += 1;
+            if t == 1.0 {
+                endpoint_hits += 1;
+            }
+            let qf = [q[0] as f64, q[1] as f64, q[2] as f64];
+            let d = curved_seam_dist_f64(arc, qf, 40_000);
+            assert!(
+                d <= eps_q,
+                "{name}: der Produktions-Fusspunkt liegt {d:e} mm von der modellierten Naht — \
+                 ε_q = {eps_q:e} mm trägt ihn nicht (t = {t})"
+            );
+            worst_abs = worst_abs.max(d);
+            worst_ratio = worst_ratio.max(d / eps_q);
+        }
+    }
+    assert!(probes > 5_000, "zu wenige Sonden ({probes})");
+    assert!(
+        endpoint_hits > 100,
+        "der Endpunkt-Zweig wurde nur {endpoint_hits}× erreicht — der Kern des Pakets \
+         bleibt ungeprüft"
+    );
+    println!(
+        "#463 Punktbrücke: {probes} Sonden über {} Bögen, grösster Abstand {worst_abs:e} mm, \
+         Ausschöpfung des Budgets {:.3}",
+        cases.len(),
+        worst_ratio
+    );
+    // Ohne diese Schranke wäre der Pin auch mit einem masslos aufgeblähten
+    // Budget grün. Gemessen wird das Budget zu einem nennenswerten Anteil
+    // ausgeschöpft — es ist keine Sicherheitsdecke, sondern eine Schranke.
+    assert!(
+        worst_ratio > 0.1,
+        "das Budget wird nur zu {worst_ratio:.3} ausgeschöpft — dann prüft der Pin die \
+         Herleitung nicht, sondern nur ihre Grosszügigkeit"
+    );
+}
+
+/// **P5c-B-Gegenprobe: der Endpunkt-Posten ist wirklich im Budget.**
+///
+/// `arc_data_valid` lässt `| ‖e‖² − 1 | ≤ 10⁻³` zu. Wer diese Reserve als
+/// „`e` ist unit" liest, verliert genau `r·| ‖e‖ − 1 |` — bei `r = 5 mm` rund
+/// `2,5·10⁻³ mm`, also mehr als das Tausendfache aller Rundungsposten
+/// zusammen. Der Test zeigt, dass das Budget mit der Verstimmung mitwächst:
+/// ein um `s` gestrecktes `e` hebt `ε_q` um mindestens `r·(s−1)/2`.
+#[test]
+fn curved_point_bridge_pays_the_unnormalised_end_384() {
+    let (_, field, ..) = cert_matrix(2.0f32)
+        .into_iter()
+        .find(|(n, ..)| n == "Stufen-Nabe")
+        .unwrap();
+    let good = omega_and_channels(&field)
+        .into_iter()
+        .flat_map(|(_, chans)| chans)
+        .flat_map(|ch| ch.arcs.clone())
+        .find(|a| !(a.sweep < 0.0))
+        .expect("kein gekrümmter Bogen in der Nabe");
+    let base = wit::curved_point_bridge_for_test(&good).expect("Basis-Brücke fehlt");
+    let r = good.r as f64;
+    let ne = ((good.e[0] as f64).powi(2) + (good.e[1] as f64).powi(2)).sqrt();
+    println!(
+        "#463 Nabe-Bogen: r = {r} mm, |e| − 1 = {:e}, ε_q = {base:e} mm",
+        ne - 1.0
+    );
+
+    for s in [1.0002f32, 1.0004f32] {
+        let mut m = good.clone();
+        m.e = [good.e[0] * s, good.e[1] * s];
+        m.d_e = crate::offset_channel::diamond(m.e[0], m.e[1]);
+        assert!(wit::arc_usable_for_test(&m), "s = {s}: der Klon ist nicht mehr gültig");
+        let got = wit::curved_point_bridge_for_test(&m).expect("Klon-Brücke fehlt");
+        let want = r * (s as f64 - 1.0) * 0.5;
+        assert!(
+            got - base >= want,
+            "s = {s}: ε_q wächst nur um {:e} mm statt um mindestens {want:e} mm — der \
+             radiale Fehlbetrag des gespeicherten `e` steckt nicht im Budget",
+            got - base
+        );
+    }
+
+    // Fail-closed am unteren Rand: ein Bogen, dessen Öffnungswinkel unter der
+    // Auflösung des Sektor-Tests liegt, bekommt KEIN Budget. Dort ist die
+    // ferne Lösungsmenge von `b ≥ 0` bewohnbar (ein Punkt am gegenüber-
+    // liegenden Kreisende bestünde den Test), und die Bogen-Schranke wäre
+    // schlicht falsch.
+    let mut tiny = good.clone();
+    tiny.e = [1.0, 1.0e-9];
+    tiny.d_e = crate::offset_channel::diamond(tiny.e[0], tiny.e[1]);
+    tiny.sweep = 1.0e-9;
+    assert!(
+        wit::arc_usable_for_test(&tiny),
+        "der Mikro-Bogen wird schon von `arc_usable` abgewiesen — dann prüft die \
+         Gegenprobe die Punktbrücke nicht"
+    );
+    assert_eq!(
+        wit::curved_point_bridge_for_test(&tiny),
+        None,
+        "die Brücke gibt für einen Bogen unterhalb der Sektor-Auflösung ein Budget aus — \
+         die ferne Lösungsmenge des Sektor-Tests ist dort nicht ausgeschlossen"
+    );
 }
