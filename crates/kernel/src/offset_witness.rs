@@ -277,6 +277,25 @@ pub const EXTRUDE_COVER_STAGE: ExtrudeCoverStage = ExtrudeCoverStage::Active;
 /// Klemmen total geordnet (gemessen: 0 Ausnahmen auf 10 648 Punkten), das
 /// Maximum ist bitgleich das Legacy-Feld. Wer die 41 Punkte über ein Maximum
 /// tilgt, liefert dort den unbewiesenen Wert.
+///
+/// **#464 (§8an) — warum die Stufe trotz #469 weiter hier steht.** Die 41
+/// Punkte sind nach der längenbasierten Stückung nicht 0, sondern **1**: die
+/// Ablation von §8al/§8am misst gegen `dist_hub_complement`, und das ist laut
+/// eigener Zusage eine OBERE Schranke von `dist(p, ∁Ω)` — auf der Über-Seite
+/// also blind (am Streitpunkt um 0,0764 mm). Gegen die exakte Referenz der
+/// §8p-Matrix bleibt an der Stufen-Nabe ein Punkt mit 0,01249 mm
+/// Phantom-Material stehen, an dem die LEGACY-Klemme exakt richtig ist und die
+/// bewiesene um `A_seam` darunter liegt. Über die volle Matrix (13 Fixturen,
+/// 144 776 Punkte) bewegt die Aktivierung nur die Nabe (543 Punkte, max
+/// 0,027332 mm nach unten) — aber eben um einen Punkt zu weit.
+///
+/// Feinere Stücke lösen das nicht strukturell: `A_seam` läuft unter ~0,004 mm
+/// Stückbreite in einen Boden von **0,007869 mm** (dann dominieren `ε_q`,
+/// `ε_d` und das Rundungsbudget statt `η`). Jedes hinreichend feine Gitter
+/// findet wieder einen Punkt, an dem die Legacy-Klemme innerhalb dieses Bodens
+/// exakt ist. Die offene Frage ist deshalb keine Mess-, sondern eine
+/// Politik-Frage: ist eine nach oben durch `A_seam` beschränkte Absenkung der
+/// Preis wert, den Beweis an die Stelle einer exakten Annahme zu setzen.
 pub const CURVED_COVER_STAGE: ExtrudeCoverStage = ExtrudeCoverStage::ShadowOnly;
 
 /// **§8ae Stufe B — trägt `Ω` ein `Extrude`-Blatt, dessen Feature GEÖFFNET

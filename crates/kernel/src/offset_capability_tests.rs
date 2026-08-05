@@ -18591,7 +18591,9 @@ fn the_dual_mirror_resolves_channel_modes_like_the_cpu_tree_467() {
 /// unbewiesene Klemme, die er ersetzen würde (`η ≈ 0,81 mm`), und kostet
 /// feldwirksam 41 Punkte Phantom-Material in der Ablation ohne `L`-Block. Woher
 /// die 41 kommen und was sie kosten, ist seit #468 aufgeschlüsselt — s.
-/// [`curved_clamp_phantom_comes_from_one_seam_468`] und §8al.
+/// [`curved_clamp_phantom_comes_from_one_seam_468`] und §8al. #469 hat sie auf
+/// 1 gedrückt (nicht auf 0, s. §8an), und #464 hat die Aktivierung deshalb
+/// nicht vollzogen.
 #[test]
 fn curved_seams_are_proved_in_shadow_only_384() {
     let cfg = wit::WitnessCfg::default();
@@ -19345,7 +19347,8 @@ fn probe_468_mixed_clamp() {
     );
 }
 
-/// **#468-Pin 1 / #469-Pin: die 41 Punkte waren Stückung — und sind weg.**
+/// **#468-Pin 1 / #469-Pin / #464-Korrektur: die 41 Punkte waren Stückung —
+/// und sind fast weg.**
 ///
 /// Gemessen wird die Ablation ohne `L`-Block (`strip_lb`), dasselbe Fixture und
 /// dasselbe Gitter, dessen BASIS-Befund `stop_lb_absent_reproduces_the_g_cap_384`
@@ -19357,9 +19360,15 @@ fn probe_468_mixed_clamp() {
 ///    Stückzahl 24 dem längsten Bogen der Nabe gab): 41 Über-Punkte, alle an
 ///    EINEM Kanal, verteilt auf dessen 3 Bögen — der Befund von §8al,
 ///    unverändert reproduzierbar.
-/// 2. **Produktion nach #469** (`DEFAULT_PIECE_LEN_MM`): **0** Über-Punkte.
-///    Damit ist die Aussage „die 41 sind Stückung, nicht Geometrie" nicht mehr
-///    bloss extrapoliert, sondern am selben Gitter erledigt.
+/// 2. **Produktion nach #469** (`DEFAULT_PIECE_LEN_MM`): **0** Über-Punkte
+///    gegen die Ray-Referenz. Damit ist die Aussage „die 41 sind Stückung,
+///    nicht Geometrie" nicht mehr bloss extrapoliert, sondern am selben Gitter
+///    weitgehend erledigt.
+/// 3. **#464-Korrektur**: die Ray-Referenz ist eine OBERE Schranke von
+///    `dist(p, ∁Ω)` und damit auf der Über-Seite blind. Gegen die exakte
+///    Referenz derselben Fixtur bleibt **1** Über-Punkt (0,01249 mm) stehen —
+///    41 → 1, nicht 41 → 0. Das ist der Grund, warum #464 die Stufe nicht
+///    umgelegt hat (§8an).
 ///
 /// **Anti-Leer-Gates**: ohne die umgelegte Stufe wäre kein Kanal der Nabe
 /// bewiesen (in Produktion sind es 0 von 2, beide `Curved` ⇒ `NotCertified`),
@@ -19508,6 +19517,55 @@ fn curved_clamp_phantom_comes_from_one_seam_468() {
     assert!(
         a_prod < 0.03,
         "A_seam_max ist {a_prod} mm statt der gemessenen Sprosse 9 (0,027332 mm) —          dann ist die Stückung gröber als dokumentiert"
+    );
+
+    // ── #464: dieselbe Ablation gegen die EXAKTE Referenz ───────────────────
+    // `dist_hub_complement` ist laut eigener Zusage eine OBERE Schranke von
+    // `dist(p, ∁Ω)`; `err = δ − ray` ist damit eine UNTERschätzung, und die 0
+    // oben ist eine UNTERE Schranke der Über-Punkte, keine Leermeldung. Am
+    // Streitpunkt überschätzt sie um 0,0764 mm (ray(160) = 2,063926 gegen
+    // exakt 1,987507; ray konvergiert mit der Richtungszahl gegen die exakte
+    // Zahl — gemessen in `probe_464_ray_reference_sharpness`).
+    //
+    // Gegen `dist_hub_complement_exact` — dieselbe Referenz, die die
+    // §8p-Matrix und der LB-Soundness-Pin benutzen — bleibt EIN Über-Punkt
+    // stehen. Er ist der Grund, warum #464 die Stufe NICHT umgelegt hat.
+    let (mut oe, mut worst_e) = (0usize, 0.0f64);
+    for p in &pts {
+        let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+        let err = delta as f64 - dist_hub_complement_exact(t, &cyls, *p);
+        if err > 1e-3 && act_prod.sdf(pf, EvalMode::Visual) < 0.0 {
+            oe += 1;
+            worst_e = worst_e.max(err);
+        }
+    }
+    println!(
+        "#464 exakte Referenz, Ziel {} mm: {oe} Über-Punkte (max {worst_e:.5} mm)",
+        wit::DEFAULT_PIECE_LEN_MM
+    );
+    assert_eq!(
+        oe, 1,
+        "gegen die exakte Referenz stehen {oe} Über-Punkte statt 1 — die Zahl ist der \
+         Blocker von #464 und darf sich nicht unbemerkt bewegen"
+    );
+    assert!(
+        (worst_e - 0.01249).abs() < 1e-4,
+        "die Überschreitung liegt bei {worst_e:.5} statt 0,01249 mm"
+    );
+    // Und die BASIS ist dort exakt richtig: der Über-Punkt entsteht allein aus
+    // der Absenkung um den Addenden, nicht aus einem vorher schon falschen
+    // Feldwert.
+    assert_eq!(
+        pts.iter()
+            .filter(|p| {
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                delta as f64 - dist_hub_complement_exact(t, &cyls, **p) > 1e-3
+                    && base.sdf(pf, EvalMode::Visual) < 0.0
+            })
+            .count(),
+        0,
+        "die BASIS hat gegen die exakte Referenz schon Über-Punkte — dann misst der \
+         Vergleich nicht die Stufe"
     );
 }
 
@@ -20019,4 +20077,234 @@ fn seam_length_bound_is_an_upper_bound_469() {
         "die Schranke überschätzt um Faktor {worst_q} — dann ist die Ziel-Stückbreite \
          nicht mehr die, die drauf steht"
     );
+}
+
+// ══════════ #384 P5c-C (#464) — die Aktivierung, vorher gemessen ══════════
+
+/// **#464-Sonde: die Ablation der GANZEN Fixture-Matrix mit aktiver
+/// Bogen-Stufe.** Dieselbe Konstruktion wie in §8al/§8am, aber über alle 13
+/// Fixturen statt nur über die Stufen-Nabe — und ohne `L`-Block, weil genau
+/// dort der Blocker von #468 sichtbar wurde.
+#[test]
+#[ignore]
+fn probe_464_matrix_ablation() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    let (mut tot_pts, mut tot_ob, mut tot_oa) = (0usize, 0usize, 0usize);
+    for (name, field, exact, lo, hi, n) in cert_matrix(delta) {
+        let base = strip_lb(&field);
+        let act = strip_lb(&field_with_curved_stage(&field, true, cfg));
+        let sh = strip_lb(&field_with_curved_stage(&field, false, cfg));
+        let (mut ob, mut oa, mut worst_a) = (0usize, 0usize, 0.0f64);
+        let (mut sh_diff, mut diff, mut worst_d, mut worst_neg) = (0usize, 0usize, 0.0f32, 0.0f32);
+        let pts = grid_468(lo, hi, n);
+        for p in &pts {
+            let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+            let err = delta as f64 - exact(*p);
+            let (vb, va, vs) = (
+                base.sdf(pf, EvalMode::Visual),
+                act.sdf(pf, EvalMode::Visual),
+                sh.sdf(pf, EvalMode::Visual),
+            );
+            if vb.to_bits() != vs.to_bits() {
+                sh_diff += 1;
+            }
+            if vb.to_bits() != va.to_bits() {
+                diff += 1;
+                worst_d = worst_d.max((va - vb).abs());
+                worst_neg = worst_neg.max(vb - va);
+            }
+            if err > 1e-3 {
+                ob += (vb < 0.0) as usize;
+                if va < 0.0 {
+                    oa += 1;
+                    worst_a = worst_a.max(err);
+                }
+            }
+        }
+        let (pb, lb_, _) = mode_tally(&base);
+        let (pa, la, _) = mode_tally(&act);
+        println!(
+            "#464 {name}: {} Punkte | über BASIS {ob}, aktiv {oa} (max {worst_a:.4} mm) | \
+             Modi {pb}/{lb_} → {pa}/{la} | {diff} Feldpunkte bewegt (max |Δ| {worst_d:.6} mm, \
+             max Absenkung {worst_neg:.6} mm) | Shadow-Re-Zert bewegt {sh_diff}",
+            pts.len()
+        );
+        tot_pts += pts.len();
+        tot_ob += ob;
+        tot_oa += oa;
+    }
+    println!("#464 GESAMT: {tot_pts} Ablations-Punkte, über BASIS {tot_ob}, aktiv {tot_oa}");
+}
+
+/// **#464-Sonde: das 90³-Gitter am Rippen-Kamm mit aktiver Bogen-Stufe.**
+#[test]
+#[ignore]
+fn probe_464_dense_rib_active() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg::default();
+    for want in ["Rippen-Kamm 4×1.5/0.8", "Rippen-Kamm 4×2/1"] {
+        let fx = cert_matrix(delta).into_iter().find(|f| f.0 == want).unwrap();
+        let (name, field, exact, lo, hi, _n) = fx;
+        let act = strip_lb(&field_with_curved_stage(&field, true, cfg));
+        let base = strip_lb(&field);
+        let (mut ob, mut oa, mut worst, mut diff) = (0usize, 0usize, 0.0f64, 0usize);
+        let pts = grid_468(lo, hi, 90);
+        for p in &pts {
+            let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+            let (vb, va) = (base.sdf(pf, EvalMode::Visual), act.sdf(pf, EvalMode::Visual));
+            if vb.to_bits() != va.to_bits() {
+                diff += 1;
+            }
+            let t = delta as f64 - exact(*p);
+            if t > 1e-3 {
+                ob += (vb < 0.0) as usize;
+                if va < 0.0 {
+                    oa += 1;
+                    worst = worst.max(t);
+                }
+            }
+        }
+        println!(
+            "#464 dicht {name}: {} Punkte, über BASIS {ob}, aktiv {oa} (max {worst:.4} mm), \
+             {diff} Feldpunkte bewegt",
+            pts.len()
+        );
+    }
+}
+
+/// **#464-Sonde: der eine Über-Punkt der Nabe unter der EXAKTEN Referenz.**
+/// Der #469-Pin misst gegen die Ray-March-Referenz (`dist_hub_complement`, 160
+/// Schritte); die Matrix misst gegen `dist_hub_complement_exact`. Die Sonde
+/// stellt beide nebeneinander und verfeinert die Stückung.
+#[test]
+#[ignore]
+fn probe_464_hub_exact_vs_ray() {
+    let delta = 2.0f32;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+    let cyls = [(r1 as f64, -(e1 as f64), zh1 as f64), (r2 as f64, -(e2 as f64), 6.0f64)];
+    let exact = |p: [f64; 3]| dist_hub_complement_exact(t as f64, &cyls, p);
+    let ray = |p: [f64; 3]| dist_hub_complement(t as f64, &cyls, p, 160);
+    let (lo, hi) = ([-9.0, -9.0, -(t as f64) - 1.5], [9.0, 9.0, 0.5]);
+    let pts = grid_468(lo, hi, 22);
+    let base = strip_lb(&field);
+    for plen in [0.9f64, 0.06, 0.03, wit::DEFAULT_PIECE_LEN_MM, 0.0075, 0.004] {
+        let cfg = wit::WitnessCfg { piece_len_mm: plen, ..wit::WitnessCfg::default() };
+        let act = strip_lb(&field_with_curved_stage(&field, true, cfg));
+        let mut a_seam = 0.0f32;
+        let mut stops = Vec::new();
+        stop_nodes(&act, &mut stops);
+        for st in &stops {
+            if let BoundedCsg::ArcChannel { channels, .. } = st {
+                for c in channels {
+                    a_seam = a_seam.max(c.limit_mode_channel_only().addends().0);
+                }
+            }
+        }
+        let (mut oe, mut orr, mut we) = (0usize, 0usize, 0.0f64);
+        let mut worst_pt = [0.0f64; 3];
+        for p in &pts {
+            let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+            let v = act.sdf(pf, EvalMode::Visual);
+            if v >= 0.0 {
+                continue;
+            }
+            if delta as f64 - exact(*p) > 1e-3 {
+                oe += 1;
+                if delta as f64 - exact(*p) > we {
+                    we = delta as f64 - exact(*p);
+                    worst_pt = *p;
+                }
+            }
+            if delta as f64 - ray(*p) > 1e-3 {
+                orr += 1;
+            }
+        }
+        println!(
+            "#464 Nabe Stückbreite {plen:8.5} mm: A_seam {a_seam:.6} mm | über(exakt) {oe} \
+             (max {we:.5} mm bei [{:.3},{:.3},{:.3}]) | über(ray) {orr}",
+            worst_pt[0], worst_pt[1], worst_pt[2]
+        );
+        if oe > 0 {
+            let pf = [worst_pt[0] as f32, worst_pt[1] as f32, worst_pt[2] as f32];
+            println!(
+                "     f_basis {:.6}, f_aktiv {:.6}, exakt {:.6}, ray {:.6}",
+                base.sdf(pf, EvalMode::Visual),
+                act.sdf(pf, EvalMode::Visual),
+                exact(worst_pt),
+                ray(worst_pt)
+            );
+        }
+    }
+}
+
+/// **#464-Sonde: ist die Ray-Referenz zu grob, oder die exakte falsch?**
+/// Am Streitpunkt der Nabe konvergiert `dist_hub_complement` mit der
+/// Richtungszahl gegen `dist_hub_complement_exact` — dann ist die 160er
+/// Referenz eine (dokumentierte) OBERE Schranke, die den Über-Punkt schlicht
+/// nicht sieht.
+#[test]
+#[ignore]
+fn probe_464_ray_reference_sharpness() {
+    let (t, r1, r2, zh1, e1, e2) = (3.0f64, 6.0f64, 4.0f64, 0.5f64, 1.2f64, 1.8f64);
+    let _ = (zh1, e1, e2);
+    let cyls = [(r1, -1.2f64, 0.5f64), (r2, -1.8f64, 6.0f64)];
+    // Der Punkt aus `probe_464_hub_exact_vs_ray`, bitgleich aus dem Gitter.
+    let (lo, hi) = ([-9.0, -9.0, -t - 1.5], [9.0, 9.0, 0.5]);
+    let mut worst: Option<[f64; 3]> = None;
+    for p in grid_468(lo, hi, 22) {
+        let d = dist_hub_complement_exact(t, &cyls, p);
+        if (d - 1.987507).abs() < 1e-4 {
+            worst = Some(p);
+        }
+    }
+    let p = worst.expect("der Streitpunkt liegt nicht mehr im Gitter");
+    println!("#464 Streitpunkt {p:?}: exakt {:.6}", dist_hub_complement_exact(t, &cyls, p));
+    for nd in [160usize, 1000, 10_000, 100_000, 1_000_000] {
+        println!("   ray({nd:7}) = {:.6}", dist_hub_complement(t, &cyls, p, nd));
+    }
+}
+
+/// **#464-Sonde: was die Aktivierung bei feinerer Stückung kostet.** Volle
+/// Matrix, EXAKTE Referenz, aktive Bogen-Stufe, je Ziel-Stückbreite.
+#[test]
+#[ignore]
+fn probe_464_piece_width_for_empty_ablation() {
+    let delta = 2.0f32;
+    let m = cert_matrix(delta);
+    for plen in [0.015f64, 0.008, 0.004, 0.002] {
+        let cfg = wit::WitnessCfg { piece_len_mm: plen, ..wit::WitnessCfg::default() };
+        let (mut over, mut worst, mut a_max, mut ms) = (0usize, 0.0f64, 0.0f32, 0.0f64);
+        for (_name, field, exact, lo, hi, n) in &m {
+            let t0 = std::time::Instant::now();
+            let act = strip_lb(&field_with_curved_stage(field, true, cfg));
+            ms += t0.elapsed().as_secs_f64() * 1e3;
+            let mut stops = Vec::new();
+            stop_nodes(&act, &mut stops);
+            for st in &stops {
+                if let BoundedCsg::ArcChannel { channels, .. } = st {
+                    for c in channels {
+                        a_max = a_max.max(c.limit_mode_channel_only().addends().0);
+                    }
+                }
+            }
+            for p in grid_468(*lo, *hi, *n) {
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let err = delta as f64 - exact(p);
+                // Nur die Punkte, die die BASIS nicht schon über hat.
+                if err > 1e-3
+                    && act.sdf(pf, EvalMode::Visual) < 0.0
+                    && strip_lb(field).sdf(pf, EvalMode::Visual) >= 0.0
+                {
+                    over += 1;
+                    worst = worst.max(err);
+                }
+            }
+        }
+        println!(
+            "#464 Stückbreite {plen:6.4} mm: {over} NEUE Über-Punkte (max {worst:.5} mm), \
+             A_seam_max {a_max:.6} mm, Re-Zertifizierung der Matrix {ms:.0} ms"
+        );
+    }
 }

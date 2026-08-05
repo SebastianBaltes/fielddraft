@@ -9585,6 +9585,14 @@ Geometrie.** Die Reihenfolge:
   die beiden Kreisnähte der Stufen-Nabe — die einzigen gekrümmten Kanäle der
   Matrix.
 
+> **Nachtrag (#464, §8an, 2026-08-05):** die Ablations-Zahl dieses Abschnitts
+> misst auf der Über-Seite gegen `dist_hub_complement` (160 Richtungen), eine
+> OBERE Schranke von `dist(p, ∁Ω)`. Sie ZÄHLT damit zu wenig, nie zu viel — für
+> den Befund „41 Punkte" ist das unschädlich (er wird nur bestätigt: gegen die
+> exakte Referenz sind es 45), für die Nachfolge-Aussage „0 Punkte" in §8am ist
+> es entscheidend. §8an misst dieselbe Ablation gegen
+> `dist_hub_complement_exact`.
+
 ## 8am. P5c-D — die Naht-Stückung folgt der Bogenlänge (#469 zu #384, 2026-08-05)
 
 §8al hat die 41 Phantom-Punkte der Bogen-Klemme als **Stückung** entlarvt: die
@@ -9769,6 +9777,16 @@ Beweis-Voraussetzung.
 - **Nicht**, dass die Bogen-Klemme jetzt aktiviert wäre. `CURVED_COVER_STAGE`
   steht unverändert auf `ShadowOnly`. #469 macht #464 nur ENTSCHEIDBAR: der
   Preis, den §8al mit 41 Punkten beziffert hat, ist auf 0 gefallen.
+
+> **Nachtrag (#464, §8an, 2026-08-05):** die letzte Zahl ist zu optimistisch
+> gemessen. Die Ablation von §8al/§8am vergleicht auf der ÜBER-Seite gegen
+> `dist_hub_complement`, und das ist laut eigener Zusage eine OBERE Schranke
+> von `dist(p, ∁Ω)` — `err = δ − ray` ist damit eine UNTERschätzung und die
+> gemeldete 0 eine untere Schranke der Über-Punkte, keine Leermeldung. Gegen
+> die exakte Referenz derselben Fixtur (`dist_hub_complement_exact`, dieselbe,
+> die die §8p-Matrix benutzt) bleibt **ein** Punkt stehen. Der Preis fiel also
+> von 41 auf 1, nicht auf 0; #464 hat deshalb nicht aktiviert. Details,
+> Zahlen und die offene Frage in §8an.
 - **Nicht**, dass das ausgelieferte Feld sich geändert hätte. Über 873 776
   gemessene Punkte ist es bit-identisch. Der Versions-Bump erfolgt, weil die
   Änderung feldwirksam SEIN KANN (sie bewegt einen ausgelieferten Tape-Wert),
@@ -9790,6 +9808,145 @@ Beweis-Voraussetzung.
   nicht der längste; es gibt eine zweite, krümmungsabhängige Achse, die eine
   reine Längen-Stückung nicht modelliert. Sie ist hier nicht untersucht.
 
+## 8an. P5c-C — die Aktivierung, die nicht stattgefunden hat (#464 zu #384, 2026-08-05)
+
+#464 sollte `CURVED_COVER_STAGE` von `ShadowOnly` auf `Active` legen. Die
+Auflage war, das vorher zu MESSEN statt zu glauben: die Ablation, die in §8al
+41 Phantom-Punkte zeigte, musste leer sein. Sie ist es nicht. Die Stufe steht
+weiter auf `ShadowOnly`, das ausgelieferte Feld ist unverändert, und dieser
+Abschnitt hält fest, warum.
+
+### Der Messfehler, der die Freigabe getragen hätte
+
+§8am meldet nach der längenbasierten Stückung `41 → 0` Über-Punkte. Diese Zahl
+entsteht aus
+
+    err = δ − dist_hub_complement(p, 160 Richtungen)
+
+und `dist_hub_complement` ist ausweislich der eigenen Dokumentation eine OBERE
+Schranke von `dist(p, ∁Ω)` (Strahl-Minimum über endlich viele Richtungen —
+jeder weitere Strahl kann den Wert nur senken). Eine obere Schranke der
+Distanz macht `err` zu einer UNTERschätzung des Fehlers: die Ablation zählt
+systematisch zu wenig Über-Punkte. „0" heisst dort „mindestens 0", nicht
+„keine".
+
+Am Streitpunkt der Nabe ist die Lücke gross genug, um die Entscheidung zu
+kippen (`probe_464_ray_reference_sharpness`, Punkt
+`[1,80927, −1,16399, −0,22985]`):
+
+| Richtungen | 160 | 1 000 | 10 000 | 100 000 | 1 000 000 | exakt |
+|---|---|---|---|---|---|---|
+| `dist(p, ∁Ω)` | 2,063926 | 2,007731 | 1,991038 | 1,987869 | 1,987822 | 1,987507 |
+
+Die Referenz konvergiert gegen die exakte Zahl; die 160-Richtungs-Fassung
+überschätzt um **0,0764 mm**. Das ist keine Kritik an §8al — dort kostete die
+Klemme 0,67 mm, weit über dieser Blindheit —, aber genau die Grössenordnung,
+in der §8am seine 0 gemeldet hat.
+
+### Die Messung mit der exakten Referenz
+
+Gemessen wurde gegen `dist_hub_complement_exact` — dieselbe analytische
+Referenz, die die §8p-Zertifikats-Matrix und der LB-Soundness-Pin benutzen.
+Die exakte Distanz am Streitpunkt lässt sich von Hand nachrechnen: der nächste
+Randpunkt ist der Deckelring von Zylinder A (`z = 0,5`, `r ∈ [4, 6]`) bzw. der
+Mantel von Zylinder B (`ρ = 4`, `z > 0,5`), beide in
+`√(0,73² + 1,8488²) = 1,9878 mm` Entfernung.
+
+Volle Fixture-Matrix, aktive Bogen-Stufe über den `SeamProofKnobs`-Knopf,
+ausgelieferte Ziel-Stückbreite, ohne `L`-Block
+(`probe_464_matrix_ablation`, 13 Fixturen, **144 776** Gitterpunkte):
+
+| Fixtur | Modi vorher → aktiv | Feld bewegt | max Absenkung | über BASIS | über aktiv |
+|---|---|---|---|---|---|
+| Stufen-Nabe | 0/2 → 2/0 | 543 Punkte | 0,027332 mm | 0 | **1** (0,01249 mm) |
+| Ecken-Schale ×8 | 24/0 → 24/0 | 0 | 0 | 0 | 0 |
+| Rippen-Kamm ×2 | 19/0, 22/0 unverändert | 0 | 0 | 312 / 264 | 312 / 264 |
+| notch ×2 | 1/0, 2/0 unverändert | 0 | 0 | 0 | 0 |
+
+Dazu das dichte 90³-Gitter beider Rippen-Kämme (`probe_464_dense_rib_active`,
+je 729 000 Punkte): **0** bewegte Feldpunkte, Über-Zahlen bitgleich zur Basis
+(10 980 bzw. 11 430 — beides Vor-Bestand ohne `L`, nicht Folge der Stufe).
+
+Der eine neue Punkt ist echt. Die BASIS ist dort **exakt richtig**
+(`f_basis = +0,012478 mm` gegen `δ − exakt = 0,012478 mm`), die aktive Klemme
+senkt den Wert um bis zu `A_seam` und schiebt ihn dadurch ins Negative —
+12,5 µm Material, das dort nicht sein darf.
+
+### Warum feinere Stücke das nicht strukturell lösen
+
+`A_seam` fällt mit der Ziel-Stückbreite, aber nur bis zu einem Boden
+(`probe_464_piece_width_for_empty_ablation`, volle Matrix, exakte Referenz,
+nur die Punkte gezählt, die die BASIS nicht schon über hat):
+
+| Ziel-Stückbreite | 0,0150 mm | 0,0080 mm | 0,0040 mm | 0,0020 mm |
+|---|---|---|---|---|
+| `A_seam_max` | 0,027332 | 0,014662 | 0,007869 | 0,007869 |
+| neue Über-Punkte | 1 | 1 | 0 | 0 |
+| Re-Zertifizierung der Matrix | 6 042 ms | 9 984 ms | 13 526 ms | 18 906 ms |
+
+Unter 0,004 mm bewegt sich `A_seam_max` nicht mehr: dort dominieren `ε_q`,
+`ε_d` und das Rundungsbudget statt `η`. Der Boden liegt bei **0,007869 mm**.
+Die 0 in der dritten Spalte ist damit keine Zusage, sondern Gitter-Glück: der
+Streitpunkt hat 0,012478 mm Luft und liegt über dem Boden. Ein Punkt mit
+weniger als 0,0079 mm Luft — und jedes hinreichend feine Gitter findet einen —
+wäre auch dort phantom.
+
+Das ist kein Fehler des Beweises. Es folgt direkt aus der Ordnung der Klemmen
+(§8al, `proved_and_legacy_clamp_are_ordered_468`): wegen `A ≥ 0` liegt die
+bewiesene Klemme punktweise NIE über der Legacy-Klemme. Wo die Legacy-Klemme
+zufällig exakt ist — an der Nabe ist sie das —, kann die Aktivierung nur
+verlieren. Der Gewinn ist woanders: dort, wo die Legacy-Klemme eine unbewiesene
+Modell-Annahme ist, wird sie zur Zusage.
+
+### Die offene Frage
+
+Sie ist keine Mess-, sondern eine Politik-Frage, und sie gehört nicht in ein
+Ticket, das „schalte um" heisst:
+
+> Ist eine nach oben durch `A_seam` beschränkte Absenkung des Feldes (0,027 mm
+> bei der ausgelieferten Stückbreite, Boden 0,0079 mm) der Preis wert, an den
+> gekrümmten Nähten eine unbewiesene Modell-Annahme durch eine Zusage zu
+> ersetzen — obwohl die Annahme an der einzigen gemessenen Fixtur exakt ist?
+
+Denkbare Ausgänge, alle mit eigenem Ticket: (a) annehmen und die Grenze als
+Zusage dokumentieren; (b) den Boden von `A_seam` senken (er sitzt in `ε_q`,
+`ε_d`, Rundungsbudget — nicht in der Stückung); (c) nicht aktivieren, weil die
+Redundanz an der Nabe mehr wert ist als die Provenienz.
+
+### Nachgezogene Pins
+
+- `curved_clamp_phantom_comes_from_one_seam_468` trägt jetzt eine dritte
+  Messung: dieselbe Ablation gegen die exakte Referenz, `1` Über-Punkt
+  (0,01249 mm), plus das Anti-Leer-Gate, dass die BASIS gegen dieselbe
+  Referenz `0` hat. Ohne dieses Gate wäre die 1 nicht der Stufe zuzurechnen.
+- `curved_seams_are_proved_in_shadow_only_384` bleibt unverändert (`238/0`
+  aktiv, `236/2` in Produktion, Konstante `ShadowOnly`) — die Aktivierung, die
+  ihn umbenannt hätte, hat nicht stattgefunden.
+- Fünf `#[ignore]`-Sonden halten die Messungen reproduzierbar:
+  `probe_464_matrix_ablation`, `probe_464_dense_rib_active`,
+  `probe_464_hub_exact_vs_ray`, `probe_464_ray_reference_sharpness`,
+  `probe_464_piece_width_for_empty_ablation`.
+
+### Was daraus NICHT folgt
+
+- **Nicht**, dass der Bogen-Beweis falsch wäre. P5c-A/B sind unangetastet; der
+  Shadow-Bericht steht weiter auf `238/238`. Bestritten ist nicht seine
+  Gültigkeit, sondern seine SCHÄRFE gegenüber der Annahme, die er ersetzt.
+- **Nicht**, dass #469 unnötig war. Ohne die längenbasierte Stückung wären es
+  45 Punkte mit 0,70 mm statt einer mit 0,0125 mm. #469 hat den Preis um drei
+  Grössenordnungen gesenkt — nur eben nicht auf null.
+- **Nicht**, dass das ausgelieferte Feld je diesen Punkt gezeigt hätte. Die
+  Messung läuft ohne `L`-Block; mit `L` fängt das Feld ihn ab (§8o/§8p). Der
+  Streitgegenstand bleibt die Redundanz.
+- **Nicht**, dass die Ray-Referenz überall zu ersetzen wäre. Sie ist als obere
+  Schranke korrekt und auf der UNTER-Seite die richtige Wahl. Nur die
+  Über-Seite darf nicht gegen sie leer-grün werden. `scan_mut` benutzt sie dort
+  bis heute; ob das die §8p-Über-Bilanzen betrifft, ist hier NICHT untersucht.
+- **Nicht**, dass 0,004 mm die richtige Stückbreite wäre. Sie leert dieses
+  Gitter, kostet 2,2 × Zertifizierungszeit und senkt `A_seam` nur bis zum
+  Boden. Eine Wahl, die an einem Gitterpunkt kalibriert ist, ist keine
+  Herleitung.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -9798,6 +9955,12 @@ Beweis-Voraussetzung.
   gemessenen Nachweise und ihrer eigenen Auswertungspunkte.
 - `crates/kernel/src/offset_capability_tests.rs` §8ag — der kausale Pin
   `extrude_omega_channels_bind_in_the_tape_384`.
+- §8an (#464, **kein Produktionscode, keine Feldänderung**):
+  `crates/kernel/src/offset_capability_tests.rs` — die exakte Messung in
+  `curved_clamp_phantom_comes_from_one_seam_468` und die fünf
+  `probe_464_*`-Sonden. `crates/kernel/src/offset_witness.rs` — der
+  Doku-Nachtrag an `CURVED_COVER_STAGE`; die Konstante selbst bleibt
+  `ShadowOnly`.
 - Produktionscode §8am (#469, **Feldwert bitgleich, Tape-Wert bewegt**):
   `crates/kernel/src/offset_witness.rs` — `WitnessCfg::piece_len_mm` /
   `min_pieces_per_arc` / `max_pieces_per_arc`, `DEFAULT_PIECE_LEN_MM`,
