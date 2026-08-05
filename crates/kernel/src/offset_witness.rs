@@ -944,23 +944,45 @@ impl Default for WitnessCfg {
 ///
 /// ```text
 /// Ziel mm | A_seam_max mm | Über-Punkte
-///  0,9000 |      2,144639 | 41
-///  0,2250 |      0,330557 | 19
-///  0,0565 |      0,095035 |  5
-///  0,0283 |      0,050962 |  1
-///  0,0200 |      0,050962 |  1
-///  0,0160 |      0,050962 |  1
-///  0,0155 |      0,027332 |  0
-///  0,0150 |      0,027332 |  0
-///  0,0125 |      0,027332 |  0
+///  0,9000 |      2,144639 | 45
+///  0,2250 |      0,616516 | 43
+///  0,0565 |      0,177238 | 13
+///  0,0283 |      0,050962 |  2
+///  0,0200 |      0,050962 |  2
+///  0,0160 |      0,050962 |  2
+///  0,0155 |      0,027332 |  1
+///  0,0150 |      0,027332 |  1
+///  0,0125 |      0,027332 |  1
 /// ```
 ///
-/// Die Kante liegt zwischen 0,016 und 0,0155 mm und ist scharf, weil `η` auf
-/// den Sprossen der geometrischen Leiter sitzt (`1e-4 · 1,865^k`): Sprosse 10
-/// ist 0,05094, Sprosse 9 ist 0,02731, dazwischen gibt es nichts. Gewählt ist
-/// **0,015 mm** — der erste runde Wert unterhalb der Kante. Feiner zu gehen
-/// kostet linear Rechenzeit und bringt bis 0,0125 mm nachweislich nichts.
-/// Die Begründung im Zusammenhang führt §8am.
+/// Die `A_seam`-Kante liegt zwischen 0,016 und 0,0155 mm und ist scharf, weil
+/// `η` auf den Sprossen der geometrischen Leiter sitzt (`1e-4 · 1,865^k`):
+/// Sprosse 10 ist 0,05094, Sprosse 9 ist 0,02731, dazwischen gibt es nichts.
+/// Gewählt ist **0,015 mm** — der erste runde Wert unterhalb dieser Kante.
+///
+/// **#471/§8ao-Korrektur der Zahlen, #470-Nachtrag der Deutung.** Die
+/// ursprüngliche Fassung dieser Tabelle mass die Über-Spalte gegen
+/// `dist_hub_complement` — eine OBERE Schranke von `dist(p,∁Ω)`, die
+/// Über-Punkte systematisch verschluckt. Oben stehen die Zahlen gegen
+/// `dist_hub_complement_exact`. Zwei Zeilen der `A_seam`-Spalte waren
+/// zusätzlich falsch abgeschrieben (0,225 mm stand mit 0,330557 statt
+/// 0,616516, 0,0565 mm mit 0,095035 statt 0,177238 — beides Werte der
+/// MATRIX-weiten Messung, nicht der Nabe); die Sonde ist deterministisch, zwei
+/// Läufe am 2026-08-05 sind bitgleich. Damit fällt die Über-Spalte
+/// **nirgends auf 0**:
+/// bis hinunter zu 0,0125 mm bleibt EIN Punkt (12,5 µm), und leer wird die
+/// Ablation der ganzen Matrix erst zwischen 0,0045 und 0,0040 mm
+/// (`probe_470_ablation_edge`). „Der erste runde Wert unterhalb der Kante"
+/// bezieht sich also auf die Kante von `A_seam`, nicht auf eine leere
+/// Ablation — die ist Sache von #464.
+///
+/// #470 hat zusätzlich geprüft, ob eine zweite, KRÜMMUNGS-abhängige Achse ein
+/// besseres Kriterium ergäbe (`θ ≤ const` oder `σ ≤ const` statt `w ≤ const`).
+/// Sie ergibt keines: `η` streut bei gleicher Breite über Bögen GLEICHER
+/// Krümmung um mehr als eine Leitersprosse (Pin
+/// `second_seam_axis_is_not_curvature_470`), und über gerade Segmente — also
+/// Krümmung exakt null — um den Faktor 80. Die Begründung im Zusammenhang
+/// führen §8am und §8aq.
 pub const DEFAULT_PIECE_LEN_MM: f64 = 0.015;
 
 /// #469 — **eine OBERE Schranke der Nahtlänge eines Bogens (mm).**
@@ -1057,6 +1079,15 @@ fn alpha_ub(d: f64) -> f64 {
         let lo = PI / 4.0 + if x >= 0.0 { x * PI / 4.0 } else { x };
         (PI - lo).clamp(PI / 2.0, PI)
     }
+}
+
+/// Test-Zugang zu [`alpha_ub`] (#470). Die Korrelations-Sonde braucht den
+/// Öffnungswinkel eines Bogens, um Stückwinkel und Sagitta auszurechnen — und
+/// sie soll dieselbe Schranke lesen, die auch die Stückung benutzt, statt sich
+/// aus dem bloss diagnostischen `sweep` eine zweite zu bauen.
+#[cfg(test)]
+pub fn alpha_ub_for_test(d: f64) -> f64 {
+    alpha_ub(d)
 }
 
 /// #469 — **die Stückzahl EINES Bogens.** `⌈L̄ / piece_len_mm⌉`, geklemmt.

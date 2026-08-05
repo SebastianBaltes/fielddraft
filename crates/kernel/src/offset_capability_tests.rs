@@ -20657,3 +20657,463 @@ fn probe_464_piece_width_for_empty_ablation() {
         );
     }
 }
+
+// ══════════ #384 P5c-E (#470) — die zweite Achse der Naht-Stückung ══════════
+
+/// **#470-Sonde 1: welcher Bogen bindet, und womit korreliert sein `η`?**
+///
+/// Für jede Ziel-Stückbreite wird jeder Bogen der Matrix mit seinen
+/// Kandidaten-Achsen aufgelistet — Stückbreite `w`, Stückwinkel `θ = α_ub/n`,
+/// Sagitta `σ = r·(1 − cos(θ/2))`, Krümmung mal Breite `κ·w = w/r` — und
+/// daneben das grösste `η`, das eines seiner Stücke gekostet hat. Sortiert
+/// nach `η`: oben steht der Bogen, der `A_seam` bindet.
+#[test]
+#[ignore]
+fn probe_470_binding_arc_axes() {
+    let delta = 2.0f32;
+    for plen in [0.0283f64, wit::DEFAULT_PIECE_LEN_MM] {
+        let cfg = wit::WitnessCfg { piece_len_mm: plen, ..wit::WitnessCfg::default() };
+        let mut rows: Vec<(f64, String)> = Vec::new();
+        for (name, field, _e, _lo, _hi, _n) in cert_matrix(delta) {
+            for (om, chans) in omega_and_channels(&field) {
+                for (ci, ch) in chans.iter().enumerate() {
+                    let cov = wit::cover_channel(om, ch, cfg);
+                    let mut per_arc = vec![0.0f64; ch.arcs.len()];
+                    for p in &cov.covered_pieces {
+                        if p.arc < per_arc.len() {
+                            per_arc[p.arc] = per_arc[p.arc].max(p.offset);
+                        }
+                    }
+                    for (ai, a) in ch.arcs.iter().enumerate() {
+                        let curved = !(a.sweep < 0.0);
+                        let l = wit::arc_seam_len_ub(a);
+                        let n = wit::pieces_for_arc(a, &cfg);
+                        let w = l / n as f64;
+                        let r = a.r as f64;
+                        let alpha =
+                            if curved { wit::alpha_ub_for_test(a.d_e as f64) } else { 0.0 };
+                        let theta = alpha / n as f64;
+                        let sag = if curved { r * (1.0 - (0.5 * theta).cos()) } else { 0.0 };
+                        let kw = if curved { w / r } else { 0.0 };
+                        let eta = per_arc[ai];
+                        rows.push((
+                            eta,
+                            format!(
+                                "{name} K{ci} B{ai} {} r {r:8.3} L {l:8.4} n {n:5} \
+                                 w {w:.5} alpha {alpha:.4} theta {theta:.6} sig {sag:.3e} \
+                                 k*w {kw:.3e} eta {eta:.6}",
+                                if curved { "gekr." } else { "Segm." }
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        rows.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        println!("== #470 Ziel-Stueckbreite {plen} mm — die 14 Boegen mit dem groessten eta:");
+        for (_e, s) in rows.iter().take(14) {
+            println!("   {s}");
+        }
+    }
+}
+
+/// **#470-Sonde 2: die kritische Stückbreite JE BOGEN.**
+///
+/// Wenn es eine zweite, krümmungsabhängige Achse gibt, muss sie sich hier
+/// zeigen: dieselbe Stückbreite müsste bei stärker gekrümmten Bögen ein
+/// grösseres `η` kosten, die Kante also bei kleinerer Breite liegen. Die
+/// Sonde fährt eine feine Breiten-Leiter und druckt je Bogen die grösste
+/// Breite, bei der sein `η` noch ≤ der jeweiligen Sprosse bleibt.
+#[test]
+#[ignore]
+fn probe_470_critical_width_per_arc() {
+    let delta = 2.0f32;
+    let widths: Vec<f64> = (0..14).map(|k| 0.06 * 0.8f64.powi(k)).collect();
+    for want in ["Stufen-Nabe", "Rippen-Kamm 4×1.5/0.8"] {
+        let fx = cert_matrix(delta).into_iter().find(|f| f.0 == want).unwrap();
+        let (name, field, _e, _lo, _hi, _n) = fx;
+        // Bogen-Kennung -> (r, gekrümmt, kappa, Vec<(w, eta)>)
+        let mut table: Vec<(String, f64, bool, Vec<(f64, f64)>)> = Vec::new();
+        for plen in &widths {
+            let cfg = wit::WitnessCfg { piece_len_mm: *plen, ..wit::WitnessCfg::default() };
+            let mut idx = 0usize;
+            for (om, chans) in omega_and_channels(&field) {
+                for (ci, ch) in chans.iter().enumerate() {
+                    let cov = wit::cover_channel(om, ch, cfg);
+                    let mut per_arc = vec![0.0f64; ch.arcs.len()];
+                    for p in &cov.covered_pieces {
+                        if p.arc < per_arc.len() {
+                            per_arc[p.arc] = per_arc[p.arc].max(p.offset);
+                        }
+                    }
+                    for (ai, a) in ch.arcs.iter().enumerate() {
+                        let curved = !(a.sweep < 0.0);
+                        let l = wit::arc_seam_len_ub(a);
+                        let n = wit::pieces_for_arc(a, &cfg);
+                        let w = l / n as f64;
+                        if table.len() <= idx {
+                            table.push((
+                                format!("{name} K{ci} B{ai}"),
+                                a.r as f64,
+                                curved,
+                                Vec::new(),
+                            ));
+                        }
+                        table[idx].3.push((w, per_arc[ai]));
+                        idx += 1;
+                    }
+                }
+            }
+        }
+        println!("== #470 kritische Breite, {name} (Sprossen der eta-Leiter)");
+        for (id, r, curved, pts) in &table {
+            // Für jede vorkommende eta-Sprosse: die GRÖSSTE Breite, die sie hält.
+            let mut rungs: Vec<f64> = pts.iter().map(|x| x.1).collect();
+            rungs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            rungs.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+            let mut s = String::new();
+            for rg in &rungs {
+                let wmax = pts
+                    .iter()
+                    .filter(|x| x.1 <= *rg + 1e-12)
+                    .map(|x| x.0)
+                    .fold(0.0f64, f64::max);
+                s.push_str(&format!(" eta<={rg:.6}@w<={wmax:.5};"));
+            }
+            println!(
+                "   {id} {} r {r:7.3} kappa {:.4}:{s}",
+                if *curved { "gekr." } else { "Segm." },
+                if *curved { 1.0 / r } else { 0.0 }
+            );
+        }
+    }
+}
+
+/// **#470-Sonde 3: was ein auf `η` GEZIELTES Kriterium kostet.**
+///
+/// Statt „Stückbreite ≤ const" (#469) hier „verfeinere diesen Kanal, bis sein
+/// `η` unter der Zielsprosse liegt". Gemessen wird gegen die gleichförmigen
+/// Breiten 0,015 und 0,004 mm: `A_seam_max`, Stückzahl, Zeit.
+#[test]
+#[ignore]
+fn probe_470_adaptive_eta_target() {
+    let delta = 2.0f32;
+    let m = cert_matrix(delta);
+    let dflt = wit::WitnessCfg::default();
+    // Referenz: gleichförmig.
+    for plen in [0.015f64, 0.008, 0.004] {
+        let cfg = wit::WitnessCfg { piece_len_mm: plen, ..dflt };
+        let t0 = std::time::Instant::now();
+        let (mut pieces, mut a_max, mut eta_max) = (0usize, 0.0f32, 0.0f64);
+        for (_n, field, _e, _l, _h, _c) in &m {
+            for (om, chans) in omega_and_channels(field) {
+                for ch in chans {
+                    let cov = wit::cover_channel(om, ch, cfg);
+                    pieces += cov.pieces;
+                    if let Some(e) = cov.eta {
+                        eta_max = eta_max.max(e.mm());
+                    }
+                    let mut c = ch.clone();
+                    let mode = wit::certify_and_resolve_curved_probe(om, &mut c, cfg, true);
+                    a_max = a_max.max(mode.addends().0);
+                }
+            }
+        }
+        println!(
+            "#470 gleichförmig {plen:6.4} mm: {pieces:9} Stücke | eta_max {eta_max:.6} | \
+             A_seam_max {a_max:.6} mm | {:.0} ms",
+            t0.elapsed().as_secs_f64() * 1e3
+        );
+    }
+    // Adaptiv: je Kanal halbieren, bis `η` unter der Zielsprosse liegt.
+    for target in [0.0079f64, 0.0043, 0.0023] {
+        let t0 = std::time::Instant::now();
+        let (mut pieces, mut a_max, mut eta_max, mut finest) = (0usize, 0.0f32, 0.0f64, 1.0f64);
+        let (mut nch, mut hit_floor) = (0usize, 0usize);
+        for (_n, field, _e, _l, _h, _c) in &m {
+            for (om, chans) in omega_and_channels(field) {
+                for ch in chans {
+                    nch += 1;
+                    let mut plen = 0.06f64;
+                    let mut cfg = wit::WitnessCfg { piece_len_mm: plen, ..dflt };
+                    loop {
+                        cfg = wit::WitnessCfg { piece_len_mm: plen, ..dflt };
+                        let cov = wit::cover_channel(om, ch, cfg);
+                        pieces += cov.pieces;
+                        let e = cov.eta.map(|e| e.mm()).unwrap_or(f64::INFINITY);
+                        if e <= target {
+                            eta_max = eta_max.max(e);
+                            break;
+                        }
+                        if plen <= 0.002 {
+                            hit_floor += 1;
+                            if e.is_finite() {
+                                eta_max = eta_max.max(e);
+                            }
+                            break;
+                        }
+                        plen *= 0.5;
+                    }
+                    finest = finest.min(plen);
+                    let mut c = ch.clone();
+                    let mode = wit::certify_and_resolve_curved_probe(om, &mut c, cfg, true);
+                    a_max = a_max.max(mode.addends().0);
+                }
+            }
+        }
+        println!(
+            "#470 adaptiv Ziel-eta {target:.4} mm: {pieces:9} Stücke (kumuliert über alle \
+             Runden) | {nch} Kanäle, {hit_floor} am Breiten-Boden, feinste Breite {finest:.5} \
+             | eta_max {eta_max:.6} | A_seam_max {a_max:.6} mm | {:.0} ms",
+            t0.elapsed().as_secs_f64() * 1e3
+        );
+    }
+}
+
+/// **#470-Sonde 4: die Kosten SAUBER — nur die Zeugen-Suche, ohne
+/// Zertifizierung.**
+///
+/// Sonde 3 hat Suche und Zertifizierung zusammen gemessen und damit den
+/// Vergleich verwässert. Hier läuft nur [`wit::cover_channel`]: gleichförmig
+/// gegen adaptiv (Start bei der ausgelieferten Breite, dann halbieren, bis
+/// `η` unter der Zielsprosse liegt).
+#[test]
+#[ignore]
+fn probe_470_cover_cost_only() {
+    let delta = 2.0f32;
+    let m = cert_matrix(delta);
+    let dflt = wit::WitnessCfg::default();
+    for plen in [0.015f64, 0.008, 0.006, 0.005, 0.004] {
+        let cfg = wit::WitnessCfg { piece_len_mm: plen, ..dflt };
+        let t0 = std::time::Instant::now();
+        let (mut pieces, mut eta_max) = (0usize, 0.0f64);
+        for (_n, field, _e, _l, _h, _c) in &m {
+            for (om, chans) in omega_and_channels(field) {
+                for ch in chans {
+                    let cov = wit::cover_channel(om, ch, cfg);
+                    pieces += cov.pieces;
+                    if let Some(e) = cov.eta {
+                        eta_max = eta_max.max(e.mm());
+                    }
+                }
+            }
+        }
+        println!(
+            "#470 SUCHE gleichförmig {plen:6.4} mm: {pieces:9} Stücke | eta_max {eta_max:.6} \
+             | {:.0} ms",
+            t0.elapsed().as_secs_f64() * 1e3
+        );
+    }
+    for (start, target) in [(0.015f64, 0.0079f64), (0.015, 0.0043), (0.06, 0.0079)] {
+        let t0 = std::time::Instant::now();
+        let (mut pieces, mut eta_max, mut rounds) = (0usize, 0.0f64, 0usize);
+        for (_n, field, _e, _l, _h, _c) in &m {
+            for (om, chans) in omega_and_channels(field) {
+                for ch in chans {
+                    let mut plen = start;
+                    loop {
+                        rounds += 1;
+                        let cfg = wit::WitnessCfg { piece_len_mm: plen, ..dflt };
+                        let cov = wit::cover_channel(om, ch, cfg);
+                        pieces += cov.pieces;
+                        let e = cov.eta.map(|e| e.mm()).unwrap_or(f64::INFINITY);
+                        if e <= target || plen <= 0.002 {
+                            if e.is_finite() {
+                                eta_max = eta_max.max(e);
+                            }
+                            break;
+                        }
+                        plen *= 0.5;
+                    }
+                }
+            }
+        }
+        println!(
+            "#470 SUCHE adaptiv Start {start:5.3} Ziel-eta {target:.4}: {pieces:9} Stücke, \
+             {rounds} Runden auf 238 Kanäle | eta_max {eta_max:.6} | {:.0} ms",
+            t0.elapsed().as_secs_f64() * 1e3
+        );
+    }
+}
+
+/// **#470-Sonde 5: die Ablations-Kante zwischen 0,008 und 0,004 mm.**
+/// Dieselbe Konstruktion wie `probe_464_piece_width_for_empty_ablation`, nur
+/// feiner aufgelöst — sie beziffert, was #464 an gleichförmiger Verfeinerung
+/// bräuchte.
+#[test]
+#[ignore]
+fn probe_470_ablation_edge() {
+    let delta = 2.0f32;
+    let m = cert_matrix(delta);
+    for plen in [0.008f64, 0.007, 0.006, 0.005, 0.0045, 0.004] {
+        let cfg = wit::WitnessCfg { piece_len_mm: plen, ..wit::WitnessCfg::default() };
+        let (mut over, mut worst, mut a_max, mut ms) = (0usize, 0.0f64, 0.0f32, 0.0f64);
+        for (_name, field, exact, lo, hi, n) in &m {
+            let t0 = std::time::Instant::now();
+            let act = strip_lb(&field_with_curved_stage(field, true, cfg));
+            ms += t0.elapsed().as_secs_f64() * 1e3;
+            let mut stops = Vec::new();
+            stop_nodes(&act, &mut stops);
+            for st in &stops {
+                if let BoundedCsg::ArcChannel { channels, .. } = st {
+                    for c in channels {
+                        a_max = a_max.max(c.limit_mode_channel_only().addends().0);
+                    }
+                }
+            }
+            let base = strip_lb(field);
+            for p in grid_468(*lo, *hi, *n) {
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let err = delta as f64 - exact(p);
+                if err > 1e-3
+                    && act.sdf(pf, EvalMode::Visual) < 0.0
+                    && base.sdf(pf, EvalMode::Visual) >= 0.0
+                {
+                    over += 1;
+                    worst = worst.max(err);
+                }
+            }
+        }
+        println!(
+            "#470 Kante Stückbreite {plen:6.4} mm: {over} NEUE Über-Punkte (max {worst:.5} mm), \
+             A_seam_max {a_max:.6} mm, Re-Zertifizierung {ms:.0} ms"
+        );
+    }
+}
+
+/// **#470-Sonde 6: die zweite Achse ist die AUSRICHTUNG, nicht die Krümmung.**
+///
+/// Der Verdacht aus Sonde 2: `η/w` nimmt je Bogen einen von zwei Werten an
+/// (rund 1,1 und rund 1,74 ≈ √3). Das ist genau die Spanne, die eine
+/// ACHSPARALLELE Stück-Box über einer schräg liegenden Naht aufspannt: läuft
+/// die Naht entlang einer Gitterachse, ist die Box `w × 0 × 0`, läuft sie in
+/// die Raumdiagonale, ist sie `w/√3` in jeder Koordinate und ihre Diagonale
+/// wieder `w`. Die Sonde stellt `η/w` neben die Diagonalität der
+/// Naht-Richtung, `‖û‖₁ ∈ [1, √3]` — für SEGMENTE, wo die Richtung konstant
+/// und die Krümmung exakt null ist.
+#[test]
+#[ignore]
+fn probe_470_seam_direction_axis() {
+    let delta = 2.0f32;
+    let cfg = wit::WitnessCfg { piece_len_mm: 0.015, ..wit::WitnessCfg::default() };
+    let mut rows: Vec<(f64, f64, String)> = Vec::new();
+    for (name, field, _e, _l, _h, _c) in cert_matrix(delta) {
+        for (om, chans) in omega_and_channels(&field) {
+            for (ci, ch) in chans.iter().enumerate() {
+                let cov = wit::cover_channel(om, ch, cfg);
+                let mut per_arc = vec![0.0f64; ch.arcs.len()];
+                for p in &cov.covered_pieces {
+                    if p.arc < per_arc.len() {
+                        per_arc[p.arc] = per_arc[p.arc].max(p.offset);
+                    }
+                }
+                for (ai, a) in ch.arcs.iter().enumerate() {
+                    if !(a.sweep < 0.0) {
+                        continue;
+                    }
+                    let n2 = (a.u.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>()).sqrt();
+                    if !(n2 > 0.0) {
+                        continue;
+                    }
+                    let l1 = a.u.iter().map(|x| (*x as f64).abs()).sum::<f64>() / n2;
+                    let l = wit::arc_seam_len_ub(a);
+                    let w = l / wit::pieces_for_arc(a, &cfg) as f64;
+                    let eta = per_arc[ai];
+                    if eta <= 1.1e-4 {
+                        continue; // Bögen am unteren Leiter-Ende: η misst dort nichts.
+                    }
+                    rows.push((
+                        l1,
+                        eta / w,
+                        format!("{name} K{ci} B{ai} |u|_1 {l1:.4} eta/w {:.3}", eta / w),
+                    ));
+                }
+            }
+        }
+    }
+    rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    println!("== #470 Segmente: Diagonalitaet der Nahtrichtung gegen eta/w ({} Boegen)", rows.len());
+    for (_a, _b, s) in &rows {
+        println!("   {s}");
+    }
+    // Pearson-Korrelation von `‖û‖₁` und `η/w`.
+    let n = rows.len() as f64;
+    if n > 2.0 {
+        let (mx, my) = (
+            rows.iter().map(|r| r.0).sum::<f64>() / n,
+            rows.iter().map(|r| r.1).sum::<f64>() / n,
+        );
+        let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
+        for r in &rows {
+            sxy += (r.0 - mx) * (r.1 - my);
+            sxx += (r.0 - mx) * (r.0 - mx);
+            syy += (r.1 - my) * (r.1 - my);
+        }
+        println!("== #470 Pearson r = {:.4} ({} Punkte)", sxy / (sxx * syy).sqrt(), rows.len());
+    }
+}
+
+/// **#470-Pin: die zweite Achse der Naht-Stückung ist NICHT die Krümmung.**
+///
+/// Die Erwartung von #470 war, `A_seam` hänge neben der Stückbreite an der
+/// Krümmung — über Sagitta oder Stückwinkel. Die Messung widerlegt das an
+/// der billigsten denkbaren Stelle: die drei gekrümmten Bögen von Kanal 1 der
+/// Stufen-Nabe haben **denselben Radius** (4 mm), also dieselbe Krümmung,
+/// denselben Stückwinkel je Breite und dieselbe Sagitta — und trotzdem
+/// unterscheidet sich ihr `η` bei GLEICHER Stückbreite um mehr als eine
+/// Sprosse der Leiter (Quotient 1,865).
+///
+/// Damit kann kein Kriterium, das nur die Geometrie des Bogens liest
+/// (`w ≤ const`, `θ ≤ const`, `σ ≤ const`), die Streuung erklären. Was sie
+/// erklärt, ist die lokale Freiheit von `Ω` an dieser Naht — eine Eigenschaft
+/// des Körpers, nicht des Bogens. Begründung und Kostenrechnung in §8aq.
+#[test]
+fn second_seam_axis_is_not_curvature_470() {
+    let delta = 2.0f32;
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    let (field, _) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+    let cfg = wit::WitnessCfg { piece_len_mm: 0.0157, ..wit::WitnessCfg::default() };
+    let (mut best, mut best_r, mut seen) = (0.0f64, 0.0f32, 0usize);
+    for (om, chans) in omega_and_channels(&field) {
+        for ch in chans {
+            // Nur Kanäle, deren gekrümmte Bögen ALLE denselben Radius haben —
+            // sonst misst der Pin einen Radius-Unterschied statt der Streuung.
+            let radii: Vec<f32> =
+                ch.arcs.iter().filter(|a| !(a.sweep < 0.0)).map(|a| a.r).collect();
+            if radii.len() < 3 || radii.iter().any(|r| (*r - radii[0]).abs() > 1e-4) {
+                continue;
+            }
+            let cov = wit::cover_channel(om, ch, cfg);
+            let mut per_arc = vec![0.0f64; ch.arcs.len()];
+            for p in &cov.covered_pieces {
+                if p.arc < per_arc.len() {
+                    per_arc[p.arc] = per_arc[p.arc].max(p.offset);
+                }
+            }
+            let curved: Vec<f64> = ch
+                .arcs
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| !(a.sweep < 0.0))
+                .map(|(i, _)| per_arc[i])
+                .collect();
+            let (lo, hi) = (
+                curved.iter().cloned().fold(f64::INFINITY, f64::min),
+                curved.iter().cloned().fold(0.0f64, f64::max),
+            );
+            if !(lo > 0.0 && hi.is_finite()) {
+                continue;
+            }
+            seen += 1;
+            if hi / lo > best {
+                best = hi / lo;
+                best_r = radii[0];
+            }
+        }
+    }
+    assert!(seen >= 2, "nur {seen} Kanäle mit ≥3 gleich-radialen Bögen — der Pin misst nichts");
+    assert!(
+        best > 1.865,
+        "grösste η-Streuung über gleich-radiale Bögen: {best:.3} (Radius {best_r} mm).          Unter einer Leitersprosse (1,865) wäre die Krümmung als zweite Achse NICHT          widerlegt und §8aq stünde auf Sand"
+    );
+}

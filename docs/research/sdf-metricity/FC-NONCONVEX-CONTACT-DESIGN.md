@@ -9928,6 +9928,29 @@ Beweis-Voraussetzung.
   nicht der längste; es gibt eine zweite, krümmungsabhängige Achse, die eine
   reine Längen-Stückung nicht modelliert. Sie ist hier nicht untersucht.
 
+> **Nachtrag (#470, §8aq, 2026-08-05):** dieser Absatz trägt seine
+> Folgerung nicht. Die Breiten-Spanne „0,0088 … 0,0283 mm" ist mit der
+> SPUR-Abschätzung der Bogenlänge gerechnet und deshalb um √2 zu gross; bei
+> 768 Stücken je Bogen liegen die echten Breiten der Nabe bei
+> 0,0063 … 0,0200 mm. Vor allem aber binden in BEIDEN Läufen dieselben Bögen
+> (Kanal 1, `r = 4`), und die bekommen bei 768 Stücken 0,0131 mm gegen 0,0283 mm
+> bei gleichförmiger Breite — der Sprossen-Sprung ist also allein durch die
+> Breite des bindenden Bogens erklärt, nicht durch eine zweite Achse.
+>
+> Eine zweite Achse gibt es unabhängig davon, aber
+> **„krümmungsabhängig" ist falsch**. Gemessen: bei gleichförmiger Breite
+> binden gerade Segmente (Krümmung exakt null, Sagitta null, Stückwinkel null)
+> mit demselben `η` wie die gekrümmten Nabenbögen, und drei Bögen desselben
+> Radius streuen in ihrer kritischen Breite um den Faktor 1,95 — mehr als eine
+> Leitersprosse. Auch die Ausrichtung der Naht erklärt nichts (36 achsparallele
+> Segmente, `η/w` streut um den Faktor 80). Die zweite Achse ist die lokale
+> Freiheit von `Ω` AM ORT der Naht, also eine Eigenschaft des Körpers, die
+> kein Kriterium über die Bogengeometrie sehen kann. Ein gemessenes Kriterium
+> („verfeinere, bis `η` unter der Zielsprosse liegt") erreicht denselben
+> `A_seam_max` wie gleichförmige 0,004 mm, spart Stücke, aber keine Zeit — es
+> ist deshalb nicht gebaut. Zahlen, Tabellen und die Ablations-Kante
+> (zwischen 0,0045 und 0,0040 mm) in §8aq.
+
 ## 8an. P5c-C — die Aktivierung, die nicht stattgefunden hat (#464 zu #384, 2026-08-05)
 
 #464 sollte `CURVED_COVER_STAGE` von `ShadowOnly` auf `Active` legen. Die
@@ -10375,6 +10398,226 @@ die tragenden Zusagen seit §8j/§8o Sätze sind, keine Ray-Messungen.
   vorher gepinnt; diese Runde bestätigt nur, dass ihre Null-Zusage auch unter
   der exakten Referenz eine Null bleibt.
 
+## 8aq. P5c-E — die zweite Achse existiert, ist aber nicht die Krümmung (#470 zu #384, 2026-08-05)
+
+§8am schliesst mit einem offenen Befund: bei fest 768 Stücken je Bogen
+(Stückbreiten 0,0088 … 0,0283 mm) ist `A_seam_max = 0,027340 mm`, bei
+gleichförmigen 0,0283 mm dagegen 0,050962 mm. Der bindende Bogen ist also
+nicht der breiteste. #470 sollte die zweite Achse finden, ein Kriterium
+herleiten, das beide abdeckt, und den Gewinn beziffern.
+
+Das Ergebnis in einem Satz: **die zweite Achse existiert, sie ist NICHT die
+Krümmung, und ein Kriterium, das sie abdeckt, kauft nichts.** Es ist deshalb
+keines gebaut worden. `DEFAULT_PIECE_LEN_MM` bleibt bei 0,015 mm,
+`CURVED_COVER_STAGE` bleibt `ShadowOnly`, das ausgelieferte Feld ist
+unverändert.
+
+### 1. Die Hypothese des Tickets, gemessen und verworfen
+
+Die Vermutung war: der `piece_box`-Bauch wächst mit der Sehnenhöhe, die hängt
+am Produkt aus Breite und Krümmung, also wäre „Stückwinkel ≤ const" oder
+„Sagitta ≤ const" die richtige Verallgemeinerung. Drei unabhängige Messungen
+widerlegen das.
+
+**(a) Gerade Segmente binden genauso.** `probe_470_binding_arc_axes` listet
+jeden Bogen der 13-Fixturen-Matrix mit Breite, Stückwinkel `θ = α_ub/n`,
+Sagitta `σ = r·(1−cos(θ/2))` und dem grössten `η` seiner Stücke. Bei
+gleichförmig 0,0283 mm stehen unter den 14 Bögen mit dem grössten `η` **elf
+gerade Segmente** — `θ = 0`, `σ = 0`, Krümmung exakt null — mit demselben
+`η = 0,050944 mm` wie die gekrümmten Nabenbögen. Ein Kriterium über `θ` oder
+`σ` würde diese elf Bögen gar nicht anfassen.
+
+**(b) Gleiche Krümmung, verschiedenes `η`.** `probe_470_critical_width_per_arc`
+fährt je Bogen eine Breiten-Leiter und liest die grösste Breite ab, die eine
+`η`-Sprosse noch hält. Für die Sprosse 0,027314 mm:
+
+    Bogen (Radius, Krümmung)                     | krit. Breite mm | η/w
+    Stufen-Nabe K1 B0  (r = 4,0, κ = 0,25)       |         0,01571 | 1,74
+    Stufen-Nabe K1 B1  (r = 4,0, κ = 0,25)       |         0,01257 | 2,17
+    Stufen-Nabe K1 B2  (r = 4,0, κ = 0,25)       |         0,02453 | 1,11
+    Stufen-Nabe K0 B0  (r = 6,0, κ = 0,167)      |         0,03066 | 0,89
+    Stufen-Nabe K0 B1  (r = 6,0, κ = 0,167)      |         0,03833 | 0,71
+    Stufen-Nabe K0 B2  (r = 6,0, κ = 0,167)      |         0,03837 | 0,71
+
+Die drei Bögen von Kanal 1 haben **denselben Radius**, also dieselbe Krümmung,
+denselben Stückwinkel je Breite und dieselbe Sagitta — und ihre kritische
+Breite streut um den Faktor 1,95. Das ist mehr als eine Leitersprosse (1,865).
+Der Pin `second_seam_axis_is_not_curvature_470` hält genau das fest, auf
+EINER Fixtur und in unter einer Sekunde.
+
+**(c) Auch nicht die Ausrichtung.** Die naheliegende Ersatz-Hypothese — eine
+achsparallele Stück-Box ist über einer schräg liegenden Naht dicker, `η/w`
+läge also zwischen 1 und √3 — ist ebenfalls falsch.
+`probe_470_seam_direction_axis` stellt für 36 gerade Segmente die Diagonalität
+`‖û‖₁` neben `η/w`:
+
+    Fixtur                | ‖û‖₁     | η/w
+    Rippen-Kamm (11 Segm.)| 1,0000   | 1,821 … 1,829
+    Ecken-Schale (25 Segm)| 1,0001…1,0027 | 0,023 … 0,154
+
+Alle 36 Nähte sind achsparallel (`‖û‖₁ = 1,000`), und trotzdem streut `η/w`
+über den **Faktor 80**. Pearson `r = −0,477`, und das Vorzeichen ist das
+falsche. Die Ausrichtung erklärt nichts.
+
+### 2. Was die zweite Achse dann ist
+
+Übrig bleibt der einzige Kandidat, der alle drei Messungen trägt: `η` ist
+**das Produkt aus der Stückbreite und einer Konstanten, die an der lokalen
+Freiheit von `Ω` an dieser Naht hängt** — daran, wie weit die Suche die Box
+schieben muss, bis sie beweisbar aussen liegt. Diese Konstante `c = η/w` misst
+die Geometrie des KÖRPERS am Ort der Naht, nicht die Geometrie des Bogens. Sie
+läuft über die Matrix von 0,023 (Ecken-Schale: die Naht steht frei, der Zeuge
+gelingt zwei, drei Sprossen über `min_offset`) bis 1,83 (Rippen-Kamm: die Naht
+sitzt in einer engen konkaven Kehle, der Zeuge braucht das Doppelte der
+Stückbreite).
+
+### 2a. Der Ausgangsbefund von §8am war ein Scheinbefund
+
+Nachgefahren gehört auch die Messung, die #470 überhaupt ausgelöst hat:
+„768 Stücke je Bogen (Breiten 0,0088 … 0,0283 mm) geben `A_seam_max`
+0,027340 mm, gleichförmige 0,0283 mm dagegen 0,050962 mm — der bindende Bogen
+ist also nicht der breiteste." Beide Zahlen stimmen; die Folgerung nicht.
+
+Die Nabe hat sechs Bögen. Ihre Nahtlängen nach `arc_seam_len_ub` sind
+15,13 / 15,35 / 7,21 mm (Kanal 0, `r = 6`) und 10,10 / 10,25 / 4,91 mm
+(Kanal 1, `r = 4`). Bei 768 Stücken je Bogen ergibt das Breiten von
+0,0063 … 0,0200 mm — **nicht** 0,0088 … 0,0283 mm. Die zitierte Spanne stammt
+aus `probe_469_seam_lengths`, und die schätzt die Bogenlänge über die SPUR der
+Gram-Matrix statt über deren grössten Eigenwert ab, also systematisch um √2 zu
+gross (genau der Fehler, den §8am an `finish_arc` beschreibt). Die „gröbste
+Breite aus derselben Menge" hat es nie gegeben.
+
+Und selbst mit den richtigen Zahlen zeigt der Vergleich keine zweite Achse:
+gebunden wird in beiden Läufen von denselben Bögen (Kanal 1, `r = 4`), und die
+bekommen bei 768 Stücken 0,0131 / 0,0133 mm, bei „gleichförmig 0,0283 mm"
+dagegen 0,0283 mm — mehr als das Doppelte. Der Sprung von Sprosse 9 auf
+Sprosse 10 ist damit vollständig durch die Breite DES BINDENDEN BOGENS
+erklärt. Verglichen wurde nicht „lang gegen kurz", sondern fein gegen grob.
+
+Die zweite Achse gibt es trotzdem — nur trägt sie der Befund aus §8am nicht,
+sondern die Messungen (a), (b) und (c) oben. Richtig ist: der bindende Bogen
+ist weder der längste noch der breiteste noch der krümmste, sondern der mit
+dem grössten `c` — der eingeklemmteste.
+
+**Kein Kriterium über die Bogengeometrie kann das sehen.** `c` ist erst
+bekannt, nachdem die Zeugensuche gelaufen ist. Die einzige Verallgemeinerung,
+die beide Achsen abdeckt, ist deshalb eine GEMESSENE: verfeinere jeden Kanal,
+bis sein `η` unter einer Zielsprosse liegt.
+
+### 3. Was dieses Kriterium kostet — und warum es sich nicht lohnt
+
+`probe_470_cover_cost_only` misst nur die Zeugensuche (ohne Zertifizierung),
+über die ganze Matrix, Testprofil, 2026-08-05:
+
+    Kriterium                                  | Stücke  | η_max mm | ms
+    gleichförmig 0,0150 mm (ausgeliefert)      | 520 087 | 0,027314 |  6 153
+    gleichförmig 0,0080 mm                     | 868 885 | 0,014645 | 10 157
+    gleichförmig 0,0060 mm                     | 894 634 | 0,014645 | 11 556
+    gleichförmig 0,0050 mm                     | 905 619 | 0,014645 | 12 544
+    gleichförmig 0,0040 mm                     | 922 064 | 0,007852 | 17 648
+    adaptiv, Start 0,015, Ziel η ≤ 0,0079      | 549 119 | 0,007852 | 16 917
+    adaptiv, Start 0,015, Ziel η ≤ 0,0043      | 589 928 | 0,007852 | 29 237
+    adaptiv, Start 0,060, Ziel η ≤ 0,0079      | 171 967 | 0,007852 | 17 243
+
+Und mit Zertifizierung, also inklusive `A_seam` (`probe_470_adaptive_eta_target`):
+
+    Kriterium                        | A_seam_max mm | ms
+    gleichförmig 0,0150 mm           |      0,027332 | 12 161
+    gleichförmig 0,0080 mm           |      0,014662 | 20 085
+    gleichförmig 0,0040 mm           |      0,007869 | 27 126
+    adaptiv, Ziel η ≤ 0,0079         |      0,007878 | 25 436
+    adaptiv, Ziel η ≤ 0,0043         |      0,007869 | 42 297
+    adaptiv, Ziel η ≤ 0,0023         |      0,007869 | 48 434
+
+Das adaptive Kriterium erreicht denselben `A_seam_max` wie die gleichförmigen
+0,004 mm — bei einem Fünftel bis zwei Dritteln der Stücke. **Nur kostet es
+dieselbe Zeit.** 16 917 ms gegen 17 648 ms, ein Gewinn von 4 %. Der Grund ist
+strukturell und macht die ganze Idee zunichte: die Kosten der Zeugensuche
+liegen nicht bei den Stücken, sondern bei den SCHWEREN Kanälen. Ein Stück mit
+grossem `c` findet seinen Zeugen erst auf einer hohen Leitersprosse und
+bezahlt jede gescheiterte Sprosse darunter; gemessen kostet ein Stück bei
+0,015 mm 11,8 µs, bei 0,004 mm 19,1 µs, im adaptiven Lauf 30,8 µs. Genau die
+Bögen, bei denen die zweite Achse erlaubt, gröber zu bleiben, sind die Bögen,
+die ohnehin billig waren. Man spart dort, wo nichts zu holen ist.
+
+### 4. Der Gewinn gegen den Boden aus #464 — er unterbietet ihn nicht
+
+#464 hat gemessen, dass `A_seam_max` bei feineren Stücken gegen **0,007869 mm**
+läuft; darunter dominieren `ε_q`, `ε_d` und die f32-Rundung. Die Frage von
+#470 war, ob die zweite Achse diesen Boden unterbietet.
+
+**Sie tut es nicht.** Das adaptive Kriterium erreicht bei Ziel `η ≤ 0,0043` mm
+exakt 0,007869 mm und bleibt dort auch bei Ziel 0,0023 mm — dieselbe Zahl, die
+gleichförmige 0,004 mm und gleichförmige 0,002 mm liefern. Der Boden ist keine
+Eigenschaft der Stückung, sondern der f32-Brücken; keine Verfeinerung, egal
+nach welchem Kriterium, kommt darunter. Für #464 ist die zweite Achse damit
+**wirkungslos**: sie bringt keine Reserve, die nicht auch eine kleinere
+gleichförmige Breite brächte, und sie bringt sie nicht billiger.
+
+### 5. Was #464 stattdessen bekommt: die Ablations-Kante, gemessen
+
+Nützlich ist an dieser Runde etwas anderes. `probe_470_ablation_edge` fährt
+die Ablation der ganzen Matrix gegen die exakten Referenzen über eine feine
+Breiten-Leiter — also genau die Messung, an der #464 gescheitert ist:
+
+    Stückbreite mm | NEUE Über-Punkte | max mm  | A_seam_max mm | Re-Zert. ms
+    0,0080         |                1 | 0,01249 |      0,014662 |     10 165
+    0,0070         |                1 | 0,01249 |      0,014662 |     10 632
+    0,0060         |                1 | 0,01249 |      0,014662 |     11 560
+    0,0050         |                1 | 0,01249 |      0,014662 |     16 016
+    0,0045         |                1 | 0,01249 |      0,014662 |     13 367
+    0,0040         |                0 | 0,00000 |      0,007869 |     13 802
+
+**Die Kante liegt zwischen 0,0045 und 0,0040 mm und ist scharf** — genau dort,
+wo `A_seam` von Sprosse 0,014662 auf 0,007869 fällt. Der eine Punkt, der #464
+blockiert hat, verschwindet also bei gleichförmigen 0,004 mm, ohne jedes neue
+Kriterium. Der Preis dafür ist die dritte Zeile der Kostentabelle oben:
+6 153 → 17 648 ms Zeugensuche über die Matrix, also **2,87 ×**, und zwar für
+JEDEN Shell-Rebuild, weil `piece_len_mm` auch die geraden Nähte trifft und
+`EXTRUDE_COVER_STAGE` seit langem `Active` ist. Diesen Preis heute zu zahlen
+brächte nichts: der einzige Nutzniesser wäre die Bogen-Klemme, und die ist
+`ShadowOnly`. Die Entscheidung gehört deshalb zu #464, zusammen mit der
+Aktivierung, und nicht hierher.
+
+Nebenbefund aus derselben Tabelle: die Stückzahl wächst von 0,008 auf 0,004 mm
+nur noch von 868 885 auf 922 064 (+6 %), während die Zeit um 74 % steigt. Der
+Grund ist `max_pieces_per_arc = 4096`: unterhalb von rund 0,008 mm läuft ein
+wachsender Teil der Bögen in den Deckel und wird gar nicht mehr feiner. `η`
+sinkt trotzdem, weil die Bögen mit kurzer Naht — und das sind die mit grossem
+`c` — noch unter dem Deckel liegen. Wer den Deckel senkt, verliert die Kante;
+wer ihn hebt, zahlt.
+
+### Was daraus NICHT folgt
+
+- **Nicht**, dass es keine zweite Achse gäbe. Sie ist gemessen und gross:
+  `η/w` streut über die Matrix um den Faktor 80. Falsch war ihre Zuordnung
+  zur Krümmung — und falsch war die Messung, aus der §8am sie erschlossen
+  hat (§8aq.2a). Beides zusammen heisst nicht „keine zweite Achse", sondern
+  „die richtige Achse ist aus einem falschen Indiz erraten worden".
+- **Nicht**, dass `arc_seam_len_ub` einen Fehler hätte. Die √2-Inflation
+  steckt allein in der Diagnose-Sonde `probe_469_seam_lengths`, die die
+  Bogenlänge über die Spur statt über den grössten Gram-Eigenwert schätzt.
+  Der Beweispfad rechnet seit #469 mit `λ_max` und ist davon nicht berührt;
+  die Sonde bleibt, wie sie ist, damit die §8am-Zahlen nachfahrbar bleiben.
+- **Nicht**, dass `c = η/w` eine geometrische Grösse wäre. Es ist wie `η`
+  selbst eine Eigenschaft der SUCHE (Richtungsvorrat, Leiter, erster Erfolg);
+  §8ae gilt unverändert. Bei den Ecken-Schalen-Segmenten liegt `η` zwei bis
+  drei Sprossen über `min_offset` — dort ist `c` eine obere Schranke des
+  wahren Verhältnisses und kein Messwert.
+- **Nicht**, dass ein adaptives Kriterium prinzipiell wertlos wäre. Gemessen
+  ist es auf DIESER Matrix, mit DIESER Leiter und DIESEM Richtungsvorrat. Ein
+  Modell, dessen Kosten von vielen leichten Kanälen dominiert werden statt von
+  wenigen schweren, könnte anders ausfallen. Nur ist das nicht die Matrix, an
+  der #384 gemessen wird.
+- **Nicht**, dass 0,004 mm damit freigegeben wäre. Gemessen ist, dass die
+  Ablation der 13 Fixturen dort leer ist. Ob das reicht, um
+  `CURVED_COVER_STAGE` zu stellen, entscheidet #464 — dort gehören auch die
+  übrigen Auflagen der Aktivierung hin.
+- **Nicht**, dass sich das ausgelieferte Feld bewegt hat. Diese Runde ändert
+  sechs `#[ignore]`-Sonden, einen schnellen Pin, einen `#[cfg(test)]`-Zugang zu
+  `alpha_ub` und Doku. Kein Opcode, kein Tape-Wert, keine Konstante, kein
+  Versions-Bump.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -10497,6 +10740,11 @@ die tragenden Zusagen seit §8j/§8o Sätze sind, keine Ray-Messungen.
   `dist_f64_up`/`dist_f64_down`, `clamp_arc_probes`, `clamp_scan`,
   `clamp_de_family`, `clamp_round_reserve`, `clamp_family_min_reserve`, die
   zehn `clamp_*_384`-Pins und die `#[ignore]`-Sonde `probe_384_clamp_shadow`.
+- `crates/kernel/src/offset_capability_tests.rs` — §8aq: der Pin
+  `second_seam_axis_is_not_curvature_470` und die sechs `#[ignore]`-Sonden
+  `probe_470_binding_arc_axes`, `probe_470_critical_width_per_arc`,
+  `probe_470_adaptive_eta_target`, `probe_470_cover_cost_only`,
+  `probe_470_ablation_edge`, `probe_470_seam_direction_axis`.
 - `crates/kernel/src/offset_capability_tests.rs` — §8k: die exakten
   Komplement-Referenzen (`dist_obb_union_complement_exact`,
   `dist_hub_complement_exact`), die zweiseitige Sonde (`two_sided_scan`) und
