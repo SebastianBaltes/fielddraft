@@ -2610,6 +2610,14 @@ Referenz.
 | notch_union 90° / 60° | 0 / 0 | **unverändert** | **unverändert** |
 | Kontroll-Lauf `L = −∞` | reproduziert BASIS **exakt** | — | — |
 
+> **Nachtrag (#471, §8ao, 2026-08-05):** die ÜBER-Spalten dieser Tabelle
+> sind gegen `dist_to_boxes_complement`/`dist_hub_complement` gemessen,
+> also gegen eine OBERE Schranke von `dist(p,∁Ω)` — sie UNTERschätzen.
+> Gegen die exakte Referenz sind es **312 · 0,8178** und **264 · 0,5469**
+> statt 168 · 0.8103 und 144 · 0.5378. Die Richtung ist strukturell (die
+> Zahlen können nur wachsen), und die 0-Zellen bleiben 0. Nachgefahrene
+> Matrix und Begründung in §8ao.
+
 Drei Lehren:
 
 * **Kein einziger Über-Claim entsteht, nirgends.** Der Rippen-Kamm — die
@@ -2871,6 +2879,15 @@ Material gegen die exakte Referenz.
 | Ecken-Schale `t/δ = 2.1, 2.25, 2.4, 2.5, 3.0, 4.0, 6.0` | 0 / 0 | **0 / 0** | 24 … 72 |
 | Rippen-Kamm 4×1.5/0.8 | **168 · 0.8103** / 0 | **168 · 0.8103** / 0 | — (Prismen ⇒ verweigert) |
 | Rippen-Kamm 4×2.0/1.0 | **144 · 0.5378** / 0 | **144 · 0.5378** / 0 | **140** |
+
+> **Nachtrag (#471, §8ao, 2026-08-05):** die ÜBER-Spalten dieser Tabelle
+> sind gegen `dist_to_boxes_complement`/`dist_hub_complement` gemessen,
+> also gegen eine OBERE Schranke von `dist(p,∁Ω)` — sie UNTERschätzen.
+> Gegen die exakte Referenz sind es **312 · 0,8178** und **264 · 0,5469**
+> statt 168 · 0.8103 und 144 · 0.5378. Die Richtung ist strukturell (die
+> Zahlen können nur wachsen), und die 0-Zellen bleiben 0. Nachgefahrene
+> Matrix und Begründung in §8ao.
+
 | notch_union 90° / 60° | 0 / 0 | **0 / 0** | 28 |
 | Kontroll-Lauf (`L`-Block entfernt) | — | reproduziert BASIS **exakt** (0 / 59 · 0.3156) | — |
 
@@ -2986,6 +3003,7 @@ Kamm 4×2.0/1.0, δ = 2, 22 Kanäle (alle `G = 0.8684`, `K = 3.9084`), ein
 | `L(x)` | 1.452760 | 140 Stücke, `= dist − 3.1·10⁻⁴` (`slack`) |
 | Feld (Produktion §8o) | **−0.041288** | Phantom-Material |
 | Über-Fehler `δ − ray` | **0.537794** | — |
+| Über-Fehler `δ − dist` (#471, maßgeblich) | **0.546933** | = Zielfeld, s. §8ao |
 
 Der Punkt liegt 1.4531 mm unter der freien Plattenoberseite, ausserhalb jeder
 Rippe (die linkeste Rippe ist `x ∈ [−5.5, −3.5]`). Das naive Feld sagt genau
@@ -3107,6 +3125,15 @@ Material gegen die exakte Referenz (§8k). Beide Spalten aus DERSELBEN Harness
 | Ecken-Schale `t/δ = 2.0` | 0 / 0 | 0 / 0 | 0 / 0 | 72 |
 | Ecken-Schale `t/δ = 2.1, 2.25, 2.4, 2.5, 3.0, 4.0, 6.0` | 0 / 0 | 0 / 0 | 0 / 0 | 72 |
 | notch_union 90° / 60° | 0 / 0 | 0 / 0 | 0 / 0 | 28 |
+
+> **Nachtrag (#471, §8ao, 2026-08-05):** die ÜBER-Spalten dieser Tabelle
+> sind gegen `dist_to_boxes_complement`/`dist_hub_complement` gemessen,
+> also gegen eine OBERE Schranke von `dist(p,∁Ω)` — sie UNTERschätzen.
+> Gegen die exakte Referenz sind es **312 · 0,8178** und **264 · 0,5469**
+> statt 168 · 0.8103 und 144 · 0.5378. Die Richtung ist strukturell (die
+> Zahlen können nur wachsen), und die 0-Zellen bleiben 0. Nachgefahrene
+> Matrix und Begründung in §8ao.
+
 
 Die mittlere Spalte trennt die beiden Anteile sauber: der Kamm 4×1.5/0.8 hat
 mit dem neuen 296-Stück-Block im `max`-Gate **immer noch 168 · 0.8103** — der
@@ -3242,6 +3269,15 @@ erst einen Trust-Region-Beweis).
 |---|---|---|
 | Rippen-Kamm 4×1.5/0.8 (über / unter) | 168 · 0.8103 / 0 | **0 / 0** |
 | Rippen-Kamm 4×2.0/1.0 (über / unter) | 144 · 0.5378 / 0 | **0 / 0** |
+
+> **Nachtrag (#471, §8ao, 2026-08-05):** die ÜBER-Spalten dieser Tabelle
+> sind gegen `dist_to_boxes_complement`/`dist_hub_complement` gemessen,
+> also gegen eine OBERE Schranke von `dist(p,∁Ω)` — sie UNTERschätzen.
+> Gegen die exakte Referenz sind es **312 · 0,8178** und **264 · 0,5469**
+> statt 168 · 0.8103 und 144 · 0.5378. Die Richtung ist strukturell (die
+> Zahlen können nur wachsen), und die 0-Zellen bleiben 0. Nachgefahrene
+> Matrix und Begründung in §8ao.
+
 | Stufen-Nabe, Ecken-Schale (8 Dicken), notch 90°/60° | 0 / 0 | **0 / 0** |
 | Golden: Tape | — | 35/35 byte-identisch |
 | Golden: Feld | — | 1 Szene, 16/512 Punkte, alle nach oben, max 0.000328 |
@@ -9431,6 +9467,14 @@ fest.
 
 ### Frage 1 — die 41 Punkte sind EINE Naht
 
+> **Nachtrag (#471, §8ao, 2026-08-05):** es sind **45**, nicht 41, und die
+> Überschreitungen reichen von **0,0125** bis **0,7042 mm**, nicht von 0,0020
+> bis 0,6737. Gemessen wurde hier gegen `dist_hub_complement`, eine OBERE
+> Schranke von `dist(p,∁Ω)`; seit #471 richtet der Pin gegen
+> `dist_hub_complement_exact`. Die inhaltliche Aussage dieses Abschnitts —
+> EIN Kanal (der mit dem grösseren `A_seam`), alle drei seiner Minor-Bögen —
+> trägt unverändert; nur die Abzählung war zu klein.
+
 Reproduziert: BASIS 0 über, mit aktiver Bogen-Klemme **41** über. Die Nabe trägt
 genau zwei Kanäle, beide gekrümmt, beide in Produktion `Curved ⇒ NotCertified`:
 
@@ -9787,6 +9831,12 @@ Beweis-Voraussetzung.
 > die die §8p-Matrix benutzt) bleibt **ein** Punkt stehen. Der Preis fiel also
 > von 41 auf 1, nicht auf 0; #464 hat deshalb nicht aktiviert. Details,
 > Zahlen und die offene Frage in §8an.
+
+> **Nachtrag (#471, §8ao, 2026-08-05):** auch die Ausgangszahl ist zu klein.
+> Gegen die exakte Referenz waren es **45** Punkte, nicht 41. Der Preis fiel
+> also von 45 auf 1. Seit #471 misst der Pin
+> `curved_clamp_phantom_comes_from_one_seam_468` beide Zeilen exakt und führt
+> die ray-basierte 0 nur noch als gepinnte Gegenprobe mit.
 - **Nicht**, dass das ausgelieferte Feld sich geändert hätte. Über 873 776
   gemessene Punkte ist es bit-identisch. Der Versions-Bump erfolgt, weil die
   Änderung feldwirksam SEIN KANN (sie bewegt einen ausgelieferten Tape-Wert),
@@ -9946,6 +9996,207 @@ Redundanz an der Nabe mehr wert ist als die Provenienz.
   Gitter, kostet 2,2 × Zertifizierungszeit und senkt `A_seam` nur bis zum
   Boden. Eine Wahl, die an einem Gitterpunkt kalibriert ist, ist keine
   Herleitung.
+
+## 8ao. Die Messlatte selbst — die Über-Seite mass gegen eine blinde Referenz (#471 zu #384, 2026-08-05)
+
+§8an hat als Nebenbefund notiert, dass die Ablation auf der ÜBER-Seite gegen
+`dist_hub_complement` richtet, eine RAY-Referenz, und dass das dort eine 0
+vorgetäuscht hat, wo in Wahrheit ein Punkt steht. Derselbe Abschnitt hat die
+Frage ausdrücklich offen gelassen: *„`scan_mut` benutzt sie dort bis heute; ob
+das die §8p-Über-Bilanzen betrifft, ist hier NICHT untersucht."*
+
+Dieses Kapitel untersucht es. Ergebnis in einem Satz: **die Blindheit war
+systematisch und betrifft jede publizierte Über-Zahl dieses Dokuments, aber sie
+hat keine Schlussfolgerung getragen** — die Zahlen, die kippen, sind
+ausnahmslos DEFEKT-Zahlen (die Fehler, die ein späteres Paket behoben hat), und
+sie werden grösser, nicht kleiner. Zwei Ausnahmen mit eigener Bedeutung: die
+41 des §8al sind 45, und die 0 des §8am/#469 ist eine 1.
+
+**Kein Produktionscode, keine Feldänderung, kein Versions-Bump.**
+`CURVED_COVER_STAGE` bleibt `ShadowOnly`.
+
+### Warum die Richtung feststeht, bevor man misst
+
+`dist_hub_complement`, `dist_to_boxes_complement` und
+`dist_to_notch_complement` sind Strahl-Minima über eine Fibonacci-Richtungsmenge
+und laut eigener Dokumentation OBERE Schranken von `dist(p, ∁Ω)`:
+`ray ≥ dist`. Beide Seiten der Bilanz rechnen anders damit:
+
+| Seite | Test | Fehler | Referenz bis #471 | Wirkung |
+|---|---|---|---|---|
+| **über** (Feld `< 0`, aber `dist < δ`) | `δ − dist > 0` | `δ − dist` | **ray** | `δ − ray ≤ δ − dist` ⇒ **UNTERschätzt**, 0 heisst nur „mindestens 0" |
+| **unter** (Feld `≥ 0`, aber `dist > δ`) | `dist − δ > 0` | `dist − δ` | exakt | war nie blind |
+
+Die Asymmetrie ist der ganze Fehler, und sie ist die gefährliche Richtung: eine
+zu gutmütige Über-Bilanz winkt Beweise durch, die nicht tragen. Daraus folgt
+zugleich, was NICHT passieren kann: `err_exakt ≥ err_ray` heisst, die Umstellung
+kann Über-Zahlen nur VERGRÖSSERN. Keine publizierte Über-Zahl war je zu gross.
+
+Gepinnt in `over_side_reference_is_exact_not_the_ray_bound_471` (Ungleichung an
+einem Nabengitter, Streitpunkt, §8p-Zeilen); die Gegenrichtung für die
+Box-Familie stand schon in `exact_complement_reference_is_below_the_ray_bound_384`.
+
+### 1. Inventar — welche Messstelle richtete womit
+
+Vier Scan-Funktionen in `offset_capability_tests.rs` tragen praktisch alle
+Bilanzen dieses Dokuments. Alle vier hatten dieselbe Asymmetrie:
+
+| Scanner | benutzt von | Über-Seite bis #471 | seit #471 |
+|---|---|---|---|
+| `scan_mut` | §8n-Matrix (`probe_384_pair_distance_gate`), `erosion_stepped_hub_is_exact_on_both_sides_384`, `stop_lb_absent_reproduces_the_g_cap_384`, `lb_only_gate_closes_the_comb_over_side_384` | ray | **exakt** (+ `over_ray` als Vergleichszahl) |
+| `scan_p8p` | §8p-Matrix (`probe_384_lb_only_gate`) | ray | **exakt** (+ `over_ray`) |
+| `two_sided_scan` | §8k/§8l-Schalen-Pins (`erosion_thin_corner_is_exact_on_both_sides_384`, `erosion_collapsing_shell_is_exact_on_both_sides_384`, `erosion_shell_is_exact_across_the_thickness_fan_384`, notch) | ray | **exakt** (+ `over_ray`) |
+| `erosion_zero_set_error` | §8g/§8h-Ecken-Pins | ray | **exakt** (`ndir` wirkungslos) |
+
+Dazu neun handgeschriebene Über-Schleifen ohne Scanner-Funktion (§8h-Kaskaden,
+§8i-Ein-Term-Gate, §8j-Kreuzgate, §8q-Inventar, die #468/#469-Ablation) — alle
+auf dieselbe Weise umgestellt. Zwei neue Helfer machten das zu Einzeilern:
+`dist_boxes_complement_exact` und `dist_notch_complement_exact`, beide reine
+Aufsätze auf die schon vorhandene exakte `dist_obb_union_complement_exact`.
+
+Die Ray-Referenzen bleiben im Repo. Sie sind als obere Schranken korrekt und
+werden weiter geführt — aber nur noch als **Vergleichszahl** (`over_ray`), nie
+mehr als Richter. Genau diese Doppelspalte ist die Evidenz unten.
+
+### 2. Die §8p-Matrix, nachgefahren
+
+`probe_384_lb_only_gate`, Gitter und Grenzen unverändert (Nabe/Schale/notch
+22³, Kamm 24³). Beide Spalten aus DEMSELBEN Lauf, nur die Referenz wechselt:
+
+| Fixture / Modus | über exakt (§8ao) | über ray (§8p gedruckt) | unter |
+|---|---|---|---|
+| **Rippen-Kamm 4×1.5/0.8 BASIS** | **312 · 0,8178** | 168 · 0,8103 | 0 |
+| **Rippen-Kamm 4×1.5/0.8 LB-ONLY** | **0** | 0 | 0 |
+| **Rippen-Kamm 4×2.0/1.0 BASIS** | **264 · 0,5469** | 144 · 0,5378 | 0 |
+| **Rippen-Kamm 4×2.0/1.0 LB-ONLY** | **0** | 0 | 0 |
+| Stufen-Nabe BASIS / LB-ONLY | 0 / 0 | 0 / 0 | 0 / 0 |
+| Ecken-Schale `t/δ = 2,0 … 6,0` (8 Dicken), beide Modi | 0 | 0 | 0 |
+| notch_union 90° / 60°, beide Modi | 0 | 0 | 0 |
+
+Zwei Ablesungen:
+
+* **Der Defekt war fast doppelt so gross wie gedruckt.** 168 → 312 Punkte
+  (+86 %) und 144 → 264 (+83 %); die Worst-Werte steigen nur um 0,0075 bzw.
+  0,0091 mm. Es ist also nicht ein einzelner tieferer Punkt, sondern eine
+  breitere Schale flacher Überschreitungen, die knapp unter der
+  1e-3-Zählschwelle lag.
+* **Die Ergebnis-Spalte bewegt sich nicht.** `0 / 0` bleibt `0 / 0`, und das
+  ist kein Glück: §8p begründet sie mit einem SATZ (wo `L` bindet, ist
+  `f ≥ δ − L ≥ δ − dist`), nicht mit einer Messung. Ein Satz über `dist` ist
+  gegen jede Verschärfung der `dist`-Schätzung immun. Genau hier zahlt sich
+  aus, dass §8p die 0 nicht als Messwert verkauft hat.
+
+Der Worst-Punkt bestätigt sich intern: §8p hat für den Kamm 4×2.0/1.0 die
+Zeile `Zielfeld δ − dist = +0.546933` gedruckt und in derselben Tabelle
+`Über-Fehler δ − ray = 0.537794` als Bilanzzahl genommen. Die neue Zahl
+**0,5469** ist genau die erste. Die richtige Zahl stand die ganze Zeit
+daneben — sie war nur nicht die, gegen die gerichtet wurde.
+
+### 3. Die §8n-Matrix, nachgefahren
+
+`probe_384_pair_distance_gate`, dieselbe Doppelspalte. Der BASIS-Zustand der
+Kämme ist seit §8p nicht mehr über `field` erreichbar (Produktion gatet
+LB-only); die Zeile, die die alte `max`-Mechanik zeigt, ist dort `PAAR`:
+
+| Fixture | über exakt | über ray (§8n gedruckt) | unter |
+|---|---|---|---|
+| Stufen-Nabe BASIS / PAAR / VOLL / NULLMUT | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / **14 · 0,1955** / 0 / **59 · 0,3156** |
+| Ecken-Schale (8 Dicken), alle Modi | 0 | 0 | 0 |
+| Rippen-Kamm 4×1.5/0.8 PAAR | **312 · 0,8178** | 168 · 0,8103 | 0 |
+| Rippen-Kamm 4×2.0/1.0 PAAR | **264 · 0,5469** | 144 · 0,5378 | 0 |
+| notch 90° / 60° | 0 | 0 | 0 |
+
+Die §8n-Aussagen hängen sämtlich an der UNTER-Seite („das Paar reicht nicht,
+der volle Schnitt schon": 59 → 14 → 0), und die war nie blind. **Keine
+§8n-Schlussfolgerung bewegt sich.** Was sich bewegt, sind dieselben zwei
+Kamm-Zellen wie in §8p — und die trugen dort schon den Vermerk „unverändert".
+
+### 4. Die #468/#469-Ablation — hier kippt tatsächlich etwas
+
+Das ist die einzige Stelle, an der die Umstellung eine ausgesprochene Aussage
+umschreibt und nicht nur eine Defekt-Zahl vergrössert.
+`curved_clamp_phantom_comes_from_one_seam_468`, Nabe ohne `L`-Block:
+
+| Messung | §8al/§8am gedruckt (ray) | §8ao (exakt) |
+|---|---|---|
+| historische Stückbreite 0,9 mm | **41** Über-Punkte, 0,0020 … 0,6737 mm | **45** Über-Punkte, **0,0125 … 0,7042 mm** |
+| ausgelieferte Stückbreite (#469) | **0** Über-Punkte | **1** Über-Punkt, 0,01249 mm |
+| BASIS (ohne Stufe) | 0 | 0 (unverändert) |
+| Kanäle / Bögen der Ursache | 1 Kanal, 3 Bögen | **unverändert** |
+
+* **§8al: „41" ist 45.** Die Ursachen-Aussage — alle an EINEM Kanal (dem mit
+  dem grösseren `A_seam`), verteilt über alle drei seiner Minor-Bögen — trägt
+  unverändert. Auch die untere Grenze der Überschreitung ist keine 0,002 mm,
+  sondern 0,0125 mm: genau die 12,5 µm, an denen #464 die Aktivierung
+  abgebrochen hat.
+* **§8am/#469: die „0" ist eine 1.** §8an hatte das bereits nachgetragen und
+  die Zahl in einem separaten Block gemessen; seit #471 misst der Pin sie
+  direkt, und die alte ray-basierte 0 steht daneben als Gegenprobe
+  (`assert_eq!(o_ray, 0)`), damit die Blindheit selbst gepinnt ist und nicht
+  wieder unbemerkt verschwindet.
+* **Für #464 ändert sich nichts.** Der Blocker war schon vorher der eine
+  exakt gemessene Punkt; #471 stellt nur sicher, dass er auf dem Hauptweg der
+  Messung sichtbar ist statt in einem Anhang.
+
+### 5. Was es kostet
+
+`probe_471_reference_cost`, release, f64, skalar, je Auswertung:
+
+| Fixture | exakt | ray(160) | Faktor |
+|---|---|---|---|
+| Stufen-Nabe (2 Zylinder + Platte, `(r,z)`-Profil) | **351 ns** | 6,316 µs | **18 × billiger** |
+| Rippen-Kamm 4×2.0/1.0 (Box-Vereinigung, Polygon-Subtraktion) | **4,985 µs** | 8,693 µs | **1,7 × billiger** |
+
+**Die exakte Referenz ist in beiden Familien BILLIGER als die Strahl-Schranke.**
+Der gestufte Ansatz, den das Ticket als Rückfalloption vorgesehen hatte („exakt
+nur nahe der Kante"), ist damit gegenstandslos — es gibt keine Stufe zu
+begründen. Die Ray-Referenz überlebt trotzdem in den Sonden, weil sie eine
+UNABHÄNGIGE zweite Rechnung ist: der Selbsttest `exakt ≤ ray` ist die einzige
+Kontrolle, die die exakte Zerlegung überhaupt hat.
+
+Laufzeit der Gesamtsuite: unverändert im Rauschen (die Scanner rechnen jetzt
+beide Referenzen; vorher rechneten sie sie ebenfalls beide, weil `exact` für
+die Unter-Seite und der `lb_viol`-Selbsttest ohnehin gebraucht wurden).
+
+### 6. Bewegte Pin-Zeilen
+
+Von 1564 Rust-Pins bewegt sich **einer**:
+`curved_clamp_phantom_comes_from_one_seam_468` (41 → 45, 0,002 … 0,674 →
+0,0125 … 0,7042, und die #469-Zeile 0 → 1). Alle anderen bleiben grün — das ist
+selbst ein Befund: die publizierten NULLEN der §8k/§8l/§8n/§8o/§8p-Matrizen
+sind echte Nullen, keine blinden.
+
+Neu: `over_side_reference_is_exact_not_the_ray_bound_471` (Richtung, Streitpunkt,
+§8p-Zeilen alt gegen neu) und die Sonde `probe_471_reference_cost`.
+
+### Was daraus NICHT folgt
+
+- **Nicht**, dass die §8p-Schlussfolgerung wackelt. Sie wird stärker: der
+  behobene Defekt war grösser als gedruckt, und die Ergebnis-Spalte ist ein
+  Satz, keine Messung.
+- **Nicht**, dass die Ray-Referenz falsch war. Sie ist eine korrekte obere
+  Schranke und bleibt der einzige unabhängige Selbsttest der exakten
+  Zerlegung. Falsch war, sie zum RICHTEN zu benutzen.
+- **Nicht**, dass jetzt jede Über-Bilanz exakt ist. Exakt sind die drei
+  Fixture-Familien mit analytischer Zerlegung (Nabe, achsparallele und
+  rotierte Box-Vereinigungen). Für eine Fixtur ohne solche Zerlegung gäbe es
+  weiterhin nur die Strahl-Schranke — und dort bliebe eine gemessene 0 eine
+  untere Schranke.
+- **Nicht**, dass die exakte Referenz bewiesen ist. Sie ist eine analytische
+  Zerlegung mit zwei Pins (Handrechnung an je einem Punkt, `exakt ≤ ray` auf
+  Gittern) und einem Konvergenz-Nachweis (`ray(400) → ray(40000)` fällt gegen
+  sie). Das ist mehr als eine Schätzung und weniger als ein Beweis.
+- **Nicht**, dass die 1e-3-Zählschwelle harmlos ist. Der ganze §8p-Zuwachs
+  (168 → 312) besteht aus Punkten, die vorher knapp darunter lagen. Wer die
+  Schwelle senkt, bekommt wieder andere Zahlen; sie ist eine Konvention, keine
+  Eigenschaft des Feldes.
+- **Nicht**, dass die §8h/§8i-Ablationstabellen (Zeilen wie „Nabe 41 / 0.198")
+  jetzt stimmen. Ihre Messstellen sind mit umgestellt, also liefern sie beim
+  Nachfahren grössere Zahlen. Sie sind reine Sonden-Ausgaben ohne Pin und
+  wurden hier NICHT nachgefahren — wer sie zitiert, muss sie neu messen.
+- **Nicht**, dass sich das ausgelieferte Feld bewegt hat. Diese Runde ändert
+  ausschliesslich Testcode und Doku; kein Opcode, kein Tape-Wert, keine
+  Konstante.
 
 ## 9. Geschriebene Dateien
 

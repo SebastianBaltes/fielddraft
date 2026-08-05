@@ -1569,7 +1569,7 @@ fn erosion_notch_seam_end_is_exact_384() {
                     if got >= 0.0 {
                         continue; // „nicht in der Erosion" — nichts zu beweisen
                     }
-                    let u = dist_to_notch_complement(alpha, p);
+                    let u = dist_notch_complement_exact(alpha, p);
                     if delta as f64 - u > worst {
                         worst = delta as f64 - u;
                         at = p;
@@ -1818,7 +1818,8 @@ fn erosion_zero_set_error(
                 if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
                     continue; // „nicht in der Erosion" — nichts zu beweisen
                 }
-                let u = dist_to_boxes_complement(boxes, p, ndir);
+                let _ = ndir; // #471: die Richtungszahl richtet nicht mehr
+                let u = dist_boxes_complement_exact(boxes, p);
                 let err = delta as f64 - u;
                 if err <= 1e-3 {
                     continue;
@@ -2248,7 +2249,7 @@ fn erosion_stepped_hub_cascade_promise_is_true_384() {
                 if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
                     continue;
                 }
-                let u = dist_hub_complement(t as f64, &cyls, p, 160);
+                let u = dist_hub_complement_exact(t as f64, &cyls, p);
                 let err = delta as f64 - u;
                 if err <= 1e-3 {
                     continue;
@@ -2326,7 +2327,7 @@ fn erosion_rib_comb_cascade_promise_is_true_384() {
                     if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
                         continue;
                     }
-                    let u = dist_to_boxes_complement(&boxes, p, 160);
+                    let u = dist_boxes_complement_exact(&boxes, p);
                     let err = delta as f64 - u;
                     if err <= 1e-3 {
                         continue;
@@ -2403,7 +2404,7 @@ fn erosion_stepped_hub_stays_within_one_term_gate_384() {
                 if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
                     continue;
                 }
-                let u = dist_hub_complement(t as f64, &cyls, p, 160);
+                let u = dist_hub_complement_exact(t as f64, &cyls, p);
                 let err = delta as f64 - u;
                 if err <= 1e-3 {
                     continue;
@@ -2664,7 +2665,7 @@ fn erosion_stepped_hub_cross_gate_is_exact_384() {
                 if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
                     continue;
                 }
-                let u = dist_hub_complement(t as f64, &cyls, p, 160);
+                let u = dist_hub_complement_exact(t as f64, &cyls, p);
                 let err = delta as f64 - u;
                 if err <= 1e-3 {
                     continue;
@@ -3052,6 +3053,26 @@ fn dist_obb_union_complement_exact(boxes: &[Obb], p: [f64; 3]) -> f64 {
     best
 }
 
+/// **#471 — die exakte Über-Seiten-Referenz für achsparallele Box-Listen.**
+/// Bequemer Aufsatz auf [`dist_obb_union_complement_exact`], damit jede
+/// Messstelle, die bisher [`dist_to_boxes_complement`] (eine OBERE Schranke)
+/// zum RICHTEN benutzt hat, ohne Umbau auf den Wert selbst umstellen kann.
+fn dist_boxes_complement_exact(boxes: &[([f64; 3], [f64; 3])], p: [f64; 3]) -> f64 {
+    let obbs: Vec<Obb> = boxes.iter().map(|&(lo, hi)| obb_aabb(lo, hi)).collect();
+    dist_obb_union_complement_exact(&obbs, p)
+}
+
+/// **#471 — die exakte Über-Seiten-Referenz des `notch_union`-Dieders.**
+/// Spiegel von [`dist_to_notch_complement`], nur ohne Strahl-Schätzung.
+fn dist_notch_complement_exact(alpha_deg: f64, p: [f64; 3]) -> f64 {
+    let gamma = std::f64::consts::PI - alpha_deg.to_radians();
+    let obbs = vec![
+        obb_rot_z([0.0, -50.0, 0.0], [100.0, 50.0, 50.0], 0.0),
+        obb_rot_z([50.0 * gamma.sin(), -50.0 * gamma.cos(), 0.0], [100.0, 50.0, 50.0], gamma),
+    ];
+    dist_obb_union_complement_exact(&obbs, p)
+}
+
 fn subtract_intervals(lo: f64, hi: f64, cuts: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let mut ivs = vec![(lo, hi)];
     for &(a, b) in cuts {
@@ -3163,6 +3184,9 @@ fn dist_hub_complement_exact(t: f64, cyls: &[(f64, f64, f64)], p: [f64; 3]) -> f
 /// MUSS `≤ 0` bleiben (die Strahl-Referenz ist eine obere Schranke) und ist
 /// damit der Selbsttest der exakten Referenz.
 struct TwoSided {
+    /// Über-Seite gegen die **exakte** Referenz — maßgeblich (#471). Die
+    /// Strahl-Schranke `ray` richtet hier NICHT mehr; sie bleibt allein als
+    /// Selbsttest `xmax = max(exakt − ray) ≤ 0` im Aufbau.
     over: (usize, f64, [f64; 3]),
     under: (usize, f64, [f64; 3]),
     xmax: f64,
@@ -3203,7 +3227,8 @@ fn two_sided_scan(
                 let u = ray(p);
                 r.xmax = r.xmax.max(e - u);
                 if got < 0.0 {
-                    let err = delta as f64 - u;
+                    // #471: gerichtet wird gegen die exakte Referenz.
+                    let err = delta as f64 - e;
                     if err > 1e-3 {
                         r.over.0 += 1;
                         if err > r.over.1 {
@@ -4125,7 +4150,16 @@ fn eval_mut(n: &BoundedCsg, p: [f32; 3], lb: &dyn Fn([f32; 3]) -> f32) -> f32 {
 
 struct Row {
     name: String,
+    /// Über-Seite gegen die **exakte** Referenz — maßgeblich (#471).
     over: (usize, f64),
+    /// Worst-Punkt der exakten Über-Seite (leer, wenn `over.0 == 0`).
+    worst_over: [f64; 3],
+    /// Über-Seite gegen die **Strahl-Schranke** — nur noch als Vergleichszahl
+    /// mitgeführt, um die Blindheit der alten Messlatte beziffern zu können
+    /// (§8ao). NIE als Zusage lesen: `ray ≥ dist`, also ist `δ − ray` eine
+    /// UNTERschätzung des Über-Fehlers und eine 0 hier heisst nur
+    /// „mindestens 0", nicht „keine Überschreitung".
+    over_ray: (usize, f64),
     under: (usize, f64),
     worst_under: [f64; 3],
     lb_viol: f64,
@@ -4147,6 +4181,8 @@ fn scan_mut(
     let mut row = Row {
         name: name.into(),
         over: (0, 0.0),
+        worst_over: [0.0; 3],
+        over_ray: (0, 0.0),
         under: (0, 0.0),
         worst_under: [0.0; 3],
         lb_viol: 0.0,
@@ -4176,10 +4212,20 @@ fn scan_mut(
                 };
                 let (e, u) = (exact(p), ray(p));
                 if got < 0.0 {
-                    let err = delta as f64 - u;
+                    // #471: maßgeblich ist die EXAKTE Referenz. `ray ≥ dist`
+                    // macht `δ − ray` zu einer Unterschätzung des Fehlers.
+                    let err = delta as f64 - e;
                     if err > 1e-3 {
                         row.over.0 += 1;
-                        row.over.1 = row.over.1.max(err);
+                        if err > row.over.1 {
+                            row.over.1 = err;
+                            row.worst_over = p;
+                        }
+                    }
+                    let err_ray = delta as f64 - u;
+                    if err_ray > 1e-3 {
+                        row.over_ray.0 += 1;
+                        row.over_ray.1 = row.over_ray.1.max(err_ray);
                     }
                 } else {
                     let err = e - delta as f64;
@@ -4478,11 +4524,15 @@ fn probe_384_pair_distance_gate() {
         ));
         rows.push(scan_mut(&format!("notch {alpha} PAAR"), &field, delta, l3, h3, 22, &exact, &ray, &pair, true));
     }
-    println!("\n{:<22} {:>6} {:>9} {:>6} {:>9} {:>10}", "Fixture", "über", "worst", "unter", "worst", "LB-Verstoß");
+    println!(
+        "\n{:<22} {:>6} {:>9} {:>8} {:>9} {:>6} {:>9} {:>10}",
+        "Fixture", "über", "worst", "über|ray", "worst|ray", "unter", "worst", "LB-Verstoß"
+    );
     for r in &rows {
         println!(
-            "{:<22} {:>6} {:>9.4} {:>6} {:>9.4} {:>10.2e}   {:?}",
-            r.name, r.over.0, r.over.1, r.under.0, r.under.1, r.lb_viol, r.worst_under
+            "{:<22} {:>6} {:>9.4} {:>8} {:>9.4} {:>6} {:>9.4} {:>10.2e}   über@{:?} unter@{:?}",
+            r.name, r.over.0, r.over.1, r.over_ray.0, r.over_ray.1,
+            r.under.0, r.under.1, r.lb_viol, r.worst_over, r.worst_under
         );
     }
 }
@@ -5306,6 +5356,15 @@ fn eval_p8p(n: &BoundedCsg, p: [f32; 3], mode: P8pMode) -> f32 {
     }
 }
 
+/// Ergebnis eines §8p-Scans. `over` misst gegen die EXAKTE Referenz,
+/// `over_ray` gegen die Strahl-Schranke — die Differenz ist genau die
+/// Blindheit, die #471 aufgearbeitet hat (§8ao).
+struct P8pSides {
+    over: (usize, f64, [f64; 3]),
+    over_ray: (usize, f64),
+    under: (usize, f64, [f64; 3]),
+}
+
 /// Beidseitiger Scan mit dem §8p-Auswerter.
 #[allow(clippy::too_many_arguments)]
 fn scan_p8p(
@@ -5317,8 +5376,9 @@ fn scan_p8p(
     exact: &dyn Fn([f64; 3]) -> f64,
     ray: &dyn Fn([f64; 3]) -> f64,
     mode: P8pMode,
-) -> (usize, f64, [f64; 3], usize, f64, [f64; 3]) {
+) -> P8pSides {
     let (mut oc, mut ow, mut op) = (0usize, 0.0f64, [0.0f64; 3]);
+    let (mut rc, mut rw) = (0usize, 0.0f64);
     let (mut uc, mut uw, mut up) = (0usize, 0.0f64, [0.0f64; 3]);
     for ix in 0..n {
         for iy in 0..n {
@@ -5336,13 +5396,20 @@ fn scan_p8p(
                 let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
                 let got = eval_p8p(field, pf, mode);
                 if got < 0.0 {
-                    let err = delta as f64 - ray(p);
+                    // #471: die exakte Referenz ist maßgeblich, die
+                    // Strahl-Schranke läuft nur noch als Vergleich mit.
+                    let err = delta as f64 - exact(p);
                     if err > 1e-3 {
                         oc += 1;
                         if err > ow {
                             ow = err;
                             op = p;
                         }
+                    }
+                    let err_ray = delta as f64 - ray(p);
+                    if err_ray > 1e-3 {
+                        rc += 1;
+                        rw = rw.max(err_ray);
                     }
                 } else {
                     let err = exact(p) - delta as f64;
@@ -5357,7 +5424,7 @@ fn scan_p8p(
             }
         }
     }
-    (oc, ow, op, uc, uw, up)
+    P8pSides { over: (oc, ow, op), over_ray: (rc, rw), under: (uc, uw, up) }
 }
 
 #[test]
@@ -5365,8 +5432,8 @@ fn scan_p8p(
 fn probe_384_lb_only_gate() {
     let delta = 2.0f32;
     println!(
-        "\n{:<20} {:>7} {:>5} {:>9} {:>5} {:>9}",
-        "Fixture/Modus", "Stücke", "über", "worst", "unter", "worst"
+        "\n{:<20} {:>7} {:>5} {:>9} {:>7} {:>9} {:>5} {:>9}",
+        "Fixture/Modus", "Stücke", "über", "worst", "über|ray", "worst|ray", "unter", "worst"
     );
     let mut run = |name: &str,
                    field: &BoundedCsg,
@@ -5381,14 +5448,16 @@ fn probe_384_lb_only_gate() {
         for (tag, mode) in [("BASIS", P8pMode::Basis), ("LB-ONLY", P8pMode::LbOnly)] {
             let r = scan_p8p(field, delta, lo, hi, n, exact, ray, mode);
             println!(
-                "{:<20} {np:>7} {:>5} {:>9.4} {:>5} {:>9.4}   über@{:?} unter@{:?}",
+                "{:<20} {np:>7} {:>5} {:>9.4} {:>7} {:>9.4} {:>5} {:>9.4}   über@{:?} unter@{:?}",
                 format!("{name} {tag}"),
-                r.0,
-                r.1,
-                r.3,
-                r.4,
-                r.2.map(|v| (v * 1e4).round() / 1e4),
-                r.5.map(|v| (v * 1e4).round() / 1e4)
+                r.over.0,
+                r.over.1,
+                r.over_ray.0,
+                r.over_ray.1,
+                r.under.0,
+                r.under.1,
+                r.over.2.map(|v| (v * 1e4).round() / 1e4),
+                r.under.2.map(|v| (v * 1e4).round() / 1e4)
             );
         }
     };
@@ -5432,6 +5501,161 @@ fn probe_384_lb_only_gate() {
         let exact = |p: [f64; 3]| dist_obb_union_complement_exact(&obbs, p);
         let ray = |p: [f64; 3]| dist_to_notch_complement(alpha, p);
         run(&format!("notch {alpha}"), &field, [-10.0, -10.0, 42.0], [10.0, 10.0, 54.0], 22, &exact, &ray);
+    }
+}
+
+/// **#471-Pin: die Über-Seite richtet gegen die EXAKTE Referenz, und das
+/// ändert Zahlen.**
+///
+/// Bis #471 haben `scan_mut`, `scan_p8p` und `two_sided_scan` auf der
+/// Über-Seite gegen die Strahl-Schranke gerichtet (`dist_hub_complement`,
+/// `dist_to_boxes_complement`, `dist_to_notch_complement`). Die ist laut
+/// eigener Zusage eine OBERE Schranke von `dist(p,∁Ω)`; damit ist
+/// `err = δ − ray ≤ δ − dist` eine UNTERschätzung, und eine gemessene 0 heisst
+/// dort nur „mindestens 0". Auf der UNTER-Seite stand von Anfang an die exakte
+/// Referenz (`err = dist − δ`), dort war nie etwas blind — die Asymmetrie war
+/// der ganze Fehler.
+///
+/// Drei Messungen, die zusammen die Richtung UND die Grösse festnageln:
+///
+/// 1. **Richtung**: `exact ≤ ray` an einem Nabengitter. Daraus folgt
+///    `err_exakt ≥ err_ray`: die Umstellung kann Über-Zahlen nur VERGRÖSSERN,
+///    nie verkleinern. Eine publizierte Über-Zahl war also nie zu gross.
+/// 2. **Grösse am Streitpunkt** (#464): `ray(160) = 2,063926` gegen exakt
+///    `1,987507` — 0,0764 mm Überschätzung an genau der Stelle, an der die
+///    Ray-Referenz in #464 eine 0 vorgetäuscht hat.
+/// 3. **Grösse in der §8p-Matrix**: die beiden Rippen-Kämme im BASIS-Modus
+///    (das `max`-Gate von §8o, das §8p abgelöst hat). Veröffentlicht waren
+///    `168 · 0,8103` und `144 · 0,5378`; exakt sind es `312 · 0,8178` und
+///    `264 · 0,5469`. Der DEFEKT, den §8p behoben hat, war also fast doppelt
+///    so gross wie gedruckt — die Schlussfolgerung von §8p wird davon nicht
+///    schwächer, sondern stärker.
+///
+/// Was der Pin NICHT sagt: dass sich die §8p-Ergebnisspalte bewegt. Die bleibt
+/// `0 / 0`, und zwar aus einem Satz, nicht aus einer Messung (wo `L` bindet,
+/// ist `f ≥ δ − L ≥ δ − dist`) — deshalb ist sie gegen jede Verschärfung der
+/// Referenz immun. Das prüft `lb_only_gate_closes_the_comb_over_side_384`.
+#[test]
+fn over_side_reference_is_exact_not_the_ray_bound_471() {
+    // (1) Richtung: die Strahl-Schranke liegt NIE unter der Wahrheit.
+    let (t, r1, r2, zh1, e1, e2) = (3.0f64, 6.0f64, 4.0f64, 0.5f64, 1.2f64, 1.8f64);
+    let cyls = [(r1, -e1, zh1), (r2, -e2, 6.0f64)];
+    let (mut worst_gap, mut inside) = (0.0f64, 0usize);
+    let n = 13usize;
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let p = [
+                    -9.0 + 18.0 * (ix as f64 + 0.2113248654) / n as f64,
+                    -9.0 + 18.0 * (iy as f64 + 0.5773502692) / n as f64,
+                    -t - 1.5 + (t + 2.0) * (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let e = dist_hub_complement_exact(t, &cyls, p);
+                let u = dist_hub_complement(t, &cyls, p, 160);
+                assert!(
+                    e <= u + 1e-9,
+                    "die exakte Referenz {e:.6} übersteigt bei {p:?} die Strahl-Schranke \
+                     {u:.6} — dann erfindet sie Distanz und die Umstellung wäre unsicher"
+                );
+                if e > 1e-6 {
+                    inside += 1;
+                    worst_gap = worst_gap.max(u - e);
+                }
+            }
+        }
+    }
+    assert!(inside > 100, "zu wenige Innenpunkte gesondet: {inside}");
+    assert!(
+        worst_gap > 0.05,
+        "die Strahl-Schranke weicht nirgends nennenswert ab (max {worst_gap:.4} mm) — dann \
+         misst der Pin nicht, worum es geht"
+    );
+
+    // (2) Der Streitpunkt aus #464, bitgleich aus dem 22³-Gitter.
+    let (lo, hi) = ([-9.0, -9.0, -t - 1.5], [9.0, 9.0, 0.5]);
+    let x = grid_468(lo, hi, 22)
+        .into_iter()
+        .find(|p| (dist_hub_complement_exact(t, &cyls, *p) - 1.987507).abs() < 1e-4)
+        .expect("der #464-Streitpunkt liegt nicht mehr im Gitter");
+    let (ex, ry) = (dist_hub_complement_exact(t, &cyls, x), dist_hub_complement(t, &cyls, x, 160));
+    assert!(
+        (ex - 1.987507).abs() < 1e-4 && (ry - 2.063926).abs() < 1e-4,
+        "Streitpunkt {x:?}: exakt {ex:.6} / ray {ry:.6} statt 1,987507 / 2,063926"
+    );
+
+    // (3) Die §8p-BASIS-Zeilen der beiden Rippen-Kämme, alt gegen neu.
+    let delta = 2.0f32;
+    for ((w, g), want_exact, want_we, want_ray, want_wr) in [
+        ((1.5f32, 0.8f32), 312usize, 0.8178f64, 168usize, 0.8103f64),
+        ((2.0, 1.0), 264, 0.5469, 144, 0.5378),
+    ] {
+        let (node, boxes, span) = rib_comb_node(4, w, g, delta);
+        let (field, _) = compile_for(node);
+        let obbs: Vec<Obb> = boxes.iter().map(|&(l, h)| obb_aabb(l, h)).collect();
+        let r = scan_p8p(
+            &field,
+            delta,
+            [-span, -3.0, -6.0],
+            [span, 3.0, 0.5],
+            24,
+            &|p| dist_obb_union_complement_exact(&obbs, p),
+            &|p| dist_to_boxes_complement(&boxes, p, 160),
+            P8pMode::Basis,
+        );
+        assert_eq!(
+            (r.over.0, r.over_ray.0),
+            (want_exact, want_ray),
+            "Kamm {w}/{g} BASIS: {} exakt / {} ray statt {want_exact} / {want_ray} — die \
+             §8p-Tabelle druckt die RAY-Zahl, §8ao die exakte",
+            r.over.0,
+            r.over_ray.0
+        );
+        assert!(
+            (r.over.1 - want_we).abs() < 1e-3 && (r.over_ray.1 - want_wr).abs() < 1e-3,
+            "Kamm {w}/{g} BASIS worst: {:.4} exakt / {:.4} ray statt {want_we} / {want_wr}",
+            r.over.1,
+            r.over_ray.1
+        );
+        assert_eq!(r.under.0, 0, "Kamm {w}/{g} BASIS: die Unter-Seite hat sich bewegt");
+    }
+}
+
+/// **#471-Sonde: was die exakte Referenz kostet.** Die Umstellung ist nur
+/// tragfähig, wenn sie bezahlbar ist — gemessen je Auswertung an beiden
+/// Referenz-Familien.
+#[test]
+#[ignore]
+fn probe_471_reference_cost() {
+    let (t, r1, r2, zh1, e1, e2) = (3.0f64, 6.0f64, 4.0f64, 0.5f64, 1.2f64, 1.8f64);
+    let cyls = [(r1, -e1, zh1), (r2, -e2, 6.0f64)];
+    let p = [1.0f64, 1.0, -1.0];
+    for (tag, f) in [
+        ("Nabe exakt", Box::new(|q: [f64; 3]| dist_hub_complement_exact(3.0, &cyls, q))
+            as Box<dyn Fn([f64; 3]) -> f64>),
+        ("Nabe ray(160)", Box::new(|q: [f64; 3]| dist_hub_complement(3.0, &cyls, q, 160))),
+    ] {
+        let t0 = std::time::Instant::now();
+        let mut acc = 0.0;
+        for _ in 0..20000 {
+            acc += f(p);
+        }
+        println!("#471 {tag:16}: {:?}/Auswertung (acc {acc:.1})", t0.elapsed() / 20000);
+    }
+    let _ = t;
+    let (_node, boxes, _span) = rib_comb_node(4, 2.0, 1.0, 2.0);
+    let obbs: Vec<Obb> = boxes.iter().map(|&(l, h)| obb_aabb(l, h)).collect();
+    let q = [-6.933645f64, -2.855662, -1.453067];
+    for (tag, f) in [
+        ("Kamm exakt", Box::new(|z: [f64; 3]| dist_obb_union_complement_exact(&obbs, z))
+            as Box<dyn Fn([f64; 3]) -> f64>),
+        ("Kamm ray(160)", Box::new(|z: [f64; 3]| dist_to_boxes_complement(&boxes, z, 160))),
+    ] {
+        let t0 = std::time::Instant::now();
+        let mut acc = 0.0;
+        for _ in 0..2000 {
+            acc += f(q);
+        }
+        println!("#471 {tag:16}: {:?}/Auswertung (acc {acc:.1})", t0.elapsed() / 2000);
     }
 }
 
@@ -5867,7 +6091,7 @@ fn probe_384_promise_inventory() {
                     if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
                         continue;
                     }
-                    let err = delta as f64 - dist_hub_complement(t as f64, &cyls, p, 160);
+                    let err = delta as f64 - dist_hub_complement_exact(t as f64, &cyls, p);
                     if err > 1e-3 {
                         miss += 1;
                         worst = worst.max(err);
@@ -5893,7 +6117,7 @@ fn probe_384_promise_inventory() {
                     if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
                         continue;
                     }
-                    let err = delta as f64 - dist_to_boxes_complement(&boxes, p, 160);
+                    let err = delta as f64 - dist_boxes_complement_exact(&boxes, p);
                     if err > 1e-3 {
                         miss += 1;
                         worst = worst.max(err);
@@ -18589,9 +18813,10 @@ fn the_dual_mirror_resolves_channel_modes_like_the_cpu_tree_467() {
 /// **Warum die Aktivierung hier nicht passiert**, steht an
 /// [`wit::CURVED_COVER_STAGE`]: der Beweis ist gültig, aber schwächer als die
 /// unbewiesene Klemme, die er ersetzen würde (`η ≈ 0,81 mm`), und kostet
-/// feldwirksam 41 Punkte Phantom-Material in der Ablation ohne `L`-Block. Woher
-/// die 41 kommen und was sie kosten, ist seit #468 aufgeschlüsselt — s.
-/// [`curved_clamp_phantom_comes_from_one_seam_468`] und §8al. #469 hat sie auf
+/// feldwirksam 45 Punkte Phantom-Material in der Ablation ohne `L`-Block (§8al
+/// hatte 41 veröffentlicht — gegen die zu gutmütige Strahl-Schranke, s. §8ao).
+/// Woher sie kommen und was sie kosten, ist seit #468 aufgeschlüsselt — s.
+/// [`curved_clamp_phantom_comes_from_one_seam_468`]. #469 hat sie auf
 /// 1 gedrückt (nicht auf 0, s. §8an), und #464 hat die Aktivierung deshalb
 /// nicht vollzogen.
 #[test]
@@ -19123,7 +19348,7 @@ fn probe_468_ablation_origin() {
         let (mut o, mut worst) = (0usize, 0.0f64);
         for p in grid_468(lo, hi, 22) {
             let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
-            let err = delta as f64 - dist_hub_complement(t, &cyls, p, 160);
+            let err = delta as f64 - dist_hub_complement_exact(t, &cyls, p);
             if f.sdf(pf, EvalMode::Visual) < 0.0 && err > 1e-3 {
                 o += 1;
                 worst = worst.max(err);
@@ -19141,7 +19366,7 @@ fn probe_468_ablation_origin() {
     let (mut ob, mut oa) = (0usize, 0usize);
     for p in &pts {
         let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
-        let u = dist_hub_complement(t, &cyls, *p, 160);
+        let u = dist_hub_complement_exact(t, &cyls, *p);
         let (vb, va) = (base.sdf(pf, EvalMode::Visual), act.sdf(pf, EvalMode::Visual));
         let err = delta as f64 - u;
         if vb < 0.0 && err > 1e-3 {
@@ -19325,7 +19550,7 @@ fn probe_468_mixed_clamp() {
     let mut mix_ne_sh = 0usize;
     for p in &pts {
         let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
-        let u = dist_hub_complement(t, &cyls, *p, 160);
+        let u = dist_hub_complement_exact(t, &cyls, *p);
         let err = delta as f64 - u;
         let (fa, fs) = (act.sdf(pf, EvalMode::Visual), sh.sdf(pf, EvalMode::Visual));
         let fm = fa.max(fs);
@@ -19347,28 +19572,33 @@ fn probe_468_mixed_clamp() {
     );
 }
 
-/// **#468-Pin 1 / #469-Pin / #464-Korrektur: die 41 Punkte waren Stückung —
+/// **#468-Pin 1 / #469-Pin / #471-Korrektur: die 45 Punkte waren Stückung —
 /// und sind fast weg.**
 ///
 /// Gemessen wird die Ablation ohne `L`-Block (`strip_lb`), dasselbe Fixture und
 /// dasselbe Gitter, dessen BASIS-Befund `stop_lb_absent_reproduces_the_g_cap_384`
 /// mit `0 über / 59 unter` festnagelt.
 ///
-/// Der Pin trägt jetzt ZWEI Messungen, weil erst sie zusammen etwas heissen:
+/// **Seit #471 richtet auf BEIDEN Seiten die exakte Referenz**
+/// (`dist_hub_complement_exact`). Vorher stand auf der Über-Seite die
+/// Strahl-Schranke `dist_hub_complement`, eine OBERE Schranke von
+/// `dist(p, ∁Ω)`; `δ − ray` unterschätzt den Fehler, und beide historischen
+/// Zahlen dieses Pins waren dadurch zu gutmütig (§8ao).
+///
+/// Der Pin trägt drei Messungen, weil erst sie zusammen etwas heissen:
 ///
 /// 1. **Historisch** (`piece_len_mm = 0,9`, die Breite, die die alte feste
-///    Stückzahl 24 dem längsten Bogen der Nabe gab): 41 Über-Punkte, alle an
-///    EINEM Kanal, verteilt auf dessen 3 Bögen — der Befund von §8al,
-///    unverändert reproduzierbar.
-/// 2. **Produktion nach #469** (`DEFAULT_PIECE_LEN_MM`): **0** Über-Punkte
-///    gegen die Ray-Referenz. Damit ist die Aussage „die 41 sind Stückung,
-///    nicht Geometrie" nicht mehr bloss extrapoliert, sondern am selben Gitter
-///    weitgehend erledigt.
-/// 3. **#464-Korrektur**: die Ray-Referenz ist eine OBERE Schranke von
-///    `dist(p, ∁Ω)` und damit auf der Über-Seite blind. Gegen die exakte
-///    Referenz derselben Fixtur bleibt **1** Über-Punkt (0,01249 mm) stehen —
-///    41 → 1, nicht 41 → 0. Das ist der Grund, warum #464 die Stufe nicht
-///    umgelegt hat (§8an).
+///    Stückzahl 24 dem längsten Bogen der Nabe gab): **45** Über-Punkte
+///    (0,0125 … 0,7042 mm), alle an EINEM Kanal, verteilt auf dessen 3 Bögen.
+///    §8al hat dieselbe Messung mit der Strahl-Schranke als „41 Punkte,
+///    0,002 … 0,674 mm" veröffentlicht — die Ursachen-Aussage (EIN Kanal,
+///    3 Bögen) trägt unverändert, die Zahlen waren zu klein.
+/// 2. **Produktion nach #469** (`DEFAULT_PIECE_LEN_MM`): **1** Über-Punkt
+///    (0,01249 mm). Gegen die Strahl-Schranke las #469 hier 0 und schrieb das
+///    als geschlossene Über-Seite fort; das war die blinde Null.
+/// 3. **Die Strahl-Schranke daneben**: an derselben Stelle 0 Punkte. Die
+///    Differenz IST die Blindheit, und sie ist der Grund, warum #464 die
+///    Stufe nicht umgelegt hat (§8an).
 ///
 /// **Anti-Leer-Gates**: ohne die umgelegte Stufe wäre kein Kanal der Nabe
 /// bewiesen (in Produktion sind es 0 von 2, beide `Curved` ⇒ `NotCertified`),
@@ -19413,7 +19643,7 @@ fn curved_clamp_phantom_comes_from_one_seam_468() {
     let mut shadow_differs = 0usize;
     for p in &pts {
         let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
-        let err = delta as f64 - dist_hub_complement(t, &cyls, *p, 160);
+        let err = delta as f64 - dist_hub_complement_exact(t, &cyls, *p);
         let (vb, va) = (base.sdf(pf, EvalMode::Visual), act.sdf(pf, EvalMode::Visual));
         if vb.to_bits() != sh.sdf(pf, EvalMode::Visual).to_bits() {
             shadow_differs += 1;
@@ -19447,7 +19677,10 @@ fn curved_clamp_phantom_comes_from_one_seam_468() {
         "die Shadow-Re-Zertifizierung bewegt das Feld an {shadow_differs} Punkten"
     );
     assert_eq!(ob, 0, "die BASIS-Ablation hat {ob} Über-Punkte statt 0 (§8n/§8o)");
-    assert_eq!(oa, 41, "die aktive Bogen-Klemme kostet {oa} Über-Punkte statt 41");
+    // #471: gemessen wird gegen `dist_hub_complement_exact`. Gegen die alte
+    // Strahl-Schranke waren es 41 — vier Punkte weniger, weil `ray ≥ dist`
+    // die Überschreitung dort unter die 1e-3-Schwelle drückte.
+    assert_eq!(oa, 45, "die aktive Bogen-Klemme kostet {oa} Über-Punkte statt 45");
     assert_eq!(
         per_ch.len(),
         1,
@@ -19470,9 +19703,13 @@ fn curved_clamp_phantom_comes_from_one_seam_468() {
         a_seam > other,
         "der Kanal ohne Über-Punkte trägt den grösseren Addenden ({other} > {a_seam})"
     );
+    // #471: gegen die exakte Referenz 0,0125 … 0,7042 mm (gegen die
+    // Strahl-Schranke waren es 0,002 … 0,674 mm — beide Enden zu klein).
+    // Die untere Grenze ist genau die 12,5-µm-Überschreitung, an der #464
+    // die Aktivierung abgebrochen hat.
     assert!(
-        (hi_e - 0.6737).abs() < 1e-3 && lo_e < 0.01,
-        "die Überschreitungen liegen bei {lo_e:.4} … {hi_e:.4} statt 0,002 … 0,674 mm"
+        (hi_e - 0.7042).abs() < 1e-3 && (lo_e - 0.0125).abs() < 1e-3,
+        "die Überschreitungen liegen bei {lo_e:.4} … {hi_e:.4} statt 0,0125 … 0,7042 mm"
     );
 
     // ── #469: dieselbe Ablation mit der AUSGELIEFERTEN Stückbreite ──────────
@@ -19487,7 +19724,7 @@ fn curved_clamp_phantom_comes_from_one_seam_468() {
     let mut worst_p = 0.0f64;
     for p in &pts {
         let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
-        let err = delta as f64 - dist_hub_complement(t, &cyls, *p, 160);
+        let err = delta as f64 - dist_hub_complement_exact(t, &cyls, *p);
         if err > 1e-3 && act_prod.sdf(pf, EvalMode::Visual) < 0.0 {
             op += 1;
             worst_p = worst_p.max(err);
@@ -19510,47 +19747,51 @@ fn curved_clamp_phantom_comes_from_one_seam_468() {
         "#469 Ziel {} mm: {op} Über-Punkte (max {worst_p:.4} mm), A_seam_max {a_prod:.6} mm —          historisch (0,9 mm) waren es {oa}",
         wit::DEFAULT_PIECE_LEN_MM
     );
+    // #471: DIESE 0 war die blinde. Gegen die Strahl-Schranke las #469 hier
+    // „0 Über-Punkte" und schrieb das als geschlossene Über-Seite fort; gegen
+    // die exakte Referenz steht genau EIN Punkt (12,5 µm) — derselbe, an dem
+    // #464 die Aktivierung abgebrochen hat. Die längenbasierte Stückung
+    // drückt also 45 → 1, NICHT 45 → 0.
     assert_eq!(
-        op, 0,
-        "die längenbasierte Stückung lässt {op} Über-Punkte stehen — dann trägt die in          §8am gewählte Ziel-Stückbreite nicht"
+        op, 1,
+        "die längenbasierte Stückung lässt {op} Über-Punkte stehen statt des einen, den \
+         #464 als Blocker beziffert hat"
+    );
+    assert!(
+        (worst_p - 0.01249).abs() < 1e-4,
+        "die Überschreitung liegt bei {worst_p:.5} statt 0,01249 mm"
     );
     assert!(
         a_prod < 0.03,
         "A_seam_max ist {a_prod} mm statt der gemessenen Sprosse 9 (0,027332 mm) —          dann ist die Stückung gröber als dokumentiert"
     );
 
-    // ── #464: dieselbe Ablation gegen die EXAKTE Referenz ───────────────────
+    // ── #464/#471: die Gegenprobe zur Referenz selbst ──────────────────────
     // `dist_hub_complement` ist laut eigener Zusage eine OBERE Schranke von
-    // `dist(p, ∁Ω)`; `err = δ − ray` ist damit eine UNTERschätzung, und die 0
-    // oben ist eine UNTERE Schranke der Über-Punkte, keine Leermeldung. Am
-    // Streitpunkt überschätzt sie um 0,0764 mm (ray(160) = 2,063926 gegen
-    // exakt 1,987507; ray konvergiert mit der Richtungszahl gegen die exakte
-    // Zahl — gemessen in `probe_464_ray_reference_sharpness`).
-    //
-    // Gegen `dist_hub_complement_exact` — dieselbe Referenz, die die
-    // §8p-Matrix und der LB-Soundness-Pin benutzen — bleibt EIN Über-Punkt
-    // stehen. Er ist der Grund, warum #464 die Stufe NICHT umgelegt hat.
-    let (mut oe, mut worst_e) = (0usize, 0.0f64);
+    // `dist(p, ∁Ω)`; `err = δ − ray` ist damit eine UNTERschätzung, und eine 0
+    // dort heisst nur „mindestens 0". Am Streitpunkt überschätzt sie um
+    // 0,0764 mm (ray(160) = 2,063926 gegen exakt 1,987507; ray konvergiert mit
+    // der Richtungszahl gegen die exakte Zahl — `probe_464_ray_reference_sharpness`).
+    // Der Pin hält beide Zahlen nebeneinander fest, damit die Blindheit nicht
+    // wieder als Leermeldung durchgeht.
+    let (mut o_ray, mut worst_ray) = (0usize, 0.0f64);
     for p in &pts {
         let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
-        let err = delta as f64 - dist_hub_complement_exact(t, &cyls, *p);
+        let err = delta as f64 - dist_hub_complement(t, &cyls, *p, 160);
         if err > 1e-3 && act_prod.sdf(pf, EvalMode::Visual) < 0.0 {
-            oe += 1;
-            worst_e = worst_e.max(err);
+            o_ray += 1;
+            worst_ray = worst_ray.max(err);
         }
     }
-    println!(
-        "#464 exakte Referenz, Ziel {} mm: {oe} Über-Punkte (max {worst_e:.5} mm)",
-        wit::DEFAULT_PIECE_LEN_MM
-    );
     assert_eq!(
-        oe, 1,
-        "gegen die exakte Referenz stehen {oe} Über-Punkte statt 1 — die Zahl ist der \
-         Blocker von #464 und darf sich nicht unbemerkt bewegen"
+        o_ray, 0,
+        "die Strahl-Schranke sieht jetzt {o_ray} statt 0 Über-Punkte — dann ist die \
+         historische #469-Zahl nicht mehr reproduzierbar und §8ao misst etwas anderes"
     );
-    assert!(
-        (worst_e - 0.01249).abs() < 1e-4,
-        "die Überschreitung liegt bei {worst_e:.5} statt 0,01249 mm"
+    println!(
+        "#471 Ziel {} mm: exakt {op} Über-Punkt(e) (max {worst_p:.5} mm), Strahl {o_ray} \
+         (max {worst_ray:.5} mm) — die Differenz ist die Blindheit der Referenz",
+        wit::DEFAULT_PIECE_LEN_MM
     );
     // Und die BASIS ist dort exakt richtig: der Über-Punkt entsteht allein aus
     // der Absenkung um den Addenden, nicht aus einem vorher schon falschen
@@ -19727,7 +19968,7 @@ fn probe_468_piece_refinement() {
         let (mut o, mut worst) = (0usize, 0.0f64);
         for p in &pts {
             let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
-            let err = delta as f64 - dist_hub_complement(t, &cyls, *p, 160);
+            let err = delta as f64 - dist_hub_complement_exact(t, &cyls, *p);
             if f.sdf(pf, EvalMode::Visual) < 0.0 && err > 1e-3 {
                 o += 1;
                 worst = worst.max(err);
