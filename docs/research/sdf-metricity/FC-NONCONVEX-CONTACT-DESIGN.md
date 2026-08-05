@@ -9585,6 +9585,211 @@ Geometrie.** Die Reihenfolge:
   die beiden Kreisnähte der Stufen-Nabe — die einzigen gekrümmten Kanäle der
   Matrix.
 
+## 8am. P5c-D — die Naht-Stückung folgt der Bogenlänge (#469 zu #384, 2026-08-05)
+
+§8al hat die 41 Phantom-Punkte der Bogen-Klemme als **Stückung** entlarvt: die
+Naht liegt auf `∂Ω` (`|SDF_Ω| ≤ 4,8·10⁻⁷ mm`), jedes positive `η` ist Schlupf
+der Zeugen-SUCHE, und `η` fällt linear mit der Stückzahl. Offen blieb die
+Ursache: die Stückung war eine **feste Zahl je Bogen** (`pieces_per_arc = 24`).
+
+### Der Befund, der die Ticket-Erwartung korrigiert
+
+Das Ticket vermutete „ein 4-mm-Bogen und ein 40-mm-Segment bekommen dieselben
+24 Stücke", also sei eine längenbasierte Stückung BILLIGER. Gemessen
+(`probe_469_seam_lengths`, ganze Zertifizierungs-Matrix) ist das Gegenteil:
+
+    434 Bögen (6 gekrümmt, 428 Segmente), Nahtlängen 0,0563 … 98,400 mm,
+    Median 4,997 mm ⇒ Stückbreite bei fest 24: 0,0023 … 4,100 mm (Faktor 1770)
+
+Die gekrümmten Nähte der Stufen-Nabe sind **6,793 … 21,711 mm** lang, nicht
+4 mm — sie bekamen mit 24 Stücken die GRÖSSTEN Stücke der ganzen Matrix
+(0,283 … 0,904 mm). Eine längenbasierte Stückung macht sie also nicht billiger,
+sondern teurer. Das ist trotzdem die richtige Richtung: `η` ist nachweislich
+eine Funktion der Stückbreite, und eine feste Stückzahl macht `A_seam` damit zu
+einer Funktion der BOGENLÄNGE statt der geforderten Genauigkeit.
+
+### Das Kriterium
+
+`n = clamp(⌈L̄ / piece_len_mm⌉, 4, 4096)` mit `L̄ =` `arc_seam_len_ub`:
+
+- **Segment** (`sweep < 0`): `L̄ = r·|u|`. NICHT `r` allein: `segment_arc`
+  normiert `u` in f32, `|u|` weicht um ein paar ULP von 1 ab, und `r` wäre um
+  genau die zu klein (gemessen an `Ecken-Schale t/δ=2`, Bogen 0: 0,27677464
+  gegen 0,27677465). Eine Schranke, die in der elften Stelle unterläuft, ist
+  keine — der Pin `seam_length_bound_is_an_upper_bound_469` hat das gefunden.
+- **Gekrümmt**: `L̄ = r · √λ_max · α_ub(D_e)`, wobei `λ_max` der grösste
+  Eigenwert der Gram-Matrix `[[|u|², u·v], [u·v, |v|²]]` ist —
+  `|−u sin φ + v cos φ|²` ist genau deren quadratische Form auf dem
+  Einheitskreis. Damit braucht die Schranke **keine Orthonormalität von
+  `(u,v)`**; die prüft niemand. `finish_arc` schätzt denselben Ausdruck durch
+  die SPUR ab (`λ_max ≤ |u|²+|v|²`); für eine Bounding-Sphere ist das egal,
+  hier nicht: bei einem orthonormalen Rahmen wäre die Spur `2` und die
+  Schranke systematisch um `√2 = 1,414` zu gross, die Stücke also um 41 % zu
+  fein. Der geschlossene 2×2-Eigenwert ist dort exakt `1`. (Die erste Fassung
+  von #469 hatte hier die Spur — der Fehler kostete eine ganze Runde
+  Ziel-Längen-Messung, weil er die Kante der Ablation um genau `√2`
+  verschob.)
+
+`α_ub(D)` ersetzt die Trigonometrie: aus `D(φ) = (1+tan(φ−π/4))/2` folgt
+`φ = π/4 + arctan(2D−1)`, und `arctan` wird auf `x ∈ [−1,1]` durch zwei
+elementare Ungleichungen ersetzt — `arctan(x) ≤ x` für `x ≥ 0` (Tangente in 0,
+dort konkav) und `arctan(x) ≤ (π/4)x` für `x ∈ [−1,0]` (Sehne, dort konvex),
+spiegelbildlich für die untere Schranke im zweiten Quadranten. Dazu die
+Quadranten-Klemmen `D ≤ 1 ⇒ α ≤ π/2` und `D ≥ 1 ⇒ α ≤ π`, die die Schranke bei
+`D = 1` exakt machen. Schlechteste Überschätzung rund **1,22 ×** (bei
+`D ≈ 1/4`) — anders als das naive `α ≤ π`, das bei kleinem Sweep unbeschränkt
+danebenliegt und einen flachen Bogen sinnlos fein stückeln würde.
+
+**Warum das KEINE Intervall-Arithmetik braucht.** Die Stückzahl ist ein reiner
+SUCH-Parameter: `[i/n, (i+1)/n]` zerlegt `[0,1]` für jedes `n ≥ 1` exakt, und
+der Beweis je Stück (`piece_box` + `box_outside_omega`) ist von `n` unabhängig
+gültig. Eine zu grosse Längenschranke macht den Beweis nur SCHWÄCHER (grössere
+Stücke, grösseres `η`), nie falsch. Genau deshalb genügt eine grobe obere
+Schranke — und genau deshalb steht `arc_seam_len_ub` NICHT unter der
+Intervall-Doktrin von §8y.
+
+### Die Ziel-Stückbreite: 0,015 mm, gemessen
+
+`probe_468_piece_refinement`, Ablation der Stufen-Nabe ohne `L`-Block, dasselbe
+22³-Gitter wie §8al:
+
+    Ziel mm | A_seam_max mm | Über-Punkte | Zertifizierung der Nabe
+     0,9000 |      2,144639 |          41 |   45 ms
+     0,2250 |      0,330557 |          19 |  145 ms
+     0,0565 |      0,095035 |           5 |  459 ms
+     0,0283 |      0,050962 |           1 |  608 ms
+     0,0200 |      0,050962 |           1 |  801 ms
+     0,0160 |      0,050962 |           1 |  956 ms
+     0,0155 |      0,027332 |           0 |  973 ms
+     0,0150 |      0,027332 |           0 |  998 ms
+     0,0125 |      0,027332 |           0 | 1151 ms
+
+Die Kante liegt zwischen 0,016 und 0,0155 mm und ist **scharf**, weil `η` auf
+den Sprossen der geometrischen Leiter sitzt (`10⁻⁴ · 1,865^k`): Sprosse 10 ist
+0,050944, Sprosse 9 ist 0,027314 — dazwischen gibt es nichts. Gewählt ist
+`DEFAULT_PIECE_LEN_MM = 0,015` — der erste runde Wert unterhalb der Kante.
+Feiner zu gehen kostet linear Rechenzeit und bringt bis 0,0125 mm nachweislich
+nichts.
+
+### Ablation vorher/nachher
+
+Beide Zahlen stehen jetzt in EINEM Pin
+(`curved_clamp_phantom_comes_from_one_seam_468`):
+
+- **historisch** (`piece_len_mm = 0,9`, die Breite, die fest-24 dem längsten
+  Bogen der Nabe gab): **41** Über-Punkte, alle an EINEM Kanal, verteilt auf
+  dessen 3 Bögen, Überschreitung 0,0020 … 0,6737 mm — §8al unverändert
+  reproduziert.
+- **Produktion** (`DEFAULT_PIECE_LEN_MM = 0,015`): **0** Über-Punkte,
+  `A_seam_max = 0,027332 mm`.
+
+### Fixtur-Matrix — kein Gate bewegt sich
+
+`probe_469_cost_and_tally` über die ganze Matrix, bei JEDER Ziel-Stückbreite von
+0,9 bis 0,0125 mm:
+
+    aktiv (proved_seam, curved, no_cover, no_bridge) = (238, 0, 0, 0)
+    Produktion (ShadowOnly)                          = (236 proved, 2 curved)
+
+Der Shadow-Stand ist also **invariant** gegen die Stückung — die Umstellung
+öffnet nirgends still ein Gate und schliesst nirgends eines. `CURVED_COVER_STAGE`
+bleibt `ShadowOnly`; die Aktivierung ist #464.
+
+### Was sich am FELD ändert — und was nicht
+
+`probe_469_aseam_shipped`, 238 Kanäle der Matrix:
+
+    A_seam_max über alle bewiesenen Kanäle: 0,330542 mm → 0,027317 mm
+
+Bewegt haben sich genau **11 von 238** Kanälen, alle in `Rippen-Kamm 4×1.5/0.8`
+(8 × 0,330542, 2 × 0,177223, 1 × 0,095020 → alle 11 auf 0,027317). Alle übrigen Kanäle
+liegen schon vorher bei `A_seam ≈ 1,1·10⁻⁴ mm`; dort dominieren die f32-Posten,
+nicht `η`.
+
+**Der ausgelieferte Feldwert bleibt trotzdem bitgleich** — gemessen, nicht
+angenommen: 144 776 Punkte des Ablations-Gitters über alle 13 Fixturen und
+zusätzlich 729 000 Punkte eines dichten 90³-Gitters über dem Rippen-Kamm sind
+vor und nach der Umstellung **bit-identisch**. Der Grund ist strukturell und
+gemessen (`probe_469_where_aseam_bites`, 216 000 Punkte je Kanal): auf genau
+den 11 Kanälen, deren `A_seam` sich bewegt, nimmt `min(de + A_seam, h + A_h)`
+an JEDEM Gitterpunkt den `h`-Ast — `A_seam` steht dort gar nicht im Feld. Die
+Kanäle, auf denen der `A_seam`-Ast wirklich beisst (5 der 19 dieser Fixtur, je
+rund 60 000 Punkte), hatten schon vorher `A_seam = 1,10·10⁻⁴ mm` und haben es
+danach.
+
+### Kosten
+
+Gemessen im Testprofil (opt-level 2), Basis = `468edfb7`, neu = dieser Stand:
+
+    Grösse                              | Basis (fest 24) | neu (0,015 mm)
+    Stücke über die ganze Matrix        |          10 416 |       520 087
+    Rebuild der ganzen Matrix           |    2120/2134 ms |  6771/6762 ms
+    Rebuild NUR Stufen-Nabe             |           68 ms |          6 ms
+
+Der Faktor auf der Matrix ist **3,19 ×** bei 50 × so vielen Stücken — die
+Zertifizierung skaliert unterlinear, weil feinere Stücke ihren Zeugen auf einer
+NIEDRIGEREN Leitersprosse finden und die Leiter beim ersten Erfolg abbricht.
+
+Die Nabe wird **schneller**, und das ist der zweite Teil von #469: die
+Frühausgänge von `certify_channel_with` (`BadConfig`, `NotConcave`, leerer
+Kanal, `Curved`) rechneten bisher eine vollständige `WitnessCover`, die
+**kein Aufrufer liest** — weder `certify_and_resolve_final_channel` noch ein
+Test. Bei fester Stückzahl kostete das die Nabe 68 ms je Rebuild, bei
+längenbasierter Stückung **1049 ms**, für ein Ergebnis, das sofort verworfen
+wird.
+Die Ausgänge geben jetzt `None` (`Option<WitnessCover>`). Ohne diese zweite
+Hälfte wäre #469 für gekrümmte Shells eine 15-fache Regression gewesen.
+
+**Deckel**: 3 der 434 Bögen (die 98,4-mm-Segmente der beiden `notch`-Fixturen)
+laufen in `max_pieces_per_arc = 4096` und bekommen dort 0,0240 mm statt
+0,0150 mm Stückbreite. Der Deckel ist eine ausdrückliche Kostengrenze, keine
+Beweis-Voraussetzung.
+
+### Nachgezogene Pins
+
+- `worst_geometric_witness_is_a_search_artefact_384` (§8ai/#466): Ort
+  (Rippen-Kamm 4×1.5/0.8, Kanal 0, Bogen 0), Zeugenrichtung (`+x`), lineare
+  Konstante (`offset/plen` = 1,031 / 1,010 / 1,000 / 1,004 für 24 / 96 / 329 /
+  500 Stücke) und Regime-Grenze (bei 12 Stücken wandert das kritische Stück in
+  die Bogenmitte) sind **unverändert**. Bewegt haben sich nur die
+  LEITERSPROSSEN: grob von 13 (0,3305387 mm) auf **9** (0,0273139 mm), fein von
+  185 auf **121** (0,014969 mm, Quotient 0,5480). Der Faktor 12 ist genau der
+  Faktor der Stückbreite: 24 feste Stücke gaben diesem Bogen 0,2052 mm, die
+  längenbasierte Stückung gibt ihm 0,0150 mm. Deutlicher lässt sich §8al kaum
+  bestätigen.
+- `curved_eta_is_piece_discretisation_not_geometry_468`: vergleicht jetzt die
+  historische Breite (0,9 mm) gegen die ausgelieferte. Gemessen
+  `η: 0,616498 → 0,014645` (Kanal r ≈ 6 mm) und `2,144621 → 0,027314`
+  (r ≈ 4 mm).
+- `η_geo max ohne Rippen-Kamm 4×1.5/0.8` bleibt bei `2,257·10⁻³ mm` —
+  unverändert, weil dort die f32-Posten dominieren.
+
+### Was daraus NICHT folgt
+
+- **Nicht**, dass die Bogen-Klemme jetzt aktiviert wäre. `CURVED_COVER_STAGE`
+  steht unverändert auf `ShadowOnly`. #469 macht #464 nur ENTSCHEIDBAR: der
+  Preis, den §8al mit 41 Punkten beziffert hat, ist auf 0 gefallen.
+- **Nicht**, dass das ausgelieferte Feld sich geändert hätte. Über 873 776
+  gemessene Punkte ist es bit-identisch. Der Versions-Bump erfolgt, weil die
+  Änderung feldwirksam SEIN KANN (sie bewegt einen ausgelieferten Tape-Wert),
+  nicht weil eine Bewegung gemessen wurde.
+- **Nicht**, dass 0,015 mm eine Genauigkeitszusage wäre. Es ist die
+  Ziel-STÜCKBREITE der Zeugen-Suche. Was daraus an `A_seam` wird, hängt an der
+  Leitersprosse, an der Geometrie und am Richtungsvorrat — gemessen sind
+  0,027317 mm auf den bewegten Kanälen.
+- **Nicht**, dass `η ∝ Stückbreite` bewiesen wäre. Gemessen ist ein Quotient
+  von 1,000 … 1,031 über ein Regime von 24 … 500 Stücken auf EINEM Bogen und
+  ein Bruch dieses Verhaltens bei 12 Stücken. Ein Gesetz ist das nicht.
+- **Nicht**, dass die Kosten für beliebige Modelle 3,19 × sind. Gemessen ist
+  die 13-Fixturen-Matrix. Die Zertifizierung skaliert mit der GESAMT-Nahtlänge
+  eines Stopps, also mit der Modellgrösse; für Shells mit sehr langen Nähten
+  greift der Deckel `max_pieces_per_arc`.
+- **Nicht**, dass die verbleibende Streuung erklärt wäre. Bei fest 768 Stücken
+  je Bogen (Stückbreiten 0,0088 … 0,0283 mm) ist `A_seam_max = 0,027340 mm`,
+  bei gleichförmigen 0,0283 mm dagegen 0,050962 mm. Der bindende Bogen ist also
+  nicht der längste; es gibt eine zweite, krümmungsabhängige Achse, die eine
+  reine Längen-Stückung nicht modelliert. Sie ist hier nicht untersucht.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -9593,6 +9798,11 @@ Geometrie.** Die Reihenfolge:
   gemessenen Nachweise und ihrer eigenen Auswertungspunkte.
 - `crates/kernel/src/offset_capability_tests.rs` §8ag — der kausale Pin
   `extrude_omega_channels_bind_in_the_tape_384`.
+- Produktionscode §8am (#469, **Feldwert bitgleich, Tape-Wert bewegt**):
+  `crates/kernel/src/offset_witness.rs` — `WitnessCfg::piece_len_mm` /
+  `min_pieces_per_arc` / `max_pieces_per_arc`, `DEFAULT_PIECE_LEN_MM`,
+  `arc_seam_len_ub`, `alpha_ub`, `pieces_for_arc`, und die `None`-Frühausgänge
+  von `certify_channel_with`.
 - Produktionscode §8af (Stufe B, **Feldänderung**):
   `crates/kernel/src/offset_witness.rs` — `EXTRUDE_COVER_STAGE = Active` und
   `omega_has_open_extrude`.

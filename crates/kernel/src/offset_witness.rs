@@ -806,8 +806,29 @@ pub struct WitnessCover {
 /// Stellschrauben der Suche.
 #[derive(Debug, Clone, Copy)]
 pub struct WitnessCfg {
-    /// Stücke je Bogen.
-    pub pieces_per_arc: usize,
+    /// **Ziel-Länge eines Naht-Stücks (mm)** — #469.
+    ///
+    /// Bis v0.66.2 stand hier eine FESTE Stückzahl je Bogen (`pieces_per_arc:
+    /// 24`). Damit bekam ein 6,8-mm-Bogen dieselben 24 Stücke wie ein
+    /// 39,9-mm-Segment, und die Stückbreite schwankte über die Matrix um den
+    /// Faktor 1770 (0,0023 … 4,100 mm, gemessen von
+    /// `probe_469_seam_lengths`). Da `η` praktisch linear an der Stückbreite
+    /// hängt (§8al/§8am), war damit auch `A_seam` eine Funktion der
+    /// Bogen-LÄNGE statt der geforderten Genauigkeit.
+    ///
+    /// Jetzt gilt `n = clamp(⌈L̄/piece_len_mm⌉, min_pieces_per_arc,
+    /// max_pieces_per_arc)` mit `L̄ = ` [`arc_seam_len_ub`] — einer OBEREN
+    /// Schranke der Nahtlänge. Die Stückzahl ist ein reiner SUCH-Parameter:
+    /// `[i/n, (i+1)/n]` zerlegt `[0,1]` für jedes `n ≥ 1` exakt, der Beweis je
+    /// Stück ist von `n` unabhängig gültig. Eine zu grosse Länge macht den
+    /// Beweis also nur SCHWÄCHER, nie falsch — deshalb genügt eine grobe
+    /// obere Schranke und es braucht dafür keine Intervall-Arithmetik.
+    pub piece_len_mm: f64,
+    /// Untere und obere Klemme der Stückzahl je Bogen. Die untere hält den
+    /// Beweis für sehr kurze Bögen nicht-entartet, die obere deckelt die
+    /// Rechenzeit sehr langer Nähte.
+    pub min_pieces_per_arc: usize,
+    pub max_pieces_per_arc: usize,
     /// Kleinster und grösster Versatz der Leiter (mm).
     pub min_offset: f64,
     pub max_offset: f64,
@@ -828,7 +849,10 @@ impl WitnessCfg {
     /// positiven Abstands. Eine Zusage, die aus einer kaputten Eingabe
     /// entsteht, ist schlimmer als keine.
     pub fn valid(&self) -> bool {
-        self.pieces_per_arc > 0
+        self.piece_len_mm.is_finite()
+            && self.piece_len_mm > 0.0
+            && self.min_pieces_per_arc > 0
+            && self.min_pieces_per_arc <= self.max_pieces_per_arc
             && self.steps > 0
             && self.min_offset.is_finite()
             && self.max_offset.is_finite()
@@ -880,13 +904,154 @@ fn arc_usable(arc: &ChannelArc) -> bool {
 impl Default for WitnessCfg {
     fn default() -> Self {
         WitnessCfg {
-            pieces_per_arc: 24,
+            piece_len_mm: DEFAULT_PIECE_LEN_MM,
+            min_pieces_per_arc: 4,
+            max_pieces_per_arc: 4096,
             min_offset: 1.0e-4,
             max_offset: 4.0,
             steps: 18,
             margin: 1.0e-9,
         }
     }
+}
+
+/// #469 — **die ausgelieferte Ziel-Stückbreite (mm).**
+///
+/// Der Wert ist GEMESSEN, nicht gewählt: `probe_468_piece_refinement` fährt
+/// die Ablation der Stufen-Nabe (dasselbe Gitter wie
+/// `curved_clamp_phantom_comes_from_one_seam_468`) über eine Leiter von
+/// Ziel-Längen und liest ab, ab wann sie leer ist. Gemessen (Testprofil,
+/// 2026-08-05):
+///
+/// ```text
+/// Ziel mm | A_seam_max mm | Über-Punkte
+///  0,9000 |      2,144639 | 41
+///  0,2250 |      0,330557 | 19
+///  0,0565 |      0,095035 |  5
+///  0,0283 |      0,050962 |  1
+///  0,0200 |      0,050962 |  1
+///  0,0160 |      0,050962 |  1
+///  0,0155 |      0,027332 |  0
+///  0,0150 |      0,027332 |  0
+///  0,0125 |      0,027332 |  0
+/// ```
+///
+/// Die Kante liegt zwischen 0,016 und 0,0155 mm und ist scharf, weil `η` auf
+/// den Sprossen der geometrischen Leiter sitzt (`1e-4 · 1,865^k`): Sprosse 10
+/// ist 0,05094, Sprosse 9 ist 0,02731, dazwischen gibt es nichts. Gewählt ist
+/// **0,015 mm** — der erste runde Wert unterhalb der Kante. Feiner zu gehen
+/// kostet linear Rechenzeit und bringt bis 0,0125 mm nachweislich nichts.
+/// Die Begründung im Zusammenhang führt §8am.
+pub const DEFAULT_PIECE_LEN_MM: f64 = 0.015;
+
+/// #469 — **eine OBERE Schranke der Nahtlänge eines Bogens (mm).**
+///
+/// * **Segment** (`sweep < 0`): die Naht ist `c + t·r·u`, `t ∈ [0,1]`, also
+///   ist die Länge `r·|u|`. `segment_arc` normiert `u` zwar, aber in f32 —
+///   `|u|` weicht um bis zu ein paar ULP von 1 ab, und `r` allein wäre dann
+///   um genau diese ULP zu KLEIN (gemessen an `Ecken-Schale t/δ=2`, Bogen 0:
+///   0,27677464 gegen 0,27677465). Eine Schranke, die in der elften Stelle
+///   unterläuft, ist keine.
+/// * **Gekrümmt**: die Naht ist `P(φ) = c + r·(u cos φ + v sin φ)`,
+///   `φ ∈ [0, α]`, also
+///   `L = ∫₀^α r·|−u sin φ + v cos φ| dφ ≤ r·α·√λ_max`, wobei `λ_max` der
+///   grösste Eigenwert der Gram-Matrix `[[|u|², u·v], [u·v, |v|²]]` ist —
+///   `|−u sin φ + v cos φ|²` ist genau deren quadratische Form auf dem
+///   Einheitskreis. Damit gilt die Schranke **ohne jede Rahmen-Voraussetzung**
+///   an `(u,v)`; `arc_data_valid` prüft Orthonormalität nicht.
+///
+///   `finish_arc` schätzt denselben Ausdruck durch die SPUR ab
+///   (`λ_max ≤ |u|²+|v|²`). Für eine Bounding-Sphere ist das egal, hier nicht:
+///   bei einem orthonormalen Rahmen — dem Normalfall — wäre die Spur `2` und
+///   die Schranke systematisch um `√2 = 1,414` zu gross, die Stücke also um
+///   41 % zu fein. Der geschlossene 2×2-Eigenwert
+///   `λ_max = m + √(d² + p²)` mit `m = (|u|²+|v|²)/2`, `d = (|u|²−|v|²)/2`,
+///   `p = u·v` ist bei Orthonormalität exakt `1`.
+///
+///   Für `α` liefert [`alpha_ub`] eine obere Schranke aus `D_e`, ohne
+///   Trigonometrie und ohne den bloss diagnostischen `sweep` zu lesen.
+///
+/// Nicht-endliche Daten geben `f64::INFINITY` zurück — das ist die
+/// fail-closed-Richtung: die Stückzahl läuft dann in die obere Klemme, der
+/// Beweis wird feiner statt grober. (`arc_usable` weist solche Bögen ohnehin
+/// vorher ab.)
+pub fn arc_seam_len_ub(arc: &ChannelArc) -> f64 {
+    if !arc.r.is_finite() || arc.r <= 0.0 {
+        return f64::INFINITY;
+    }
+    let r = arc.r as f64;
+    let u2: f64 = arc.u.iter().map(|x| (*x as f64) * (*x as f64)).sum();
+    if arc.sweep < 0.0 {
+        return if u2.is_finite() { r * u2.sqrt() } else { f64::INFINITY };
+    }
+    let v2: f64 = arc.v.iter().map(|x| (*x as f64) * (*x as f64)).sum();
+    let uv: f64 = arc
+        .u
+        .iter()
+        .zip(arc.v.iter())
+        .map(|(a, b)| (*a as f64) * (*b as f64))
+        .sum();
+    let (m, d) = (0.5 * (u2 + v2), 0.5 * (u2 - v2));
+    let lam = m + (d * d + uv * uv).sqrt();
+    if !lam.is_finite() || lam < 0.0 || !arc.d_e.is_finite() {
+        return f64::INFINITY;
+    }
+    r * lam.sqrt() * alpha_ub(arc.d_e as f64)
+}
+
+/// #469 — **eine obere Schranke des Öffnungswinkels `α` zum Diamant-Parameter
+/// `D_e ∈ (0,2]`, ohne Trigonometrie im Beweispfad.**
+///
+/// Aus der geschlossenen Form an [`crate::offset_channel::diamond`] folgt
+/// `D(φ) = (1 + tan(φ − π/4))/2` auf `[0, π/2]`, also
+/// `φ = π/4 + arctan(2D − 1)`, und `D(φ) = 2 − D(π − φ)` auf `[π/2, π]`.
+/// `arctan` ist selbst wieder eine transzendente Funktion; ersetzt wird sie
+/// durch zwei elementare Schranken auf `x ∈ [−1,1]`:
+///
+/// * `arctan(x) ≤ x` für `x ≥ 0` (Tangente in 0, `arctan` dort konkav),
+/// * `arctan(x) ≤ (π/4)·x` für `x ∈ [−1,0]` (Sehne von `(−1,−π/4)` nach
+///   `(0,0)`, `arctan` dort konvex),
+///
+/// und spiegelbildlich für die untere Schranke, die der zweite Quadrant
+/// braucht. Zusätzlich wird auf die Quadranten-Grenzen geklemmt
+/// (`D ≤ 1 ⇒ α ≤ π/2`, `D ≥ 1 ⇒ α ≤ π`), was die Schranke bei `D = 1` exakt
+/// macht.
+///
+/// Die Überschätzung ist damit **beschränkt** (schlechtester Fall rund 1,22 ×
+/// bei `D ≈ 1/4`) — anders als beim naiven `α ≤ π`, das bei kleinem Sweep
+/// unbeschränkt danebenliegt und einen flachen Bogen sinnlos fein stückeln
+/// würde.
+fn alpha_ub(d: f64) -> f64 {
+    use std::f64::consts::PI;
+    if !d.is_finite() || d <= 0.0 {
+        return PI;
+    }
+    if d <= 1.0 {
+        let x = 2.0 * d - 1.0;
+        let up = PI / 4.0 + if x >= 0.0 { x } else { x * PI / 4.0 };
+        up.clamp(0.0, PI / 2.0)
+    } else {
+        // Spiegel: `α = π − β` mit `β = π/4 + arctan(2(2−D) − 1)`. Für eine
+        // obere Schranke von `α` braucht es eine UNTERE von `β`, also die
+        // umgekehrten beiden Ungleichungen.
+        let x = 3.0 - 2.0 * d;
+        let lo = PI / 4.0 + if x >= 0.0 { x * PI / 4.0 } else { x };
+        (PI - lo).clamp(PI / 2.0, PI)
+    }
+}
+
+/// #469 — **die Stückzahl EINES Bogens.** `⌈L̄ / piece_len_mm⌉`, geklemmt.
+///
+/// Der Aufrufer hat `cfg.valid()` schon geprüft; ohne das wäre `piece_len_mm`
+/// nicht garantiert positiv.
+pub fn pieces_for_arc(arc: &ChannelArc, cfg: &WitnessCfg) -> usize {
+    let want = arc_seam_len_ub(arc) / cfg.piece_len_mm;
+    let n = if want.is_finite() {
+        want.ceil().clamp(1.0, cfg.max_pieces_per_arc as f64) as usize
+    } else {
+        cfg.max_pieces_per_arc
+    };
+    n.clamp(cfg.min_pieces_per_arc, cfg.max_pieces_per_arc)
 }
 
 /// Test-Zugang zum Gate [`arc_usable`] (#384 P5c-A). `piece_box` ist die reine
@@ -1119,18 +1284,21 @@ pub(crate) fn cover_channel_staged(
     for (ai, arc) in ch.arcs.iter().enumerate() {
         let len = if arc.r.is_finite() { arc.r as f64 } else { 0.0 };
         cover.seam_len += len;
+        // #469: die Stückzahl folgt der LÄNGE dieses Bogens, nicht mehr einer
+        // festen Zahl je Naht.
+        let np = pieces_for_arc(arc, &cfg);
         if !arc_usable(arc) {
             // Gekrümmt (P4) oder entartet. Ehrlich als ungedeckt zählen.
-            cover.pieces += cfg.pieces_per_arc;
+            cover.pieces += np;
             cover.uncovered_len += len;
             all_ok = false;
             continue;
         }
-        for i in 0..cfg.pieces_per_arc {
-            let t0 = i as f64 / cfg.pieces_per_arc as f64;
-            let t1 = (i + 1) as f64 / cfg.pieces_per_arc as f64;
+        for i in 0..np {
+            let t0 = i as f64 / np as f64;
+            let t1 = (i + 1) as f64 / np as f64;
             cover.pieces += 1;
-            let plen = len / cfg.pieces_per_arc as f64;
+            let plen = len / np as f64;
             let Some(pb) = piece_box(arc, t0, t1) else {
                 cover.uncovered_len += plen;
                 all_ok = false;
@@ -3131,7 +3299,7 @@ pub fn certify_channel(
     omega: &BoundedCsg,
     ch: &mut OffsetChannel,
     cfg: WitnessCfg,
-) -> (SeamProofStatus, WitnessCover) {
+) -> (SeamProofStatus, Option<WitnessCover>) {
     certify_channel_with(omega, ch, cfg, SeamProofKnobs::default()).0
 }
 
@@ -3142,7 +3310,7 @@ pub fn certify_channel_reported(
     omega: &BoundedCsg,
     ch: &mut OffsetChannel,
     cfg: WitnessCfg,
-) -> ((SeamProofStatus, WitnessCover), Option<HStatus>) {
+) -> ((SeamProofStatus, Option<WitnessCover>), Option<HStatus>) {
     certify_channel_with(omega, ch, cfg, SeamProofKnobs::default())
 }
 
@@ -3151,29 +3319,30 @@ pub(crate) fn certify_channel_with(
     ch: &mut OffsetChannel,
     cfg: WitnessCfg,
     knobs: SeamProofKnobs,
-) -> ((SeamProofStatus, WitnessCover), Option<HStatus>) {
+) -> ((SeamProofStatus, Option<WitnessCover>), Option<HStatus>) {
     let mut hs_out: Option<HStatus> = None;
     // §8ac-Korrektur: `seal_seam_proof` entzieht den Laufzeitmodus selbst —
     // die Invariante sitzt im Schreibweg, nicht hier (achtzehntes Review,
     // Empfehlung 2).
     ch.seal_seam_proof(SeamProofToken::mint(), None);
+    // #469: Die Frühausgänge geben `None` statt einer berechneten Abdeckung.
+    // Sie war dort schon immer WEGWERFARBEIT — kein Aufrufer, auch nicht
+    // `certify_and_resolve_final_channel`, liest sie auf diesen Pfaden —, und
+    // seit die Stückung der Länge folgt, ist sie teuer: die Stufen-Nabe
+    // (2 gekrümmte Kanäle ⇒ Ausgang `Curved`) zahlte dafür 1049 ms statt
+    // 68 ms je Rebuild. Wer die Abdeckung eines nicht zertifizierbaren Kanals
+    // sehen will, ruft [`cover_channel`] direkt — die Sonden tun genau das.
     if !cfg.valid() {
-        return ((SeamProofStatus::BadConfig, cover_channel(omega, ch, cfg)), None);
+        return ((SeamProofStatus::BadConfig, None), None);
     }
     // #384 §8ab — Scope-Sperre: nur der konkave Zweig. Die ganze Zusage spricht
     // über `Ω` = dem Körper VOR der Erosion; am Dilations-Stopp ist die
     // Dualität eine andere, und einen konvexen Dualsatz gibt es nicht.
     if !ch.concave {
-        return ((
-            SeamProofStatus::NotConcave,
-            cover_channel_staged(omega, ch, cfg, knobs.extrude_stage.unwrap_or(EXTRUDE_COVER_STAGE)),
-        ), None);
+        return ((SeamProofStatus::NotConcave, None), None);
     }
     if ch.arcs.is_empty() {
-        return ((
-            SeamProofStatus::NoCover,
-            cover_channel_staged(omega, ch, cfg, knobs.extrude_stage.unwrap_or(EXTRUDE_COVER_STAGE)),
-        ), None);
+        return ((SeamProofStatus::NoCover, None), None);
     }
     // Gekrümmt UND unbeweisbar zuerst — ein struktureller Ausschluss, kein
     // Zeugen-Fehlschlag. Seit P5c-A trägt die Konstruktion gekrümmte
@@ -3190,26 +3359,23 @@ pub(crate) fn certify_channel_with(
         .iter()
         .any(|a| !(a.sweep < 0.0) && (!curved_active || !arc_usable(a)))
     {
-        return ((
-            SeamProofStatus::Curved,
-            cover_channel_staged(omega, ch, cfg, knobs.extrude_stage.unwrap_or(EXTRUDE_COVER_STAGE)),
-        ), None);
+        return ((SeamProofStatus::Curved, None), None);
     }
     let stage = knobs.extrude_stage.unwrap_or(EXTRUDE_COVER_STAGE);
     let cover = cover_channel_staged(omega, ch, cfg, stage);
     let Some(eta) = cover.eta else {
-        return ((SeamProofStatus::NoCover, cover), None);
+        return ((SeamProofStatus::NoCover, Some(cover)), None);
     };
     let geo = eta.mm();
     if !(geo.is_finite() && geo >= 0.0) {
-        return ((SeamProofStatus::NoBridge, cover), None);
+        return ((SeamProofStatus::NoBridge, Some(cover)), None);
     }
     // `ε_q`: das Maximum über alle Bögen — die Zusage gilt für den Kanal, also
     // für seinen schlechtesten Bogen.
     let mut eps_q = 0.0f64;
     for a in &ch.arcs {
         let Some(v) = point_bridge_mm(a) else {
-            return ((SeamProofStatus::NoBridge, cover), None);
+            return ((SeamProofStatus::NoBridge, Some(cover)), None);
         };
         eps_q = eps_q.max(v);
     }
@@ -3217,7 +3383,7 @@ pub(crate) fn certify_channel_with(
         eps_q = 0.0;
     }
     let Some(mut eps_d) = norm_bridge_mm(ch.trust) else {
-        return ((SeamProofStatus::NoBridge, cover), None);
+        return ((SeamProofStatus::NoBridge, Some(cover)), None);
     };
     if knobs.drop_norm_bridge {
         eps_d = 0.0;
@@ -3225,12 +3391,12 @@ pub(crate) fn certify_channel_with(
     let bridge_total = next_up(next_up(geo + eps_q) + eps_d);
     let (field_round, addend) = if knobs.drop_field_round {
         let Some(a) = f32_ceil(bridge_total) else {
-            return ((SeamProofStatus::NoBridge, cover), None);
+            return ((SeamProofStatus::NoBridge, Some(cover)), None);
         };
         (0.0, a)
     } else {
         let Some(v) = round_budget(ch.delta, ch.trust, bridge_total) else {
-            return ((SeamProofStatus::NoBridge, cover), None);
+            return ((SeamProofStatus::NoBridge, Some(cover)), None);
         };
         v
     };
@@ -3239,7 +3405,7 @@ pub(crate) fn certify_channel_with(
         addend = f32::from_bits(addend.to_bits().saturating_sub(1));
     }
     if !(addend.is_finite() && addend >= 0.0) {
-        return ((SeamProofStatus::NoBridge, cover), None);
+        return ((SeamProofStatus::NoBridge, Some(cover)), None);
     }
     // #384 §8ab — das h-Budget. Es scheitert unabhängig vom Naht-Addenden;
     // scheitert es, bleibt der `h`-Ast dieses Kanals auf der Modell-Annahme.
@@ -3274,7 +3440,7 @@ pub(crate) fn certify_channel_with(
         h,
     };
     ch.seal_seam_proof(SeamProofToken::mint(), Some(proof));
-    ((SeamProofStatus::Proved, cover), hs_out)
+    ((SeamProofStatus::Proved, Some(cover)), hs_out)
 }
 
 /// #384 §8ae — **nur für die Shadow-Messung**: dieselbe Zertifizierung, aber
@@ -3292,7 +3458,7 @@ pub(crate) fn certify_for_probe(
     ch: &mut OffsetChannel,
     cfg: WitnessCfg,
     active: bool,
-) -> ((SeamProofStatus, WitnessCover), Option<HStatus>) {
+) -> ((SeamProofStatus, Option<WitnessCover>), Option<HStatus>) {
     let stage =
         if active { ExtrudeCoverStage::Active } else { ExtrudeCoverStage::ShadowOnly };
     certify_channel_with(

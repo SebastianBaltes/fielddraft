@@ -11052,7 +11052,7 @@ fn witness_cover_is_a_map_not_a_sample_384() {
                 }
             }
             // Dichte Naht-Punkte: jeder bekommt seinen Zeugen.
-            let dense = 24 * cfg.pieces_per_arc;
+            let dense = 24 * c.pieces;
             for (ai, arc) in ch.arcs.iter().enumerate() {
                 for i in 0..=dense {
                     let s = i as f64 / dense as f64;
@@ -11212,7 +11212,11 @@ fn witness_config_is_fail_closed_384() {
         ("min_offset inf", wit::WitnessCfg { min_offset: f64::INFINITY, ..good }),
         ("margin negativ", wit::WitnessCfg { margin: -1.0, ..good }),
         ("margin NaN", wit::WitnessCfg { margin: f64::NAN, ..good }),
-        ("pieces null", wit::WitnessCfg { pieces_per_arc: 0, ..good }),
+        ("Stücklänge null", wit::WitnessCfg { piece_len_mm: 0.0, ..good }),
+        ("Stücklänge negativ", wit::WitnessCfg { piece_len_mm: -0.1, ..good }),
+        ("Stücklänge NaN", wit::WitnessCfg { piece_len_mm: f64::NAN, ..good }),
+        ("min_pieces null", wit::WitnessCfg { min_pieces_per_arc: 0, ..good }),
+        ("min > max Stücke", wit::WitnessCfg { min_pieces_per_arc: 9, max_pieces_per_arc: 4, ..good }),
         ("steps null", wit::WitnessCfg { steps: 0, ..good }),
     ];
     for (tag, cfg) in bad {
@@ -13468,7 +13472,8 @@ fn clamp_is_fail_closed_384() {
         wit::WitnessCfg { min_offset: 0.0, ..cfg },
         wit::WitnessCfg { min_offset: -1.0e-4, ..cfg },
         wit::WitnessCfg { steps: 0, ..cfg },
-        wit::WitnessCfg { pieces_per_arc: 0, ..cfg },
+        wit::WitnessCfg { piece_len_mm: 0.0, ..cfg },
+        wit::WitnessCfg { min_pieces_per_arc: 0, ..cfg },
         wit::WitnessCfg { margin: -1.0, ..cfg },
         wit::WitnessCfg { max_offset: f64::NAN, ..cfg },
     ] {
@@ -13902,36 +13907,45 @@ fn clamp_shadow_report_matches_the_matrix_384() {
 ///
 /// 1. Das schlechteste Stück der ganzen Matrix sitzt auf Bogen 0, Kanal 0 des
 ///    **Rippen-Kamms 4×1.5/0.8**, sein Versatz liegt **exakt auf Leitersprosse
-///    13** (`t₁₃ = 0,3305387…` mm), und `cover_mm` wie `coord_mm` sind **exakt
+///    9** (`t₉ = 0,0273139…` mm), und `cover_mm` wie `coord_mm` sind **exakt
 ///    null** — die η dieses Kanals IST dieses eine Stück. „Das" schlechteste
 ///    Stück ist unter der groben Leiter allerdings **nicht eindeutig**: die
-///    Sprosse ist ein Plateau, auf dem **alle 24** Stücke des Kanals gemeinsam
+///    Sprosse ist ein Plateau, auf dem **alle 329** Stücke des Kanals gemeinsam
 ///    sitzen — die grobe Leiter kollabiert den Kanal auf einen Wert. Erst die
 ///    feine Leiter (2.) löst es auf, und dort liegt das kritische Stück am
 ///    **Nahtende** (`t1 = 1`). Der Vergleich (1.)↔(2.) läuft deshalb nicht
 ///    buchstäblich über dasselbe Stück, sondern über denselben Kanal und
 ///    Bogen; das feine Endstück steckt im groben Plateau bereits drin.
 /// 2. Eine **feinere Leiter** (257 statt 18 Sprossen) über denselben Kanal
-///    drückt den Versatz auf 0,2117 mm — Sprosse 185, Quotient 0,6404. Der Pin
-///    sichert ihn nach BEIDEN Seiten: die bequeme Lesart „alles nur Sprosse"
-///    ist damit ebenso falsifiziert wie „alles echte Geometrie".
+///    drückt den Versatz auf 0,014969 mm — Sprosse 121, Quotient 0,5480. Der
+///    Pin sichert ihn nach BEIDEN Seiten: die bequeme Lesart „alles nur
+///    Sprosse" ist damit ebenso falsifiziert wie „alles echte Geometrie".
 /// 3. Bei feiner Leiter **folgt der Versatz der Stücklänge**: `offset/plen` =
-///    1,031 / 1,021 / 1,010 für `ppa` 24 / 48 / 96, und das kritische Stück
-///    liegt dort stets am **Nahtende**. Ausserhalb dieses Regimes gilt das
-///    nicht — bei `ppa = 12` ist der Versatz ein Vielfaches und das kritische
-///    Stück wandert in die Bogenmitte; auch diese Grenze ist gepinnt.
+///    1,031 / 1,010 / 1,000 / 1,004 für 24 / 96 / 329 / 500 Stücke auf diesem
+///    Bogen, und das kritische Stück liegt dort stets am **Nahtende**.
+///    Ausserhalb dieses Regimes gilt das nicht — bei 12 Stücken ist der
+///    Versatz ein Vielfaches und das kritische Stück wandert in die
+///    Bogenmitte; auch diese Grenze ist gepinnt.
 /// 4. **Ohne** genau diese Fixture bleibt die Matrix bei `2,26e-3` mm — der
 ///    Schwester-Kamm `4×2/1` bleibt ausdrücklich drin, sonst dürfte er
 ///    unbemerkt mitregressieren.
 ///
+/// **#469**: Ort, Richtung, lineare Konstante und Regime-Grenze sind
+/// unverändert; die LEITERSPROSSEN sind es nicht. Vor #469 stand hier Sprosse
+/// 13 (0,3305387 mm) und feine Sprosse 185 — jetzt Sprosse 9 (0,0273139 mm)
+/// und feine Sprosse 121. Der Faktor 12 kommt allein aus der feineren
+/// Stückung: 24 feste Stücke gaben diesem Bogen 0,2052 mm Stückbreite, die
+/// längenbasierte Stückung gibt ihm 0,0150 mm. Genau das ist die Aussage von
+/// §8am — die Zahl war eine Eigenschaft der Diskretisierung.
+///
 /// **Was daraus NICHT folgt** (27. Review): eine multiplikative Zerlegung des
 /// Faktors 145 gibt es nicht — dessen Nenner stammt aus einer anderen Fixture.
-/// Belegt ist „0,33 mm ist im untersuchten Regime stark
+/// Belegt ist „0,027 mm ist im untersuchten Regime stark
 /// diskretisierungsgetrieben", nicht „der Rest ist Stückung": Geometrie und
 /// endlicher Richtungsvorrat (26 Gitterrichtungen + Naht-Normalen) sind hier
 /// **nicht getrennt**. Die Geometrie entscheidet, welche Verschiebungen tragen
-/// — die Diskretisierung bestimmt die beobachtete Grobheit. Wird 0,33 mm
-/// fachlich zu teuer, ist der Hebel `pieces_per_arc` bzw. `steps` — NICHT eine
+/// — die Diskretisierung bestimmt die beobachtete Grobheit. Wird 0,027 mm
+/// fachlich zu teuer, ist der Hebel `piece_len_mm` bzw. `steps` — NICHT eine
 /// kleinere Zahl im Pin, die wie eine Soundness-Schranke aussähe.
 ///
 /// **Was der Pin bewusst NICHT prüft** (#466, Ticket-Vorschlag): dass bei
@@ -13988,7 +14002,7 @@ fn worst_geometric_witness_is_a_search_artefact_384() {
         let t = ladder(&cfg, s);
         (t - pc.offset).abs() <= 1e-9 * t.max(1.0)
     });
-    assert_eq!(rung, Some(13), "der Versatz sitzt nicht mehr auf Leitersprosse 13 ({:e})", pc.offset);
+    assert_eq!(rung, Some(9), "der Versatz sitzt nicht mehr auf Leitersprosse 9 ({:e})", pc.offset);
     assert_eq!((eta.cover_mm(), eta.coord_mm()), (0.0, 0.0), "die Zeugen sind keine Punkte mehr");
     assert_eq!(
         eta.offset_mm(),
@@ -14009,6 +14023,12 @@ fn worst_geometric_witness_is_a_search_artefact_384() {
         let (_, chans) = omega_and_channels(&fx.1).into_iter().next().unwrap();
         chans[ci].arcs[pc.arc].r as f64 / ppa as f64
     };
+    // Die Stückzahl, die die Produktions-Konfiguration Bogen `pc.arc` gibt —
+    // seit #469 aus dessen Länge, nicht mehr eine feste Zahl.
+    let ppa_default = {
+        let (_, chans) = omega_and_channels(&fx.1).into_iter().next().unwrap();
+        wit::pieces_for_arc(&chans[ci].arcs[pc.arc], &cfg)
+    };
     // Der schlechteste Versatz von Bogen 0 unter frei gewählter Diskretisierung
     // — mitsamt dem Stück, das ihn trägt, und der Grösse seines Plateaus.
     //
@@ -14019,7 +14039,10 @@ fn worst_geometric_witness_is_a_search_artefact_384() {
     // die Abdeckung zerfällt. Ein Maximum über eine schrumpfende Menge ist
     // keine Verbesserung.
     let worst_at = |ppa: usize, steps: usize| -> (f64, f64, usize) {
-        let c2 = wit::WitnessCfg { pieces_per_arc: ppa, steps, ..cfg };
+        // #469: die Stückzahl ist keine Stellschraube mehr — die Ziel-BREITE
+        // ist es. `ppa` Stücke auf Bogen `pc.arc` heisst hier also: die
+        // Ziel-Breite auf dessen Länge geteilt durch `ppa` setzen.
+        let c2 = wit::WitnessCfg { piece_len_mm: plen_of(ppa), steps, ..cfg };
         let stops = omega_and_channels(&fx.1);
         assert_eq!(stops.len(), 1, "der Rippen-Kamm hat nicht mehr genau einen Kanal-Stopp");
         let (om, chans) = stops[0];
@@ -14047,10 +14070,10 @@ fn worst_geometric_witness_is_a_search_artefact_384() {
     // Sprosse ist ein Plateau, auf dem mehrere Stücke gemeinsam sitzen. Erst
     // die feine Leiter löst sie auf — und dort liegt das kritische Stück am
     // Nahtende. Beides ist Messung, nicht Deutung.
-    let (coarse, _, plateau_coarse) = worst_at(cfg.pieces_per_arc, cfg.steps);
+    let (coarse, _, plateau_coarse) = worst_at(ppa_default, cfg.steps);
     assert_eq!(
         (coarse, plateau_coarse),
-        (pc.offset, cfg.pieces_per_arc),
+        (pc.offset, ppa_default),
         "das Plateau trägt nicht mehr ALLE Stücke des Kanals — dann ist die Aussage, dass die \
          grobe Sprosse den Kanal kollabiert, überholt"
     );
@@ -14063,7 +14086,7 @@ fn worst_geometric_witness_is_a_search_artefact_384() {
     );
     // (2) Der Anteil der Leiter — nach oben UND nach unten geschraubt.
     let fine_cfg = wit::WitnessCfg { steps: 257, ..cfg };
-    let (fine, fine_t1, _) = worst_at(cfg.pieces_per_arc, fine_cfg.steps);
+    let (fine, fine_t1, _) = worst_at(ppa_default, fine_cfg.steps);
     let fine_rung = (0..fine_cfg.steps).find(|&s| {
         let t = ladder(&fine_cfg, s);
         (t - fine).abs() <= 1e-9 * t.max(1.0)
@@ -14074,23 +14097,23 @@ fn worst_geometric_witness_is_a_search_artefact_384() {
         pc.offset
     );
     assert_eq!(fine_t1, 1.0, "das kritische Stück liegt nicht mehr am Nahtende (t1={fine_t1})");
-    assert_eq!(fine_rung, Some(185), "der feine Versatz sitzt nicht mehr auf Sprosse 185");
-    // Gemessen ist 0,6404. Die Schranken lassen mehrere 257er-Sprossen Luft
-    // (eine Sprosse ≈ 4,2 %), fangen aber jede echte Bewegung.
+    assert_eq!(fine_rung, Some(121), "der feine Versatz sitzt nicht mehr auf Sprosse 121");
+    // Gemessen ist 0,5480 (0,014969 / 0,027314). Die Schranken lassen mehrere
+    // 257er-Sprossen Luft (eine Sprosse ≈ 4,2 %), fangen aber jede echte Bewegung.
     let q_ladder = fine / pc.offset;
     assert!(
-        (0.55..0.70).contains(&q_ladder),
+        (0.50..0.60).contains(&q_ladder),
         "der Leiter-Anteil hat sich bewegt (fein/grob = {q_ladder}) — dann stimmt die Zerlegung \
          in §8ai nicht mehr"
     );
     // (3) Bei FEINER Leiter folgt der Versatz der Stücklänge — im geprüften
     // Regime ppa 24…96, und dort liegt das kritische Stück stets am Nahtende.
-    for ppa in [24usize, 48, 96] {
+    for ppa in [24usize, 96, 329, 500] {
         let (w, t1, _) = worst_at(ppa, fine_cfg.steps);
         let q = w / plen_of(ppa);
-        println!("#466 ppa={ppa}: Stücklänge {:.6}, Versatz {w:.6}, Quotient {q:.3}", plen_of(ppa));
+        println!("#466 ppa={ppa}: Stücklänge {:.6}, Versatz {w:.6}, Quotient {q:.3}, t1={t1}", plen_of(ppa));
         assert!(
-            (0.90..=1.12).contains(&q),
+            (0.99..=1.04).contains(&q),
             "bei ppa={ppa} folgt der Versatz nicht mehr der Stücklänge (Quotient {q}) — dann \
              trägt die Stückung den Sprung nicht"
         );
@@ -19089,9 +19112,9 @@ fn probe_468_ablation_origin() {
     // Dieselbe Ablation mit FEINEREN Suchparametern — dieselbe Geometrie,
     // dieselbe Stufe, nur mehr Stücke je Bogen bzw. eine feinere Leiter.
     for (tag, cfg) in [
-        ("Stücke 48", wit::WitnessCfg { pieces_per_arc: 48, ..dflt }),
-        ("Stücke 96", wit::WitnessCfg { pieces_per_arc: 96, ..dflt }),
-        ("Stücke 192", wit::WitnessCfg { pieces_per_arc: 192, ..dflt }),
+        ("Stückbreite 0,45 mm", wit::WitnessCfg { piece_len_mm: 0.45, ..dflt }),
+        ("Stückbreite 0,225 mm", wit::WitnessCfg { piece_len_mm: 0.225, ..dflt }),
+        ("Stückbreite 0,113 mm", wit::WitnessCfg { piece_len_mm: 0.113, ..dflt }),
         ("steps 1025", wit::WitnessCfg { steps: 1025, ..dflt }),
     ] {
         let f = strip_lb(&field_with_curved_stage(&field, true, cfg));
@@ -19203,15 +19226,15 @@ fn probe_468_eta_decomposition() {
                 ch.trust
             );
             for steps in [18usize, 65, 257, 1025, 4097] {
-                for ppa in [24usize, 48, 96, 192] {
+                for plen in [0.9f64, 0.45, 0.225, 0.113] {
                     let cfg = wit::WitnessCfg {
-                        pieces_per_arc: ppa,
+                        piece_len_mm: plen,
                         steps,
                         ..wit::WitnessCfg::default()
                     };
                     let cov = wit::cover_channel(om, ch, cfg);
                     let eta = cov.eta.map(|e| e.mm()).unwrap_or(f64::NAN);
-                    println!("   steps {steps:5} | Stücke/Bogen {ppa:4} | η {eta:.6} mm");
+                    println!("   steps {steps:5} | Stückbreite {plen:6.4} mm | η {eta:.6} mm");
                 }
             }
             // Die f32-Posten daneben.
@@ -19322,12 +19345,21 @@ fn probe_468_mixed_clamp() {
     );
 }
 
-/// **#468-Pin 1: die 41 Punkte sind EINE Naht, nicht 41 Stellen.**
+/// **#468-Pin 1 / #469-Pin: die 41 Punkte waren Stückung — und sind weg.**
 ///
-/// Reproduziert die Zahl aus §8aj — und schlüsselt sie auf. Gemessen wird die
-/// Ablation ohne `L`-Block (`strip_lb`), dasselbe Fixture und dasselbe Gitter,
-/// dessen BASIS-Befund `stop_lb_absent_reproduces_the_g_cap_384` mit
-/// `0 über / 59 unter` festnagelt.
+/// Gemessen wird die Ablation ohne `L`-Block (`strip_lb`), dasselbe Fixture und
+/// dasselbe Gitter, dessen BASIS-Befund `stop_lb_absent_reproduces_the_g_cap_384`
+/// mit `0 über / 59 unter` festnagelt.
+///
+/// Der Pin trägt jetzt ZWEI Messungen, weil erst sie zusammen etwas heissen:
+///
+/// 1. **Historisch** (`piece_len_mm = 0,9`, die Breite, die die alte feste
+///    Stückzahl 24 dem längsten Bogen der Nabe gab): 41 Über-Punkte, alle an
+///    EINEM Kanal, verteilt auf dessen 3 Bögen — der Befund von §8al,
+///    unverändert reproduzierbar.
+/// 2. **Produktion nach #469** (`DEFAULT_PIECE_LEN_MM`): **0** Über-Punkte.
+///    Damit ist die Aussage „die 41 sind Stückung, nicht Geometrie" nicht mehr
+///    bloss extrapoliert, sondern am selben Gitter erledigt.
 ///
 /// **Anti-Leer-Gates**: ohne die umgelegte Stufe wäre kein Kanal der Nabe
 /// bewiesen (in Produktion sind es 0 von 2, beide `Curved` ⇒ `NotCertified`),
@@ -19336,7 +19368,9 @@ fn probe_468_mixed_clamp() {
 fn curved_clamp_phantom_comes_from_one_seam_468() {
     let delta = 2.0f32;
     let (field, cyls, lo, hi, t) = hub_468();
-    let cfg = wit::WitnessCfg::default();
+    // Der historische Stand: 0,9 mm Stückbreite ⇒ 24 Stücke auf dem längsten
+    // Bogen (21,71 mm) — genau die alte feste Stückzahl.
+    let cfg = wit::WitnessCfg { piece_len_mm: 0.9, ..wit::WitnessCfg::default() };
     let base = strip_lb(&field);
     let act = strip_lb(&field_with_curved_stage(&field, true, cfg));
     let sh = strip_lb(&field_with_curved_stage(&field, false, cfg));
@@ -19431,6 +19465,50 @@ fn curved_clamp_phantom_comes_from_one_seam_468() {
         (hi_e - 0.6737).abs() < 1e-3 && lo_e < 0.01,
         "die Überschreitungen liegen bei {lo_e:.4} … {hi_e:.4} statt 0,002 … 0,674 mm"
     );
+
+    // ── #469: dieselbe Ablation mit der AUSGELIEFERTEN Stückbreite ──────────
+    let prod = wit::WitnessCfg::default();
+    let act_prod = strip_lb(&field_with_curved_stage(&field, true, prod));
+    assert_eq!(
+        (mode_tally(&act_prod).0, mode_tally(&act_prod).1),
+        (2, 0),
+        "unter der Produktions-Stückbreite beweist die umgelegte Stufe die Nabe nicht mehr —          dann wäre die 0 unten leer-grün"
+    );
+    let mut op = 0usize;
+    let mut worst_p = 0.0f64;
+    for p in &pts {
+        let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+        let err = delta as f64 - dist_hub_complement(t, &cyls, *p, 160);
+        if err > 1e-3 && act_prod.sdf(pf, EvalMode::Visual) < 0.0 {
+            op += 1;
+            worst_p = worst_p.max(err);
+        }
+    }
+    let a_prod = {
+        let mut stops2 = Vec::new();
+        stop_nodes(&act_prod, &mut stops2);
+        let mut m = 0.0f32;
+        for st in &stops2 {
+            if let BoundedCsg::ArcChannel { channels, .. } = st {
+                for c in channels {
+                    m = m.max(c.limit_mode_channel_only().addends().0);
+                }
+            }
+        }
+        m
+    };
+    println!(
+        "#469 Ziel {} mm: {op} Über-Punkte (max {worst_p:.4} mm), A_seam_max {a_prod:.6} mm —          historisch (0,9 mm) waren es {oa}",
+        wit::DEFAULT_PIECE_LEN_MM
+    );
+    assert_eq!(
+        op, 0,
+        "die längenbasierte Stückung lässt {op} Über-Punkte stehen — dann trägt die in          §8am gewählte Ziel-Stückbreite nicht"
+    );
+    assert!(
+        a_prod < 0.03,
+        "A_seam_max ist {a_prod} mm statt der gemessenen Sprosse 9 (0,027332 mm) —          dann ist die Stückung gröber als dokumentiert"
+    );
 }
 
 /// **#468-Pin 2: `η ≈ 0,81 mm` ist Stück-Diskretisierung, keine Geometrie.**
@@ -19441,8 +19519,10 @@ fn curved_clamp_phantom_comes_from_one_seam_468() {
 ///    die `η` nach oben schrankt — ist also ≈ 0, und jedes positive `η` ist
 ///    Schlupf der Zeugen-SUCHE, nicht der Geometrie.
 /// 2. `η` fällt mit der Stückzahl. Die Leiter-Verfeinerung (§8aj: 18 → 1025)
-///    konvergiert bei FESTEN 24 Stücken je Bogen gegen ≈ 0,81 mm; verachtfacht
-///    man die Stücke, fällt derselbe Wert unter 0,10 mm.
+///    konvergiert bei einer Stückbreite von 0,9 mm (= 24 Stücke auf dem
+///    längsten Bogen der Nabe, dem historischen Stand) gegen ≈ 0,81 mm; unter
+///    der seit #469 ausgelieferten Ziel-Stückbreite fällt derselbe Wert unter
+///    0,03 mm.
 #[test]
 fn curved_eta_is_piece_discretisation_not_geometry_468() {
     let (field, ..) = hub_468();
@@ -19463,13 +19543,16 @@ fn curved_eta_is_piece_discretisation_not_geometry_468() {
                 }
             }
             // (2) `η` bei Produktions-Leiter, grob und fein gestückelt.
-            let coarse = wit::WitnessCfg::default();
-            let fine = wit::WitnessCfg { pieces_per_arc: 192, ..coarse };
+            // #469: die Stellschraube ist die Ziel-STÜCKBREITE. 0,9 mm ist die
+            // Breite, die die alte feste Stückzahl (24) dem längsten Bogen der
+            // Nabe (21,71 mm) gab — die historische Vergleichsgrösse.
+            let coarse = wit::WitnessCfg { piece_len_mm: 0.9, ..wit::WitnessCfg::default() };
+            let fine = wit::WitnessCfg { piece_len_mm: wit::DEFAULT_PIECE_LEN_MM, ..coarse };
             let e24 = wit::cover_channel(om, ch, coarse).eta.expect("η grob fehlt").mm();
             let e192 = wit::cover_channel(om, ch, fine).eta.expect("η fein fehlt").mm();
             println!(
                 "#468 Kanal r ≈ {:.1} mm: |SDF_Ω| auf der Naht ≤ {worst_on_boundary:.2e} mm, \
-                 η(24 Stücke) = {e24:.6} mm, η(192 Stücke) = {e192:.6} mm",
+                 η(0,9 mm Stücke) = {e24:.6} mm, η(Vorgabe) = {e192:.6} mm",
                 ch.arcs[0].r
             );
             assert!(
@@ -19479,10 +19562,10 @@ fn curved_eta_is_piece_discretisation_not_geometry_468() {
             );
             assert!(
                 e192 * 5.0 < e24,
-                "η fällt mit der Stückzahl nur von {e24:e} auf {e192:e} — dann ist der \
+                "η fällt mit der Stückbreite nur von {e24:e} auf {e192:e} — dann ist der \
                  Wert doch geometrisch und §8al ist falsch"
             );
-            assert!(e192 < 0.1, "η(192 Stücke) = {e192:e} mm, erwartet < 0,1 mm");
+            assert!(e192 < 0.03, "η(Vorgabe) = {e192:e} mm, erwartet < 0,03 mm");
         }
     }
     assert_eq!(seen, 2, "die Nabe trägt nicht mehr zwei gekrümmte Kanäle ({seen})");
@@ -19568,8 +19651,8 @@ fn probe_468_piece_refinement() {
     let (field, cyls, lo, hi, t) = hub_468();
     let dflt = wit::WitnessCfg::default();
     let pts = grid_468(lo, hi, 22);
-    for ppa in [24usize, 96, 192, 384, 768] {
-        let cfg = wit::WitnessCfg { pieces_per_arc: ppa, ..dflt };
+    for plen in [0.9f64, 0.225, 0.0565, 0.0283, 0.020, 0.016, 0.0155, 0.015, 0.0125] {
+        let cfg = wit::WitnessCfg { piece_len_mm: plen, ..dflt };
         let t0 = std::time::Instant::now();
         let f = strip_lb(&field_with_curved_stage(&field, true, cfg));
         let cert_ms = t0.elapsed().as_secs_f64() * 1e3;
@@ -19593,8 +19676,347 @@ fn probe_468_piece_refinement() {
             }
         }
         println!(
-            "#468 Stücke/Bogen {ppa:4}: A_seam_max {a_seam:.6} mm | {o} Über-Punkte \
+            "#469 Stückbreite {plen:7.4} mm: A_seam_max {a_seam:.6} mm | {o} Über-Punkte \
              (max {worst:.4} mm) | Zertifizierung der ganzen Nabe {cert_ms:.0} ms"
         );
     }
+}
+
+/// **#469-Sonde: die Naht-Geometrie der ganzen Matrix.**
+#[test]
+#[ignore]
+fn probe_469_seam_lengths() {
+    let mut hist: Vec<f64> = Vec::new();
+    let mut narc = 0usize;
+    let mut nseg = 0usize;
+    for (name, field, _e, _l, _h, _c) in cert_matrix(2.0f32) {
+        let mut lens: Vec<(bool, f64, f64)> = Vec::new();
+        for (_om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                for a in &ch.arcs {
+                    let curved = !(a.sweep < 0.0);
+                    let g = ((a.u[0] as f64 * a.u[0] as f64
+                        + a.u[1] as f64 * a.u[1] as f64
+                        + a.u[2] as f64 * a.u[2] as f64)
+                        + (a.v[0] as f64 * a.v[0] as f64
+                            + a.v[1] as f64 * a.v[1] as f64
+                            + a.v[2] as f64 * a.v[2] as f64))
+                        .sqrt();
+                    let l = if curved {
+                        a.r as f64 * a.sweep as f64 * g
+                    } else {
+                        a.r as f64
+                    };
+                    if curved { narc += 1 } else { nseg += 1 }
+                    lens.push((curved, l, a.sweep as f64));
+                    hist.push(l);
+                }
+            }
+        }
+        if lens.is_empty() {
+            continue;
+        }
+        let mn = lens.iter().map(|x| x.1).fold(f64::INFINITY, f64::min);
+        let mx = lens.iter().map(|x| x.1).fold(0.0, f64::max);
+        let nc = lens.iter().filter(|x| x.0).count();
+        println!(
+            "{name}: {} Bögen ({nc} gekrümmt), Länge {mn:.3} … {mx:.3} mm, \
+             Stückbreite bei 24 {:.4} … {:.4} mm",
+            lens.len(),
+            mn / 24.0,
+            mx / 24.0
+        );
+        if nc > 0 {
+            for (c, l, s) in lens.iter().filter(|x| x.0) {
+                println!("   gekrümmt {c}: L {l:.4} mm, sweep {s:.4} rad");
+            }
+        }
+    }
+    hist.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!(
+        "#469 gesamt: {} Bögen ({narc} gekrümmt, {nseg} Segmente), Längen {:.4} … {:.4} mm, Median {:.4}",
+        hist.len(),
+        hist.first().unwrap(),
+        hist.last().unwrap(),
+        hist[hist.len() / 2]
+    );
+    for tgt in [1.0f64, 0.5, 0.25, 0.1, 0.05, 0.025] {
+        let total: usize = hist.iter().map(|l| (l / tgt).ceil().max(1.0) as usize).sum();
+        println!("   Ziel {tgt} mm ⇒ {total} Stücke gesamt (fest 24: {})", hist.len() * 24);
+    }
+}
+
+/// **#469-Sonde: Kosten und Shadow-Stand der ganzen Matrix je Ziel-Stückbreite.**
+#[test]
+#[ignore]
+fn probe_469_cost_and_tally() {
+    let fields: Vec<_> = cert_matrix(2.0f32).into_iter().collect();
+    for plen in [0.9f64, 0.225, 0.0565, 0.0283, 0.020, 0.016, 0.015, 0.0125] {
+        let cfg = wit::WitnessCfg { piece_len_mm: plen, ..wit::WitnessCfg::default() };
+        let t0 = std::time::Instant::now();
+        let mut act = wit::SeamProofTally::default();
+        let mut prod = wit::SeamProofTally::default();
+        let (mut pieces, mut eta_max) = (0usize, 0.0f64);
+        for (_n, field, _e, _l, _h, _c) in &fields {
+            for (om, chans) in omega_and_channels(field) {
+                for ch in chans {
+                    for (tally, stage) in [
+                        (&mut act, Some(wit::ExtrudeCoverStage::Active)),
+                        (&mut prod, None),
+                    ] {
+                        let mut c = ch.clone();
+                        let knobs =
+                            wit::SeamProofKnobs { curved_stage: stage, ..Default::default() };
+                        tally.add(wit::certify_channel_with(om, &mut c, cfg, knobs).0 .0);
+                    }
+                    let cov = wit::cover_channel(om, ch, cfg);
+                    pieces += cov.pieces;
+                    if let Some(e) = cov.eta {
+                        eta_max = eta_max.max(e.mm());
+                    }
+                }
+            }
+        }
+        println!(
+            "#469 Ziel {plen:7.4} mm: {pieces:8} Stücke | aktiv ({},{},{},{}) | prod ({},{}) | \
+             η_max {eta_max:.6} mm | {:.0} ms",
+            act.proved_seam, act.curved, act.no_cover, act.no_bridge,
+            prod.proved_seam, prod.curved,
+            t0.elapsed().as_secs_f64() * 1e3
+        );
+    }
+}
+
+/// **#469-Sonde: der volle Rebuild der Matrix mit der AUSGELIEFERTEN
+/// Ziel-Stückbreite.** Misst `compile_for` — also den Weg, den ein echter
+/// Shell-Regen nimmt, inklusive Zertifizierung.
+#[test]
+#[ignore]
+fn probe_469_rebuild_cost() {
+    println!("#469 Ziel-Stückbreite in Produktion: {} mm", wit::DEFAULT_PIECE_LEN_MM);
+    for pass in 0..2 {
+        let t0 = std::time::Instant::now();
+        let m = cert_matrix(2.0f32);
+        let ms = t0.elapsed().as_secs_f64() * 1e3;
+        println!("#469 Rebuild der ganzen Matrix ({} Fixturen), Lauf {pass}: {ms:.0} ms", m.len());
+    }
+    let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+    for pass in 0..2 {
+        let t0 = std::time::Instant::now();
+        let _ = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, 2.0));
+        println!(
+            "#469 Rebuild NUR Stufen-Nabe, Lauf {pass}: {:.0} ms",
+            t0.elapsed().as_secs_f64() * 1e3
+        );
+    }
+}
+
+/// **#469-Sonde: die ausgelieferten `A_seam` je Kanal, über die ganze Matrix.**
+#[test]
+#[ignore]
+fn probe_469_aseam_shipped() {
+    let mut all: Vec<(String, bool, f32, f32)> = Vec::new();
+    for (name, field, _e, _l, _h, _c) in cert_matrix(2.0f32) {
+        for (proved, s, h) in crate::offset_channel::collect_limit_modes(&field) {
+            all.push((name.clone(), proved, s, h));
+        }
+    }
+    let mut smax = 0.0f32;
+    let mut nproved = 0usize;
+    for (name, proved, s, h) in &all {
+        if *proved {
+            nproved += 1;
+            smax = smax.max(*s);
+        }
+        println!("#469 A_seam | {name} | proved {proved} | A_seam {s:.6} | A_h {h:.6}");
+    }
+    println!("#469 A_seam GESAMT: {} Kanäle, {nproved} bewiesen, A_seam_max {smax:.6} mm", all.len());
+}
+
+/// **#469-Sonde: dichter Feld-Vergleich am Rippen-Kamm** — der einzigen
+/// Fixtur, deren ausgelieferte `A_seam` sich durch #469 bewegt.
+#[test]
+#[ignore]
+fn probe_469_dense_rib() {
+    let delta = 2.0f32;
+    let fx = cert_matrix(delta)
+        .into_iter()
+        .find(|f| f.0 == "Rippen-Kamm 4×1.5/0.8")
+        .unwrap();
+    let (_name, field, exact, lo, hi, _n) = fx;
+    let n = 90usize;
+    let mut vals: Vec<f32> = Vec::with_capacity(n * n * n);
+    let (mut over, mut worst_over) = (0usize, 0.0f64);
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let f = [
+                    (ix as f64 + 0.2113248654) / n as f64,
+                    (iy as f64 + 0.5773502692) / n as f64,
+                    (iz as f64 + 0.7886751346) / n as f64,
+                ];
+                let p = [
+                    lo[0] + (hi[0] - lo[0]) * f[0],
+                    lo[1] + (hi[1] - lo[1]) * f[1],
+                    lo[2] + (hi[2] - lo[2]) * f[2],
+                ];
+                let v = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual);
+                vals.push(v);
+                let t = delta as f64 - exact(p);
+                if v.is_finite() && v < 0.0 && t > 1e-3 {
+                    over += 1;
+                    worst_over = worst_over.max(t);
+                }
+            }
+        }
+    }
+    println!("#469 dicht: {} Punkte, {over} über (max {worst_over:.4} mm)", vals.len());
+}
+
+/// **#469-Sonde: wo wirkt ein kleineres `A_seam` auf die Klemme?**
+#[test]
+#[ignore]
+fn probe_469_where_aseam_bites() {
+    let delta = 2.0f32;
+    for want in ["Rippen-Kamm 4×1.5/0.8", "Rippen-Kamm 4×2/1"] {
+        let fx = cert_matrix(delta).into_iter().find(|f| f.0 == want).unwrap();
+        let (name, field, _e, lo, hi, _n) = fx;
+        let mut stops = Vec::new();
+        stop_nodes(&field, &mut stops);
+        let mut chans: Vec<OffsetChannel> = Vec::new();
+        for st in &stops {
+            if let BoundedCsg::ArcChannel { channels, .. } = st {
+                chans.extend(channels.iter().cloned());
+            }
+        }
+        let n = 60usize;
+        let mut pts = Vec::new();
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let f = [
+                        (ix as f64 + 0.2113248654) / n as f64,
+                        (iy as f64 + 0.5773502692) / n as f64,
+                        (iz as f64 + 0.7886751346) / n as f64,
+                    ];
+                    pts.push([
+                        (lo[0] + (hi[0] - lo[0]) * f[0]) as f32,
+                        (lo[1] + (hi[1] - lo[1]) * f[1]) as f32,
+                        (lo[2] + (hi[2] - lo[2]) * f[2]) as f32,
+                    ]);
+                }
+            }
+        }
+        for (ci, ch) in chans.iter().enumerate() {
+            let m = ch.limit_mode_channel_only();
+            if !m.is_proved() {
+                continue;
+            }
+            let (_s_new, h) = m.addends();
+            let old = crate::offset_channel::ChannelLimitMode::Proved { seam: 0.330542, h };
+            let (mut diff, mut worst, mut seam_branch) = (0usize, 0.0f32, 0usize);
+            for p in &pts {
+                let a = crate::offset_channel::channel_limit(*p, ch, m);
+                let b = crate::offset_channel::channel_limit(*p, ch, old);
+                if a != b {
+                    diff += 1;
+                    worst = worst.max((a - b).abs());
+                }
+                if crate::offset_channel::channel_limit(*p, ch, m)
+                    != crate::offset_channel::channel_limit(
+                        *p,
+                        ch,
+                        crate::offset_channel::ChannelLimitMode::Proved { seam: 0.0, h },
+                    )
+                {
+                    seam_branch += 1;
+                }
+            }
+            {
+                println!(
+                    "#469 {name} Kanal {ci}: A_seam {_s_new:.6} (alt 0.330542) — {diff} von {} \
+                     Punkten mit anderer Klemme (max {worst:.6} mm), {seam_branch} Punkte im \
+                     A_seam-Ast",
+                    pts.len()
+                );
+            }
+        }
+    }
+}
+
+/// **#469-Pin: `arc_seam_len_ub` ist wirklich eine OBERE Schranke.**
+///
+/// Die Stückzahl folgt seit #469 dieser Schranke. Läge sie UNTER der wahren
+/// Nahtlänge, wären die Stücke breiter als angefordert — die Ziel-Stückbreite
+/// wäre dann eine Behauptung statt einer Zusage. Der Pin misst gegen eine
+/// dichte Polygonzug-Länge derselben Kurve, die auch `piece_box` einschliesst
+/// (`c + r·(u cos φ + v sin φ)` über die `diamond`-Parametrisierung), und über
+/// ALLE Bögen der Zertifizierungs-Matrix.
+///
+/// Zweiter Teil, sonst wäre der Pin mit `L̄ = ∞` trivial grün: die Schranke
+/// darf nicht beliebig grob sein. Gemessen wird ihr Quotient zur
+/// Polygonzug-Länge.
+#[test]
+fn seam_length_bound_is_an_upper_bound_469() {
+    let (mut n_seg, mut n_arc) = (0usize, 0usize);
+    let (mut worst_q, mut best_q) = (0.0f64, f64::INFINITY);
+    for (name, field, _e, _l, _h, _c) in cert_matrix(2.0f32) {
+        for (_om, chans) in omega_and_channels(&field) {
+            for ch in chans {
+                for (ai, a) in ch.arcs.iter().enumerate() {
+                    let ub = wit::arc_seam_len_ub(a);
+                    assert!(ub.is_finite() && ub > 0.0, "{name}/{ai}: L̄ = {ub}");
+                    // Die Kurve dicht abtasten — dieselbe Parametrisierung wie
+                    // in `piece_box`/`curved_seam_point_f64`.
+                    let m = 4096usize;
+                    let mut poly = 0.0f64;
+                    let mut prev = if a.sweep < 0.0 {
+                        [a.c[0] as f64, a.c[1] as f64, a.c[2] as f64]
+                    } else {
+                        curved_seam_point_f64(a, 0.0)
+                    };
+                    for i in 1..=m {
+                        let t = i as f64 / m as f64;
+                        let q = if a.sweep < 0.0 {
+                            let r = a.r as f64;
+                            [
+                                a.c[0] as f64 + a.u[0] as f64 * (t * r),
+                                a.c[1] as f64 + a.u[1] as f64 * (t * r),
+                                a.c[2] as f64 + a.u[2] as f64 * (t * r),
+                            ]
+                        } else {
+                            curved_seam_point_f64(a, t)
+                        };
+                        let d = [q[0] - prev[0], q[1] - prev[1], q[2] - prev[2]];
+                        poly += (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                        prev = q;
+                    }
+                    // Der Polygonzug ist eine UNTERE Schranke der Bogenlänge
+                    // (Dreiecksungleichung), also die richtige Seite für den
+                    // Vergleich.
+                    assert!(
+                        ub >= poly * (1.0 - 1e-9),
+                        "{name}/Bogen {ai}: L̄ = {ub} < Polygonzug {poly} — die Schranke ist keine"
+                    );
+                    let q = ub / poly.max(1e-12);
+                    worst_q = worst_q.max(q);
+                    best_q = best_q.min(q);
+                    if a.sweep < 0.0 { n_seg += 1 } else { n_arc += 1 }
+                }
+            }
+        }
+    }
+    println!(
+        "#469 L̄/Polygonzug über {n_seg} Segmente und {n_arc} Bögen: {best_q:.6} … {worst_q:.6}"
+    );
+    assert!(n_arc >= 6 && n_seg > 400, "die Matrix trägt nur {n_arc} Bögen / {n_seg} Segmente");
+    // Gemessen 1,0215 (ein Bogen der Stufen-Nabe). Die Schranke ist 1,23: das
+    // ist der theoretische schlechteste Fall von `alpha_ub` (rund 1,22 bei
+    // `D ≈ 1/4`), nicht der gemessene — sonst würde der Pin eine Fixtur-Zahl
+    // wie eine Herleitung aussehen lassen.
+    assert!(
+        worst_q < 1.23,
+        "die Schranke überschätzt um Faktor {worst_q} — dann ist die Ziel-Stückbreite \
+         nicht mehr die, die drauf steht"
+    );
 }
