@@ -1223,6 +1223,37 @@ worüber der Stopp die Wahrheit sagt.
   Exaktheitsgarantie — die Stufen-Nabe ist genau dieser Fall (die
   Platten-Unterseite konkurriert mit der Kreisnaht), nur eben jetzt gemeldet.
 
+**Nachtrag (#472 zu #384/#471, 2026-08-05).** Die Familien-Tabelle oben und die
+Term-für-Term-Rechnung („naiv +2.349 → ch0 +0.067 → ch1 −0.056 → **2.000 mm**")
+richten gegen `dist_hub_complement`/`dist_to_boxes_complement` — die
+Strahl-Schranke, die §8ao als systematisch zu gutmütig identifiziert hat. Sie
+sind NICHT nachfahrbar: diese Zahlen sind eine Momentaufnahme des Feldes VOR dem
+`d₀`-Gate (§8i) — ein Zwischenzustand, den es im heutigen Code nicht mehr
+gibt (der Tape hat seit §8i kein Gate mehr, das gegen den laufenden Wert
+rechnet). Ihn mit der exakten Referenz neu zu vermessen, würde entweder den
+`OP_STOP_BASE`-Commit zurückrollen (verboten — reine Doku-Arbeit) oder eine
+andere Grösse behaupten. Betroffen sind die Familien-Tabelle, die
+Term-Rechnung und die Bilanz-Tabelle (Zeilen „vorher"); nicht betroffen ist
+die Fix-Beschreibung selbst (`gate = G ∓ d₀`, bewiesen, referenzunabhängig).
+
+Was reproduzierbar ist: dieselben drei Fixturen (Stufen-Nabe, Rippen-Kamm
+4×1.5/0.8, Rippen-Kamm 4×2.0/1.0) gegen das HEUTIGE Feld (alle Pakete bis
+§8s/#471 inklusive), beide Referenzen nebeneinander —
+`probe_472_8h_8i_ablation_exact` in `offset_capability_tests.rs`
+(`cargo test -p fielddraft-kernel probe_472_8h_8i_ablation_exact -- --ignored
+--nocapture`). Ergebnis: **0 Fehler auf beiden Referenzen, an allen drei
+Fixturen** — nicht überraschend, denn §8p hat seither einen SATZ dafür
+(`f ≥ δ − L ≥ δ − dist`), keine Messung; ein Satz ist gegen den
+Referenz-Wechsel immun. Die Kaskade, die §8h hier zum ersten Mal vermessen
+hat, ist real gewesen (der Wächter-Fix und der `d₀`-Gate-Fix sind beide
+gebaut und gepinnt), aber ihre Zahlen sind archiviert, nicht mehr aktuell.
+
+Zapfen-Reihe und V-Rippen (§8i-Tabelle, unten) tauchen NUR in der Prosa auf:
+`git log -S"Zapfen"`/`-S"V-Rippen"` zeigt keinen Commit, der eine Generator-
+Funktion für sie einführt — sie liefen einmalig ad hoc und wurden nie als
+Fixtur committet. Sie können ohne Neubau der Geometrie nicht nachgefahren
+werden; das wird hier festgehalten statt eine Zahl zu raten.
+
 ## 8i. Das Gate rechnet gegen den naiven Wert (#384, 2026-08-02)
 
 §8h hat den Kaskaden-Bruch vermessen, den Wächter darauf gerichtet und den
@@ -1390,6 +1421,45 @@ was zugesagt wird, muss halten) statt eines eingefrorenen Status.
   einschränkt. Dort trägt allein der Zeugen-Wächter, und der ist eine
   Stichprobe.
 * **Der Wächter bleibt eine Stichprobe** (§8h unverändert).
+
+**Nachtrag (#472 zu #384/#471, 2026-08-05).** Die Bilanz-Tabelle („Stufen-Nabe
+957 → 661/0.841 mm", „Rippen-Kamm … 1904/1624, je 0.819 mm", „Zapfen-Reihe
+0.787 mm") und der Steinmetz-Golden-Vergleich messen zwei verschiedene Dinge,
+und nur eines davon ist von der Strahl→exakt-Umstellung betroffen:
+
+* Die **Stufen-Nabe-, Rippen-Kamm- und Zapfen-Reihe-Zeilen** vergleichen das
+  Feld gegen `dist(x,∁Ω)` — dieselbe Blindheit wie in §8h. Wie dort: der
+  Zwischenzustand „nur §8i, noch kein §8j/§8n/§8o" existiert im heutigen Code
+  nicht mehr, ein Nachfahren „derselben" Zahl braucht einen Revert. Reproduziert
+  ist stattdessen dasselbe wie im §8h-Nachtrag, jetzt auf dem Feld nach §8i:
+  `probe_472_8h_8i_ablation_exact` misst an Stufen-Nabe und beiden
+  Rippen-Kämmen **0 Fehler auf exakt UND ray** — auf dem heutigen Feld gibt es
+  nichts mehr zu vermessen, weil §8j (viertes Gate) und §8o (`L`-Block) den
+  hier offen gelassenen Rest („quer zur Naht", 0.841/0.822 mm) inzwischen
+  strukturell geschlossen haben, bevor die Referenz überhaupt gewechselt
+  wurde. Zapfen-Reihe hat wie in §8h keine committete Fixtur — nicht
+  nachfahrbar, nicht geraten.
+* Die **Steinmetz-Zentrum-** und **Reihenfolge-Sonde-Zeilen** sind KEINE
+  Referenz-Vergleiche. Steinmetz misst den naiven Stoppwert `d0` und die
+  Gate-Weite direkt aus den Feld-Internals (`BoundedCsg::ArcChannel`), die
+  Reihenfolge-Sonde vergleicht Tape-Ausgaben bit-für-bit gegen sich selbst
+  (`stop_terms_are_order_independent_384`) — an keiner Stelle taucht
+  `dist_hub_complement` oder eine andere Komplement-Distanz auf. Beide Zahlen
+  (`0.791823 → 0.661273 mm`, „nicht invariant → bit-identisch") sind von der
+  §8ao-Umstellung UNBERÜHRT und bleiben unverändert stehen; die zugehörigen
+  Pins (`dilation_steinmetz_center_stays_within_one_term_gate_384`,
+  `stop_terms_are_order_independent_384`) laufen unverändert grün.
+* Die **Kollabierende Schale** (0.841/0.822 mm hier referenziert) ist selbst
+  schon archiviert: der zugehörige Pin-Kommentar (§8k-Vermerk an
+  `erosion_collapsing_shell_promise_is_true_384`) hält fest, dass der
+  Über-Claim seit §8k an beiden Dicken exakt Null ist — auch das ein
+  Fix, der vor dem Referenz-Wechsel gelandet ist, nicht durch ihn.
+
+**Keine Schlussfolgerung dieses Abschnitts kippt.** Sowohl unter der alten
+Strahl-Schranke als auch unter der exakten Referenz gilt: der `d₀`-Gate-Fix
+schliesst die Kaskade auf `≤ G`; was danach noch offen blieb (quer zur Naht),
+haben spätere, unabhängig gebaute und gepinnte Pakete geschlossen. Kein Pin
+aus §8i musste bewegt werden.
 
 ## 8j. Das vierte Gate — Fremdgeometrie QUER zur Naht (#384, 2026-08-02)
 
@@ -10198,6 +10268,113 @@ Neu: `over_side_reference_is_exact_not_the_ray_bound_471` (Richtung, Streitpunkt
   ausschliesslich Testcode und Doku; kein Opcode, kein Tape-Wert, keine
   Konstante.
 
+## 8ap. Die §8h/§8i-Ablationstabellen — nachgefahren, soweit möglich (#472 zu #384/#471, 2026-08-05)
+
+§8ao hat die Über-Seite systematisch von der Strahl-Schranke auf die exakte
+Referenz umgestellt, dabei aber die §8h/§8i-Ablationstabellen ausdrücklich
+ausgelassen: „reine Sonden-Ausgaben ohne Pin … wer sie zitiert, muss sie neu
+messen." Dieses Kapitel ist die Neumessung.
+
+### 1. Inventar — welche Zahl kam von welcher Sonde
+
+| Tabelle/Zeile | Sonde | Stand heute |
+|---|---|---|
+| §8h Familien-Tabelle (Rippen-Kamm/Zapfen-Reihe/V-Rippen/Stufen-Nabe bricht) | ad-hoc-Scan, nie committet | **nicht reproduzierbar** (Fixtur existiert nicht) |
+| §8h Term-für-Term (Stufen-Nabe, `naiv +2.349 → … → 2.000 mm`) | ad-hoc-Scan über `stepped_hub_node` + `dist_hub_complement` (ray) | Feldzustand VOR §8i, im heutigen Code nicht mehr herstellbar |
+| §8h Bilanz-Tabelle, Stufen-Nabe/Rippen-Kamm-Zeilen | dieselbe ad-hoc-Sonde | wie oben — Zwischenzustand weg |
+| §8h Bilanz-Tabelle, Zapfen-Reihe-Zeile | ad-hoc, nie committet | **nicht reproduzierbar** |
+| §8h Kern-Pins (Doktrin, nicht die Tabellenzahlen) | `erosion_stepped_hub_cascade_promise_is_true_384`, `erosion_rib_comb_cascade_promise_is_true_384` | **laufen heute bereits gegen `dist_hub_complement_exact`/`dist_boxes_complement_exact`** (von #471 umgestellt, nicht bloss der Kommentar drumherum) |
+| §8i Bilanz-Tabelle, Stufen-Nabe/Rippen-Kamm/Zapfen-Reihe | wie §8h, plus derselbe Blindheits-Fehler | Zwischenzustand NACH §8i, VOR §8j/§8o — auch weg |
+| §8i Bilanz-Tabelle, Steinmetz-Zentrum | `dilation_steinmetz_center_stays_within_one_term_gate_384` — misst `d0`/`gate` aus den Feld-Internals, **keine** Komplement-Distanz | von §8ao **nicht betroffen**, unverändert grün |
+| §8i Bilanz-Tabelle, Reihenfolge-Sonde | `stop_terms_are_order_independent_384` — Bit-Vergleich zweier Tape-Auswertungen, **keine** Komplement-Distanz | von §8ao **nicht betroffen**, unverändert grün |
+| §8i Kollabierende-Schale-Zeile (0.841/0.822 mm) | `erosion_collapsing_shell_promise_is_true_384` | seit §8k bereits auf **0 Fehler** korrigiert (im Pin-Kommentar dokumentiert) — auch das ein Fix vor #471, nicht durch #471 |
+
+Jede Zahl, die ich nicht reproduzieren konnte (Zapfen-Reihe, V-Rippen,
+Stufen-Nabe/Rippen-Kamm „vorher"), habe ich als solche benannt statt sie
+weiterzuschreiben.
+
+### 2. Was neu gemessen wurde
+
+`probe_472_8h_8i_ablation_exact` in `offset_capability_tests.rs` baut
+Stufen-Nabe (`stepped_hub_node`) und beide Rippen-Kämme (`rib_comb_node`,
+4×1.5/0.8 und 4×2.0/1.0) auf dem HEUTIGEN Feld (alle Pakete bis §8s/#471
+inklusive) und misst beide Referenzen nebeneinander:
+
+    cargo test -p fielddraft-kernel probe_472_8h_8i_ablation_exact -- --ignored --nocapture
+
+| Fixtur | exakt (`dist_*_complement_exact`) | ray(160) | Status |
+|---|---|---|---|
+| Stufen-Nabe | **0 Fehler, 0.0000 mm** | 0 Fehler, 0.0000 mm | `ToleranceBounded`, PHANTOM ≤ 0.01 mm strukturell ausgeschlossen (§8p-Satz) |
+| Rippen-Kamm 4×1.5/0.8 | **0 Fehler, 0.0000 mm** | 0 Fehler, 0.0000 mm | dito |
+| Rippen-Kamm 4×2.0/1.0 | **0 Fehler, 0.0000 mm** | 0 Fehler, 0.0000 mm | dito |
+
+Zum Vergleich die alten, im Dokument stehen gebliebenen Zahlen für dieselben
+drei Fixturen (§8h „vorher" bzw. §8i „nachher", beide ray, beide auf
+Zwischenzuständen, die es nicht mehr gibt): Stufen-Nabe 2.000 mm → 0.841 mm,
+Rippen-Kamm 1.5/0.8 1.987 mm → 0.819 mm, Rippen-Kamm 2.0/1.0 1.052 mm →
+0.819 mm. Der Sprung von diesen Zahlen auf die heutige 0.0000 mm ist NICHT
+die Referenz-Umstellung — er ist §8j (viertes Gate) und §8o (`L`-Block), die
+beide schon vor #471 gelandet und gepinnt sind. Was die Referenz-Umstellung
+hier beiträgt: sie bestätigt, dass die 0 auch unter der schärferen Messlatte
+eine 0 bleibt, und nicht (wie an anderer Stelle in diesem Dokument, #468/#469)
+eine blinde 0.
+
+### 3. Kippt eine Schlussfolgerung?
+
+**Nein.** Für keine der drei nachfahrbaren Fixturen ändert sich die
+Schlussfolgerung — sie war und ist „am heutigen Feld null Fehler, strukturell
+begründet (§8p), nicht bloss gemessen". Für Zapfen-Reihe und V-Rippen gibt es
+keine Schlussfolgerung, die kippen könnte, weil es keine Fixtur mehr gibt, an
+der man sie prüfen könnte; sie stehen unverändert als historische Notiz im
+Dokument (mit dem Nachtrag, dass sie nicht mehr nachprüfbar sind). Für
+Steinmetz-Zentrum und Reihenfolge-Sonde gab es nie ein Referenz-Risiko — beide
+sind Feld-interne Vergleiche ohne Komplement-Distanz.
+
+### 4. Pins — keiner neu
+
+`probe_472_8h_8i_ablation_exact` bleibt `#[ignore]` (Sonde, kein Pin). Ein
+Assert auf „0/0" an dieser Stelle würde nichts zusätzlich absichern: die
+tragende Aussage — PHANTOM-Material an diesen Stopps ist strukturell
+ausgeschlossen, nicht bloss gemessen — ist bereits über den §8p-Satz und die
+bestehenden Pins abgedeckt (`erosion_stepped_hub_is_exact_on_both_sides_384`,
+`erosion_stepped_hub_cascade_promise_is_true_384`,
+`erosion_rib_comb_cascade_promise_is_true_384`, die `lb_only_gate`-Matrix in
+§8ao). Ein weiterer Pin auf dieselbe Null wäre doppelte Buchhaltung ohne neue
+Deckung. Kein Pin aus §8h/§8i musste bewegt werden — anders als bei #468/#469
+(§8ao) war hier keine der überlebenden, geprüften Zahlen jemals falsch, weil
+die tragenden Zusagen seit §8j/§8o Sätze sind, keine Ray-Messungen.
+
+### Zwei Randnotizen aus §8ao, mitgeprüft
+
+* **Die 1e-3-Zählschwelle ist eine Konvention**, nicht eine Eigenschaft des
+  Feldes — das steht in §8ao (Abschnitt „Was daraus NICHT folgt") bereits
+  korrekt und wird hier nicht wiederholt verändert. An den §472-Fixturen
+  spielt sie ohnehin keine Rolle: der gemessene Fehler ist exakt `0.0000 mm`,
+  nicht knapp unter der Schwelle.
+- **Die exakte Zerlegung ist dreifach abgesichert, nicht bewiesen** — auch das
+  bereits in §8ao korrekt benannt (zwei Handrechnungs-Pins plus
+  Konvergenz-Nachweis `ray(400) → ray(40000)`). Für diese Runde folgt daraus:
+  die „0 Fehler" oben stehen auf derselben, nicht-bewiesenen, aber
+  dreifach-geprüften Grundlage wie jede andere exakte Zahl in diesem
+  Dokument seit §8ao — keine neue Unsicherheit, keine geringere.
+
+### Was daraus NICHT folgt
+
+- **Nicht**, dass die §8h/§8i-Ablationstabellen jetzt korrigiert im Dokument
+  stehen. Ihre Zahlen bleiben unverändert stehen (Vorschrift: alte Zahl nicht
+  stillschweigend ersetzen); daneben stehen jetzt Nachträge, die erklären,
+  warum ein direktes Nachfahren nicht möglich ist bzw. was stattdessen
+  gemessen wurde.
+- **Nicht**, dass Zapfen-Reihe oder V-Rippen widerlegt sind. Es gibt schlicht
+  keine Fixtur mehr, an der sich das prüfen liesse — das ist eine Lücke in der
+  Reproduzierbarkeit, keine Aussage über die Geometrie.
+- **Nicht**, dass das ausgelieferte Feld sich bewegt hat. Diese Runde ändert
+  eine neue `#[ignore]`-Sonde und Doku; kein Opcode, kein Tape-Wert, keine
+  Konstante, kein Versions-Bump.
+- **Nicht**, dass §8j/§8o durch diese Runde neu belegt wären. Sie waren schon
+  vorher gepinnt; diese Runde bestätigt nur, dass ihre Null-Zusage auch unter
+  der exakten Referenz eine Null bleibt.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.
@@ -10445,6 +10622,10 @@ Neu: `over_side_reference_is_exact_not_the_ray_bound_471` (Richtung, Streitpunkt
   leer, §8r-Zahlen als Historie im Doc-Kommentar) und
   `junction_anchor_hits_the_true_corner_384` in `offset_channel_tests.rs`
   (parallele Tangenten ⇒ `None` statt Mittelpunkt).
+- §8ap (#472, **kein Produktionscode, keine Feldänderung**):
+  `crates/kernel/src/offset_capability_tests.rs` — die neue Sonde
+  `probe_472_8h_8i_ablation_exact` (`#[ignore]`, kein Pin). Keine bestehende
+  Pin-Zeile bewegt sich.
 
 ## 10. Verweise
 

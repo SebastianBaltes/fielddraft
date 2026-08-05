@@ -2597,7 +2597,115 @@ fn stop_terms_are_order_independent_384() {
     );
 }
 
+/// **#472-Sonde.** §8h/§8i drucken Ablationstabellen (Stufen-Nabe,
+/// Rippen-Kamm 4×1.5/0.8, Rippen-Kamm 4×2.0/1.0), deren „vorher"/„nachher"-
+/// Spalten Momentaufnahmen ZWISCHENZEITLICHER Feldzustände sind (vor §8i,
+/// zwischen §8i und §8j) und gegen `dist_hub_complement`/
+/// `dist_to_boxes_complement` (Strahl, obere Schranke) gerichtet wurden.
+/// Diese Zwischenzustände existieren im heutigen Code nicht mehr — §8j, §8n,
+/// §8o haben sie überholt, bevor #471 die Referenz austauschte, und ein
+/// Nachfahren „derselben" Zahl würde entweder altes Feld (Revert nötig, hier
+/// verboten) oder eine andere Messgrösse behaupten. Was diese Sonde stattdessen
+/// liefert: dieselben drei Fixturen, GEGEN DAS HEUTIGE FELD (alle Pakete bis
+/// #471 inklusive), beide Referenzen (`exakt` und `ray`) nebeneinander — der
+/// ehrliche Vergleichspunkt für den §8ap-Nachtrag.
+#[test]
+#[ignore]
+fn probe_472_8h_8i_ablation_exact() {
+    let delta = 2.0f32;
 
+    // Stufen-Nabe (§8h-Sonde 1 / §8i-Kern-Pin-Fixtur).
+    {
+        let (t, r1, r2, zh1, e1, e2) = (3.0f32, 6.0f32, 4.0f32, 0.5f32, 1.2f32, 1.8f32);
+        let (field, report) = compile_for(stepped_hub_node(t, r1, r2, zh1, e1, e2, delta));
+        let cyls = [
+            (r1 as f64, -(e1 as f64), zh1 as f64),
+            (r2 as f64, -(e2 as f64), 6.0f64),
+        ];
+        let n = 26usize;
+        let (mut miss_e, mut worst_e, mut at_e) = (0usize, 0.0f64, [0.0f64; 3]);
+        let (mut miss_r, mut worst_r) = (0usize, 0.0f64);
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let p = [
+                        -9.0 + 18.0 * (ix as f64 + 0.2113248654) / n as f64,
+                        -9.0 + 18.0 * (iy as f64 + 0.5773502692) / n as f64,
+                        -(t as f64) - 1.5 + (t as f64 + 2.0) * (iz as f64 + 0.7886751346) / n as f64,
+                    ];
+                    if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
+                        continue;
+                    }
+                    let ue = dist_hub_complement_exact(t as f64, &cyls, p);
+                    let ee = delta as f64 - ue;
+                    if ee > 1e-3 {
+                        miss_e += 1;
+                        if ee > worst_e {
+                            worst_e = ee;
+                            at_e = p;
+                        }
+                    }
+                    let ur = dist_hub_complement(t as f64, &cyls, p, 160);
+                    let er = delta as f64 - ur;
+                    if er > 1e-3 {
+                        miss_r += 1;
+                        worst_r = worst_r.max(er);
+                    }
+                }
+            }
+        }
+        println!(
+            "#472 Stufen-Nabe (heutiges Feld): exakt {miss_e}/{worst_e:.4} bei {at_e:?} \
+             | ray(160) {miss_r}/{worst_r:.4} | Status {:?} Reasons {:?}",
+            report.status(),
+            report.reasons()
+        );
+    }
+
+    // Rippen-Kamm, beide Breiten (§8h-Sonde 2 / §8i-Tabellenzeilen).
+    for (w, g) in [(1.5f32, 0.8f32), (2.0, 1.0)] {
+        let (node, boxes, span) = rib_comb_node(4, w, g, delta);
+        let (field, report) = compile_for(node);
+        let n = 28usize;
+        let (mut miss_e, mut worst_e, mut at_e) = (0usize, 0.0f64, [0.0f64; 3]);
+        let (mut miss_r, mut worst_r) = (0usize, 0.0f64);
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let p = [
+                        -span + 2.0 * span * (ix as f64 + 0.2113248654) / n as f64,
+                        -3.0 + 6.0 * (iy as f64 + 0.5773502692) / n as f64,
+                        -6.0 + 6.5 * (iz as f64 + 0.7886751346) / n as f64,
+                    ];
+                    if field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) >= 0.0 {
+                        continue;
+                    }
+                    let ue = dist_boxes_complement_exact(&boxes, p);
+                    let ee = delta as f64 - ue;
+                    if ee > 1e-3 {
+                        miss_e += 1;
+                        if ee > worst_e {
+                            worst_e = ee;
+                            at_e = p;
+                        }
+                    }
+                    let ur = dist_to_boxes_complement(&boxes, p, 160);
+                    let er = delta as f64 - ur;
+                    if er > 1e-3 {
+                        miss_r += 1;
+                        worst_r = worst_r.max(er);
+                    }
+                }
+            }
+        }
+        println!(
+            "#472 Rippen-Kamm {w}/{g} (heutiges Feld): exakt {miss_e}/{worst_e:.4} bei {at_e:?} \
+             | ray(160) {miss_r}/{worst_r:.4} | Status {:?} Reasons {:?}",
+            report.status(),
+            report.reasons()
+        );
+    }
+}
 
 // ─── #384 §8j: das vierte Gate — Fremdgeometrie QUER zur Naht ────────────
 //
