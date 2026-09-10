@@ -161,6 +161,6 @@ darf jeder Angemeldete einladen. `GET`-Liste und `DELETE` sind optional
 | Reset-Token-Speicherung | Klartext (s. o.) | Abdruck |
 | `password-change` | fehlt | war `/api/auth/passwort`; wird umbenannt und übernimmt dabei `old_password`/`new_password` |
 | Feldnamen `login`/`register` | konform | deutsch (`name`, `passwort`, …) — bleibt vorerst, Umbenennung ohne Nutzen solange kein Dritter die API spricht |
-| E-Mail am Konto | Pflicht + Login-Kennung | optional (eindeutig wenn gesetzt) + Nachtrage-Route; Betreiber-Entscheidung zur Pflicht offen |
+| E-Mail am Konto | Pflicht + Login-Kennung | wird Pflicht (Betreiber-Anweisung 2026-09-10, mit der Go-Portierung); Abweichung entfällt |
 | Invite-Pfade | konform | Umzug von `/api/auth/invite` auf `/api/invites` zugesagt; `GET`-Liste und `DELETE` nicht gebaut (optional) |
 | Mailversand | fehlt komplett (Token wird geloggt); übernimmt den 587/STARTTLS-Weg, sobald gebaut | in Arbeit; wechselt auf „konform", sobald gegen einen echten Kanal gemessen |
