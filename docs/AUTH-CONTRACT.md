@@ -12,9 +12,14 @@ Dokument. Abgestimmt 2026-09-10 zwischen den Agenten `fielddraft` und
 - Alle Bodies sind JSON. Fehler haben immer die Form `{"error": "<meldung>"}`
   mit passendem HTTP-Status.
 - Die Sitzung ist ein **opaker Zufallswert** (mindestens 128 Bit aus einem
-  CSPRNG), transportiert als Cookie `session` mit `HttpOnly`, `SameSite=Lax`,
-  `Secure` (in Prod), `Path=/`. Die Sitzungsdauer ist implementierungsfrei
-  (fielddraft: 7 Tage).
+  CSPRNG), **serverseitig widerrufbar**. Der Transport ist
+  implementierungsfrei: Cookie **oder** `Authorization: Bearer <token>`.
+  fielddraft: Cookie `session` mit `HttpOnly`, `SameSite=Lax`, `Secure` (in
+  Prod), `Path=/`, 7 Tage. newpulous: Bearer-Token (32 Bytes hex, 30 Tage) —
+  ein Cookie ist dort unmöglich, weil die API mit
+  `Access-Control-Allow-Origin: *` antwortet und CORS bei Wildcard das
+  Mitsenden von Anmeldedaten verbietet (Seite wird aus wechselnden Herkünften
+  geladen).
 - User-Objekte in Antworten enthalten **nie** Passwort-Ableitungen oder Salts.
 - Feldnamen sind `snake_case`.
 
@@ -43,10 +48,13 @@ Verfahren sein (fielddraft: Argon2id; newpulous: scrypt N=2^15).
 
 Registrierung ist **invite-gated**. Request:
 `{"email", "display_name", "password", "invite"}` — `invite` alternativ als
-Query `?invite=<token>`. E-Mail und Passwort sind Pflicht; die E-Mail ist
-eindeutig pro Konto (sie ist bei fielddraft zugleich die Login-Kennung;
-newpulous darf zusätzlich einen Namen als Kennung führen, die E-Mail bleibt
-Pflicht und eindeutig).
+Query `?invite=<token>`. Passwort ist Pflicht. Die **Login-Kennung ist
+App-Sache**: bei fielddraft die E-Mail (Pflicht), bei newpulous der Name
+(E-Mail optional, dort entsteht das Erstkonto aus der Dienst-Umgebung ohne
+Adresse; ob sie Pflicht wird, entscheidet der Betreiber — offen). Verbindlich
+ist nur: **wenn eine E-Mail gesetzt ist, ist sie eindeutig pro Konto**, und
+der Passwort-Reset setzt eine hinterlegte E-Mail voraus (Konto ohne Adresse →
+kein Reset; eine Route zum Nachtragen ist erlaubt).
 
 Antworten: 200 mit dem User-Objekt + gesetztem Session-Cookie (direkt
 eingeloggt) · 400 fehlende Felder / Passwort zu kurz · 403 fehlender oder
@@ -58,8 +66,10 @@ Duplikat-E-Mail darf den Token nicht verbrennen.
 
 ### POST /api/auth/login
 
-Request `{"email", "password"}` → 200 User-Objekt + Session-Cookie, sonst 401
-(siehe Nicht-Verrats-Regel 1). Gesperrte Konten: ebenfalls 401.
+Request: Login-Kennung + Passwort → 200 User-Objekt + Sitzung, sonst 401
+(siehe Nicht-Verrats-Regel 1). Gesperrte Konten: ebenfalls 401. Kanonische
+Felder `{"email", "password"}` (fielddraft); newpulous nimmt
+`{"name", "passwort"}` — `email` ist dort im Login-Body **nicht** zulässig.
 
 ### POST /api/auth/logout
 
@@ -93,13 +103,19 @@ der Name ist hiermit reserviert, damit kein dritter Dialekt entsteht.)
 
 ### Invites
 
-- `POST /api/invites` (nur Admin): Request
+„Berechtigt" heißt **berechtigt im Sinne der App**: fielddraft hat Rollen und
+bindet die Verwaltung an Admins; newpulous hat bewusst keine Rollen — dort
+darf jeder Angemeldete einladen. `GET`-Liste und `DELETE` sind optional
+(newpulous baut sie vorerst nicht).
+
+- `POST /api/invites` (berechtigt): Request
   `{"invitee_name", "invitee_email", "message"}` → 200 Invite-Objekt inkl.
   `token`, `expires_at` (Default-TTL 14 Tage) und `register_url`
   (`…/register?invite=<token>`).
-- `GET /api/invites` (nur Admin): Liste aller Invites mit Status
+- `GET /api/invites` (berechtigt, optional): Liste aller Invites mit Status
   (`open` / `used` / `expired`).
-- `DELETE /api/invites/{token}` (nur Admin): offenen Invite zurückziehen.
+- `DELETE /api/invites/{token}` (berechtigt, optional): offenen Invite
+  zurückziehen.
 - `GET /api/invites/{token}/info` (**öffentlich**, für das Prefill des
   Registrierungsformulars): offener Invite →
   `{"invitee_name", "invitee_email", "valid": true}`; alles andere →
@@ -141,7 +157,10 @@ der Name ist hiermit reserviert, damit kein dritter Dialekt entsteht.)
 | Punkt | fielddraft | newpulous |
 |---|---|---|
 | `GET /api/auth/me` | liegt noch auf `GET /api/me`; Migration auf den kanonischen Pfad steht aus | konform |
-| Passwort-Minimum bei Registrierung | seit diesem Commit durchgesetzt | konform |
+| Passwort-Minimum bei Registrierung | seit 16a64035 durchgesetzt | konform |
 | Reset-Token-Speicherung | Klartext (s. o.) | Abdruck |
-| `password-change` | fehlt | war `/api/auth/passwort`, wird umbenannt/umgebaut |
-| Mailversand | fehlt komplett (Token wird geloggt); übernimmt den 587/STARTTLS-Weg, sobald gebaut | in Arbeit |
+| `password-change` | fehlt | war `/api/auth/passwort`; wird umbenannt und übernimmt dabei `old_password`/`new_password` |
+| Feldnamen `login`/`register` | konform | deutsch (`name`, `passwort`, …) — bleibt vorerst, Umbenennung ohne Nutzen solange kein Dritter die API spricht |
+| E-Mail am Konto | Pflicht + Login-Kennung | optional (eindeutig wenn gesetzt) + Nachtrage-Route; Betreiber-Entscheidung zur Pflicht offen |
+| Invite-Pfade | konform | Umzug von `/api/auth/invite` auf `/api/invites` zugesagt; `GET`-Liste und `DELETE` nicht gebaut (optional) |
+| Mailversand | fehlt komplett (Token wird geloggt); übernimmt den 587/STARTTLS-Weg, sobald gebaut | in Arbeit; wechselt auf „konform", sobald gegen einen echten Kanal gemessen |
