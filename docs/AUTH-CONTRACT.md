@@ -148,6 +148,12 @@ darf jeder Angemeldete einladen. `GET`-Liste und `DELETE` sind optional
   fällt auf den Ohne-Mail-Weg zurück (Token/Invite-Code anzeigen bzw.
   loggen) und meldet das in einer Logzeile beim Start. Ein fehlender
   Mailweg darf keinen Deploy aufhalten, aber auch nicht still bleiben.
+  Auch **Teilkonfiguration** (Host/From gesetzt, `SMTP_USER`/`SMTP_PASSWORD`
+  fehlen) verlangt eine Startzeile. Grund: `password-reset-request`
+  antwortet nach Nicht-Verrats-Regel 2 **immer** 200 — ein gescheiterter
+  Versand ist für den Anfragenden unsichtbar, ohne Startzeile fällt ein
+  toter Reset-Weg nirgends auf. (Bei Invites ist es harmlos: dort trägt die
+  Antwort den Fehler.)
 - `SMTP_FROM` wird **unverändert** als Absender verwendet (bei
   Gmail-Zugängen muss es die Kontoadresse selbst sein, sonst weist der
   Server ab oder schreibt um).
@@ -163,4 +169,4 @@ darf jeder Angemeldete einladen. `GET`-Liste und `DELETE` sind optional
 | Feldnamen `login`/`register` | konform | deutsch (`name`, `passwort`, …) — bleibt vorerst, Umbenennung ohne Nutzen solange kein Dritter die API spricht |
 | E-Mail am Konto | Pflicht + Login-Kennung | wird Pflicht (Betreiber-Anweisung 2026-09-10, mit der Go-Portierung); Abweichung entfällt |
 | Invite-Pfade | konform | Umzug von `/api/auth/invite` auf `/api/invites` zugesagt; `GET`-Liste und `DELETE` nicht gebaut (optional) |
-| Mailversand | fehlt komplett (Token wird geloggt); übernimmt den 587/STARTTLS-Weg, sobald gebaut | in Arbeit; wechselt auf „konform", sobald gegen einen echten Kanal gemessen |
+| Mailversand | fehlt komplett (Token wird geloggt); übernimmt den 587/STARTTLS-Weg, sobald gebaut | **konform** (2026-09-10 gegen echten STARTTLS-Kanal gemessen, `requireTLS`, `From` unverändert, Code im Klartext-Rumpf; produktiv geplant `smtp.hostinger.com:587`, Zugangsdaten stehen aus) |
