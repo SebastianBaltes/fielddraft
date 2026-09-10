@@ -268,7 +268,7 @@ func TestDuplicateEmailRejects(t *testing.T) {
 	defer ts.Close()
 
 	mk := func() string {
-		return `{"email":"dup@test.com","password":"pass","invite":"` + newInvite(t, store) + `"}`
+		return `{"email":"dup@test.com","password":"passwort1","invite":"` + newInvite(t, store) + `"}`
 	}
 	resp, _ := http.Post(ts.URL+"/api/auth/register", "application/json", strings.NewReader(mk()))
 	resp.Body.Close()
@@ -831,5 +831,21 @@ func TestPublishSnapshotSelfContained(t *testing.T) {
 	emptyObj := viewDoc(publish(`{}`))
 	if !strings.Contains(emptyObj, "__asset") {
 		t.Fatalf("empty-object body should fall back to stored doc: %s", emptyObj)
+	}
+}
+
+// The password policy (docs/AUTH-CONTRACT.md) is enforced at registration,
+// not only in the reset path.
+func TestRegisterRejectsShortPassword(t *testing.T) {
+	store := NewStore()
+	srv := NewServerWithTickets(store, store.(TicketStore))
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	body := `{"email":"short@test.com","password":"kurz","invite":"` + newInvite(t, store) + `"}`
+	resp, _ := http.Post(ts.URL+"/api/auth/register", "application/json", strings.NewReader(body))
+	resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("short password register: got %d, want 400", resp.StatusCode)
 	}
 }

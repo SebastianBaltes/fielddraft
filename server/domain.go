@@ -28,6 +28,10 @@ const sessionTTL = 7 * 24 * time.Hour
 // resetTokenTTL is how long a password-reset token stays valid.
 const resetTokenTTL = 1 * time.Hour
 
+// minPasswordLen is the password policy (docs/AUTH-CONTRACT.md) — declared
+// exactly once, enforced at every entry point (register, reset, change).
+const minPasswordLen = 8
+
 // ─── password hashing (Argon2id) ────────────────────────────────
 
 // The Argon2id parameters — defined exactly once. Changing them here changes

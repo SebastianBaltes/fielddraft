@@ -214,6 +214,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "email and password required")
 		return
 	}
+	if len(body.Password) < minPasswordLen {
+		writeErr(w, http.StatusBadRequest, "password must be at least 8 characters")
+		return
+	}
 
 	// Invite-gated registration: token from body or ?invite= query.
 	token := body.Invite
@@ -548,7 +552,7 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "token and new_password required")
 		return
 	}
-	if len(body.NewPassword) < 8 {
+	if len(body.NewPassword) < minPasswordLen {
 		writeErr(w, http.StatusBadRequest, "password must be at least 8 characters")
 		return
 	}
