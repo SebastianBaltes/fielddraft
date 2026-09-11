@@ -124,7 +124,7 @@ tokens come from prod's `.env.prod` (`PO_SERVICE_TOKEN` / `CODING_SERVICE_TOKEN`
 and live **only on the desktop** — never in the repo, never on the V-Server.
 
 ```bash
-export FIELDDRAFT_API_URL="https://203.0.113.10.sslip.io"   # prod
+export FIELDDRAFT_API_URL="https://fielddraft.sebastian-l-baltes.de"   # prod
 
 # ── PO agent — source-less tickets dir ──
 export PO_SERVICE_TOKEN="…"            # from .env.prod

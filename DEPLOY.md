@@ -212,7 +212,7 @@ ansible-playbook -i inventory.ini deploy.yml --ask-vault-pass -e version=$TAG
 
 ### Ansible playbooks (`deploy/ansible/`)
 
-> **The live deployment does NOT run this.** Production (`https://203.0.113.10.sslip.io`)
+> **The live deployment does NOT run this.** Production (`https://fielddraft.sebastian-l-baltes.de`)
 > is deployed by the **devops agent** from **its own** Ansible role on its control
 > node, over the **archive path**: we build the images and `docker save` them into
 > `dist/fielddraft-<version>.image.tar.gz` (`just release-image`), the tarball goes

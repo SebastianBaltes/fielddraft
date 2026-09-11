@@ -180,7 +180,7 @@ const pairs = args
   .map((a) => a.split("="));
 const installations = pairs.length ? pairs : DEFAULT_INSTALLATIONS;
 
-const IV_URL = process.env.IV_URL || "https://issuevault.203.0.113.10.sslip.io/api/v1";
+const IV_URL = process.env.IV_URL || "https://issuevault.sebastian-l-baltes.de/api/v1";
 const IV_TOKEN = process.env.IV_TOKEN || "";
 const IV_PROJECT = process.env.IV_PROJECT || "fielddraft";
 const IV_BLOB_TARGET = process.env.IV_BLOB_TARGET || "root@203.0.113.10:/data/issuevault/blobs/";

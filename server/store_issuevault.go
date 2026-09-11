@@ -53,7 +53,7 @@ var _ TicketStore = (*issuevaultStore)(nil)
 func newIssuevaultStore() *issuevaultStore {
 	base := os.Getenv("ISSUEVAULT_URL")
 	if base == "" {
-		base = "https://issuevault.203.0.113.10.sslip.io/api/v1"
+		base = "https://issuevault.sebastian-l-baltes.de/api/v1"
 	}
 	project := os.Getenv("ISSUEVAULT_PROJECT")
 	if project == "" {
