@@ -2,6 +2,8 @@
 
 Stand: 2026-10-21. Erstellt aus einem Shallow-Clone von SolidCraft (Stand `main` vom 2026-10-21, nur gelesen, nicht gebaut), GitHub-Metadaten über `gh` und einer Lektüre des FieldDraft-Repos. Unsichere Aussagen sind als solche markiert. Hintergrund der Einstellung: [DISCONTINUED.md](DISCONTINUED.md).
 
+> **Nachtrag 2026-10-21:** FieldDraft steht inzwischen unter **MIT OR Apache-2.0** (`cgal-mesher/` unter GPL-3.0-or-later, Drittkomponenten in `THIRD_PARTY.md`). Die Lizenz-Befunde unten beschreiben den Stand vor der Veröffentlichung.
+
 ## 1. Kurzfazit
 
 - **SolidCraft** ist in kurzer Zeit zu einem sehr breiten B-Rep-CAD herangewachsen: rund 448 000 Zeilen Rust, etwa 5 850 `#[test]`, 84 Oracle-Referenzteile, Desktop, Web (WASM), CLI und MCP. Gebaut wird es überwiegend von KI-Agenten unter einem Maintainer (bherbruck). Die Community ist groß (8 840 Sterne, 142 Contributors), die offene Last ebenfalls (1 706 offene Issues, 1 063 davon mit Label `bug`, 484 offene PRs).
@@ -117,7 +119,7 @@ Leitprinzipien aus AGENTS.md:
 | Umfang | ca. 195 000 Zeilen Rust, ca. 96 000 Zeilen TS/TSX ohne Tests, ca. 13 000 Zeilen Go | `wc -l` |
 | Tests | ca. 1 760 Rust-`#[test]`, ca. 2 100 Vitest-Fälle in 222 Testdateien, 51 Playwright-Dateien (echte GPU) | grep |
 | Version / Historie | v0.66.4; 1 828 Commits, **ein einziger Autor**, 2026-04-09 bis 2026-09-11 (letztes Commit-Datum laut `git log -1`) | git |
-| Lizenz | **keine LICENSE-Datei**; `Cargo.toml` deklariert `AGPL-3.0-or-later`; README §8: „Lizenz: offen", Details in docs/BUSINESS.md | Cargo.toml:14, README.md:326 ff. |
+| Lizenz | **keine LICENSE-Datei**; `Cargo.toml` deklariert `AGPL-3.0-or-later`; README §8 (damals): „Lizenz: offen"; inzwischen MIT OR Apache-2.0 | Cargo.toml:14, README.md:326 ff. |
 | Lizenz-Abhängigkeiten | PlaneGCS (LGPL-2.1+, aus FreeCAD), opencascade.js und occt-import-js (LGPL-2.1, OCCT), CGAL Mesh_3 (GPL-3, nur im separaten Container), fidget (MPL-2.0); sonst permissiv (nalgebra, spade, cavalier_contours, fast-surface-nets, baby_shark …) | web/package.json, crates/kernel/Cargo.toml |
 
 Feature-Kinds laut `crates/kernel/src/features/`: Primitive, extrude, revolve, sweep, loft, helix, hole (inkl. ISO), fillet/shell, chamfer, thicken, offset, boolean, patterns/mirror/transforms, **gyroid (TPMS-Infill)**, **custom_sdf (Formel-Implicit)**, mate_connector, material, imported_mesh.

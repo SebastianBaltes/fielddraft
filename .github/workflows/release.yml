@@ -31,9 +31,9 @@ jobs:
       # submodule the module graph has nothing to resolve and the server image
       # does not build — the release would push web+mesher and silently no server.
       #
-      # BaseAIChat is a PRIVATE repo, and the automatic GITHUB_TOKEN is scoped to
-      # THIS repository only — it cannot clone a second private repo. So the
-      # checkout needs SUBMODULE_TOKEN: a fine-grained PAT with `Contents: read`
+      # BaseAIChat is public now; SUBMODULE_TOKEN dates from when it was private
+      # (the automatic GITHUB_TOKEN cannot clone a second private repo). The
+      # checkout still uses SUBMODULE_TOKEN: a fine-grained PAT with `Contents: read`
       # on BOTH SebastianBaltes/BaseAIChat and .../fielddraft (checkout uses this
       # token for the main repo too). Without the secret the submodule step fails
       # with "Authentication failed" — that is a MISSING SECRET, not a broken URL.

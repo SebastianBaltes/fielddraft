@@ -2,10 +2,11 @@
 
 ![image](assets/logo.png)
 
-> © 2026 Sebastian Leonardo Baltes, Deutschland. Alle Rechte vorbehalten.
-> Dieses Dokument einschließlich aller Inhalte, Konzepte und technischen Beschreibungen ist urheberrechtlich geschützt.
-> Jede Vervielfältigung, Verbreitung, öffentliche Zugänglichmachung oder sonstige Verwertung – ganz oder teilweise – bedarf
-> der vorherigen schriftlichen Zustimmung des Rechteinhabers. Vertraulich – nicht zur Weitergabe bestimmt.
+> **⚠ Eingestellt (2026-10-21).** FieldDraft wird nicht weiterentwickelt. Der SDF-Ansatz ist an drei Stellen in eine Sackgasse geraten (Onshape-Import, Fillets, Booleans ergeben kein echtes SDF); ein vollständiger B-Rep-Kernel ist der Ausweg, und den geht das Open-Source-Projekt [SolidCraft](https://github.com/tangency-labs/solidcraft) bereits. Begründung: [`docs/DISCONTINUED.md`](docs/DISCONTINUED.md), Vergleich: [`docs/SOLIDCRAFT-COMPARISON.md`](docs/SOLIDCRAFT-COMPARISON.md).
+>
+> **Discontinued (2026-10-21).** FieldDraft is no longer developed. See [`docs/DISCONTINUED.md`](docs/DISCONTINUED.md) for why (English summary at the top). The code stays available as a reference under MIT OR Apache-2.0.
+
+© 2026 Sebastian Leonardo Baltes. Lizenz: MIT OR Apache-2.0 ([`LICENSE-MIT`](LICENSE-MIT), [`LICENSE-APACHE`](LICENSE-APACHE)), ausgenommen `cgal-mesher/` (GPL-3.0-or-later). Drittkomponenten: [`THIRD_PARTY.md`](THIRD_PARTY.md).
 
 ## 1. Kurzfassung
 
@@ -33,7 +34,8 @@ Diese README ist das **Einstiegsdokument** und beschreibt die Vision, Zielgruppe
 | [`DEPLOY.md`](DEPLOY.md) | Self‑Hosting‑Anleitung (Docker Compose, MariaDB, Production‑Deployment) | Beim Deployment |
 | [`CLAUDE.md`](CLAUDE.md) | Agent‑spezifische Arbeitsanweisungen (Telegram‑Kommunikation, Build & Test, Doc‑Map) | Automatisch bei Session‑Start geladen |
 | [`onshape-ux.md`](onshape-ux.md) | Vollständige Onshape‑Paritäts‑Analyse für die Sketch‑UX | Vor K6b und UX‑Arbeit am Sketcher |
-| [`docs/BUSINESS.md`](docs/BUSINESS.md) | Lizenzmodell, Preisstrategie, Zielgruppen‑Positionierung, Kommerzialisierung | Nicht Teil der technischen Dokumentation |
+| [`docs/DISCONTINUED.md`](docs/DISCONTINUED.md) | Warum FieldDraft eingestellt wurde | Zuerst |
+| [`docs/SOLIDCRAFT-COMPARISON.md`](docs/SOLIDCRAFT-COMPARISON.md) | Vergleich mit SolidCraft, was sich übertragen lässt | Bei Interesse an einem Beitrag zu SolidCraft |
 
 Querverweise auf „§4.x" zeigen auf `docs/ARCHITECTURE.md`, „§10" auf `docs/ROADMAP.md`, „§11" auf `docs/ARCHITECTURE.md` (dort als eigener Abschnitt), „§16.x" auf `docs/LITERATURE.md`. §2, §3, §5–§9, §12–§15 leben in dieser README.
 
@@ -331,7 +333,7 @@ Das hat drei konkrete Konsequenzen:
 - **Self‑Hostable:** Ein einzelnes statisches Go‑Binary + MariaDB‑Container reicht. `docker-compose.yml` im Repo startet Server, DB und Web‑Frontend mit einem Befehl — siehe [`DEPLOY.md`](DEPLOY.md).
 - **IP‑Schutz:** Projekte sind standardmäßig privat; der Sichtbarkeits‑Schalter muss explizit umgelegt werden.
 - **OSS‑Readiness als Architektur‑Disziplin.** Unabhängig davon, wann und in welcher Form FieldDraft unter einer freien Lizenz veröffentlicht wird, wird der Kernel von Anfang an so gebaut, dass er **OSS‑fähig bleibt**: Keine proprietären Abhängigkeiten außer PlaneGCS (LGPL‑2.1+, siehe `docs/ARCHITECTURE.md` §4.4), keine Secrets oder API‑Keys im Repository, jede Drittbibliothek sauber attributiert, keine Telemetrie ohne Opt‑in.
-- **Lizenz: offen.** Das Lizenzmodell, die Preisstrategie, die Zielgruppen‑Positionierung und alles andere mit kommerziellem Bezug sind bewusst nicht Gegenstand dieses technischen Dokuments und sind in `docs/BUSINESS.md` dokumentiert.
+- **Lizenz:** MIT OR Apache-2.0 nach Wahl des Nutzers; `cgal-mesher/` steht wegen CGAL unter GPL-3.0-or-later. Drittkomponenten und deren Lizenzen: [`THIRD_PARTY.md`](THIRD_PARTY.md).
 
 ### 8.1 IP‑Hygiene (agent‑relevante Regeln)
 

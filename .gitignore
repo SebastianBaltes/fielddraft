@@ -73,3 +73,7 @@ server/tmp/
 
 # Onshape import — local API key config (never commit)
 web/.onshape.local.json
+
+# Local secrets (see .env.prod.example) and IssueVault CLI state
+/secrets/
+/.issuevault.json
